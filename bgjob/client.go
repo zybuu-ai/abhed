@@ -48,21 +48,35 @@ func StatusOf(err error) int {
 // do sends one call and decodes a JSON answer into out.
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
 	var body []byte
+	ct := ""
 	if in != nil {
 		var err error
 		if body, err = json.Marshal(in); err != nil {
 			return err
 		}
+		ct = "application/json"
 	}
-	cctx, cancel := context.WithTimeout(ctx, time.Minute)
+	b, err := c.send(ctx, method, path, ct, body, time.Minute)
+	if err != nil || out == nil || len(b) == 0 {
+		return err
+	}
+	if err := json.Unmarshal(b, out); err != nil {
+		return fmt.Errorf("the server's answer could not be read: %w", err)
+	}
+	return nil
+}
+
+// send sends one call with body as contentType and returns the answer.
+func (c *Client) send(ctx context.Context, method, path, contentType string, body []byte, timeout time.Duration) ([]byte, error) {
+	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	resp, err := c.Profile.Do(cctx, c.HTTP, func() (*http.Request, error) {
 		req, err := c.Profile.NewRequest(method, path, bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}
-		if in != nil {
-			req.Header.Set("Content-Type", "application/json")
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
 		}
 		return req, nil
 	}, c.Saved)
@@ -71,23 +85,40 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 		if errors.As(err, &ue) {
 			err = ue.Err
 		}
-		return fmt.Errorf("could not reach %s: %w", c.Profile.URL, err)
+		return nil, fmt.Errorf("could not reach %s: %w", c.Profile.URL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if resp.StatusCode >= 300 {
-		return refused(path, resp.StatusCode, b)
+		return nil, refused(path, resp.StatusCode, b)
 	}
-	if out == nil || len(b) == 0 {
-		return nil
+	return b, nil
+}
+
+// UploadSnapshot sends a snapshot, a gzip-compressed tar as PathSnapshots
+// describes, for a job to start from.
+func (c *Client) UploadSnapshot(ctx context.Context, tgz []byte) (Snapshot, error) {
+	var snap Snapshot
+	if len(tgz) > MaxSnapshotUpload {
+		return snap, fmt.Errorf("the snapshot is %d MiB compressed, over the %d MiB a server takes", len(tgz)>>20, MaxSnapshotUpload>>20)
 	}
-	if err := json.Unmarshal(b, out); err != nil {
-		return fmt.Errorf("the server's answer could not be read: %w", err)
+	b, err := c.send(ctx, http.MethodPost, PathSnapshots, "application/gzip", tgz, 10*time.Minute)
+	if err != nil {
+		return snap, err
 	}
-	return nil
+	if err := json.Unmarshal(b, &snap); err != nil {
+		return snap, fmt.Errorf("the server's answer could not be read: %w", err)
+	}
+	return snap, nil
+}
+
+// JobPatch is the patch a job kept when it ended (see Job.Result).
+func (c *Client) JobPatch(ctx context.Context, id string) (string, error) {
+	b, err := c.send(ctx, http.MethodGet, PatchPath(url.PathEscape(id)), "", nil, time.Minute)
+	return string(b), err
 }
 
 // refused reads a refusal. A server without background jobs answers their

@@ -22,7 +22,39 @@ const (
 	PathApprovals = "/v1/bg/approvals"
 	// PathAdminJobs is GET, for an administrator, for every job in the tenant.
 	PathAdminJobs = "/v1/admin/bg/jobs"
+	// PathSnapshots is POST of a snapshot, a gzip-compressed tar of the
+	// files a job starts with; see Snapshot.
+	PathSnapshots = "/v1/bg/snapshots"
 )
+
+// A snapshot is a gzip-compressed tar of regular files only: no links,
+// devices or folders of their own, each name relative, slash-separated,
+// with no "." or ".." part and nothing under .git or .abhed, at most
+// MaxSnapshotName bytes, each mode 0644 or 0755. Its headers are USTAR, or
+// PAX with only the path, size and mtime records; no GNU long names or
+// sparse files. These bound it; the server refuses one past any of them.
+const (
+	MaxSnapshotUpload = 64 << 20  // the compressed upload
+	MaxSnapshotTotal  = 512 << 20 // all its files together
+	MaxSnapshotFile   = 16 << 20  // any one file
+	MaxSnapshotFiles  = 50000
+	MaxSnapshotName   = 1024
+	// MaxSnapshotUnpacked bounds every byte the archive decompresses to,
+	// headers and padding included: the files, and 4 KiB a file for the rest.
+	MaxSnapshotUnpacked = MaxSnapshotTotal + 4<<10*MaxSnapshotFiles
+)
+
+// Snapshot is an uploaded snapshot, which one job of its uploader's may
+// take, once, before it expires.
+type Snapshot struct {
+	ID      string    `json:"id"`
+	Files   int       `json:"files"`
+	Bytes   int64     `json:"bytes"`
+	Expires time.Time `json:"expires"`
+}
+
+// PatchPath is what a job changed, as one unified diff, kept when it ended.
+func PatchPath(id string) string { return JobPath(id) + "/patch" }
 
 // JobPath is one job's path; CancelPath stops it.
 func JobPath(id string) string    { return PathJobs + "/" + id }
@@ -60,7 +92,8 @@ const (
 	WorkspaceSession = "session"
 	// WorkspaceClone is a repository the server clones into that folder.
 	WorkspaceClone = "clone"
-	// WorkspaceSnapshot is files the caller uploads into it.
+	// WorkspaceSnapshot is files the caller uploads into it first: see
+	// PathSnapshots. The job's folder is its own and is removed when it ends.
 	WorkspaceSnapshot = "snapshot"
 )
 
@@ -70,6 +103,15 @@ type Workspace struct {
 	// Repo and Ref name what a clone takes.
 	Repo string `json:"repo,omitempty"`
 	Ref  string `json:"ref,omitempty"`
+	// Snapshot is the ID of an uploaded snapshot, for WorkspaceSnapshot.
+	Snapshot string `json:"snapshot,omitempty"`
+}
+
+// Result is what a job left when it ended: its patch is at PatchPath.
+type Result struct {
+	// Bytes is the patch's size; Truncated says it was cut at the server's limit.
+	Bytes     int  `json:"bytes"`
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // StartRequest starts a job. It names no identity, sandbox tier, secrets or
@@ -123,6 +165,9 @@ type Job struct {
 	Error  string `json:"error,omitempty"`
 	// Waiting is the ask the job waits on, when it does.
 	Waiting *Approval `json:"waiting,omitempty"`
+	// Result is set once a job whose folder was its own has ended and its
+	// patch was kept; the folder itself is then removed.
+	Result *Result `json:"result,omitempty"`
 }
 
 // JobList is a list of jobs, newest first.

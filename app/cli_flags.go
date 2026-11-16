@@ -462,7 +462,7 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 	case "sandbox":
 		return sandboxCmd(workspace, rest[1:], os.Stdin, os.Stdout, os.Stderr)
 	case "bg":
-		return bgCmd(workspace, rest[1:], os.Stdin, os.Stdout, os.Stderr)
+		return bgCmd(workspace, rest[1:], a.trust, os.Stdin, os.Stdout, os.Stderr)
 	case "pki":
 		return pkiCmd(rest[1:], os.Stdout, os.Stderr)
 	case "egress-proxy":

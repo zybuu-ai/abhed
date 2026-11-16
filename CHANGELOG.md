@@ -132,6 +132,24 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `abhed bg start` sends a snapshot of the repository it runs in, so a
+  background job works on your code: the tracked files as they are in the
+  working tree, without anything your read rules withhold, anything named
+  like a key or holding one or a stored secret, links or submodules, each
+  left-out file named. A file is left out when any rules a session in the
+  repository would follow withhold it: the root's, the folder `start` runs
+  in and those between, and any other folder with a `.abhed` of its own.
+  Every file is read by opening each folder on its path without following
+  a link. In a terminal it asks before sending, with the count
+  and size; `-y` sends without asking, and without a terminal `-y` or
+  `-no-snapshot` is required. `-no-snapshot` starts in an empty folder. `abhed bg
+  logs -patch` reads the patch a job kept when it ended. For editions, a
+  session's `StartSpec.Prepare` fills its own sandbox folder before it
+  starts, refused with `ErrNoOwnWorkspace` where sessions share a folder,
+  and `Server.SessionPatch` (cut at a size the edition names) and
+  `Server.DeleteSessionSandbox` keep a session's changes and remove its
+  folder. `server.background.snapshots_waiting` and `snapshots_mb` bound the
+  snapshots a server keeps waiting.
 - `/parallel <work>` in the terminal, in Studio and as an `abhed -p` task or
   `-input-format stream-json` line: the work, its `@` mentions attached, goes
   to the model with the instruction to start its independent parts at once
