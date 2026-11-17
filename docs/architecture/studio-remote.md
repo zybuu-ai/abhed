@@ -1,6 +1,7 @@
 # Studio remote: the engine in a dev container or on an SSH host
 
-Status: design for 1.3.0. The dev-container path is built; the SSH path is
+Status: 1.3.0. The dev-container path is built and tested end to end with a
+throwaway container (Studio's `devcontainer-smoke.mjs`); the SSH path is
 designed here and not built (see [What is left](#what-is-left)).
 
 ## The problem
@@ -71,7 +72,7 @@ keeps the container. *Remove Dev Container…* asks (default No) and runs
 | Question | Answer |
 |---|---|
 | Who enforces policy? | The engine inside the container, with the configuration it reads there: its own `~/.abhed`, the folder's `.abhed` under the same workspace trust, and the container's `/etc/abhed` if the image has one. Studio enforces nothing new; it only chose where the engine runs. |
-| Which sandbox? | The engine's tiers, as available inside the container. The container is an outer boundary of its own, not a tier: a container without user namespaces gives the engine no process tier, and `sandbox.min_tier` then refuses to run rather than fall to `none`. The policy is the same whatever the tier. |
+| Which sandbox? | The engine's tiers, as available inside the container. The container is an outer boundary of its own, not a tier: an image without bubblewrap (or a container without user namespaces) gives the engine no process tier, and `sandbox.min_tier` (process by default) then refuses the session rather than fall to `none`; verified with a slim Debian image. The person may set `sandbox.min_tier: "none"` in the engine's own configuration inside, a choice made there and recorded there. The policy is the same whatever the tier. |
 | Where does the record live? | In the container, under the engine's `~/.abhed`. It goes with the container: *Remove Dev Container* deletes it. Shipping (`record.ship`) works from inside as anywhere. The laptop's record does not see the container's sessions. |
 | How do credentials travel? | They do not, by default. No environment variable, SSH agent socket, home folder, `~/.abhed`, secret store, container-runtime socket or credential helper is passed or mounted. The engine reads model keys and secrets from its own store inside the container, which the person fills there (`abhed secret set` in an Abhed terminal). Forwarding is not offered in 1.3.0. |
 | What does the container reach? | The folder (read-write) and the engine binary (read-only). Its network is the runtime's default; the engine's own egress rules apply to what the agent does. |

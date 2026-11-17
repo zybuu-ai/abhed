@@ -132,6 +132,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Abhed Studio can run a folder's engine in a dev container: **Abhed: Reopen
+  Folder in Dev Container…** runs the image `devcontainer.json` names with
+  the folder at the same path and a pinned Linux engine read-only, and
+  starts `abhed acp` inside through the runtime's `exec`, so the policy,
+  sandbox and record are the container's. No credential or environment is
+  passed in. The design, threat model and the SSH host still to build are
+  in `docs/architecture/studio-remote.md`.
+
 - Abhed Studio's settings import also takes another editor of the same
   family found by its folder's layout (an AI editor built on it: settings,
   keybindings and extension list, through the same filters), and other agent
