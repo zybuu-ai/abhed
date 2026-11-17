@@ -52,7 +52,9 @@ func (h *denialHints) observe(ev agent.Event) (permissionDenial, bool) {
 	switch ev.Type {
 	case agent.EvActionRequested:
 		var a agent.ActionRequested
-		if json.Unmarshal(ev.Payload, &a) == nil && a.CallID != "" {
+		// The engine's own start of a language server is no call of the
+		// agent's: a refusal of it is a note (diagnosticsNote), not a denial.
+		if json.Unmarshal(ev.Payload, &a) == nil && a.CallID != "" && (a.Via != agent.DiagnosticsVia || ev.Actor != agent.ActorSystem) {
 			h.asked[a.CallID] = a
 		}
 	case agent.EvActionDenied:
@@ -70,6 +72,23 @@ func (h *denialHints) observe(ev agent.Event) (permissionDenial, bool) {
 		return out, true
 	}
 	return permissionDenial{}, false
+}
+
+// diagnosticsNote is the line a -p run prints when no language server gave
+// the agent diagnostics for a language (not installed, or its start not
+// allowed): once per language, as the record holds it once.
+func diagnosticsNote(ev agent.Event) string {
+	if ev.Type != agent.EvLSPDiagnostics {
+		return ""
+	}
+	var d agent.LSPDiagnostics
+	if json.Unmarshal(ev.Payload, &d) != nil || d.Skipped == "" {
+		return ""
+	}
+	if strings.HasPrefix(d.Skipped, "no "+d.Language+" diagnostics") {
+		return "note: " + d.Skipped
+	}
+	return "note: no " + d.Language + " diagnostics: " + d.Skipped
 }
 
 // hint is the flag that would allow a refused call and what to say of it.

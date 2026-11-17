@@ -716,6 +716,48 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- `abhed -p -mode acceptEdits` was refused ("unknown -mode"), although
+  `-permission-mode acceptEdits` was taken. `-mode` now takes
+  `acceptEdits` and `bypassPermissions` (and their snake_case forms) as
+  aliases of `accept-edits` and `bypass`.
+- Ghost text at the end of a file was English prose, and Tab inserted it.
+  The completion request went to Ollama with an empty suffix, so no
+  fill-in-the-middle template was applied and a coder model answered the
+  code as a chat ("It looks like you're working on a Python script…", 7 of 7
+  suggestions at the end of a file with `qwen2.5-coder:7b`). The suffix sent
+  is now never empty: a newline at the end of a file. A suggestion that
+  opens as an English sentence where code is written (not in a comment, a
+  docstring, a string, or a prose or configuration language) is dropped,
+  with `dropped` saying why; text inside a string that spans lines (a Go raw
+  string, a template literal, a Rust raw string, a heredoc) is kept. Studio
+  does not show one that would leave the file parsing worse than it does.
+- Next-edit calls starved ghost text on a model server that answers one
+  request at a time: 17 next-edit calls wrote 12,708 tokens in one session,
+  and completions shown in 2.6 s by the engine reached the editor after 4.6
+  to 10 s. Completions now go first: one waiting for a request slot is given
+  the next free one, fill-in-the-middle requests take a slot rather than
+  queueing at the server, next-edit calls to that server wait while a
+  completion is asked for, and one in flight is cancelled
+  (`cancelled: "a completion went first"`). Studio cancels the next edit in
+  flight on each keystroke (`_abhed/nextEdit/cancel`), and a next-edit
+  answer is bounded by the window it rewrites rather than 1,024 tokens; one
+  cut at that bound is dropped, never read as lines to delete. This applies
+  on servers that queue requests (local, `ollama`, or
+  `max_concurrent_requests`); a call that never left the queue is not
+  charged.
+- After a rename, Tab could insert the rest of the line a second time
+  (`stride = size - overlap  = size - overlap`): a completion that wrote the
+  text already after the cursor was offered whole. That text is now taken
+  off. On the renamed line Studio shows the rename's own edit, which needs
+  no model, instead of asking for ghost text.
+- A `-p` run with no Python language server installed reported the engine's
+  attempt to start one as a permission denial ("denied bash: …
+  basedpyright-langserver --stdio", an entry in `permission_denials` with
+  an empty hint). Where the CLI chooses its sandbox tier at the first
+  command, a missing server is now found before anything is judged:
+  diagnostics for the language are off with one note on stderr naming the
+  install (`abhed toolchain install -lsp python`), and a start that policy
+  does not allow is a note too, never a denial of the agent's.
 - In `abhed -p -runbook`, a change the runbook does not list was refused
   with the hint "rerun with -allow '…'", which could not help: under a bound
   runbook such a change asks whatever an allow rule says. The hint now says
