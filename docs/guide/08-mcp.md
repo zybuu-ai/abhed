@@ -250,8 +250,14 @@ A URL server that wants a sign-in answers `401` until you sign in to it:
 
 ```sh
 abhed mcp login corpus     # opens your browser; prints the address too
+abhed mcp login -no-browser corpus  # only prints the address
 abhed mcp logout corpus    # revokes the login where the server offers that, and forgets it
 ```
+
+The browser is the one `BROWSER` names when it is set (commands separated
+by `:`, each given the address in place of `%s` or at the end, run without
+a shell), else the system's. Over SSH no browser is opened, since the
+sign-in returns to a listener on this machine.
 
 `login` follows the MCP authorization specification. It asks the server for
 its protected-resource metadata (from its `401` challenge, or the well-known
@@ -443,6 +449,32 @@ collide, and a policy rule can name one precisely:
 Every MCP tool routes through the policy engine, because Abhed cannot know what
 someone else's tool does. A remote tool is subject to approval exactly as `bash`
 is, and its result is recorded and tagged untrusted.
+
+### readOnlyHint
+
+A server may mark a tool `readOnlyHint: true` in its tool list. Abhed
+ignores that unless the operator opts the server in: the managed file
+(`/etc/abhed/config.json`) defines the server, with
+`"trust_read_only_hint": true` on its entry, and the entry in force is
+exactly that one.
+
+```json
+{"mcp": {"servers": [{"name": "docs", "url": "https://docs.corp.example/mcp",
+  "enabled": true, "trust_read_only_hint": true}]}}
+```
+
+A tool such an opted-in server marks read-only is then a read, as `read`
+and `grep` are: it runs without asking in the default mode and in plan
+mode, and deny rules, ask rules, hooks and the record apply as before. It
+is off by default, so a managed server that does not opt in, and every
+server you, a `-mcp-config` file or a workspace added (with the key or
+without it), asks as above.
+
+Why only the operator: the hint is the server's own word about itself. A
+server that wants to run unasked would say it, and nothing checks it. An
+operator who opts a server in has vouched both that it may run and that its
+reads need no question; a server that came with a repository, or that a
+person added for themselves, has no one who has.
 
 ## Failure
 

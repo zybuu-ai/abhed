@@ -376,9 +376,10 @@ func run(a *App, workspace string, f *cliFlags) int {
 		prompt := f.task()
 		// The person's own words: the task given after -p, or stdin when that is the whole task.
 		o.typed = prompt
+		o.stdinWait = f.stdinWait
 		if f.inputFormat == "stream-json" {
 			o.inputs = streamInputs(os.Stdin, os.Stderr)
-		} else if prompt, err = headlessTask(ctx, prompt, os.Stdin, !f.noStdin && stdinIsPipe(), os.Stderr); err != nil {
+		} else if prompt, o.lateStdin, err = headlessTask(ctx, prompt, os.Stdin, stdinWindow(f, prompt, stdinIsPipe()), os.Stderr); err != nil {
 			if code, stopped := stopCode(ctx); stopped {
 				return code
 			}
@@ -387,6 +388,15 @@ func run(a *App, workspace string, f *cliFlags) int {
 		}
 		if o.typed == "" {
 			o.typed = prompt
+		}
+		// A custom command runs as the terminal runs it; one the workspace
+		// brought and nobody trusted is refused before anything is recorded.
+		if strings.HasPrefix(o.typed, "/") || o.inputs != nil {
+			o.commands = readCustomCommands(cfg, sess.Root)
+			if _, _, err := headlessCustom(o.commands, sess.Root, o.typed); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: %v\n", config.PrintableText(err.Error()))
+				return 2
+			}
 		}
 		if prompt == "" && o.inputs == nil {
 			if !startFlags.resuming() {
@@ -589,6 +599,12 @@ func checkHeadlessFlags(f *cliFlags) int {
 		return bad("-input-format stream-json needs -p")
 	case !f.print.on && f.noStdin:
 		return bad("-no-stdin needs -p")
+	case !f.print.on && f.stdinDash:
+		return bad("- (attach stdin) needs -p")
+	case f.noStdin && f.stdinDash:
+		return bad("-no-stdin and - disagree: - attaches stdin")
+	case f.stdinDash && f.inputFormat == "stream-json":
+		return bad("- and -input-format stream-json disagree: stream-json reads stdin as messages")
 	case f.noStdin && f.inputFormat == "stream-json":
 		return bad("-no-stdin and -input-format stream-json disagree: stream-json reads stdin")
 	case !f.print.on && f.format != "text":

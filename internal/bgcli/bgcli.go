@@ -88,7 +88,8 @@ func Usage(w io.Writer) {
 
 Background jobs on an Abhed server: an agent that runs as you, in its own
 sandbox under the server's policy, and keeps going after this command exits.
-What it asks waits for you: abhed bg attach answers it, and an ask left
+What it asks waits for you: abhed bg attach answers it (y, n, or a to
+always allow for that job alone the rule the ask offers), and an ask left
 unanswered past the server's timeout stops the job with nothing approved.
 Every command takes -profile NAME or -server URL (default: the current
 profile) and -o table|json.`)
@@ -150,6 +151,9 @@ type runner struct {
 	// question, so a line typed ahead is the next question's, not lost.
 	lines   chan lineRead
 	linesAt error // the read's end, once it has ended
+	// fragments are the streamed text no whole message has followed yet,
+	// by event type, shown joined if the record ends without one.
+	fragments map[string]*strings.Builder
 }
 
 type lineRead struct {
@@ -243,6 +247,12 @@ func (r *runner) flags(name, args string) *flag.FlagSet {
 
 // parse reads flags wherever they stand among the arguments, up to "--".
 func (r *runner) parse(fs *flag.FlagSet, args []string) ([]string, error) {
+	return r.parseFlags(fs, args, false)
+}
+
+// parseFlags is parse; with untilWord the flags end at the first other
+// word, so a prompt keeps every word after it, "-C" or "-y" included.
+func (r *runner) parseFlags(fs *flag.FlagSet, args []string, untilWord bool) ([]string, error) {
 	var pos []string
 	for {
 		if err := fs.Parse(args); err != nil {
@@ -257,6 +267,10 @@ func (r *runner) parse(fs *flag.FlagSet, args []string) ([]string, error) {
 		}
 		if args[0] == "--" {
 			pos = append(pos, args[1:]...)
+			break
+		}
+		if untilWord {
+			pos = append(pos, args...)
 			break
 		}
 		pos, args = append(pos, args[0]), args[1:]
@@ -325,16 +339,35 @@ func short(s string, n int) string {
 	return s
 }
 
-func (r *runner) start(args []string) error {
-	fs := r.flags("start", "[-name N] [-mode M] [-provider P] [-y | -no-snapshot] [-attach] PROMPT")
-	var req bgjob.StartRequest
+// startFlags are start's flags, set on req and the switches returned.
+func (r *runner) startFlags(req *bgjob.StartRequest) (fs *flag.FlagSet, attach, bare, yes *bool) {
+	fs = r.flags("start", "[-name N] [-mode M] [-provider P] [-y | -no-snapshot] [-attach] PROMPT")
 	fs.StringVar(&req.Name, "name", "", "a label for the job")
 	fs.StringVar(&req.Mode, "mode", "", "plan, or the server's own mode (default: the server's)")
 	fs.StringVar(&req.Provider, "provider", "", "a model provider the server offers")
-	attach := fs.Bool("attach", false, "follow the job once it starts, as attach does")
-	bare := fs.Bool("no-snapshot", false, "start in an empty folder, sending none of this repository")
-	yes := fs.Bool("y", false, "send the repository's snapshot without asking")
-	pos, err := r.parse(fs, args)
+	attach = fs.Bool("attach", false, "follow the job once it starts, as attach does")
+	bare = fs.Bool("no-snapshot", false, "start in an empty folder, sending none of this repository")
+	yes = fs.Bool("y", false, "send the repository's snapshot without asking")
+	return fs, attach, bare, yes
+}
+
+// StartTakesValue reports whether start's flag name reads the next word as
+// its value, so a caller can tell where the prompt begins.
+func StartTakesValue(name string) bool {
+	fs, _, _, _ := (&runner{Env: Env{Err: io.Discard}}).startFlags(&bgjob.StartRequest{})
+	f := fs.Lookup(name)
+	if f == nil {
+		return false
+	}
+	b, ok := f.Value.(interface{ IsBoolFlag() bool })
+	return !ok || !b.IsBoolFlag()
+}
+
+func (r *runner) start(args []string) error {
+	var req bgjob.StartRequest
+	fs, attach, bare, yes := r.startFlags(&req)
+	// Flags come before the prompt; every word from its first is the prompt's.
+	pos, err := r.parseFlags(fs, args, true)
 	if err != nil {
 		return err
 	}
@@ -387,8 +420,12 @@ func (r *runner) list(args []string) error {
 	fmt.Fprintln(tw, "ID\tSTATE\tSTARTED\tNAME")
 	for _, j := range jobs {
 		state := string(j.State)
-		if j.Waiting != nil {
+		switch {
+		case j.Waiting != nil:
 			state += " (" + short(j.Waiting.Tool, 20) + ")"
+		case j.State.Final() && j.State != bgjob.StateDone && j.Reason != "":
+			// Why it ended, as -o json has it: max_budget, owner_revoked…
+			state += " (" + short(j.Reason, 30) + ")"
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", line(j.ID), line(state), j.Created.Local().Format("Jan 2 15:04"), short(j.Name, 60))
 	}
@@ -449,21 +486,80 @@ func (r *runner) logs(args []string) error {
 	for _, e := range evs {
 		r.printEvent(e)
 	}
+	r.flushFragments()
 	return nil
 }
 
-// printEvent writes one event as a line: its type and what it says.
+// streamed are the fragments of a reply or of reasoning as they arrive. The
+// whole text follows in agent.message or agent.reasoning, so the table
+// shows that once instead of a line per fragment; -o json keeps them.
+var streamed = map[string]bool{"agent.delta": true, "agent.reasoning.delta": true}
+
+// printEvent writes one event as a line: its type and what it says. A
+// reply is shown whole, below its line, as the command line shows it.
 func (r *runner) printEvent(e bgjob.Event) {
 	var p map[string]any
 	_ = json.Unmarshal(e.Payload, &p)
-	say := ""
-	for _, k := range []string{"text", "command", "tool", "reason", "error"} {
-		if s, ok := p[k].(string); ok && s != "" {
-			say = s
-			break
+	text, _ := p["text"].(string)
+	if streamed[e.Type] {
+		if r.fragments == nil {
+			r.fragments = map[string]*strings.Builder{}
+		}
+		if r.fragments[e.Type] == nil {
+			r.fragments[e.Type] = &strings.Builder{}
+		}
+		r.fragments[e.Type].WriteString(text)
+		return
+	}
+	switch e.Type {
+	case "agent.message":
+		delete(r.fragments, "agent.delta")
+	case "agent.reasoning":
+		delete(r.fragments, "agent.reasoning.delta")
+	}
+	at := e.CreatedAt.Local().Format("15:04:05")
+	if e.Type == "agent.message" && strings.TrimSpace(text) != "" {
+		r.printWhole(at, e.Type, text)
+		return
+	}
+	fmt.Fprintf(r.Out, "%s  %-22s %s\n", at, line(e.Type), short(eventSays(p), 160))
+}
+
+// printWhole writes a reply below its line, every line of it escaped.
+func (r *runner) printWhole(at, typ, text string) {
+	fmt.Fprintf(r.Out, "%s  %s\n", at, line(typ))
+	for _, l := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+		fmt.Fprintf(r.Out, "  %s\n", visible.Text(l, false, true))
+	}
+}
+
+// flushFragments shows, joined, what was streamed but never followed by its
+// whole message, as when a run was cut off mid-reply.
+func (r *runner) flushFragments() {
+	for _, typ := range []string{"agent.reasoning.delta", "agent.delta"} {
+		if b := r.fragments[typ]; b != nil && strings.TrimSpace(b.String()) != "" {
+			r.printWhole("        ", typ+" (streamed, no whole message followed)", b.String())
+		}
+		delete(r.fragments, typ)
+	}
+}
+
+// eventSays is what an event says in a word or a line: a budget stop's
+// message rather than its kind, and a run's end with its detail.
+func eventSays(p map[string]any) string {
+	str := func(k string) string { s, _ := p[k].(string); return s }
+	for _, k := range []string{"text", "message", "command", "tool"} {
+		if s := str(k); s != "" {
+			return s
 		}
 	}
-	fmt.Fprintf(r.Out, "%s  %-22s %s\n", e.CreatedAt.Local().Format("15:04:05"), line(e.Type), short(say, 120))
+	if s := str("reason"); s != "" {
+		if d := str("detail"); d != "" {
+			return s + ": " + d
+		}
+		return s
+	}
+	return str("error")
 }
 
 func (r *runner) cancel(args []string) error {
@@ -504,6 +600,8 @@ func (r *runner) follow(id string) error {
 	interactive := r.Interactive && r.In != nil
 	seen := int64(-1)
 	asked := ""
+	// stopped is what the job's last budget stop said, for its last line.
+	stopped := ""
 	detached := func() error {
 		// Leaving does not stop the job; it runs on.
 		fmt.Fprintf(r.Err, "abhed: detached; job %s runs on (abhed bg attach %s)\n", line(id), line(id))
@@ -528,6 +626,11 @@ func (r *runner) follow(id string) error {
 			for _, e := range evs {
 				if e.Seq > seen {
 					seen = e.Seq
+					if e.Type == "budget.stopped" {
+						var p map[string]any
+						_ = json.Unmarshal(e.Payload, &p)
+						stopped = eventSays(p)
+					}
 					if r.out == "json" {
 						_ = json.NewEncoder(r.Out).Encode(e)
 					} else {
@@ -537,9 +640,15 @@ func (r *runner) follow(id string) error {
 			}
 		}
 		if j.State.Final() {
+			if r.out != "json" {
+				r.flushFragments()
+			}
 			msg := string(j.State)
 			if j.Error != "" {
 				msg += ": " + j.Error
+			}
+			if j.State != bgjob.StateDone && stopped != "" {
+				msg += " (" + stopped + ")"
 			}
 			fmt.Fprintf(r.Err, "abhed: job %s %s\n", line(j.ID), line(msg))
 			if j.State != bgjob.StateDone {
@@ -590,28 +699,67 @@ func (r *runner) ask(interactive bool, w bgjob.Approval) error {
 	for _, l := range argLines(w.Args) {
 		fmt.Fprintf(r.Err, "  %s\n", l)
 	}
-	fmt.Fprint(r.Err, "Allow it? [y/N] ")
-	ans, err := r.readLine()
-	if r.Ctx.Err() != nil {
-		fmt.Fprintln(r.Err)
-		return errDetached
+	if w.Scope != "" {
+		// Remembered on this job's session only, never for the person's other jobs.
+		fmt.Fprintf(r.Err, "  a = always for this job: %s\n", short(w.Scope, 200))
+		fmt.Fprint(r.Err, "Allow it? [y/N/a] ")
+	} else {
+		fmt.Fprint(r.Err, "Allow it? [y/N] ")
+	}
+	a, err := r.answer()
+	if err != nil {
+		return err
+	}
+	always := w.Scope != "" && (a == "a" || a == "A")
+	ok := always || a == "y" || a == "Y"
+	if always {
+		err = r.cl.AnswerAlways(r.Ctx, w)
+	} else {
+		err = r.cl.Answer(r.Ctx, w, ok)
+	}
+	if err != nil && ok && r.Ctx.Err() == nil && bgjob.IsAnswerRefused(err) {
+		// A workspace that needs other approvers lets the owner only refuse:
+		// refuse, or leave the ask to its approvers.
+		fmt.Fprintf(r.Err, "abhed: %s\nRefuse it, or leave it to the workspace's approvers? [n = refuse, Enter = leave it] ", line(err.Error()))
+		if a, err = r.answer(); err != nil {
+			return err
+		}
+		if a != "n" && a != "N" {
+			fmt.Fprintln(r.Err, "left waiting for the workspace's approvers")
+			return nil
+		}
+		always, ok = false, false
+		err = r.cl.Answer(r.Ctx, w, false)
 	}
 	if err != nil {
-		ans = "" // no answer is a no
-	}
-	ok := strings.TrimSpace(ans) == "y" || strings.TrimSpace(ans) == "Y"
-	if err := r.cl.Answer(r.Ctx, w, ok); err != nil {
 		if r.Ctx.Err() != nil {
 			return errDetached
 		}
 		return err
 	}
-	if ok {
+	switch {
+	case always:
+		fmt.Fprintf(r.Err, "allowed, and always for this job: %s\n", short(w.Scope, 200))
+	case ok:
 		fmt.Fprintln(r.Err, "allowed")
-	} else {
+	default:
 		fmt.Fprintln(r.Err, "denied")
 	}
 	return nil
+}
+
+// answer is the person's answer to a question, trimmed; no answer is "",
+// a no. Ctrl-C at the question is errDetached.
+func (r *runner) answer() (string, error) {
+	ans, err := r.readLine()
+	if r.Ctx.Err() != nil {
+		fmt.Fprintln(r.Err)
+		return "", errDetached
+	}
+	if err != nil {
+		ans = ""
+	}
+	return strings.TrimSpace(ans), nil
 }
 
 // maxArg bounds what one argument shows; the record has it whole.

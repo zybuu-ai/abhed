@@ -94,6 +94,10 @@ type Verifier struct {
 	Critic *Critic
 	// Contract is the operator's completion contract, or nil.
 	Contract *Contract
+	// Relevance notes in the verdict an answer that seems not to address the
+	// question the person typed. It is a note only: the outcome, the exit
+	// code and the revision turn are never changed by it.
+	Relevance bool
 
 	mu      sync.Mutex
 	pending *givenAnswer
@@ -134,7 +138,11 @@ type AnswerVerdict struct {
 	// Note says why an answer with nothing verified passes: nothing in it
 	// is about this session's work, so there was nothing to check.
 	Note string `json:"note,omitempty"`
-	Turn int    `json:"turn"`
+	// Relevance is addresses or off_topic when the answer was checked
+	// against the question typed; off_topic adds why to Note. It is a note,
+	// and changes nothing else.
+	Relevance string `json:"relevance,omitempty"`
+	Turn      int    `json:"turn"`
 }
 
 // Footer is the one-line summary a surface shows under the answer.
@@ -165,6 +173,9 @@ func (v AnswerVerdict) Footer() string {
 		} else {
 			s += " · contract not met"
 		}
+	}
+	if v.Relevance == RelevanceOffTopic {
+		s += " · may not address the question"
 	}
 	return s
 }
@@ -449,6 +460,20 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 			n = av.Note + "; " + n
 		}
 		av.Note = n
+	}
+	// Whether it answers the question is a note, never a gate.
+	if v.Relevance {
+		if q := typedFrom(ctx); q != "" {
+			av.Relevance = RelevanceAddresses
+			if why := offTopic(q, text); why != "" {
+				av.Relevance = RelevanceOffTopic
+				n := "the answer may not address the question: " + why
+				if av.Note != "" {
+					n = av.Note + "; " + n
+				}
+				av.Note = n
+			}
+		}
 	}
 	gated := v.Mode == VerifyStrict || v.Contract != nil
 	// In label mode a contradicted claim also earns the one revision: it is

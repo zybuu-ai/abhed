@@ -135,7 +135,10 @@ that 0 only when both hold:
   `gpt-4o-2024-08-06`, a `provider/` prefix such as `openai/gpt-4o`, other
   letter case, surrounding spaces, full-width letters, zero-width
   characters or Unicode dashes, which are normalised before the lookup),
-  and the machine's file and the person's do not price it. The variants
+  and the machine's file and the person's do not price it. Under a
+  managed or org dollar cap the person's own price does not count, since a
+  cap prices calls only by the managed layers: it is set aside, said once at
+  start-up, and does not keep the org's 0 from applying. The variants
   match by prefix, so a local model named after a listed family (anything
   `o3-…`, `gpt-5-nano-…`) is refused too: it fails closed, and is priced in
   the managed file instead;
