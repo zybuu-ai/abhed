@@ -218,9 +218,9 @@ func TestMCPLoginUnderTheAllowlist(t *testing.T) {
 	}
 }
 
-// urlFollower is the output of a login run by an editor: when the sign-in's
+// editorURLFollower is the output of a login run by an editor: when the sign-in's
 // address is printed it follows it, as the browser the editor opened would.
-type urlFollower struct {
+type editorURLFollower struct {
 	t      *testing.T
 	follow func(string) error
 	mu     sync.Mutex
@@ -228,7 +228,7 @@ type urlFollower struct {
 	done   bool
 }
 
-func (u *urlFollower) Write(p []byte) (int, error) {
+func (u *editorURLFollower) Write(p []byte) (int, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.buf.Write(p)
@@ -243,7 +243,7 @@ func (u *urlFollower) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (u *urlFollower) String() string { u.mu.Lock(); defer u.mu.Unlock(); return u.buf.String() }
+func (u *editorURLFollower) String() string { u.mu.Lock(); defer u.mu.Unlock(); return u.buf.String() }
 
 // An editor signs in with the yes on a descriptor: the browser is left to it
 // (the address is printed, never opened here), the sign-in is logged as the
@@ -261,7 +261,7 @@ func TestMCPLoginConfirmsOnADescriptor(t *testing.T) {
 		defer r.Close()
 		_, _ = w.WriteString(answer)
 		_ = w.Close()
-		out := &urlFollower{t: t, follow: follow}
+		out := &editorURLFollower{t: t, follow: follow}
 		var errw bytes.Buffer
 		// The argv exactly as Studio's engine host sends it: login -confirm-fd N -- NAME.
 		code := mcpCmd(ws, []string{"login", "-confirm-fd", strconv.Itoa(int(r.Fd())), "--", "corp"}, config.TrustRefused,

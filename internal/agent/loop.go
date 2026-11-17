@@ -240,6 +240,8 @@ func unanswered(ctx context.Context, held bool) string {
 }
 
 type Config struct {
+	// Plugins are the approved plugins in force, recorded once as EvPluginLoaded.
+	Plugins []PluginInForce
 	// Egress is the guard of the tool set the loop runs with, egress.Unguarded
 	// outside the allowlist; nil names none. Subagents keep it.
 	Egress *egress.Guard
@@ -309,6 +311,8 @@ type Loop struct {
 	// loop, by path and hash, guarded by startupMu.
 	startupMu    sync.Mutex
 	startupNoted string
+	// pluginsNoted is set once EvPluginLoaded is recorded, under startupMu.
+	pluginsNoted bool
 	Adapter      model.Adapter
 	// Provider is the configured name Adapter came from, when the surface
 	// knows it. A subagent that runs on its parent's model records it.
@@ -914,6 +918,9 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 		return l.run(ctx)
 	}
 	if err := l.noteTrustedStartup(); err != nil {
+		return TermError, err
+	}
+	if err := l.notePlugins(); err != nil {
 		return TermError, err
 	}
 	text, withheld := l.withholdSecrets(m.Text)
@@ -2079,6 +2086,10 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 	var doomed error
 	if decision.Decision != policy.Deny {
 		doomed = tools.Precheck(ctx, tool, l.Session, call.Args)
+	} else if pp, ok := tool.(tools.PlanPrechecker); ok && decision.Step == "mode" {
+		// Plan mode refuses the call anyway; the tool's own answer says what
+		// to do instead, such as ssh_connect's "this host is ready".
+		doomed = pp.Precheck(l.Session, call.Args)
 	}
 	if doomed == nil && decision.Decision == policy.Ask {
 		if why := l.readFirst(ctx, tool, call); why != "" {

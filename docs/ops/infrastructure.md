@@ -396,10 +396,28 @@ missing slash, misspelled directory, space in the name — resolves correctly,
 because a path pasted into a chat is approximate and sending the agent hunting
 with `glob` through denied directories is worse than trying the obvious places.
 
-A host whose key is not in `known_hosts` is refused, and the refusal says to
-retry with `accept_host_key: true` **only if the user has said the host is new
-or ephemeral**. That is a deliberate line: the agent should not decide on its
-own to stop verifying the identity of a machine it is about to run commands on.
+A host whose key is not in `known_hosts` is refused. For a host
+`ssh_connect` added, the refusal says to retry with `accept_host_key: true`
+**only if the user has said the host is new or ephemeral**. That is a
+deliberate line: the agent should not decide on its own to stop verifying the
+identity of a machine it is about to run commands on. For a host in
+`ssh.hosts`, which has no such option, it gives the command that records the
+key, such as `ssh -p 2222 ops@db.internal`.
+
+Abhed asks the server for the key types `known_hosts` holds for that host and
+port first, as OpenSSH does, so a file holding only the ed25519 key `ssh`
+recorded is enough; it does not need every key type `ssh-keyscan` would
+list. Only a key on file is accepted. A key of a type on file that is not the
+key on file is refused as a mismatch, with no offer to accept it: the machine
+was rebuilt, or something is in the middle. Confirm the new key out of band
+before removing the old one with `ssh-keygen -R '[db.internal]:2222'`.
+
+`ssh_connect` is for a machine the user gives an address for. Called with the
+name of a host in `ssh.hosts`, it is answered at once, before any approval and
+in plan mode too, that the host is ready for the `ssh` tool; nothing is
+connected. The `ssh`
+tool's description lists the declared hosts as ready, so the model need not
+connect first.
 
 **Every remote command requires approval unless it is provably a read.**
 A local `bash` call runs inside a sandbox with a workspace boundary and a
@@ -423,6 +441,57 @@ patterns for one simple command, matched on every host.
   "openssl x509 -enddate -noout -in /etc/nginx/tls/site.crt"
 ] }
 ```
+
+For incident triage on a host without `ssh.read_contents`, name the log reads
+you expect:
+
+```json
+"ssh": { "enabled": true, "read_commands": [
+  "tail -n 200 /var/log/app/app.log",
+  "tail -n * /var/log/app/app.log",
+  "grep -i * /var/log/app/app.log"
+] }
+```
+
+In an entry, `*` and `?` stand within one argument of the call: an entry
+matches a call with the same number of arguments, each matching the entry's
+word in its place. So `tail -n * /var/log/app/app.log` matches
+`tail -n 100 /var/log/app/app.log` but not
+`tail -n 100 /etc/shadow /var/log/app/app.log`, and `grep -i * …` matches
+one pattern, quoted or not (`grep -i 'pool exhausted' …`). A word that is
+`**` alone stands for one or more whole arguments, each still checked as a
+read form: `systemctl status **` matches `systemctl status -n 0 nginx`.
+
+What a wildcard matches is the argument the program gets, so:
+
+- A word the wildcard matches may hold nothing the remote shell would
+  expand: no unquoted `*`, `?`, `[`, brace or `~`, and no `$` outside single
+  quotes. `cat /var/log/.[.]/.[.]/etc/shadow` and
+  `grep -i /etc/s* /var/log/app/app.log` ask. Only the entry's own word,
+  written exactly as in the entry, may hold a glob: under `cat /var/log/*`,
+  the call `cat /var/log/*` is the operator's own.
+- Where `*` stands for an operand, it never matches an option (a word
+  starting with `-`) unless a `--` comes before it, since getopt reads an
+  option wherever it stands: under `grep -i * /var/log/app/app.log`,
+  `grep -i -r /var/log/app/app.log` and `grep -i --file=/etc/shadow …` ask.
+  Where it stands for an option's value (`tail -n *`, `journalctl -u *`), the
+  program takes the next word as the value, so that is unchanged.
+- No wildcard stands for a `..` segment the entry does not write, so
+  `cat /var/log/*` does not match `cat /var/log/../../etc/shadow`. An entry
+  with a wildcard in a path part that starts with `.` (`/var/log/.*`,
+  `.?*`, `.[.]`) is refused at load, since bash before 5.2 and dash expand
+  such a glob to `..`. This is a rule about the text, not where a path
+  leads: a symbolic link under an allowed folder (`/var/log/x` pointing at
+  `/etc`) still reaches its target.
+- `**` with a program that prints files (`cat`, `grep`, `head`, `tail`, `rg`,
+  `sort`, `journalctl`, a checksum, `systemctl status` with its log, …) could
+  name any file the account can read, which is what `ssh.read_contents`
+  decides. Without it, such an entry runs only calls that print no file
+  (`systemctl status -n 0 nginx`), and `getent` with a wildcard never reaches
+  the `shadow` or `gshadow` database. A single `*` with no folder written
+  before it reaches any one file (`head -n 5 *` runs `head -n 5 /etc/shadow`),
+  so `abhed doctor` and editors warn of that entry too, and of a `**` one.
+  Name the files, or a folder: `cat /var/log/app/*`.
 
 A call whose command is one simple command matching an entry is a read: plan
 mode allows it, so a plan can start by inspecting the fleet, and no mode asks
@@ -460,6 +529,8 @@ it; any other is refused at load. The error names the accepted forms: an
 exact command (`df -h`), or a pattern whose `*` or `?` stands for a whole
 operand (`df -h *`) or for a value after `=` (`df --output=*`), never for
 part of an option (`df -h*`), and it lists the read options of that program.
+`*` and `?` stand within one argument; a word that is `**` alone stands for
+one or more whole arguments (`df **`).
 Every call the pattern matches is checked against the same form, so an
 option or verb that is not a read is never approved through a wildcard,
 whatever the pattern says.
@@ -481,7 +552,9 @@ since programs as plain as `lspci` have options that write (`-O`) or reach
 the network (`-q`). A call with a `$` outside single quotes is not a read,
 nor is one with an unquoted `*`, `?` or `[` at the start of a word or in a
 word that starts with `-`, since the host's shell could expand it into an
-option: write the glob after a path (`/etc/nginx/*.conf`, `./*.log`). A value
+option. A glob anywhere else in a word the entry's wildcard matches asks too,
+as above; a glob the entry itself writes (`ls -l /etc/nginx/*.conf`) runs
+when the call writes it the same way. A value
 in single quotes may hold `$` and braces only for `dpkg-query -f` and
 `rpm --queryformat`, which take a format. A call with a backslash inside
 single quotes is not a read: POSIX shells keep it as written and fish reads
@@ -558,9 +631,10 @@ Not on the list, so declared exactly or not at all: `find` (the
 [read-only classifier](#read-only-commands-on-declared-hosts) reads its read
 forms on declared hosts), `mount`, `ss`
 (the parser reads its operand as a command), `lsof`, `curl`, `wget`,
-`nginx`, `kubectl`, `git`, and every program that runs another. `*` matches
-any text, spaces included, so `ip addr *` does not match `ip addr` alone;
-write both if both are wanted.
+`nginx`, `kubectl`, `git`, and every program that runs another. A `*` stands
+within exactly one argument, so `ip addr *` matches neither `ip addr` alone
+nor `ip addr show dev eth0`; write an entry for each form you want, or
+`ip addr **` for one or more arguments.
 
 The `ssh` tool's description lists the entries, so the model knows which
 commands it may run in plan mode.
@@ -621,6 +695,12 @@ it, keys included, into the session and so to the model's provider. Set
 `read_contents` only for hosts and accounts whose files may be read that
 way. Only the person's own file or the managed file sets it; a workspace and
 an org policy cannot.
+
+Without it, a content read on a declared host asks, and the reason says why:
+`tail prints the contents of files, which runs unasked on a declared host only
+where the operator sets ssh.read_contents: true (in the user or managed
+configuration) or lists the command in ssh.read_commands`. Nothing else
+changes: what runs unasked is the same either way.
 
 A command is a read only when all of these hold:
 
@@ -906,3 +986,12 @@ kubernetes  reads + writes (every write needs approval)
 ssh host    build1 → ci@10.0.0.5
 rag corpus  runbooks → https://rag.internal/v1/search
 ```
+
+To try the Kubernetes tools and a runbook end to end without a real cluster,
+`scripts/dev/k8s-kind-runbook/run.sh` creates a throwaway
+[kind](https://kind.sigs.k8s.io/) cluster with its own kubeconfig, runs a
+scripted incident flow through `abhed -p -runbook` (`k8s_get` of the pods, the
+deployment and a pod's logs, then the one approved `scale`, while a change the
+runbook does not list is refused), checks each result, and deletes the
+cluster. It needs kind, kubectl, node, Go and docker or podman; no existing
+kube context is read or changed, and nothing reaches a model provider.

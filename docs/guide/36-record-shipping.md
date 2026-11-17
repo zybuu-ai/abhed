@@ -81,7 +81,20 @@ abhed: ⚠ Your organisation access was removed: https://abhed.example.com refus
 ```
 
 `abhed record ship`, `abhed doctor` and Studio's Health view (the
-`record_ship` check, failing) say the same. The record keeps being written
+`record_ship` check, failing) say the same. So do the other ways the
+machine meets the server: `abhed policy refresh` (and the refresh as a
+session starts), `abhed login`, whose sign-in the server refuses with
+`access_revoked`, and the identity check after a sign-in. Each says the
+organisation removed the access, with the server's own reason, that
+signing in again will not restore it, and to ask the organisation's Abhed
+administrator who manages that server:
+
+```text
+abhed: your organisation has removed your access to https://abhed.example.com (the server says: …); signing in again will not restore it. Ask your organisation's Abhed administrator, who manages https://abhed.example.com, to restore it
+```
+
+Only the reason the server gives the person is shown, escaped and cut at
+300 characters; nothing else from its answer. The record keeps being written
 here; once a pass reaches the server again (access restored and `abhed
 login` run), the warning clears and what waited is shipped. A sign-in that
 only lapsed is not taken for a removal: it says to run `abhed login` again.

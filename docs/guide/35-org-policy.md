@@ -99,7 +99,7 @@ names a local CA file and secret, and the policy is fetched through it), ssh
 hosts, `ssh.read_commands` and `ssh.read_contents`, `k8s` clusters, `sandbox.read_only_paths`,
 `sandbox.language_servers`, `sandbox.image`, `verify.contract.require`,
 `verify.critic`, extensions, simple hooks (`hooks.run`), `mcp.servers`,
-statusline, the `dirs` settings, `context`, `additional_dirs`, record paths
+statusline, the `dirs` settings, `plugins.sources` and `plugins.trusted_root`, `context`, `additional_dirs`, record paths
 and retention, storage, server, auth, schedules, the control plane and
 `org_policy` itself.
 
@@ -135,7 +135,10 @@ that 0 only when both hold:
   `gpt-4o-2024-08-06`, a `provider/` prefix such as `openai/gpt-4o`, other
   letter case, surrounding spaces, full-width letters, zero-width
   characters or Unicode dashes, which are normalised before the lookup),
-  and the machine's file and the person's do not price it. The variants
+  and the machine's file and the person's do not price it. Under a
+  managed or org dollar cap the person's own price does not count, since a
+  cap prices calls only by the managed layers: it is set aside, said once at
+  start-up, and does not keep the org's 0 from applying. The variants
   match by prefix, so a local model named after a listed family (anything
   `o3-…`, `gpt-5-nano-…`) is refused too: it fails closed, and is priced in
   the managed file instead;
@@ -163,6 +166,12 @@ later applies to the sessions started after it.
 **Always**: `record.ship.enabled` and `record.ship.max_backlog_mb` (records
 go only to the server this machine enrolled with), `hooks.managed_only:
 true`, `studio.disable_host_terminal: true`, `model.allowed_loopback: false`,
+`plugins.disabled: true`, `plugins.require_signature: true`,
+`plugins.allowed_publishers` and `plugins.allowed_bundles` (a layer of their
+own that every bundle must pass as well as the machine's; they grant trust
+only when the machine pins the keys, and otherwise only narrow), and
+`plugins.org_source: true` (the server this machine enrolled with serves the
+plugin index, trusted only with pinned keys; see [Plugins](41-plugins.md#policy)),
 and `model.default` pinned to a provider the machine's managed file defines
 (never one the person configured with their own key). Under the org's `model.allowed`,
 endpoints are bound as under the managed file's, but only the managed file

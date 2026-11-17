@@ -82,6 +82,12 @@ func mergeManaged(cfg *Config) error {
 	var orgLists map[string]any
 	if org != nil {
 		orgLists = takeOrgLists(org)
+		// Only a fresh, verified policy from pinned keys grants; a stale,
+		// refused or fallback one only narrows.
+		grants := len(orgMachine(local).Keys) > 0 && cfg.OrgPolicy.Status == orgpolicy.StatusApplied
+		if err := takeOrgPlugins(cfg, org, grants, source); err != nil {
+			return err
+		}
 		if b, err := json.Marshal(org); err == nil {
 			mine := managedRuleSet(local)
 			cfg.orgRules = map[string]bool{}
@@ -164,6 +170,7 @@ func applyManaged(cfg *Config, label string, data []byte) error {
 	}
 	cfg.Managed = true
 	cfg.ManagedKeys = managedKeys(data)
+	cfg.managedMCP = managedMCPServers(data)
 	joinManagedLists(cfg, belowLists)
 	// As the managed file says it, before a lower layer's narrowing applies.
 	cfg.managedFetchOff = cfg.ManagedSets("web_fetch.enabled") && !cfg.WebFetch.Enabled
@@ -868,23 +875,24 @@ func managedPricing(cfg *Config, data []byte, below map[string]PriceConfig) {
 }
 
 // orgZeroBelow keeps an unpinned org's 0 from replacing a price a lower
-// layer set: the model keeps that price, or, under a managed dollar cap
-// that sets lower prices aside, stays unpriced. A 0 only prices a model that
-// has no price of its own.
+// layer set: the model keeps that price. A 0 only prices a model that has no
+// price of its own. Under a managed dollar cap a lower layer's price does not
+// count at all, so it cannot stand in the way of the org's 0 either: it is
+// set aside, said once, and the org's 0 holds where it would for a model
+// nobody priced.
 func orgZeroBelow(cfg *Config, below map[string]PriceConfig) {
+	capped := cfg.ManagedSets("limits.max_budget_usd") && cfg.Limits.MaxBudgetUSD > 0
 	for name := range cfg.PricingLoopbackOnly {
 		p, ok := below[name]
 		if !ok {
 			continue
 		}
-		delete(cfg.PricingLoopbackOnly, name)
-		if cfg.ManagedSets("limits.max_budget_usd") && cfg.Limits.MaxBudgetUSD > 0 {
-			delete(cfg.Pricing, name)
-			// The person's own price is set aside too, as managedPricing does.
+		if capped {
 			cfg.SetAside = append(cfg.SetAside, pricingSetAside(cfg.origins["pricing."+name], name))
-		} else {
-			cfg.Pricing[name] = p
+			continue
 		}
+		delete(cfg.PricingLoopbackOnly, name)
+		cfg.Pricing[name] = p
 		cfg.SetAside = append(cfg.SetAside, SetAsideKey{File: orgSource(cfg.OrgPolicy.URL), Layer: LayerOrg, Key: "pricing." + name,
 			Reason: "an org policy whose keys this machine does not pin prices only a model that has no price of its own"})
 	}
@@ -894,4 +902,42 @@ func orgZeroBelow(cfg *Config, below map[string]PriceConfig) {
 func pricingSetAside(o origin, name string) SetAsideKey {
 	return SetAsideKey{File: o.file, Layer: o.layer, Key: "pricing." + name,
 		Reason: "a managed dollar budget prices calls only by the managed configuration and the built-in list"}
+}
+
+// managedMCPServers are the MCP servers the managed document defines, by
+// name, as it defines them. An org policy never sets mcp.servers, so these
+// are the machine's own file's.
+func managedMCPServers(data []byte) map[string]MCPServerConfig {
+	var doc struct {
+		MCP struct {
+			Servers []MCPServerConfig `json:"servers"`
+		} `json:"mcp"`
+	}
+	if json.Unmarshal(data, &doc) != nil || len(doc.MCP.Servers) == 0 {
+		return nil
+	}
+	out := make(map[string]MCPServerConfig, len(doc.MCP.Servers))
+	for _, s := range doc.MCP.Servers {
+		out[s.Name] = s
+	}
+	return out
+}
+
+// ReadOnlyHintTrusted reports whether s's readOnlyHint is believed: the
+// managed file defines the server, exactly as it is in force, and opts it in
+// with trust_read_only_hint. A server a person or a workspace added, or
+// changed, describes itself, and the hint is the server's own claim.
+func (c Config) ReadOnlyHintTrusted(s MCPServerConfig) bool {
+	m, ok := c.managedMCP[s.Name]
+	return ok && m.TrustReadOnlyHint && reflect.DeepEqual(m, s)
+}
+
+// warnReadOnlyHint says, once per server, that trust_read_only_hint set
+// anywhere but the managed file's own entry is ignored.
+func warnReadOnlyHint(w warnSink, c Config) {
+	for _, s := range c.MCP.Servers {
+		if s.TrustReadOnlyHint && !c.ReadOnlyHintTrusted(s) {
+			w.emit("readonlyhint\x00"+s.Name, fmt.Sprintf("MCP server %s sets trust_read_only_hint, which is ignored: only the managed configuration's own entry for a server can opt it in, so its tools still ask", Printable(s.Name)))
+		}
+	}
 }

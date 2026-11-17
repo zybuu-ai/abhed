@@ -38,6 +38,9 @@ type denialHints struct {
 	registry *tools.Registry
 	asked    map[string]agent.ActionRequested
 	denials  []permissionDenial
+	// runbook says -runbook bound one: a change it does not list asks
+	// whatever an allow rule says, so no flag can allow one.
+	runbook bool
 }
 
 func newDenialHints(pol *policy.Engine, cfg config.Config, registry *tools.Registry) *denialHints {
@@ -49,7 +52,9 @@ func (h *denialHints) observe(ev agent.Event) (permissionDenial, bool) {
 	switch ev.Type {
 	case agent.EvActionRequested:
 		var a agent.ActionRequested
-		if json.Unmarshal(ev.Payload, &a) == nil && a.CallID != "" {
+		// The engine's own start of a language server is no call of the
+		// agent's: a refusal of it is a note (diagnosticsNote), not a denial.
+		if json.Unmarshal(ev.Payload, &a) == nil && a.CallID != "" && (a.Via != agent.DiagnosticsVia || ev.Actor != agent.ActorSystem) {
 			h.asked[a.CallID] = a
 		}
 	case agent.EvActionDenied:
@@ -69,6 +74,23 @@ func (h *denialHints) observe(ev agent.Event) (permissionDenial, bool) {
 	return permissionDenial{}, false
 }
 
+// diagnosticsNote is the line a -p run prints when no language server gave
+// the agent diagnostics for a language (not installed, or its start not
+// allowed): once per language, as the record holds it once.
+func diagnosticsNote(ev agent.Event) string {
+	if ev.Type != agent.EvLSPDiagnostics {
+		return ""
+	}
+	var d agent.LSPDiagnostics
+	if json.Unmarshal(ev.Payload, &d) != nil || d.Skipped == "" {
+		return ""
+	}
+	if strings.HasPrefix(d.Skipped, "no "+d.Language+" diagnostics") {
+		return "note: " + d.Skipped
+	}
+	return "note: no " + d.Language + " diagnostics: " + d.Skipped
+}
+
 // hint is the flag that would allow a refused call and what to say of it.
 func (h *denialHints) hint(a agent.ActionRequested, d map[string]string) (flag, hint string) {
 	step, source, rule := d["step"], d["source"], d["rule"]
@@ -79,6 +101,9 @@ func (h *denialHints) hint(a agent.ActionRequested, d map[string]string) (flag, 
 		return "", "refused by a policy hook; no flag lifts it"
 	case step == "monitor":
 		return "", "refused by the supervisor; no flag lifts it"
+	case step == "precheck":
+		// The tool answered before anyone was asked; an allow would not change that.
+		return "", "the tool answered this call before it ran, as the reason says; it was not a permission question, and no flag changes it"
 	case step == "destructive":
 		return "", "this always asks for confirmation; run it interactively"
 	case step == "ask" && rule != "":
@@ -99,6 +124,9 @@ func (h *denialHints) hint(a agent.ActionRequested, d map[string]string) (flag, 
 		return "", s + " asks on every call, and no flag lifts it; run it interactively"
 	case d["by"] != agent.ByHeadless && step != "mode":
 		return "", ""
+	}
+	if h.runbook && h.mutates(a) {
+		return "", "a runbook is bound, so a change it does not list as the next step asks even where an allow rule matches, and no flag allows it; add the call to the runbook, or run it interactively"
 	}
 	if f := h.allowingFlag(a); f != "" {
 		return f, "rerun with " + f + " to allow it"
@@ -135,6 +163,12 @@ func orgWords(source string) string {
 func (h *denialHints) where(list, rule string) string {
 	_, where := h.cfg.RuleSource(list, rule)
 	return where
+}
+
+// mutates reports whether the refused call is a change.
+func (h *denialHints) mutates(a agent.ActionRequested) bool {
+	tool, ok := h.registry.Get(a.Tool)
+	return !ok || tools.MutatesCall(tool, a.Args)
 }
 
 // allowingFlag is the first flag that would allow the call on a rerun: one

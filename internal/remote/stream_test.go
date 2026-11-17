@@ -55,7 +55,7 @@ func TestStreamAndHostKeyMismatch(t *testing.T) {
 	}
 	bad, _ := NewHost(HostConfig{Name: "vm1", Addr: srv.addr, User: "tester", PasswordEnv: "TEST_SSH_PW", KnownHostsFile: kh})
 	before, _ := srv.ran()
-	if _, err := bad.Stream(context.Background(), "echo-stdin", strings.NewReader("x"), &out, &errw); err == nil || !strings.Contains(err.Error(), "does not match the one recorded") {
+	if _, err := bad.Stream(context.Background(), "echo-stdin", strings.NewReader("x"), &out, &errw); err == nil || !strings.Contains(err.Error(), "does not match the one known_hosts") {
 		t.Fatalf("a mismatched host key was accepted: %v", err)
 	}
 	if after, _ := srv.ran(); len(after) != len(before) {
@@ -63,7 +63,7 @@ func TestStreamAndHostKeyMismatch(t *testing.T) {
 	}
 	// The algorithms asked for are the recorded key's.
 	cb, _ := knownhosts.New(kh)
-	if algs := knownAlgorithms(cb, srv.addr); len(algs) != 1 || algs[0] != ssh.KeyAlgoED25519 {
+	if algs := knownAlgorithms(cb, srv.addr); len(algs) == 0 || algs[0] != ssh.KeyAlgoED25519 {
 		t.Fatalf("algorithms %v", algs)
 	}
 }

@@ -86,8 +86,8 @@ func mcpLogin(workspace string, trust config.TrustChoice, name string, cio mcpIO
 		defer egress.Install(guard)()
 	}
 	o.HTTP = mcpOAuthHTTP(guard)
-	// An editor that asked opens the printed address in its own way.
-	if !cio.byEditor && canOpenBrowser() {
+	// With -no-browser, no browser here, or an editor that asked (it opens the address itself), it is only printed.
+	if !cio.byEditor && !cio.noBrowser && canOpenBrowser() {
 		o.Open = openBrowser
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -35,6 +35,8 @@ type mcpIO struct {
 	inSandbox bool
 	// byEditor is a yes read from -confirm-fd, which the change log says apart.
 	byEditor bool
+	// noBrowser prints a login's address instead of opening a browser.
+	noBrowser bool
 }
 
 func stdMCPIO() mcpIO {
@@ -53,7 +55,7 @@ func mcpCmd(workspace string, args []string, trust config.TrustChoice, cio mcpIO
 			"       abhed mcp add [-header-env HEADER=VAR]... [-allow-tools a,b] NAME https://URL\n"+
 			"         either add also takes -sha256 HEX (only that entry) and -confirm-fd N (the yes from an inherited descriptor, for an editor)\n"+
 			"       abhed mcp remove NAME\n"+
-			"       abhed mcp login [-confirm-fd N] NAME | logout NAME\n"+
+			"       abhed mcp login [-no-browser] [-confirm-fd N] NAME | logout NAME\n"+
 			"         login -confirm-fd N reads the yes from an inherited descriptor and leaves the browser to the editor that asked\n"+
 			"  Servers are added to ~/.abhed/config.json, enabled, after a confirmation at a terminal.")
 		return 2
@@ -74,7 +76,7 @@ func mcpCmd(workspace string, args []string, trust config.TrustChoice, cio mcpIO
 		}
 		return fail0(mcpRemove(args[1], cio.out), fail)
 	case "login":
-		name, fd, ok := parseMCPLogin(args[1:])
+		name, fd, noBrowser, ok := parseMCPLogin(args[1:])
 		if !ok {
 			return usage()
 		}
@@ -86,6 +88,7 @@ func mcpCmd(workspace string, args []string, trust config.TrustChoice, cio mcpIO
 			defer func() { _ = f.Close() }()
 			cio.in, cio.terminal, cio.byEditor = f, true, true
 		}
+		cio.noBrowser = noBrowser
 		return fail0(mcpLogin(workspace, trust, name, cio), fail)
 	case "logout":
 		if len(args) != 2 {
@@ -124,14 +127,15 @@ var errUsage = errors.New("usage")
 
 // parseMCPLogin reads login's words: NAME, or -confirm-fd N NAME for an
 // editor that asked the person and opens the browser itself.
-func parseMCPLogin(args []string) (name string, fd int, ok bool) {
+func parseMCPLogin(args []string) (name string, fd int, noBrowser, ok bool) {
 	fs := flag.NewFlagSet("mcp login", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.IntVar(&fd, "confirm-fd", 0, "")
+	fs.BoolVar(&noBrowser, "no-browser", false, "")
 	if fs.Parse(args) != nil || fs.NArg() != 1 || (fd != 0 && fd < 3) {
-		return "", 0, false
+		return "", 0, false, false
 	}
-	return fs.Arg(0), fd, true
+	return fs.Arg(0), fd, noBrowser, true
 }
 
 // mcpAddOpts are add's flags for an editor's main process: where the yes is
@@ -580,8 +584,13 @@ func logConfigChange(by, key string, s config.MCPServerConfig, file string) erro
 const maxConfigChangeLog = 4 << 20
 
 func appendConfigChange(c configChange, s config.MCPServerConfig) error {
-	c.Time = time.Now().UTC()
 	c.Kind, c.SHA256 = mcpEntrySum(s)
+	return writeConfigChange(c)
+}
+
+// writeConfigChange appends c, as it is, to the change log beside c.File.
+func writeConfigChange(c configChange) error {
+	c.Time = time.Now().UTC()
 	line, err := json.Marshal(c)
 	if err != nil {
 		return err

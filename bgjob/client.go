@@ -182,6 +182,29 @@ func (c *Client) Answer(ctx context.Context, a Approval, approved bool) error {
 	return c.do(ctx, http.MethodPost, "/v1/sessions/"+url.PathEscape(a.SessionID)+"/approve", body, nil)
 }
 
+// AnswerRefused begins the reason a server's approval gate gives when it
+// refuses an answer as a decision (server.ErrAnswerRefused), such as the
+// owner's own approval where a workspace needs other approvers.
+const AnswerRefused = "this answer is refused"
+
+// IsAnswerRefused reports whether err is the approval gate refusing an
+// answer, which leaves the ask waiting, rather than any other 403, such as
+// a revoked owner.
+func IsAnswerRefused(err error) bool {
+	var e *Error
+	return errors.As(err, &e) && e.Status == http.StatusForbidden && strings.HasPrefix(e.Message, AnswerRefused)
+}
+
+// AnswerAlways allows an ask and, for the rest of its job, every later call
+// the ask's scope covers: the scope is remembered on the job's session only.
+func (c *Client) AnswerAlways(ctx context.Context, a Approval) error {
+	if a.Scope == "" {
+		return errors.New("this ask offers no rule to always allow; answer it once")
+	}
+	body := map[string]any{"approved": true, "request_id": a.RequestID, "scope": a.Scope}
+	return c.do(ctx, http.MethodPost, "/v1/sessions/"+url.PathEscape(a.SessionID)+"/approve", body, nil)
+}
+
 // Event is one event of a job's record.
 type Event struct {
 	ID        string          `json:"id"`

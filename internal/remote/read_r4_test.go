@@ -10,17 +10,17 @@ import (
 // given an option that prints another file's lines through a wildcard entry.
 func TestSSHReadNoOptionPrintsAnotherFile(t *testing.T) {
 	for entry, calls := range map[string][]string{
-		"file *":      {"-m /home/u/.ssh/id_rsa x", "--magic-file /home/u/.ssh/id_rsa x", "--magic-file=/etc/shadow x", "-m/etc/shadow x"},
-		"wc *":        {"--files0-from=/etc/shadow", "--files0-from /etc/shadow"},
-		"du *":        {"--files0-from=/etc/shadow", "-X /etc/shadow /", "--exclude-from=/etc/shadow /"},
-		"sha256sum *": {"-c /etc/shadow", "--check /etc/shadow", "-cw /etc/shadow"},
-		"md5sum *":    {"-c /etc/shadow"},
-		"cksum *":     {"--check /etc/shadow"},
-		"findmnt *":   {"-F /etc/shadow", "--tab-file /etc/shadow", "--tab-file=/etc/shadow"},
-		"lsusb *":     {"-D /etc/shadow"},
-		"date *":      {"-f /etc/shadow", "--file=/etc/shadow"},
-		"dmesg *":     {"-F /etc/shadow", "--file /etc/shadow"},
-		"rpm *":       {"-qa --qf %{NAME:expand}", "-qa --queryformat=%(id)", "-qa --qf=x%(id)"},
+		"file **":      {"-m /home/u/.ssh/id_rsa x", "--magic-file /home/u/.ssh/id_rsa x", "--magic-file=/etc/shadow x", "-m/etc/shadow x"},
+		"wc **":        {"--files0-from=/etc/shadow", "--files0-from /etc/shadow"},
+		"du **":        {"--files0-from=/etc/shadow", "-X /etc/shadow /", "--exclude-from=/etc/shadow /"},
+		"sha256sum **": {"-c /etc/shadow", "--check /etc/shadow", "-cw /etc/shadow"},
+		"md5sum **":    {"-c /etc/shadow"},
+		"cksum **":     {"--check /etc/shadow"},
+		"findmnt **":   {"-F /etc/shadow", "--tab-file /etc/shadow", "--tab-file=/etc/shadow"},
+		"lsusb **":     {"-D /etc/shadow"},
+		"date **":      {"-f /etc/shadow", "--file=/etc/shadow"},
+		"dmesg **":     {"-F /etc/shadow", "--file /etc/shadow"},
+		"rpm **":       {"-qa --qf %{NAME:expand}", "-qa --queryformat=%(id)", "-qa --qf=x%(id)"},
 	} {
 		e := readsEngine(t, policy.ModePlan, entry)
 		prog := entry[:len(entry)-2]
@@ -31,7 +31,7 @@ func TestSSHReadNoOptionPrintsAnotherFile(t *testing.T) {
 			}
 		}
 	}
-	e := readsEngine(t, policy.ModePlan, "file *", "wc *", "du *", "sha256sum *", "findmnt *", "rpm *")
+	e := readsEngine(t, policy.ModePlan, "file **", "wc **", "du **", "sha256sum **", "findmnt **", "rpm **")
 	for _, cmd := range []string{"file -b /bin/ls", "wc -l /var/log/syslog", "du -sh /var/log", "sha256sum /bin/ls",
 		"findmnt -n -o SOURCE /", "rpm -qa --qf '%{NAME}'"} {
 		if res := e.Evaluate("ssh", true, sshCall("web1", cmd)); res.Decision != policy.Allow {
@@ -42,7 +42,7 @@ func TestSSHReadNoOptionPrintsAnotherFile(t *testing.T) {
 
 // ip's options come before its object, as ip reads them.
 func TestSSHReadIPOptionsBeforeTheObject(t *testing.T) {
-	e := readsEngine(t, policy.ModePlan, "ip -br addr show *", "ip addr show *")
+	e := readsEngine(t, policy.ModePlan, "ip -br addr show **", "ip addr show **")
 	if res := e.Evaluate("ssh", true, sshCall("web1", "ip -br addr show dev eth0")); res.Decision != policy.Allow {
 		t.Errorf("an option before the object was refused: %+v", res)
 	}

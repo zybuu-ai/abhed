@@ -394,6 +394,8 @@ type acpConn struct {
 	// warmed is when each completion provider was last warmed on this
 	// connection, so many sessions load a model once.
 	warmed map[string]time.Time
+	// pool puts completions before next-edit calls on a model server.
+	pool editorPool
 
 	// inflight are the requests being answered; gone closes when stdin
 	// does, so nothing waits for an answer the client can no longer send.

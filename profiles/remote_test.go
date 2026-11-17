@@ -1,4 +1,6 @@
-package profiles
+// The tests that need a server run outside package profiles: the server
+// imports bgjob, which imports profiles.
+package profiles_test
 
 import (
 	"context"
@@ -9,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -19,86 +20,9 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/profiles"
 	"github.com/zybuu-ai/abhed/server"
 )
-
-func TestProfilesFileIsPrivate(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "home", ".abhed", "profiles.json")
-	f, err := Load(path)
-	if err != nil || len(f.Profiles) != 0 {
-		t.Fatalf("missing file = %v %v", f, err)
-	}
-	f.Profiles["prod"] = &Profile{URL: "https://abhed.test", Token: "abhcli_secret", Username: "ada"}
-	f.Current = "prod"
-	if err := Save(path, f); err != nil {
-		t.Fatal(err)
-	}
-	if runtime.GOOS != "windows" {
-		fi, _ := os.Stat(path)
-		if fi.Mode().Perm() != 0o600 {
-			t.Fatalf("profiles mode %o, want 600", fi.Mode().Perm())
-		}
-		di, _ := os.Stat(filepath.Dir(path))
-		if di.Mode().Perm() != 0o700 {
-			t.Errorf("profiles dir mode %o, want 700", di.Mode().Perm())
-		}
-	}
-	got, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, p, err := got.Get(""); err != nil || p.Token != "abhcli_secret" {
-		t.Fatalf("current profile = %v %v", p, err)
-	}
-	if _, _, err := got.Get("other"); err == nil {
-		t.Error("a missing profile was found")
-	}
-	if runtime.GOOS == "windows" {
-		return
-	}
-	// Opened up by someone: refused rather than read.
-	_ = os.Chmod(path, 0o644)
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "chmod 600") {
-		t.Errorf("a 0644 profiles file = %v", err)
-	}
-	_ = os.Chmod(path, 0o600)
-	link := filepath.Join(filepath.Dir(path), "link.json")
-	_ = os.Symlink(path, link)
-	if _, err := Load(link); err == nil {
-		t.Error("a profiles file behind a link was read")
-	}
-	if err := Save(link, got); err == nil {
-		t.Error("a profiles file was written through a link")
-	}
-}
-
-func TestNormalizeURL(t *testing.T) {
-	for in, want := range map[string]string{
-		"https://abhed.test/":      "https://abhed.test",
-		"https://abhed.test:8443":  "https://abhed.test:8443",
-		"http://127.0.0.1:8860":    "http://127.0.0.1:8860",
-		"http://localhost:8860/":   "http://localhost:8860",
-		"https://abhed.test/team/": "https://abhed.test/team",
-	} {
-		if got, err := NormalizeURL(in, false); err != nil || got != want {
-			t.Errorf("NormalizeURL(%q) = %q, %v", in, got, err)
-		}
-	}
-	for _, in := range []string{"http://abhed.test", "ftp://abhed.test", "abhed.test", "https://u:p@abhed.test", "https://abhed.test/?x=1"} {
-		if _, err := NormalizeURL(in, false); err == nil {
-			t.Errorf("NormalizeURL(%q) accepted", in)
-		}
-	}
-	if _, err := NormalizeURL("http://abhed.test", true); err != nil {
-		t.Errorf("-allow-http refused: %v", err)
-	}
-	if _, err := Resolve("https://a.test", "http://idp.test/token"); err == nil {
-		t.Error("a plain-http endpoint on another host was accepted")
-	}
-	if got, _ := Resolve("https://a.test", "/v1/cli/token"); got != "https://a.test/v1/cli/token" {
-		t.Errorf("relative endpoint = %q", got)
-	}
-}
 
 type stub struct{}
 
@@ -183,18 +107,18 @@ func (r *rig) browser(t *testing.T, method, path, body string) map[string]any {
 
 func TestDeviceLoginAgainstTheServer(t *testing.T) {
 	r := newRig(t)
-	p := &Profile{URL: r.srv.URL, CAFile: r.ca}
+	p := &profiles.Profile{URL: r.srv.URL, CAFile: r.ca}
 	c, err := p.HTTPClient()
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := Discover(context.Background(), c, p.URL)
+	d, err := profiles.Discover(context.Background(), c, p.URL)
 	if err != nil || d.AuthMode != "local" || len(d.Methods) != 1 {
 		t.Fatalf("discover = %+v %v", d, err)
 	}
 	var wg sync.WaitGroup
 	wg.Add(1)
-	tok, err := DeviceLogin(context.Background(), c, p.URL, d.Methods[0], "test", func(code, uri, complete string) {
+	tok, err := profiles.DeviceLogin(context.Background(), c, p.URL, d.Methods[0], "test", func(code, uri, complete string) {
 		if !strings.HasPrefix(uri, r.srv.URL+"/cli/login") || !strings.Contains(complete, url.QueryEscape(code)) {
 			t.Errorf("prompt %s %s", uri, complete)
 		}
@@ -209,25 +133,25 @@ func TestDeviceLoginAgainstTheServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.Apply(tok, time.Now())
-	me, err := Whoami(context.Background(), c, p)
+	me, err := profiles.Whoami(context.Background(), c, p)
 	if err != nil || me["owner"] != "local:ada" {
 		t.Fatalf("whoami = %v %v", me, err)
 	}
 	p.RevocationEndpoint = r.srv.URL + auth.CLIRevokePath
-	if err := Revoke(context.Background(), c, p); err != nil {
+	if err := profiles.Revoke(context.Background(), c, p); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Whoami(context.Background(), c, p); err == nil {
+	if _, err := profiles.Whoami(context.Background(), c, p); err == nil {
 		t.Fatal("the token still works after logout")
 	}
 }
 
 func TestDeviceLoginDenied(t *testing.T) {
 	r := newRig(t)
-	p := &Profile{URL: r.srv.URL, CAFile: r.ca}
+	p := &profiles.Profile{URL: r.srv.URL, CAFile: r.ca}
 	c, _ := p.HTTPClient()
-	d, _ := Discover(context.Background(), c, p.URL)
-	_, err := DeviceLogin(context.Background(), c, p.URL, d.Methods[0], "test", func(code, _, _ string) {
+	d, _ := profiles.Discover(context.Background(), c, p.URL)
+	_, err := profiles.DeviceLogin(context.Background(), c, p.URL, d.Methods[0], "test", func(code, _, _ string) {
 		go r.browser(t, "POST", auth.CLIApprovePath, `{"user_code":"`+code+`","approve":false}`)
 	})
 	if err == nil || !strings.Contains(err.Error(), "denied") {
@@ -237,9 +161,9 @@ func TestDeviceLoginDenied(t *testing.T) {
 
 func TestPKCELoginAgainstTheServer(t *testing.T) {
 	r := newRig(t)
-	p := &Profile{URL: r.srv.URL, CAFile: r.ca}
+	p := &profiles.Profile{URL: r.srv.URL, CAFile: r.ca}
 	c, _ := p.HTTPClient()
-	d, _ := Discover(context.Background(), c, p.URL)
+	d, _ := profiles.Discover(context.Background(), c, p.URL)
 	// The browser: approve on the page's endpoint, then follow the redirect.
 	open := func(u string) error {
 		pu, err := url.Parse(u)
@@ -272,21 +196,21 @@ func TestPKCELoginAgainstTheServer(t *testing.T) {
 		}()
 		return nil
 	}
-	tok, err := PKCELogin(context.Background(), c, p.URL, d.Methods[0], open)
+	tok, err := profiles.PKCELogin(context.Background(), c, p.URL, d.Methods[0], open)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p.Apply(tok, time.Now())
-	if me, err := Whoami(context.Background(), c, p); err != nil || me["subject"] != "ada" {
+	if me, err := profiles.Whoami(context.Background(), c, p); err != nil || me["subject"] != "ada" {
 		t.Fatalf("whoami = %v %v", me, err)
 	}
 }
 
 func TestClientRefusesAnUntrustedServer(t *testing.T) {
 	r := newRig(t)
-	p := &Profile{URL: r.srv.URL} // no CA: the test server's is not trusted
+	p := &profiles.Profile{URL: r.srv.URL} // no CA: the test server's is not trusted
 	c, _ := p.HTTPClient()
-	if _, err := Discover(context.Background(), c, p.URL); err == nil {
+	if _, err := profiles.Discover(context.Background(), c, p.URL); err == nil {
 		t.Fatal("an unverified certificate was accepted")
 	}
 }

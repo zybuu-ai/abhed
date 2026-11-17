@@ -120,7 +120,8 @@ func judgeCall(words []string, piped, contents, findOK bool) string {
 		return ""
 	}
 	if !contents {
-		return name + " prints the contents of files, which runs unasked only where the operator sets ssh.read_contents"
+		return name + " prints the contents of files, which runs unasked on a declared host only where the operator sets " +
+			"ssh.read_contents: true (in the user or managed configuration) or lists the command in ssh.read_commands"
 	}
 	if name == "rg" && !slices.Contains(args, "--one-file-system") {
 		return "rg walks into any mount, a /proc among them; add --one-file-system"
@@ -164,12 +165,18 @@ func printsContents(name string, args []string) bool {
 	case "md5sum", "sha1sum", "sha224sum", "sha256sum", "sha384sum", "sha512sum", "b2sum", "cksum":
 		// A hash of a short secret gives the secret back to a guess.
 		return true
+	case "getent":
+		// The shadow databases hold password hashes.
+		return slices.ContainsFunc(args, secretDatabase)
 	case "findmnt":
 		// The fstab holds mount options, a CIFS password among them.
 		return slices.Contains(args, "-s") || slices.Contains(args, "--fstab")
 	}
 	return false
 }
+
+// secretDatabase reports a getent database that holds password hashes.
+func secretDatabase(w string) bool { return w == "shadow" || w == "gshadow" }
 
 // statusWithoutLog reports a systemctl status call that prints no journal
 // lines: -n 0 or --lines=0, and no -o. Any other prints the unit's log.
