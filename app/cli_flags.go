@@ -463,6 +463,8 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return userCmd(workspace, rest[1:], a.trust)
 	case "secret":
 		return secretCmd(rest[1:])
+	case "account":
+		return accountCmd(rest[1:], os.Stdin, os.Stdout, os.Stderr)
 	case "login":
 		return loginCmd(workspace, rest[1:], os.Stdout, os.Stderr)
 	case "logout":
@@ -548,6 +550,7 @@ var permissionModes = map[string]string{
 var ownsHelp = map[string]bool{
 	"sandbox": true, "bg": true, "secret": true, "mcp": true, "record": true, "logs": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
 	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true, "ollama": true,
+	"account": true,
 }
 
 func isHelpArg(s string) bool {
