@@ -15,8 +15,10 @@ package remote
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -213,12 +215,16 @@ func (h *Host) connect(ctx context.Context) (*ssh.Client, error) {
 		return nil, fmt.Errorf("cannot reach %s (%s): %w", h.cfg.Name, h.cfg.Addr, err)
 	}
 
-	sshConn, chans, reqs, err := ssh.NewClientConn(conn, h.cfg.Addr, &ssh.ClientConfig{
+	cc := &ssh.ClientConfig{
 		User:            h.cfg.User,
 		Auth:            methods,
 		HostKeyCallback: hostKey,
 		Timeout:         h.cfg.Timeout,
-	})
+	}
+	if !h.cfg.InsecureSkipHostKeyCheck {
+		cc.HostKeyAlgorithms = knownAlgorithms(hostKey, h.cfg.Addr)
+	}
+	sshConn, chans, reqs, err := ssh.NewClientConn(conn, h.cfg.Addr, cc)
 	if err != nil {
 		_ = conn.Close()
 		if (strings.Contains(err.Error(), "knownhosts") ||
@@ -376,3 +382,71 @@ func expandHome(path string) string {
 	}
 	return path
 }
+
+// Stream runs command with the caller's streams, as the SSH host's own
+// process: nothing is forwarded (no agent, no X11, no ports) and no
+// environment is sent. It returns the command's exit status.
+func (h *Host) Stream(ctx context.Context, command string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	client, err := h.connect(ctx)
+	if err != nil {
+		return -1, err
+	}
+	session, err := client.NewSession()
+	if err != nil {
+		return -1, fmt.Errorf("open session on %s: %w", h.cfg.Name, err)
+	}
+	defer func() { _ = session.Close() }()
+	session.Stdin, session.Stdout, session.Stderr = stdin, stdout, stderr
+	done := make(chan error, 1)
+	go func() { done <- session.Run(command) }()
+	select {
+	case err := <-done:
+		var exitErr *ssh.ExitError
+		if err != nil && asExitError(err, &exitErr) {
+			return exitErr.ExitStatus(), nil
+		}
+		if err != nil {
+			return -1, fmt.Errorf("the command on %s ended: %w", h.cfg.Name, err)
+		}
+		return 0, nil
+	case <-ctx.Done():
+		_ = session.Signal(ssh.SIGTERM)
+		return -1, ctx.Err()
+	}
+}
+
+// knownAlgorithms are the host key types known_hosts holds for addr, so the
+// handshake asks for one of them and a host whose key is recorded under one
+// type is not refused for offering another first (OpenSSH does the same).
+func knownAlgorithms(cb ssh.HostKeyCallback, addr string) []string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil
+	}
+	tcp := &net.TCPAddr{IP: net.ParseIP(host)}
+	if p, err := net.LookupPort("tcp", port); err == nil {
+		tcp.Port = p
+	}
+	// A key no one has: the callback answers with the keys it knows for the host.
+	probe, err := ssh.NewPublicKey(ed25519Zero)
+	if err != nil {
+		return nil
+	}
+	var keyErr *knownhosts.KeyError
+	if err := cb(addr, tcp, probe); !errors.As(err, &keyErr) {
+		return nil
+	}
+	var out []string
+	for _, k := range keyErr.Want {
+		switch t := k.Key.Type(); t {
+		case ssh.KeyAlgoRSA:
+			out = append(out, ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA)
+		default:
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// ed25519Zero is an Ed25519 public key no host has, for knownAlgorithms' probe.
+var ed25519Zero = ed25519.PublicKey(make([]byte, ed25519.PublicKeySize))
