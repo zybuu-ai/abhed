@@ -621,15 +621,20 @@ counts (`12 tests`, `replicas: 3`). Then:
 - **`file:line` cites are checked against what a read showed.** The lines
   of a current read of that file, as the read numbered them, come first; the
   file as it is now is read only when no read of it is current. Code the
-  statement says is there must be within three lines of the cited one and
-  inside the same definition (`def`, `class`, `func`, `fn`, a JavaScript
-  `function` or `class`, read by indentation): models cite a method's line
-  for its class or a call's line for its result, never a line of the next
+  statement says is there, and every number it gives ("returns 2",
+  "returns `2`"), must be within three lines of the cited one and inside
+  the same innermost definition (`def`, `class`, `func`, `fn`; in
+  JavaScript and TypeScript a `function`, a `class`, a method, a `const`,
+  `let` or `var` given a function or an arrow function, and `name: () =>`
+  or `name: function` in an object, `export default` and `async` forms
+  included; read by indentation): models cite a method's line for its
+  class or a call's line for its result, never a line of the next
   function. In a file whose definitions are not read here (Python, Go,
-  JavaScript and TypeScript, and Rust are), only the cited line counts.
-  "`f` (a.py:L)" or "… in `f`" needs L inside `f`; "`f` is defined at
-  a.py:L" needs `f`'s definition at L (or one line off past blank or
-  decorator lines). A cite further off, or of a file that cannot be read,
+  JavaScript and TypeScript, and Rust are), or at a line that lies in no
+  definition, only the cited line counts. "`f` (a.py:L)" or "… in `f`"
+  needs L inside `f`, with no definition nested in `f` holding L; "`f` is
+  defined at a.py:L" needs `f`'s definition at L (or one line off past
+  blank or decorator lines). A cite further off, or of a file that cannot be read,
   leaves the statement unverified.
 - **A command is shown by the call that ran it.** "The tests were run
   using `python3 -m unittest tests.test_text` and passed" is matched to the
@@ -654,8 +659,15 @@ counts (`12 tests`, `replicas: 3`). Then:
   was scaled to 2" is shown by a call of the agent's own (`k8s_apply`
   here) that succeeded, whose action or tool name is the claim's verb,
   whose `name` the claim says, and every number of the claim one of its
-  arguments; a refused or failed call, a scale to 5, or a scale of another
-  deployment shows nothing.
+  arguments. A call that exited non-zero, whose output reads as an error
+  ("Error from server (Forbidden)", "error: …", "not found", "failed")
+  even with exit 0, or that has any dry-run argument (`dry_run`, `dryRun`,
+  `--dry-run`, of any value) shows nothing. Every scope the claim names
+  must be the call's own argument: a namespace, context or cluster ("in
+  prod", "from the prod namespace", "on the production cluster") and a
+  kind ("the web deployment"); a scope the call does not carry leaves the
+  claim unverified. A refused call, a scale to 5, or a scale of another
+  deployment shows nothing either.
 - **An explanation of code is not checked, and never fails an answer.** A
   statement that only says how or why code the session read behaves, or
   what code did before the session changed it ("The previous

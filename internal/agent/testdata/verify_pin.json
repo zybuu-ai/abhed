@@ -6454,6 +6454,206 @@
       "name": "an explanation of the session's own change: the new code said to prevent a fault",
       "kind": "planted",
       "hash": "3b0fc9653ac72de3"
+    },
+    {
+      "name": "a delete said done in prod, made in staging",
+      "kind": "planted",
+      "hash": "72e7027578233dc6"
+    },
+    {
+      "name": "a delete said done from the prod namespace, made in staging",
+      "kind": "planted",
+      "hash": "365991816118ffb6"
+    },
+    {
+      "name": "a delete said done, a dry run",
+      "kind": "planted",
+      "hash": "a49b2429092e0991"
+    },
+    {
+      "name": "a delete said done, a server dry run",
+      "kind": "planted",
+      "hash": "9908466cbf8e9bc9"
+    },
+    {
+      "name": "a delete said done, forbidden in output that exits 0",
+      "kind": "planted",
+      "hash": "0acae8f47c04b6a4"
+    },
+    {
+      "name": "a delete said done, an error in output that exits 0",
+      "kind": "planted",
+      "hash": "811e40b5d872299f"
+    },
+    {
+      "name": "a deployment delete said done, a service deleted",
+      "kind": "planted",
+      "hash": "d314c4e6640d5b5e"
+    },
+    {
+      "name": "a scale said done in prod, made in staging",
+      "kind": "planted",
+      "hash": "67b125c632c057db"
+    },
+    {
+      "name": "a scale said done, a dry run",
+      "kind": "planted",
+      "hash": "aec5a973aaea6489"
+    },
+    {
+      "name": "a scale said done, forbidden in output that exits 0",
+      "kind": "planted",
+      "hash": "dfece8cf8a980805"
+    },
+    {
+      "name": "a scale said done, a dry-run flag in a list",
+      "kind": "planted",
+      "hash": "e60005c711fa08de"
+    },
+    {
+      "name": "a scale said done on a cluster the call does not name",
+      "kind": "planted",
+      "hash": "09974223a1b06f54"
+    },
+    {
+      "name": "a delete said done in its namespace",
+      "kind": "control",
+      "hash": "9f3a23e4522a3034"
+    },
+    {
+      "name": "a deployment delete said done from its namespace",
+      "kind": "control",
+      "hash": "3720ccb64f6617ab"
+    },
+    {
+      "name": "a scale said done in its namespace",
+      "kind": "control",
+      "hash": "ce614bbe539ae978"
+    },
+    {
+      "name": "an arrow function cited for code of the one before it",
+      "kind": "planted",
+      "hash": "c382544aac9195d2"
+    },
+    {
+      "name": "an arrow function cited for code of the one after it",
+      "kind": "planted",
+      "hash": "1d052424dfbb4021"
+    },
+    {
+      "name": "an arrow function named at a line of the one before it",
+      "kind": "planted",
+      "hash": "73ad7561ea796f47"
+    },
+    {
+      "name": "an object method cited for code of the next method",
+      "kind": "planted",
+      "hash": "7a8e0eaa1dfad53c"
+    },
+    {
+      "name": "an exported arrow function cited for code of an object method",
+      "kind": "planted",
+      "hash": "42dc366f06ad46b6"
+    },
+    {
+      "name": "a line in no definition cited for code near it",
+      "kind": "planted",
+      "hash": "b85625ab07f57670"
+    },
+    {
+      "name": "a class method cited for code of an object arrow",
+      "kind": "planted",
+      "hash": "9fe319601cac1d4d"
+    },
+    {
+      "name": "an object arrow cited for a number of a class method",
+      "kind": "planted",
+      "hash": "392fdef63cb2f48b"
+    },
+    {
+      "name": "an arrow function cited for its own code",
+      "kind": "control",
+      "hash": "e8fb0bc05d925981"
+    },
+    {
+      "name": "an object method cited for its own code",
+      "kind": "control",
+      "hash": "dd3b232839ca7d56"
+    },
+    {
+      "name": "a function-valued key cited for its own code",
+      "kind": "control",
+      "hash": "b3313b87ddfd92b3"
+    },
+    {
+      "name": "an async exported arrow cited for its own code",
+      "kind": "control",
+      "hash": "e3469608554632ea"
+    },
+    {
+      "name": "an exported default function cited for its number",
+      "kind": "control",
+      "hash": "d745124a3b0e1eb6"
+    },
+    {
+      "name": "an async class method cited for its number",
+      "kind": "control",
+      "hash": "5c9a3ee44e405b2c"
+    },
+    {
+      "name": "an object arrow key cited for its number",
+      "kind": "control",
+      "hash": "59ee62a0de75b683"
+    },
+    {
+      "name": "a one-line function cited for the next one's number span",
+      "kind": "planted",
+      "hash": "613d10ca9b49e768"
+    },
+    {
+      "name": "a one-line function cited for the next one's number",
+      "kind": "planted",
+      "hash": "504d6ef853b14ed9"
+    },
+    {
+      "name": "a one-line function cited for the one before's number span",
+      "kind": "planted",
+      "hash": "c6629bbd6154afed"
+    },
+    {
+      "name": "a function cited for another function's number",
+      "kind": "planted",
+      "hash": "1104b8831350826f"
+    },
+    {
+      "name": "a one-line function cited for its own number",
+      "kind": "control",
+      "hash": "6bf7e732ae526094"
+    },
+    {
+      "name": "a one-line function cited for its own number span",
+      "kind": "control",
+      "hash": "e1e66aa363dc442c"
+    },
+    {
+      "name": "a function cited for its own number",
+      "kind": "control",
+      "hash": "b779289a641ee45d"
+    },
+    {
+      "name": "an outer function cited at its nested function's line",
+      "kind": "planted",
+      "hash": "a09af96657ca51cd"
+    },
+    {
+      "name": "a nested function cited for its own number",
+      "kind": "control",
+      "hash": "e7ad5ab211a7cdd2"
+    },
+    {
+      "name": "an outer function cited for its own return",
+      "kind": "control",
+      "hash": "90740072ced5fe6f"
     }
   ],
   "strict": [

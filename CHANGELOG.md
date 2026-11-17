@@ -560,9 +560,14 @@ All notable changes to Abhed are recorded here. The format follows
   three lines of the cite, "I fixed X" by the change to X and a test run
   that passed after it and covers what failed before it, a change made
   by another tool (`k8s_apply` scaling `web` to 2) by that call's own
-  arguments, and evidence objects are read. A `file:line` cite counts
-  within three lines only inside the same definition, and "`f` is
-  defined at L" needs `f`'s definition there. An explanation of code the
+  arguments, and evidence objects are read. Such a call must have exited
+  0 with no error in its output and no dry-run argument, and every
+  namespace, context, cluster or kind the claim names must be its own
+  argument. A `file:line` cite counts within three lines only inside the
+  same innermost definition (JavaScript and TypeScript arrow functions,
+  methods and object functions included), only at the line itself where
+  the line is in no definition, and the code and numbers the claim gives
+  must be there; "`f` is defined at L" needs `f`'s definition there. An explanation of code the
   session read, or of what changed code did before, with no event, count,
   result, change, run or citation of its own, is shown as "explanation:
   not checked" and no longer fails strict mode; a statement that the
@@ -573,10 +578,10 @@ All notable changes to Abhed are recorded here. The format follows
   ("This correctly handles multiple whitespace…") where the record shows
   only that the tests pass, and the first also cites two call ids the
   record never held. The false-claim corpus gains the two sessions'
-  statements (14 controls, 2 planted, 8 neutral), 29 more planted cases
-  and 6 controls, and 3 true statements that were neutral now verify;
-  none of the 1011 planted claims verifies, all 276 controls do, and none
-  of the 396 true or neutral claims is contradicted.
+  statements (14 controls, 2 planted, 8 neutral), 54 more planted cases
+  and 21 controls, and 3 true statements that were neutral now verify;
+  none of the 1036 planted claims verifies, all 291 controls do, and none
+  of the 411 true or neutral claims is contradicted.
 - A model reply that only reasons, with no text or tool call, is cut past
   `limits.reasoning_stall_tokens` reasoning tokens (8000 by default, or the
   request's thinking budget if larger), with `limits.reasoning_stall_seconds`

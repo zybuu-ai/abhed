@@ -761,9 +761,23 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 	// A file:line cite is checked against the file now; what it quotes there
 	// needs no tool result as well.
 	atLine := map[string]bool{} // literals found other than in a tool result
+	// A claim citing a file's line says its code and numbers are there: each
+	// must be in a cited line's bounded window, not anywhere in the session.
+	var windows []*citeWindow
+	inWindow := func(lit string) bool {
+		for _, w := range windows {
+			if lit == w.owner && w.owner != "" || w.ev.hasLiteral(lit) {
+				return true
+			}
+		}
+		return false
+	}
 	for _, fl := range f.fileLines {
-		fd, lit := ix.checkFileLine(env, fl, f)
+		fd, lit, cw := ix.checkFileLine(env, fl, f)
 		findings = append(findings, fd)
+		if cw != nil {
+			windows = append(windows, cw)
+		}
 		if fd.out == matched {
 			atLine[lit] = true
 			// The cite itself ("src/a.py:28") is shown by the line it names.
@@ -936,6 +950,8 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 	for _, lit := range f.literals {
 		switch {
 		case atLine[lit]:
+		case len(windows) > 0 && !inWindow(lit) && !citePart(f, lit):
+			findings = append(findings, finding{out: missing, why: fmt.Sprintf("%q is not within three lines of the cited line", clipRunes(lit, 60))})
 		case (f.changeAct || f.changed || f.changeWord) && ix.changeTookAway(lit) != nil:
 			// What a change replaced is shown by what that change was given
 			// to take away, as a read before it showed it.
@@ -974,6 +990,25 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		}
 	}
 	findings = append(findings, oneValueMet(unitFindings)...)
+	// A code span that is a number ("returns `2`") is a number at the line.
+	citedNums := append([]string(nil), f.numbers...)
+	for _, t := range f.tokens {
+		if isNumberWord(t) {
+			citedNums = append(citedNums, normNumber(t))
+		}
+	}
+	for _, n := range citedNums {
+		if len(windows) == 0 {
+			continue
+		}
+		in := false
+		for _, w := range windows {
+			in = in || w.ev.numbers[n]
+		}
+		if !in {
+			findings = append(findings, finding{out: missing, why: "the number " + n + " is not within three lines of the cited line"})
+		}
+	}
 	for _, n := range f.numbers {
 		if countedNumber(f.counted, n) || keyedOK[n] {
 			continue // judged with its unit above
@@ -1865,7 +1900,7 @@ func (ix *recordIndex) ranCommand(cmd string) finding {
 
 // checkFileLine checks a path:line cite against the file as it is now, and,
 // where the claim quotes something, that the line or its neighbours hold it.
-func (ix *recordIndex) checkFileLine(env checkEnv, fl fileLine, f facts) (finding, string) {
+func (ix *recordIndex) checkFileLine(env checkEnv, fl fileLine, f facts) (finding, string, *citeWindow) {
 	literals := f.literals
 	label := fmt.Sprintf("%s:%d", fl.path, fl.line)
 	// The lines a current read of the file showed come first: what the
@@ -1873,7 +1908,7 @@ func (ix *recordIndex) checkFileLine(env checkEnv, fl fileLine, f facts) (findin
 	lines, ok := ix.readLines(env, fl.path)
 	if !ok {
 		if env.readFile == nil {
-			return finding{}, ""
+			return finding{}, "", nil
 		}
 		p := fl.path
 		if !filepath.IsAbs(p) && env.workDir != "" {
@@ -1882,7 +1917,7 @@ func (ix *recordIndex) checkFileLine(env checkEnv, fl fileLine, f facts) (findin
 		data, err := env.readFile(p)
 		if err != nil {
 			return finding{out: missing, why: label + " cites a file that cannot be read now: " + firstLine(err.Error()),
-				conflict: &Conflict{Excerpt: fl.path + ": " + firstLine(err.Error())}}, ""
+				conflict: &Conflict{Excerpt: fl.path + ": " + firstLine(err.Error())}}, "", nil
 		}
 		lines = map[int]string{}
 		for k, l := range strings.Split(string(data), "\n") {
@@ -1891,7 +1926,7 @@ func (ix *recordIndex) checkFileLine(env checkEnv, fl fileLine, f facts) (findin
 	}
 	if _, at := lines[fl.line]; !at && fl.line > len(lines) {
 		return finding{out: missing, why: fmt.Sprintf("%s cites line %d; the file has %d", label, fl.line, len(lines)),
-			conflict: &Conflict{Excerpt: fmt.Sprintf("%s has %d lines", fl.path, len(lines))}}, ""
+			conflict: &Conflict{Excerpt: fmt.Sprintf("%s has %d lines", fl.path, len(lines))}}, "", nil
 	}
 	// A cite within three lines of what it names counts, in the same
 	// definition: models cite the line of a method for its class, or the
@@ -1899,18 +1934,19 @@ func (ix *recordIndex) checkFileLine(env checkEnv, fl fileLine, f facts) (findin
 	// file's definitions cannot be told, only the line itself counts.
 	blocks, known := codeBlocks(fl.path, lines)
 	if why := citeOwner(f, fl, lines, blocks, known); why != "" {
-		return finding{out: missing, why: label + " " + why}, ""
+		return finding{out: missing, why: label + " " + why}, "", nil
 	}
 	own := innermostBlock(blocks, fl.line)
 	var window []string
 	for n := fl.line - 3; n <= fl.line+3; n++ {
 		l, at := lines[n]
-		if !at || !known && n != fl.line || known && innermostBlock(blocks, n) != own {
+		if !at || (!known || own == nil) && n != fl.line || known && own != nil && innermostBlock(blocks, n) != own {
 			continue
 		}
 		window = append(window, l)
 	}
 	ev := prepareEvidence(strings.Join(window, "\n"), false)
+	cw := &citeWindow{ev: ev, owner: normText(citeOwnerName(f, blocks))}
 	// Code the claim says is at the line, other than the definition it is
 	// of, must all be there; with none, the definition's name is enough.
 	owner := normText(citeOwnerName(f, blocks))
@@ -1926,17 +1962,17 @@ func (ix *recordIndex) checkFileLine(env checkEnv, fl fileLine, f facts) (findin
 			continue
 		}
 		if !ev.hasLiteral(lit) {
-			return finding{out: missing, why: fmt.Sprintf("%s does not show %q within three lines of its own definition", label, clipRunes(lit, 60))}, lit
+			return finding{out: missing, why: fmt.Sprintf("%s does not show %q within three lines of its own definition", label, clipRunes(lit, 60))}, lit, cw
 		}
 		if first == "" {
 			first = lit
 		}
 	}
 	if first != "" {
-		return finding{out: matched, what: fmt.Sprintf("%q at %s", first, label)}, first
+		return finding{out: matched, what: fmt.Sprintf("%q at %s", first, label)}, first, cw
 	}
 	if hit != "" {
-		return finding{out: matched, what: fmt.Sprintf("%q at %s", hit, label)}, hit
+		return finding{out: matched, what: fmt.Sprintf("%q at %s", hit, label)}, hit, cw
 	}
 	for _, lit := range literals {
 		if strings.Contains(lit, normText(fl.path)) || strings.Contains(normText(fl.path), lit) {
@@ -1946,13 +1982,20 @@ func (ix *recordIndex) checkFileLine(env checkEnv, fl fileLine, f facts) (findin
 			first = lit
 		}
 		if ev.hasLiteral(lit) {
-			return finding{out: matched, what: fmt.Sprintf("%q at %s", lit, label)}, lit
+			return finding{out: matched, what: fmt.Sprintf("%q at %s", lit, label)}, lit, cw
 		}
 	}
 	if first != "" {
-		return finding{out: missing, why: fmt.Sprintf("%s does not show %q within three lines of its own definition", label, clipRunes(first, 60))}, first
+		return finding{out: missing, why: fmt.Sprintf("%s does not show %q within three lines of its own definition", label, clipRunes(first, 60))}, first, cw
 	}
-	return finding{}, "" // the line exists; with nothing quoted there is nothing more to compare
+	return finding{}, "", cw // the line exists; with nothing quoted there is nothing more to compare
+}
+
+// citeWindow is what a file:line cite's bounded window shows, and the
+// definition the claim names there.
+type citeWindow struct {
+	ev    *evidenceText
+	owner string
 }
 
 // numberedLineRe is a line of a read's output: its number, a tab, the line.
@@ -2508,6 +2551,11 @@ func (ix *recordIndex) toolCallChange(f facts) finding {
 		if !o.usable() || o.child != "" || o.isError || o.tool == "bash" || o.tool == "write" || o.tool == "edit" || readers[o.tool] {
 			continue
 		}
+		// Only a call that did it: exit 0, no error in its output, and no
+		// dry run of any kind.
+		if o.exit != nil && *o.exit != 0 || callErrorRe.MatchString(strings.ToLower(o.content)) || o.dryRun() {
+			continue
+		}
 		args := o.argMap
 		verb := strings.ToLower(args["action"])
 		if verb == "" {
@@ -2537,11 +2585,148 @@ func (ix *recordIndex) toolCallChange(f facts) finding {
 		for _, n := range f.numbers {
 			ok = ok && vals[n]
 		}
-		if ok {
+		if ok && callScopesMatch(f.plain, args) {
 			return finding{out: matched, what: fmt.Sprintf("%s %s of #%d", o.tool, verb, o.seq), seq: o.seq}
 		}
 	}
 	return finding{out: missing, why: "no call of this session's own is read as that change"}
+}
+
+var (
+	// callErrorRe is output that reports a call failed, whatever its exit.
+	callErrorRe = regexp.MustCompile(`(?m)^\s*error\b|error from server|\bforbidden\b|\bdenied\b|\bnot\s?found\b|\bfailed\b|\bunauthori[sz]ed\b|\bdry[\s_-]?run\b`)
+	// scopeSaidRe is a scope a claim names: "in prod", "from the prod
+	// namespace", "on the production cluster", "namespace prod".
+	scopeSaidRe = regexp.MustCompile(`\b(?:in|from|on|into|within|across)\s+(?:the\s+)?([a-z0-9][\w.-]*)(?:\s+(namespace|ns|cluster|context|environment|env)\b)?|\b(namespace|cluster|context)\s+([a-z0-9][\w.-]*)`)
+	// notScopeWords follow "in" or "on" without naming a scope.
+	notScopeWords = wordSet(`a an it its this that them place order turn case line lines file files response reply answer total all both each every one two three order part addition short fact same way time`)
+	scopeArgKeys  = map[string][]string{
+		"":        {"namespace", "ns", "context", "kube_context", "kubecontext", "cluster", "environment", "env"},
+		"ns":      {"namespace", "ns"},
+		"cluster": {"cluster", "context", "kube_context", "kubecontext"},
+		"context": {"context", "kube_context", "kubecontext"},
+		"env":     {"environment", "env"},
+	}
+	// kindWords are the kinds of object a claim may name.
+	kindWords = wordSet(`deployment deploy service svc statefulset sts daemonset ds pod po job cronjob configmap cm secret ingress replicaset rs node pvc persistentvolumeclaim namespace hpa`)
+	kindAlias = map[string]string{"deploy": "deployment", "svc": "service", "sts": "statefulset", "ds": "daemonset", "po": "pod", "cm": "configmap", "rs": "replicaset", "persistentvolumeclaim": "pvc"}
+)
+
+// dryRun reports a call with any dry-run argument, of any value.
+func (o *obsRec) dryRun() bool {
+	isDry := func(s string) bool {
+		k := strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(s))
+		return strings.Contains(k, "dryrun")
+	}
+	for k, v := range o.argMap {
+		if isDry(k) || isDry(v) {
+			return true
+		}
+	}
+	var walk func(v any) bool
+	walk = func(v any) bool {
+		switch t := v.(type) {
+		case map[string]any:
+			for k, x := range t {
+				if isDry(k) || walk(x) {
+					return true
+				}
+			}
+		case []any:
+			for _, x := range t {
+				if walk(x) {
+					return true
+				}
+			}
+		case string:
+			return isDry(t)
+		}
+		return false
+	}
+	var m any
+	return json.Unmarshal([]byte(o.rawArgs), &m) == nil && walk(m)
+}
+
+// kindOf is a kind's singular, plain name: "deployments.apps" is deployment.
+func kindOf(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if i := strings.IndexAny(s, "./"); i > 0 {
+		s = s[:i]
+	}
+	if k, ok := kindAlias[s]; ok {
+		return k
+	}
+	if kindWords[s] {
+		return s
+	}
+	if t := strings.TrimSuffix(s, "es"); kindWords[t] && strings.HasSuffix(t, "ss") {
+		return t
+	}
+	if t := strings.TrimSuffix(s, "s"); kindWords[t] {
+		if k, ok := kindAlias[t]; ok {
+			return k
+		}
+		return t
+	}
+	return s
+}
+
+// callScopesMatch reports whether every scope a claim names, its namespace,
+// context or cluster and its kind of object, is the call's own argument. A
+// scope the call does not carry is not shown by it.
+func callScopesMatch(plain string, args map[string]string) bool {
+	arg := func(keys []string) []string {
+		var out []string
+		for k, v := range args {
+			for _, want := range keys {
+				if strings.EqualFold(k, want) {
+					out = append(out, strings.ToLower(v))
+				}
+			}
+		}
+		return out
+	}
+	for _, m := range scopeSaidRe.FindAllStringSubmatch(plain, -1) {
+		w, label := m[1], m[2]
+		if w == "" {
+			w, label = m[4], m[3]
+		}
+		w = strings.TrimRight(w, ".-")
+		if m[1] != "" && label == "" && (notScopeWords[w] || isNumberWord(w) || kindWords[kindOf(w)]) {
+			continue
+		}
+		if args["name"] != "" && strings.EqualFold(args["name"], w) && label == "" {
+			continue
+		}
+		switch label {
+		case "namespace":
+			label = "ns"
+		case "environment":
+			label = "env"
+		}
+		found := false
+		for _, v := range arg(scopeArgKeys[label]) {
+			found = found || v == w
+		}
+		if !found {
+			return false
+		}
+	}
+	callKind := ""
+	for _, v := range arg([]string{"kind", "resource", "resource_type", "type"}) {
+		callKind = kindOf(v)
+	}
+	for _, w := range strings.FieldsFunc(plain, func(r rune) bool { return !unicode.IsLetter(r) }) {
+		if k := kindOf(w); kindWords[k] && k != "namespace" && k != callKind {
+			return false
+		}
+	}
+	return true
+}
+
+// isNumberWord reports a word made of digits.
+func isNumberWord(w string) bool {
+	return w != "" && strings.Trim(w, "0123456789.") == ""
 }
 
 // numArgs are a call's number arguments, normalised: argMap holds strings
@@ -2565,20 +2750,33 @@ type codeBlock struct {
 	name       string
 	start, end int
 	indent     int
+	// class: a class or type, which holds methods.
+	class bool
 }
 
 var (
 	// defLineRes find a definition's line and name, by language.
-	defLineRes = map[string]*regexp.Regexp{
-		".py": regexp.MustCompile(`^(\s*)(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)`),
-		".go": regexp.MustCompile(`^(\s*)(?:func\s*(?:\([^)]*\)\s*)?([A-Za-z_]\w*)|type\s+([A-Za-z_]\w*))`),
-		".js": regexp.MustCompile(`^(\s*)(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s*\*?\s*([A-Za-z_$][\w$]*)|class\s+([A-Za-z_$][\w$]*))`),
-		".rs": regexp.MustCompile(`^(\s*)(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:fn|struct|enum|impl|trait|mod)\s+([A-Za-z_]\w*)`),
+	defLineRes = map[string][]*regexp.Regexp{
+		".py": {regexp.MustCompile(`^(\s*)(?:async\s+)?(def|class)\s+([A-Za-z_]\w*)`)},
+		".go": {regexp.MustCompile(`^(\s*)(func)\s*(?:\([^)]*\)\s*)?([A-Za-z_]\w*)`), regexp.MustCompile(`^(\s*)(type)\s+([A-Za-z_]\w*)`)},
+		".js": {
+			regexp.MustCompile(`^(\s*)(?:export\s+)?(?:default\s+)?(?:async\s+)?(function)\s*\*?\s*([A-Za-z_$][\w$]*)`),
+			regexp.MustCompile(`^(\s*)(?:export\s+)?(?:default\s+)?(?:abstract\s+)?(class)\s+([A-Za-z_$][\w$]*)`),
+			// const add = (a, b) => {, let f = async function (…) {, var g = x =>
+			regexp.MustCompile(`^(\s*)(?:export\s+)?(const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*(?::[^=]+)?=>|[A-Za-z_$][\w$]*\s*=>)`),
+			// name: (…) =>, name: function (…)
+			regexp.MustCompile(`^(\s*)()([A-Za-z_$][\w$]*)\s*:\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*(?::[^=]+)?=>|[A-Za-z_$][\w$]*\s*=>)`),
+			// a method of a class or an object: name(…) {
+			regexp.MustCompile(`^(\s*)()(?:(?:public|private|protected|static|async|get|set|readonly|override)\s+)*([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?::[^{]+)?\{\s*$`),
+		},
+		".rs": {regexp.MustCompile(`^(\s*)(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(fn|struct|enum|impl|trait|mod)\s+([A-Za-z_]\w*)`)},
 	}
-	closingLineRe = regexp.MustCompile(`^\s*[\])}]+[;,]?\s*$`)
-	identSpanRe   = regexp.MustCompile(`^[A-Za-z_][\w]*$`)
-	definedAtRe   = regexp.MustCompile(`\b(?:is\s+)?defined\s+(?:at|on|in)\b`)
-	decoratorRe   = regexp.MustCompile(`^\s*@`)
+	// notMethodNames are words a method line's pattern also matches.
+	notMethodNames = wordSet(`if for while switch catch function return else do with`)
+	closingLineRe  = regexp.MustCompile(`^\s*[\])}]+[;,]?\s*$`)
+	identSpanRe    = regexp.MustCompile(`^[A-Za-z_][\w]*$`)
+	definedAtRe    = regexp.MustCompile(`\b(?:is\s+)?defined\s+(?:at|on|in)\b`)
+	decoratorRe    = regexp.MustCompile(`^\s*@`)
 )
 
 // codeBlocks are the definitions in a read's numbered lines, each running
@@ -2590,8 +2788,8 @@ func codeBlocks(path string, lines map[int]string) ([]codeBlock, bool) {
 	case ".ts", ".tsx", ".jsx", ".mjs", ".cjs":
 		ext = ".js"
 	}
-	re := defLineRes[ext]
-	if re == nil {
+	res := defLineRes[ext]
+	if res == nil {
 		return nil, false
 	}
 	var nums []int
@@ -2602,18 +2800,18 @@ func codeBlocks(path string, lines map[int]string) ([]codeBlock, bool) {
 	indentOf := func(l string) int { return len(l) - len(strings.TrimLeft(l, " \t")) }
 	var out []codeBlock
 	for i, n := range nums {
-		m := re.FindStringSubmatch(lines[n])
+		var m []string
+		for _, re := range res {
+			if m = re.FindStringSubmatch(lines[n]); m != nil && !notMethodNames[m[3]] {
+				break
+			}
+			m = nil
+		}
 		if m == nil {
 			continue
 		}
-		name := ""
-		for _, g := range m[2:] {
-			if g != "" {
-				name = g
-				break
-			}
-		}
-		b := codeBlock{name: name, start: n, end: n, indent: len(m[1])}
+		name := m[3]
+		b := codeBlock{name: name, start: n, end: n, indent: len(m[1]), class: m[2] == "class" || m[2] == "type"}
 		for _, k := range nums[i+1:] {
 			l := lines[k]
 			if strings.TrimSpace(l) == "" {
@@ -2701,8 +2899,14 @@ func citeOwner(f facts, fl fileLine, lines map[int]string, bs []codeBlock, known
 			break
 		}
 	}
+	// The definition must be the innermost one at the line, or a class or
+	// type holding it: a nested function's line is not its outer one's.
+	in := innermostBlock(bs, fl.line)
 	for _, b := range bs {
-		if b.name == owner && b.start <= fl.line && fl.line <= b.end {
+		if b.name != owner || b.start > fl.line || fl.line > b.end {
+			continue
+		}
+		if in != nil && (in.name == owner || b.class) {
 			return ""
 		}
 	}
@@ -2732,6 +2936,22 @@ func citeOwnerName(f facts, bs []codeBlock) string {
 		}
 	}
 	return named[0]
+}
+
+// citePart reports a literal that is a cited path or cite, not code at it.
+func citePart(f facts, lit string) bool {
+	for _, fl := range f.fileLines {
+		p := normText(fl.path)
+		if strings.Contains(lit, p) || strings.Contains(p, lit) {
+			return true
+		}
+	}
+	for _, p := range f.paths {
+		if np := normText(p); strings.Contains(lit, np) || strings.Contains(np, lit) {
+			return true
+		}
+	}
+	return false
 }
 
 // isSpanLiteral reports a literal that is one of the claim's code spans.
