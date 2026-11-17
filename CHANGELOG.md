@@ -575,6 +575,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- `abhed -p -mode acceptEdits` was refused ("unknown -mode"), although
+  `-permission-mode acceptEdits` was taken. `-mode` now takes
+  `acceptEdits` and `bypassPermissions` (and their snake_case forms) as
+  aliases of `accept-edits` and `bypass`.
 - Ghost text at the end of a file was English prose, and Tab inserted it.
   The completion request went to Ollama with an empty suffix, so no
   fill-in-the-middle template was applied and a coder model answered the
