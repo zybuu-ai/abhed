@@ -83,18 +83,20 @@ func acpIdentity() map[string]any {
 // sign-in, so the engine's next start asks who is working. The engine
 // keeps working as who it is until it is restarted.
 func (c *acpConn) signOut(msg rpcMessage) {
-	switch currentPrincipal().Kind {
-	case identity.Account, identity.Server:
-		s, err := identity.Open()
-		if err == nil {
-			err = s.Forget()
-		}
-		if err != nil {
-			c.reply(msg.ID, nil, refusal(errRefused, "%s", err.Error()))
-			return
-		}
+	note, err := signOutHere()
+	if err != nil {
+		c.reply(msg.ID, nil, refusal(errRefused, "%s", err.Error()))
+		return
 	}
-	c.reply(msg.ID, map[string]any{"restart": true}, nil)
+	// The engine works for no one now: everything after is refused until it restarts.
+	c.identMu.Lock()
+	c.signedOut = true
+	c.identMu.Unlock()
+	res := map[string]any{"restart": true}
+	if note != "" {
+		res["notice"] = note
+	}
+	c.reply(msg.ID, res, nil)
 }
 
 func init() {

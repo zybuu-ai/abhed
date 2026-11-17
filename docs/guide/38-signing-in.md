@@ -31,7 +31,10 @@ Abhed — who is working?
 ```
 
 Once you sign in, this machine remembers it until you sign out, change the
-password, or an administrator removes you. Each later start says who is
+password, or an administrator removes you. Signing out (`abhed account
+signout`, `/account signout`, Studio's Abhed: Sign Out) ends that sign-in
+everywhere on this machine, and for a server sign-in also ends its token at
+the server. Each later start says who is
 signed in, under the banner, and `/account` signs out or switches (it ends
 the session; the next start asks again). `/status` shows it too.
 

@@ -436,3 +436,52 @@ func principalStart() map[string]any {
 	}
 	return out
 }
+
+// signOutHere signs out who this process works as, and no one else: the
+// remembered sign-in is forgotten only if it is still theirs, the account's
+// revocation count rises so no copy of it is good, and a server sign-in's
+// token is ended at the server as abhed logout ends it, kept pending there
+// when the server cannot be told. It reports what the person should know.
+func signOutHere() (string, error) {
+	p := currentPrincipal()
+	if p.Kind != identity.Account && p.Kind != identity.Server {
+		return "", nil
+	}
+	s, err := identity.Open()
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.ForgetIf(p.Entry.ID); err != nil {
+		return "", err
+	}
+	if err := s.SignOutEverywhere(p.Entry.ID); err != nil {
+		return "", err
+	}
+	if p.Kind != identity.Server {
+		return "", nil
+	}
+	path := filepath.Join(p.Root, "profiles.json")
+	reg, err := profiles.Load(path)
+	if err != nil {
+		return "", err
+	}
+	_, prof, err := reg.Get(p.Entry.Profile)
+	if err != nil || prof.Token == "" {
+		return "", nil
+	}
+	c, err := prof.HTTPClient()
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	lerr := profiles.Logout(ctx, c, prof, logoutAttempts, logoutBackoff)
+	reg.SignOut(p.Entry.Profile, lerr)
+	if err := profiles.Save(path, reg); err != nil {
+		return "", err
+	}
+	if lerr != nil {
+		return "The server " + p.Entry.URL + " could not be told yet; the next abhed login, logout or profile command tells it again.", nil
+	}
+	return "", nil
+}

@@ -375,7 +375,9 @@ type acpConn struct {
 	// switching is a server sign-in waiting on its network or browser part,
 	// with identMu released; switchCancel ends it (under identMu), and
 	// switchCancelUnlocked is the same for _abhed/auth/cancel (under switchMu).
-	switching            bool
+	switching bool
+	// signedOut is set by _abhed/auth/signout: nothing more works as anyone.
+	signedOut            bool
 	switchCancel         context.CancelFunc
 	switchGen            int
 	switchMu             sync.Mutex
@@ -853,6 +855,12 @@ func (c *acpConn) request(msg rpcMessage) {
 	if !acpBeforeSignIn[msg.Method] {
 		// Waits for an authenticate in progress, so this works as whoever it settles on.
 		c.identMu.Lock()
+		if c.signedOut {
+			c.identMu.Unlock()
+			c.reply(msg.ID, nil, &rpcError{Code: errRefused, Message: "signed out; restart the engine to sign in again",
+				Data: map[string]any{"authRequired": true, "signedOut": true}})
+			return
+		}
 		if c.switching {
 			c.identMu.Unlock()
 			c.reply(msg.ID, nil, &rpcError{Code: errRefused, Message: "a sign-in is in progress; try again when it has finished",

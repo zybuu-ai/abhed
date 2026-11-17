@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/identity"
+	"github.com/zybuu-ai/abhed/profiles"
 )
 
 type acpAuthMethod struct {
@@ -276,5 +278,67 @@ func TestACPServerSignInIsCancellable(t *testing.T) {
 	}
 	if m := cl.call("session/new", map[string]any{"cwd": ws, "mcpServers": []any{}}); m.Error != nil {
 		t.Fatalf("session/new after the cancel: %+v", m.Error)
+	}
+}
+
+// Sign-out over ACP ends this engine's own sign-in, everywhere: the
+// account's revocation count rises, a server's token is revoked there, a
+// sign-in another process made since is left alone, and the engine works
+// for no one after it.
+func TestACPSignOutEndsOnlyThisEnginesSignIn(t *testing.T) {
+	signInTest(t)
+	acpModelsEnv(t, `{}`)
+	revoked := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/cli/whoami":
+			_, _ = w.Write([]byte(`{"sub":"pat"}`))
+		case "/v1/cli/logout":
+			revoked <- struct{}{}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	s, _ := identity.Open()
+	e, _ := s.AddServer(srv.URL, "pat", "", "org")
+	root, _ := s.Root(e)
+	prof := &profiles.Profile{URL: srv.URL, Token: "abhcli_x", RevocationEndpoint: srv.URL + "/v1/cli/logout"}
+	_ = profiles.Save(filepath.Join(root, "profiles.json"), &profiles.File{Profiles: map[string]*profiles.Profile{"org": prof}, Current: "org"})
+	_ = s.Remember(e.ID)
+	if code := enterPrincipalForClient(signInFlags{}, &strings.Builder{}); code != 0 {
+		t.Fatal(code)
+	}
+	if currentPrincipal().Kind != identity.Server {
+		t.Fatalf("principal %v", currentPrincipal().Kind)
+	}
+	before, _ := s.ByID(e.ID)
+	cl := newStudioClient(t, t.TempDir(), true)
+	initAuth(t, cl)
+
+	// Another process signs someone else in meanwhile.
+	other, _, _ := s.Create("b2", "correct horse", "", "")
+	_ = s.Remember(other.ID)
+
+	cl.ok("_abhed/auth/signout", map[string]any{}, nil)
+	select {
+	case <-revoked:
+	default:
+		t.Error("the server token was not revoked")
+	}
+	if rem, ok, _ := s.Remembered(nil); !ok || rem.ID != other.ID {
+		t.Error("sign-out ended another process's sign-in")
+	}
+	if after, _ := s.ByID(e.ID); after.Revocations <= before.Revocations {
+		t.Error("the revocation count did not rise")
+	}
+	reg, _ := profiles.Load(filepath.Join(root, "profiles.json"))
+	if _, p, _ := reg.Get("org"); p != nil && p.Token != "" {
+		t.Error("the server token is still kept")
+	}
+	m := cl.call("session/new", map[string]any{"cwd": t.TempDir(), "mcpServers": []any{}})
+	if m.Error == nil || !strings.Contains(m.Error.Message, "signed out") {
+		t.Fatalf("session/new after sign-out: %+v", m.Error)
 	}
 }

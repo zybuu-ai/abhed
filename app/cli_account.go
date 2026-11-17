@@ -36,13 +36,13 @@ func slashAccount(_ context.Context, e *cmdEnv, args []string) (bool, error) {
 	}
 	switch args[0] {
 	case "signout", "switch":
-		if p.Kind == identity.Account || p.Kind == identity.Server {
-			s, err := identity.Open()
+		if args[0] == "signout" || p.Kind == identity.Account || p.Kind == identity.Server {
+			note, err := signOutHere()
 			if err != nil {
 				return false, err
 			}
-			if err := s.Forget(); err != nil {
-				return false, err
+			if note != "" {
+				e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: note})
 			}
 		}
 		e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: "Ending this session. The next start asks who is working."})

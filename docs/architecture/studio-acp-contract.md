@@ -119,8 +119,13 @@ Studio keeps each person's chat history apart, keyed by `identity.owner`
 (the unkeyed history from before sign-in belongs to the `adopted` account
 and to `legacy`), and keeps nothing of a guest: a guest window's chat
 history lives in memory and is dropped when the person changes.
-`_abhed/auth/signout` (feature `auth`) makes the machine forget the
-remembered sign-in; Studio then restarts the engine, whose next start asks.
+`_abhed/auth/signout` (feature `auth`) signs out the person this engine
+works as, and no one another process signed in since: their remembered
+sign-in is forgotten, the account's revocation count rises, and a server
+sign-in's token is revoked at the server (the reply's `notice` says when the
+server could not be told yet). The engine then refuses everything with
+-32000 `data.signedOut` until it restarts; Studio restarts it, and its
+next start asks.
 
 `features` names every `abhed/*` area the engine serves: `sessions`, `fork`,
 `events`, `record.verify`, `hawkeye`, `export`, `tasks`, `tasks.review`,
