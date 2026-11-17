@@ -54,6 +54,10 @@ func (a *App) serveCmd(workspace, addr string) int {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
+	addr, ok := serveSignInChoice(cfg, addr, terminalBoth(), newPrompter(os.Stdin, os.Stderr))
+	if !ok {
+		return 0
+	}
 	if err := vaultLoads(); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
