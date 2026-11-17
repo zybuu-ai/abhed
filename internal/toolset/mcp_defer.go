@@ -174,7 +174,7 @@ func (d *deferredTool) Hidden() bool { return !d.loaded.Load() }
 // SecretWithholder, ModeScoped, FixedArgs) or that rebuilds the tool (StoreBound) cannot be forwarded.
 func deferrable(t tools.Tool) bool {
 	switch t.(type) {
-	case tools.SecretArgs, tools.SecretPaths, tools.SecretWithholder, tools.ModeScoped, tools.FixedArgs, tools.StoreBound:
+	case tools.SecretArgs, tools.SecretPaths, tools.SecretWithholder, tools.ModeScoped, tools.FixedArgs, tools.StoreBound, tools.PlanPrechecker:
 		return false
 	}
 	return true

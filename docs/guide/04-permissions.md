@@ -290,7 +290,9 @@ programs on the read-only list in read forms, joined only by `|`, with no
 redirection, expansion, substitution or double quote (`ls -lah /var/log`,
 `du -ah /var/log | sort -rh | head`). Programs that print files (`cat`,
 `grep`, `journalctl`, …) join them only where the operator sets
-`ssh.read_contents`. The record names the rule `ssh.read_only`
+`ssh.read_contents`; without it such a read asks, and the reason names
+`ssh.read_contents` and `ssh.read_commands`, where an entry such as
+`tail -n * /var/log/app/app.log` declares one log read. The record names the rule `ssh.read_only`
 ([Read-only commands](../ops/infrastructure.md#read-only-commands-on-declared-hosts)). In `bypass` mode the
 read step is not used: bypass allows it as it allows anything, and where the
 managed configuration refuses bypass the call asks, as in default mode. A remote command the destructive step names, such as `rm -rf`,

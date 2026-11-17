@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -31,6 +32,7 @@ type loginServer struct {
 	ts     *httptest.Server
 	cookie *http.Cookie
 	ca     string
+	local  *auth.LocalAuth
 }
 
 func newLoginServer(t *testing.T) *loginServer {
@@ -67,7 +69,7 @@ func newLoginServerFor(t *testing.T, user auth.User) *loginServer {
 		t.Fatal(err)
 	}
 	_ = resp.Body.Close()
-	ls := &loginServer{ts: ts, ca: ca}
+	ls := &loginServer{ts: ts, ca: ca, local: local}
 	for _, c := range resp.Cookies() {
 		if c.Name == "abhed_session" {
 			ls.cookie = c
@@ -199,6 +201,50 @@ func TestLoginProfileLogoutCommands(t *testing.T) {
 	reg, _ = profiles.Load(path)
 	if _, ok := reg.Profiles["other"]; ok {
 		t.Fatal("profile rm left the profile")
+	}
+}
+
+// removedErr is a refusal an edition gives a person whose organisation
+// removed their access.
+type removedErr struct{}
+
+func (removedErr) Error() string {
+	return "your access to this deployment was revoked; contact its administrator if you think this is wrong"
+}
+func (removedErr) AccessRemoved() bool { return true }
+
+// A sign-in the server refuses because the organisation removed the
+// person's access says so, and whom to ask, not to sign in again.
+func TestLoginOfARemovedPersonSaysAccessWasRemoved(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(profiles.EnvFile, "")
+	ls := newLoginServer(t)
+	ls.local.Admit = func(context.Context, *auth.User) error { return removedErr{} }
+	var out bytes.Buffer
+	ap := &approver{ls: ls}
+	code := loginCmd(t.TempDir(), []string{"-device", "-ca", ls.ca, ls.ts.URL}, &out, ap)
+	msg := ap.String()
+	if code == 0 || !strings.Contains(msg, "your organisation has removed your access to "+ls.ts.URL) ||
+		!strings.Contains(msg, "Ask your organisation's Abhed administrator") || !strings.Contains(msg, "revoked") {
+		t.Fatalf("login = %d:\n%s", code, msg)
+	}
+	if strings.Contains(msg, "run abhed login") {
+		t.Fatalf("told to sign in again:\n%s", msg)
+	}
+}
+
+// whoami, which login asks after a sign-in, says the same.
+func TestWhoamiOfARemovedPersonSaysAccessWasRemoved(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":"unauthorized","reason":"revoked \u001b[2J by the org","access_removed":true}`)
+	}))
+	defer ts.Close()
+	_, err := profiles.Whoami(context.Background(), ts.Client(), &profiles.Profile{URL: ts.URL, Token: "t"})
+	var removed *profiles.AccessRemovedError
+	if !errors.As(err, &removed) || strings.Contains(err.Error(), "\x1b") || !strings.Contains(err.Error(), "revoked") {
+		t.Fatalf("whoami: %v", err)
 	}
 }
 

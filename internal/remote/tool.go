@@ -3,11 +3,13 @@ package remote
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -184,7 +186,8 @@ func (Tool) Mutates() bool { return true }
 func (t Tool) Description() string {
 	hosts := ""
 	if t.R != nil && t.R.Len() > 0 {
-		hosts = " Declared hosts: " + strings.Join(t.R.names(), ", ") + "."
+		hosts = " Hosts the operator declared, ready now with no ssh_connect needed: " +
+			strings.Join(t.R.names(), ", ") + "."
 	}
 	return "Run a shell command on a remote machine over SSH." + hosts +
 		" Hosts added with ssh_connect in this session can be named too." +
@@ -201,7 +204,7 @@ func reads(cmds []string) string {
 		return ""
 	}
 	return ", except a command the operator declared a read, which runs unasked and in plan mode, " +
-		"alone and exactly as declared (* matches any text): " + strings.Join(cmds, "; ")
+		"alone and exactly as declared (* or ? stands within one argument, a lone ** for one or more arguments): " + strings.Join(cmds, "; ")
 }
 
 // readOnly tells the model what the read-only classifier lets run unasked.
@@ -575,8 +578,25 @@ func (ConnectTool) FixedArgs() {}
 // SecretArgs puts password_secret to a secret(NAME) rule.
 func (ConnectTool) SecretArgs() []string { return []string{"password_secret"} }
 
-func (ConnectTool) Description() string {
-	return "Register a remote machine for SSH, for this session only. Use when the user " +
+func (t ConnectTool) Description() string {
+	declared := ""
+	var ready, broken []string
+	for _, n := range t.declaredNames() {
+		if t.loaded(n) {
+			ready = append(ready, n)
+		} else {
+			broken = append(broken, n)
+		}
+	}
+	if len(ready) > 0 {
+		declared = "Not for a host the operator declared (" + strings.Join(ready, ", ") +
+			"): those are ready, so run commands on them with the `ssh` tool directly. "
+	}
+	if len(broken) > 0 {
+		declared += "Declared in ssh.hosts but not loaded, so unusable until the user fixes the entry: " +
+			strings.Join(broken, ", ") + ". "
+	}
+	return declared + "Register a remote machine for SSH, for this session only. Use when the user " +
 		"gives an address and a key path, or a password they stored with " +
 		"`abhed secret set NAME`. Call this FIRST with the key path " +
 		"exactly as the user wrote it — it resolves typos and common locations itself, " +
@@ -585,6 +605,30 @@ func (ConnectTool) Description() string {
 		"Do NOT use `ssh` through bash: the sandbox denies reads of key material, and a " +
 		"connection made inside a bash call does not survive to the next one. " +
 		"After this succeeds, run commands with the `ssh` tool."
+}
+
+// loaded reports a declared host that loaded, and so is ready for ssh.
+func (t ConnectTool) loaded(name string) bool {
+	if t.R == nil {
+		return false
+	}
+	_, ok := t.R.get(name)
+	return ok
+}
+
+// declaredNames are the operator's host names, loaded or not, sorted.
+func (t ConnectTool) declaredNames() []string {
+	var out []string
+	if t.R != nil {
+		out = t.R.names()
+	}
+	for _, d := range t.Declared {
+		if !slices.Contains(out, d) {
+			out = append(out, d)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (ConnectTool) Schema() json.RawMessage {
@@ -611,6 +655,66 @@ type connectArgs struct {
 	AcceptHostKey  bool   `json:"accept_host_key"`
 }
 
+// declaredName is why a call's name cannot be a session host, or "". A
+// declared host needs no connect; any other name may not pass for one.
+func (t ConnectTool) declaredName(a connectArgs) string {
+	name := a.Name
+	if name == "" {
+		name = a.Addr
+	}
+	if !plainName(name) {
+		return "Host names are plain ASCII letters, digits and punctuation, so one cannot " +
+			"pass for another; choose another name."
+	}
+	// An operator's host keeps its name: a session cannot put another machine
+	// behind it.
+	taken := ""
+	if t.R != nil {
+		taken = t.R.resembles(name)
+	}
+	for _, d := range t.Declared {
+		if taken == "" && foldName(d) == foldName(name) {
+			taken = d
+		}
+	}
+	switch {
+	case taken == "":
+		return ""
+	case a.Addr == taken && (a.Name == "" || a.Name == taken) && !t.loaded(taken):
+		return fmt.Sprintf("%s is declared in ssh.hosts but did not load (an entry needs a name, an addr "+
+			"and a user), so it cannot be used, and ssh_connect may not take its name. Ask the user to "+
+			"check its ssh.hosts entry. Nothing was connected.", taken)
+	case a.Addr == taken && (a.Name == "" || a.Name == taken):
+		// The model named the host, not a machine: it is already there.
+		return fmt.Sprintf("%s is a host the operator declared, and it is ready: run commands "+
+			"on it with the ssh tool (host %q), with no ssh_connect needed. ssh_connect is only for "+
+			"a machine the user gives an address for. Nothing was connected.", taken, taken)
+	}
+	return fmt.Sprintf("%q is, or reads like, %q, a host the operator declared; use that "+
+		"with the ssh tool, or choose a name unlike it for this one.", name, taken)
+}
+
+// Precheck answers a call naming a declared host before anyone is asked:
+// nothing would be connected, so no approval could make it succeed.
+func (t ConnectTool) Precheck(_ *tools.Session, raw json.RawMessage) error {
+	var a connectArgs
+	if json.Unmarshal(raw, &a) != nil {
+		return nil // Run reports it
+	}
+	a.Addr, a.Name = strings.TrimSpace(a.Addr), strings.TrimSpace(a.Name)
+	if a.Addr == "" {
+		return nil
+	}
+	if why := t.declaredName(a); why != "" {
+		return errors.New(why)
+	}
+	return nil
+}
+
+// PrecheckInPlanMode: naming a declared host is answered in plan mode too;
+// the check connects nothing.
+func (ConnectTool) PrecheckInPlanMode() {}
+
 func (t ConnectTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage) tools.Result {
 	var a connectArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
@@ -633,24 +737,8 @@ func (t ConnectTool) Run(ctx context.Context, sess *tools.Session, raw json.RawM
 	if a.Name == "" {
 		a.Name = a.Addr
 	}
-	if !plainName(a.Name) {
-		return errf("Host names are plain ASCII letters, digits and punctuation, so one cannot " +
-			"pass for another; choose another name.")
-	}
-	// An operator's host keeps its name: a session cannot put another machine
-	// behind it.
-	taken := ""
-	if t.R != nil {
-		taken = t.R.resembles(a.Name)
-	}
-	for _, d := range t.Declared {
-		if taken == "" && foldName(d) == foldName(a.Name) {
-			taken = d
-		}
-	}
-	if taken != "" {
-		return errf("%q is, or reads like, %q, a host the operator declared; use that "+
-			"with the ssh tool, or choose a name unlike it for this one.", a.Name, taken)
+	if why := t.declaredName(a); why != "" {
+		return errf("%s", why)
 	}
 
 	var password string

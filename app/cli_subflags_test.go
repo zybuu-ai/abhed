@@ -61,6 +61,19 @@ func TestHoistGlobalFlags(t *testing.T) {
 		{args: []string{"pki", "init", "-C", "/ws"}, err: "-C does not apply to pki"},
 		{args: []string{"secret", "list", "-model", "x"}, err: "-model does not apply to secret"},
 		{args: []string{"admin", "web-search", "on", "-C", "/ws"}, err: "-C does not apply to admin"},
+		// bg start's -name and -mode are its own, as its help lists them.
+		{args: []string{"bg", "start", "-name", "nightly", "-mode", "plan", "-y", "fix it"},
+			left: "bg start -name nightly -mode plan -y fix it"},
+		{args: []string{"bg", "start", "-model", "x", "fix it"}, err: "-model does not apply to bg"},
+		// start snapshots the workspace, so -C names it; the other bg commands read none.
+		{args: []string{"bg", "start", "-C", "/repo", "-y", "fix it"}, left: "bg start -y fix it", workdir: "/repo"},
+		{args: []string{"bg", "list", "-C", "/repo"}, err: "-C does not apply to bg"},
+		// After the prompt's first word every word is the prompt's: -C there
+		// names no workspace, and a top-level flag there is not refused.
+		{args: []string{"bg", "start", "-y", "run", "make", "-C", "/tmp"}, left: "bg start -y run make -C /tmp"},
+		{args: []string{"bg", "start", "-name", "n", "-C", "/repo", "explain", "-model"}, left: "bg start -name n explain -model", workdir: "/repo"},
+		{args: []string{"bg", "start", "--", "-C", "/tmp"}, left: "bg start -- -C /tmp"},
+		{args: []string{"bg", "attach", "bg_1", "-C", "/repo"}, err: "-C does not apply to bg"},
 	} {
 		var f cliFlags
 		fs := newFlagSet(&f)
