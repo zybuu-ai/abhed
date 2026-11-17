@@ -1,8 +1,9 @@
 # Studio remote: the engine in a dev container or on an SSH host
 
-Status: 1.3.0. The dev-container path is built and tested end to end with a
-throwaway container (Studio's `devcontainer-smoke.mjs`); the SSH path is
-designed here and not built (see [What is left](#what-is-left)).
+Status: 1.3.0. Both are built and tested end to end: the dev container with a
+throwaway container (Studio's `devcontainer-smoke.mjs`), the SSH host with a
+throwaway sshd container, its own key and known_hosts (`ssh-smoke.mjs`). See
+[What is left](#what-is-left).
 
 ## The problem
 
@@ -95,29 +96,90 @@ home volume, which deletes the record kept in it.
 | What still runs on the laptop? | The editor, its extensions, *New Host Terminal* and host-run tasks, which are on the host by design and say so, and the container runtime's CLI. Adding an MCP server or signing in (`abhed mcp add`, `abhed mcp login`) acts on the laptop's configuration, so in a dev-container window Studio does not offer them and says to run them in an Abhed terminal, which is inside. |
 | Could a repository abuse this? | It can ship a `devcontainer.json` naming any image. Nothing happens until the person has trusted the folder, read the image in the modal and said yes. The image then runs as code with the folder writable and the network above, but without the laptop's credentials, and it cannot choose the engine, its configuration home or its managed policy. A tag that later names another image is refused at the next start. |
 
-## SSH host (designed, not built)
+## SSH host (built)
 
-The same transport over SSH: `ssh -T -o BatchMode=yes -o ForwardAgent=no
--o ClearAllForwardings=yes -o PermitLocalCommand=no <host> -- abhed acp`,
-with the engine installed on the host and the folder a path there. Policy,
-sandbox and record are the host's, as for the container. Credentials are
-not forwarded: no agent, no X11, no ports, no `SendEnv`.
+**Transport.** The engine on the laptop connects, not OpenSSH: Studio's engine
+host process runs the local, pinned engine as `abhed ssh-acp -host H -port P
+-user U -sha256 HEX (-engine PATH | -upload FILE) [-identity F]
+[-known-hosts F] -- FOLDER`, an argv of validated values. `ssh-acp` dials
+with the engine's own SSH client (`internal/remote`), the one its `ssh` tool
+uses:
 
-What makes it larger than the container: the folder lives on the host, so
-the editor needs the host's files. Without the Code-OSS remote server that
-is a file system provider over the same connection (a second ACP-like
-channel, or the engine serving read and write of the workspace to Studio
-under its policy), and search, the SCM view and file watching over it. That
-is the part not built.
+- the host key must already be in known_hosts (`~/.ssh/known_hosts`, or
+  `abhed.ssh.knownHostsFile`); an unknown key is refused, a different one is
+  refused as possibly another machine, and nothing is ever added. The
+  handshake asks for the key types known_hosts records for the host, as
+  OpenSSH does, so a host recorded under one type is not refused for
+  offering another first;
+- it signs in with `abhed.ssh.identityFile` or the person's SSH agent, which
+  is used to sign in and never forwarded. Nothing is forwarded: no agent, no
+  X11, no ports, and no environment variable is sent;
+- one remote command runs, through the account's shell: it checks the engine
+  at the pinned path (`abhed.ssh.enginePath`) is a regular file, not a link,
+  whose SHA-256 is `abhed.ssh.engineSha256`, refusing with exit 97
+  otherwise; then `cd FOLDER` and `exec ENGINE acp`. ACP is carried on
+  `ssh-acp`'s stdio, so Studio's ACP client is unchanged. With
+  `abhed.ssh.uploadEngine` (a local build with the pinned hash) the build is
+  first copied to `~/.abhed/bin/abhed-<16 hex>` on the host, under the
+  engine's own state folder, checked there and put in place, then checked
+  again at every start.
+
+**Files.** The folder opens as `abhed-ssh://user@host:port/path`. Studio
+registers a file system provider for that scheme whose every operation is
+an ACP request to the engine on the host, in the window's session there
+(`_abhed/fs/*`, studio-acp-contract.md):
+
+- `stat`, `readDir`, `read`: inside the session's roots only; Abhed's own
+  state and any path the read rules withhold are neither listed nor read;
+- `write`: the person's save goes through the write tool on the manual path,
+  so the write rules, the syntax check and the record apply (by: user); only
+  text is written over it;
+- `delete`, `rename`, `mkdir`: through the delete and write rules, refusals
+  recorded;
+- `search` and `files`: text search and quick open, walked by the engine
+  over readable files (no `.git`, state or `node_modules`), Go regular
+  expressions, bounded;
+- `watch`: the engine polls the watched tree's sizes and times every 1.5 s
+  and notifies `_abhed/fs/changed`; at most 64 watches and 20,000 entries
+  each;
+- `git`: the SCM view's read-only status and HEAD contents, run by the
+  engine with hooks, fsmonitor, pager and external diff turned off. Studio
+  shows the changed files and a diff with HEAD; staging and committing are
+  left to the Abhed terminal.
+
+Only an authority the person chose in *Reopen Folder on SSH Host* (kept in
+Studio's application storage on this computer) is served or connected to,
+so a workspace file or link naming another host connects nowhere.
+
+### Threat model
+
+| Question | Answer |
+|---|---|
+| Who enforces policy? | The engine on the host, with its configuration there (`~/.abhed`, `/etc/abhed`, the folder's `.abhed` under workspace trust). The person's file operations go through it too, so its read, write and delete rules hold for them. |
+| Which sandbox? | The engine's tiers on the host. A host without a usable tier refuses a session below `sandbox.min_tier`, as anywhere. |
+| Where does the record live? | On the host, under the engine's `~/.abhed`. The laptop's record does not see those sessions. |
+| How do credentials travel? | The laptop signs in to the host with the person's key or agent; neither is forwarded, and no environment variable is sent. The engine on the host reads model keys and secrets from its own store there. |
+| Who is the host? | Only one whose key is already in known_hosts; an unknown or changed key is refused before anything is sent. |
+| Which engine runs? | Only a binary with the pinned SHA-256, checked on the host at every start (a check, then an exec, by the account's own shell: the account can change its own files between them). |
+| What still runs on the laptop? | The editor, its extensions, the host terminal and host tasks. Language servers, completions, next edits, debugging, the Run and Review views and Studio's local git extension do not work on an SSH folder; the Abhed terminal and the agent run on the host. |
 
 ## What is left
 
-- SSH host: the file system provider and its watcher; host-key handling
-  (Studio's own known_hosts check before connecting).
+- SSH host:
+  - only text files are written (`write` refuses binary content);
+  - the watch polls, so a change is seen within 1.5 s and very large trees
+    (over 20,000 entries) are watched in part;
+  - the SCM view is read-only (no stage, commit, branch or history), and
+    language servers, completions, debugging and the Review view do not
+    work on an SSH folder;
+  - `~/.ssh/config` (ProxyJump, aliases) is not read; a jump host is not
+    supported;
+  - the check of the engine and its exec are two steps of the account's
+    shell, not one file descriptor.
 - Dev container: `build` (a Dockerfile), `features`, lifecycle commands and
-  `remoteUser`; a named volume for the engine's `~/.abhed`, so the record
-  outlives the container; forwarding a model key on request, kept per
-  container and recorded; routing `mcp add`/`mcp login` into the container
+  `remoteUser`; forwarding a model key on request, kept per container and
+  recorded; routing `mcp add`/`mcp login` into the container
   (`exec --preserve-fds`).
 - Paths the engine reports outside the folder (its record, an export written
-  to its home) are container paths, which Studio cannot open on the laptop.
+  to its home) are container or host paths, which Studio cannot open on the
+  laptop.

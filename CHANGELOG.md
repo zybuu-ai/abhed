@@ -132,6 +132,19 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Abhed Studio opens a folder on an SSH host with the engine running there
+  (**Abhed: Reopen Folder on SSH Host…**). `abhed ssh-acp` connects with
+  the engine's SSH client (the host key must already be in known_hosts;
+  nothing is forwarded and no environment is sent), checks the engine on
+  the host against a pinned SHA-256 at every start (uploading a local build
+  first when asked), and carries ACP on its stdio. The editor's files,
+  search, a polling watch and a read-only SCM view come from that engine
+  through the new `_abhed/fs/*` methods (feature `fs`), so its read, write
+  and delete rules hold for the person's file operations and saves are
+  recorded on the host. The engine's SSH client now asks for the host key
+  types known_hosts records, and says a changed key apart from an unknown
+  one.
+
 - Abhed Studio can run a trusted folder's engine in a dev container:
   **Abhed: Reopen Folder in Dev Container…** runs the image
   `devcontainer.json` names with the folder at the same path, Studio's own

@@ -1077,6 +1077,32 @@ interface Capabilities {
   address, and only an `http(s)` one. The engine keeps the tokens in its
   store and logs `by: "login -confirm-fd"`; `/mcp restart` takes the new
   login up. Cancelling ends that process only.
+- **The editor's files from the engine** (1.3.0; `fs` in `features`), for a
+  folder on another machine (studio-remote.md). Every method takes
+  `{sessionId, path}` with `path` absolute on the engine's machine and inside
+  the session's roots; a path outside them, Abhed's state and anything the
+  read rules withhold are refused (-32001) with `data.fs` naming the kind
+  (`notFound`, `exists`, `notADirectory`, `isADirectory`, `noPermissions`).
+  - `_abhed/fs/stat` → `{type: 1 | 2, size, mtime, ctime}` (milliseconds);
+    `_abhed/fs/readDir` → `{entries: [{name, type}]}`, withheld names left
+    out; `_abhed/fs/read` → `{content: base64, sha256}` (at most 16 MiB).
+  - `_abhed/fs/write {path, content: base64, create, overwrite}`: text only,
+    through the write tool on the manual path (recorded by: user);
+    `_abhed/fs/delete {path, recursive}` through the delete rules;
+    `_abhed/fs/rename {path, to, overwrite}` judged as a delete and a write,
+    recorded `manual.edit`; `_abhed/fs/mkdir {path}` through the write rules.
+  - `_abhed/fs/search {path, query, isRegex, caseSensitive, wholeWord,
+    include, exclude, maxResults}` → `{matches: [{path, line, text,
+    ranges: [[start, end]]}], limitHit}` (0-based, UTF-16 columns);
+    `_abhed/fs/files {path, query, include, exclude, maxResults}` →
+    `{files, limitHit}`.
+  - `_abhed/fs/watch {path, recursive, id}` and `_abhed/fs/unwatch {id}`;
+    changes arrive as `_abhed/fs/changed {id, changes: [{path, type: 1
+    changed | 2 added | 3 deleted}]}`.
+  - `_abhed/fs/git {op: "status"}` → `{root, changes: [{x, y, path}]}`
+    (porcelain v1) and `{op: "original", path}` → `{content}` (HEAD's),
+    run with hooks, fsmonitor, pager and external diff off. Nothing is
+    staged or committed.
 - `_abhed/index/status {sessionId}` and `_abhed/index/rebuild {sessionId}`
   (recorded `by: user`; progress as events).
 - `_abhed/infra/status {sessionId}` is `infra` alone, for polling.

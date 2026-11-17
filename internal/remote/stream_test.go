@@ -39,7 +39,7 @@ func TestStreamAndHostKeyMismatch(t *testing.T) {
 	}
 	bad, _ := NewHost(HostConfig{Name: "vm1", Addr: srv.addr, User: "tester", PasswordEnv: "TEST_SSH_PW", KnownHostsFile: kh})
 	before, _ := srv.ran()
-	if _, err := bad.Stream(context.Background(), "echo-stdin", strings.NewReader("x"), &out, &errw); err == nil || !strings.Contains(err.Error(), "handshake") {
+	if _, err := bad.Stream(context.Background(), "echo-stdin", strings.NewReader("x"), &out, &errw); err == nil || !strings.Contains(err.Error(), "does not match the one recorded") {
 		t.Fatalf("a mismatched host key was accepted: %v", err)
 	}
 	if after, _ := srv.ran(); len(after) != len(before) {

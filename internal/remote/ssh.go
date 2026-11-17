@@ -227,6 +227,12 @@ func (h *Host) connect(ctx context.Context) (*ssh.Client, error) {
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, h.cfg.Addr, cc)
 	if err != nil {
 		_ = conn.Close()
+		// A recorded key that differs is not an unknown host: it may be a machine in the middle.
+		if strings.Contains(err.Error(), "key mismatch") {
+			return nil, fmt.Errorf("the host key for %s does not match the one recorded in known_hosts; "+
+				"this may be another machine answering in its place, so nothing was sent. If the host was "+
+				"rebuilt, check its new key out of band before replacing the old one: %w", h.cfg.Name, err)
+		}
 		if (strings.Contains(err.Error(), "knownhosts") ||
 			strings.Contains(err.Error(), "key is unknown")) && h.cfg.password != "" {
 			return nil, fmt.Errorf("the host key for %s is not in known_hosts, and a stored "+

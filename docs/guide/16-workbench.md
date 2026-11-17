@@ -941,3 +941,30 @@ dev-container window; run `abhed mcp` in an Abhed terminal instead.
 the container; **Remove Dev Container…** deletes it, its home volume and the
 record in it. The design and its threat model are in [Studio
 remote](../architecture/studio-remote.md).
+
+## A folder on an SSH host (Abhed Studio)
+
+**Abhed: Reopen Folder on SSH Host…** asks for `user@host[:port]` and the
+folder's absolute path there, then opens it with the engine running on the
+host: its policy, sandbox and record are the host's, and the editor's files,
+search and the SCM view's changes come from that engine, under its rules.
+Set in your user settings (a workspace cannot set them):
+
+- `abhed.ssh.engineSha256`, and either `abhed.ssh.enginePath` (the engine's
+  path on the host) or `abhed.ssh.uploadEngine` (a local build for the host,
+  copied to `~/.abhed/bin` there when it lacks one);
+- `abhed.ssh.identityFile` (else your SSH agent signs in; it is never
+  forwarded) and `abhed.ssh.knownHostsFile` (else `~/.ssh/known_hosts`).
+
+The host's key must already be in known_hosts: an unknown or changed key is
+refused, and Studio never adds one. Nothing is forwarded: no agent, X11,
+ports or environment variable. The engine must have the pinned SHA-256,
+checked at every start. Studio asks first, in a modal whose default is
+Don't Connect, and connects later only to hosts you chose this way. Saves
+are recorded on the host as yours, and Abhed's own state and paths the read
+rules withhold are not shown. Language servers, completions, debugging, the
+Run and Review views and Studio's git extension do not work on an SSH folder
+(the SCM view shows changes and diffs, read-only); the Abhed terminal runs
+on the host. **Reopen Folder Locally** leaves it. The command line's side is
+`abhed ssh-acp`. Design and threat model: [Studio
+remote](../architecture/studio-remote.md).
