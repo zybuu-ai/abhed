@@ -338,8 +338,10 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 			mut := false
 			switch {
 			case readers[o.Tool]:
-			case o.Tool == "ssh" && remoteReads[o.CallID] && reqs[o.CallID].a.Tool == "ssh":
-				// The policy ran it as a read; it changed nothing on the host.
+			case o.Tool == "ssh" && remoteReads[o.CallID] && reqs[o.CallID].a.Tool == "ssh" && rec.inspect:
+				// The policy ran it as a read, and it parses as known readers
+				// only: an operator's ssh.read_commands entry that writes
+				// (`sed -i …`) still counts as a change.
 			case o.Tool == "bash":
 				// A lint run that says it fixed something changed files, even
 				// with no fix flag the reader list would refuse.
@@ -2027,24 +2029,75 @@ func (ix *recordIndex) ranCommand(cmd string) finding {
 	return finding{out: missing, why: "`" + clipRunes(cmd, 60) + "` is not among the commands this session ran, as written"}
 }
 
-// runResult reads what a named command's last run resulted in from that
-// run's own output: no other result shows it.
+// runResult reads what a named command's last run resulted in. The run is
+// the latest of that exact command, as written, and must not predate a later
+// change. A success ("OK", "passed", "green") needs exit 0 and no FAIL in
+// the output, and for a test command a whole run that ran tests (no filter);
+// a failure needs a non-zero exit; anything else said of it must be in that
+// run's own output.
 func (ix *recordIndex) runResult(cmd, outcome string) finding {
+	want := strings.Fields(cmd)
 	var last *obsRec
 	for _, o := range ix.obs {
-		if (o.tool == "bash" || o.tool == "ssh") && o.usable() && o.child == "" && ranIn(o.line, o.exit, cmd) {
+		if (o.tool == "bash" || o.tool == "ssh") && o.usable() && o.child == "" && slices.Equal(strings.Fields(o.command), want) {
 			last = o
 		}
 	}
 	if last == nil {
 		return finding{out: missing, why: "`" + clipRunes(cmd, 60) + "` is not among the commands this session ran, as written"}
 	}
-	want := normText(outcome)
-	if want == "" || !strings.Contains(last.evidence().norm, want) {
-		return finding{out: missing, why: fmt.Sprintf("the last run of `%s`, #%d, does not show %q", clipRunes(cmd, 40), last.seq, clipRunes(outcome, 40))}
+	label := fmt.Sprintf("the last run of `%s`, #%d,", clipRunes(cmd, 40), last.seq)
+	if m := ix.staleBy(last); m != nil {
+		return finding{out: missing, why: fmt.Sprintf("%s predates a later change (#%d)", label, m.seq)}
+	}
+	said := normText(outcome)
+	good, bad := runSuccessRe.MatchString(said), runFailureRe.MatchString(said)
+	exit := -1
+	if last.exit != nil {
+		exit = *last.exit
+	}
+	switch {
+	case good && bad:
+		return finding{out: missing, why: fmt.Sprintf("it says %q, both a pass and a failure", clipRunes(outcome, 40))}
+	case good:
+		if exit != 0 {
+			return finding{out: missing, why: fmt.Sprintf("%s exited %d", label, exit)}
+		}
+		if outputFailRe.MatchString(last.content) {
+			return finding{out: missing, why: label + " reports a failure"}
+		}
+		if commandKind(last.line.final) == "test" {
+			if _, ok := runScope(last.line.final, last.line.finalCwd); !ok || !last.line.shape || ranNothing(last) {
+				return finding{out: missing, why: label + " is not a whole test run that ran tests"}
+			}
+		}
+		if !runSuccessOnlyRe.MatchString(said) && !strings.Contains(last.evidence().norm, said) {
+			return finding{out: missing, why: fmt.Sprintf("%s does not show %q", label, clipRunes(outcome, 40))}
+		}
+	case bad:
+		if exit == 0 {
+			return finding{out: missing, why: label + " exited 0"}
+		}
+		if !runFailureOnlyRe.MatchString(said) && !strings.Contains(last.evidence().norm, said) {
+			return finding{out: missing, why: fmt.Sprintf("%s does not show %q", label, clipRunes(outcome, 40))}
+		}
+	default:
+		if said == "" || !strings.Contains(last.evidence().norm, said) {
+			return finding{out: missing, why: fmt.Sprintf("%s does not show %q", label, clipRunes(outcome, 40))}
+		}
 	}
 	return finding{out: matched, what: fmt.Sprintf("%q in the last run of `%s`, #%d", clipRunes(outcome, 30), clipRunes(cmd, 40), last.seq), seq: last.seq}
 }
+
+var (
+	// runSuccessRe and runFailureRe are what a run is said to have resulted
+	// in; the "Only" forms are those words alone, with nothing else to find.
+	runSuccessRe     = regexp.MustCompile(`\b(?:ok|success|successful|succeeded|passed|passing|pass|green|clean)\b`)
+	runFailureRe     = regexp.MustCompile(`\b(?:fail|failed|failure|failures|failing|error|errors|red|broken)\b`)
+	runSuccessOnlyRe = regexp.MustCompile(`^(?:(?:a|an|all|tests?|ok|success|successful|succeeded|passed|passing|pass|green|clean|build|run)\s*)+$`)
+	runFailureOnlyRe = regexp.MustCompile(`^(?:(?:a|an|fail|failed|failure|failing|error|errors|red|broken|build|run|tests?)\s*)+$`)
+	outputFailRe     = regexp.MustCompile(`\bFAIL(?:ED|URE|:)?\b|--- FAIL`)
+)
 
 // checkFileLine checks a path:line cite against the file as it is now, and,
 // where the claim quotes something, that the line or its neighbours hold it.

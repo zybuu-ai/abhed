@@ -7164,6 +7164,51 @@
       "name": "a real answer, candidate review of piped input 1.9: If a user requests `top_k` results, they will receive `top_k - 1`.",
       "kind": "control",
       "hash": "300114dfb6d5ecef"
+    },
+    {
+      "name": "a whole suite said to result in OK, one module run",
+      "kind": "planted",
+      "hash": "b20fad5ba4e71ddd"
+    },
+    {
+      "name": "a run said to result in ok, a package failing in it",
+      "kind": "planted",
+      "hash": "1e31665271b7b8f9"
+    },
+    {
+      "name": "a run said to result in ok, a filtered run that ran no test",
+      "kind": "planted",
+      "hash": "dd821e6faebfc4a7"
+    },
+    {
+      "name": "a filtered run said as written to result in ok, no test run",
+      "kind": "planted",
+      "hash": "a5fb56b7afc98da8"
+    },
+    {
+      "name": "a run said to result in OK, a test OK in a failing run",
+      "kind": "planted",
+      "hash": "7be06c4dc841bd3a"
+    },
+    {
+      "name": "a run said to result in OK, a change after it",
+      "kind": "planted",
+      "hash": "f207a6a8bd85f02d"
+    },
+    {
+      "name": "a passing run said to result in failures",
+      "kind": "planted",
+      "hash": "e135f0b04b1f2eaf"
+    },
+    {
+      "name": "a failing run said to result in its failure",
+      "kind": "control",
+      "hash": "6577a184cce608eb"
+    },
+    {
+      "name": "a host file listed by a read, then a writing command an operator listed as a read",
+      "kind": "planted",
+      "hash": "d8a142ea6a8e479d"
     }
   ],
   "strict": [

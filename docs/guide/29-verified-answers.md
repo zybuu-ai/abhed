@@ -648,9 +648,12 @@ counts (`12 tests`, `replicas: 3`). Then:
   bash call whose command that is (or, for a test run, to the test names it
   was given), and to that run's exit and output for the pass; text that only
   appears inside a command's arguments ("`printf ok # replicas: 5`") shows
-  no value. "Running `X` resulted in `OK`" is read from the last run of X
-  as written: its own output must show what it resulted in, never an
-  earlier run's or another command's.
+  no value. "Running `X` resulted in `OK`" is read from the last run of
+  exactly X, as written (not a longer or shorter command), and only when
+  no change came after it. A success ("OK", "passed", "green", "clean")
+  needs exit 0 and no FAIL in the output, and for a test command a whole
+  run that ran tests (no `-run`, `-k` or other filter); a failure needs a
+  non-zero exit; anything else it says must be in that run's own output.
 - **Edits are read from the session's own edits.** A change claim that
   names its file and the code it changed ("Changed `text.split(" ")` to
   `text.split()`", "Replaced the `range` loop with a `while` loop") is
@@ -677,10 +680,14 @@ counts (`12 tests`, `replicas: 3`). Then:
   lines and code in them ("the input has `replicas: 3`"), and never the
   session's work: a pasted test log does not show the tests pass, and a
   pasted diff does not show a change. Only the attached blocks count, not
-  what the person typed around them.
+  what the person typed around them. A pasted block shows what was
+  pasted, not the live state: "the service runs 2.4.1" from a pasted
+  config is verified even if the service has moved on.
 - **A read on a host does not make earlier results out of date.** An ssh
   call the policy ran as a read (under `ssh.read_only`, or as an entry of
-  `ssh.read_commands`) changed nothing; any other ssh call may have.
+  `ssh.read_commands`) and whose command parses as known readers changed
+  nothing; any other ssh call may have, including a writing command an
+  operator listed in `ssh.read_commands`.
 - **A change made by another tool is not read from its call.** "web in
   demo was scaled to 2", "I deleted the web deployment" and the like stay
   unverified even when a call of the agent's own (`k8s_apply`, an MCP
