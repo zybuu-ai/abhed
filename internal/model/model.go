@@ -225,6 +225,10 @@ type Profile struct {
 	GuidedDecoding  bool               `json:"guided_decoding"`
 	CachePrefix     bool               `json:"cache_prefix"`
 	Conformance     map[string]float64 `json:"conformance,omitempty"`
+	// MaxTools is the most tools one request may offer; zero is
+	// DefaultMaxTools. The loop unloads searched-for MCP tools to stay
+	// under it, and an adapter refuses a request past it (ErrTooManyTools).
+	MaxTools int `json:"max_tools,omitempty"`
 	// Sampling reports which decoding knobs this provider honours, so a
 	// config naming one it does not is rejected rather than ignored.
 	Sampling Sampling `json:"-"`

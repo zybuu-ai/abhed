@@ -22,6 +22,8 @@ type Spec struct {
 	Params          Params
 	// Timeouts bound each request; a zero field keeps its default.
 	Timeouts Timeouts
+	// MaxTools is the most tools one request offers; zero is DefaultMaxTools.
+	MaxTools int
 	// MaxConcurrent bounds the requests this provider has in flight; the
 	// rest wait here, before their timeouts start. Zero is one for Ollama,
 	// which queues the rest, and no bound for every other type.
@@ -84,6 +86,9 @@ func New(s Spec) (Adapter, error) {
 	if s.MaxConcurrent < 0 {
 		return nil, fmt.Errorf("max_concurrent_requests may not be negative")
 	}
+	if s.MaxTools < 0 {
+		return nil, fmt.Errorf("max_tools may not be negative")
+	}
 	p, ok := providers[s.Type]
 	if !ok {
 		return nil, fmt.Errorf("unknown provider type %q; known types are %s",
@@ -95,6 +100,13 @@ func New(s Spec) (Adapter, error) {
 	}
 	if t, ok := a.(interface{ SetTimeouts(Timeouts) }); ok && s.Timeouts != (Timeouts{}) {
 		t.SetTimeouts(s.Timeouts)
+	}
+	if s.MaxTools > 0 {
+		t, ok := a.(interface{ SetMaxTools(int) })
+		if !ok {
+			return nil, fmt.Errorf("max_tools is not honoured by provider type %q", s.Type)
+		}
+		t.SetMaxTools(s.MaxTools)
 	}
 	if err := s.Params.Validate(s.Type, a.Profile().Sampling); err != nil {
 		return nil, err

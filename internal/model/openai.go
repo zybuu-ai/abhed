@@ -90,6 +90,9 @@ func NewOpenAICompatible(baseURL, apiKey, model string, p Profile) *OpenAICompat
 func (c *OpenAICompatible) Name() string     { return c.profile.Name }
 func (c *OpenAICompatible) Profile() Profile { return c.profile }
 
+// SetMaxTools sets the most tools one request may offer.
+func (c *OpenAICompatible) SetMaxTools(n int) { c.profile.MaxTools = n }
+
 // wire types
 
 type wireMessage struct {
@@ -343,6 +346,10 @@ func (c *OpenAICompatible) buildRequest(req Request) wireRequest {
 }
 
 func (c *OpenAICompatible) Complete(ctx context.Context, req Request) (<-chan Chunk, error) {
+	req, wire, err := toWire(req, ToolLimit(c.Profile()), c.Name())
+	if err != nil {
+		return nil, err
+	}
 	// Refuse an image the endpoint cannot read, rather than sending it and
 	// letting the provider 400 with its own wording — or silently ignore it.
 	if err := CheckVision(c.Profile(), req); err != nil {
@@ -401,7 +408,7 @@ func (c *OpenAICompatible) Complete(ctx context.Context, req Request) (<-chan Ch
 		}
 		release()
 	}()
-	return out, nil
+	return fromWire(out, wire), nil
 }
 
 // acquire waits for a request slot, when requests are bounded.
