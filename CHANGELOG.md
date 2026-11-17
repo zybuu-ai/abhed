@@ -552,12 +552,15 @@ All notable changes to Abhed are recorded here. The format follows
   recorded as `command.invoked`; it used to send the text to the model as
   it was. A workspace command nobody trusted is refused with exit code 2,
   before anything is recorded, and the message gives the exact `abhed trust
-  grant -commands-sha256 …` line. A command with shell lines or its own
+  grant -commands-sha256 …` line, which trusts those commands and nothing
+  else. A command with shell lines or its own
   `model` is refused in `-p`, which cannot ask.
-- `abhed trust` shows the workspace's commands and their hash, `abhed trust
-  grant` trusts them along with the rest (`-commands-sha256` pins the
-  grant), and `abhed trust revoke` forgets them too, so a workspace's
-  commands no longer need `/commands trust` in the terminal.
+- `abhed trust` shows the workspace's commands and their hash, and `abhed
+  trust grant -commands-sha256 H` trusts exactly those commands and nothing
+  else of the workspace, so they no longer need `/commands trust` in the
+  terminal. A plain `abhed trust grant` is unchanged and trusts no command;
+  it prints the line that would. `abhed trust revoke` forgets the commands
+  too.
 - `abhed login` and `abhed profile list` say who you are signed in as by
   the account's email, or its name, instead of the identity provider's
   subject (such as `u-bob`); the profile keeps the subject as the

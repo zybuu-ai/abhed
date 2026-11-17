@@ -191,7 +191,8 @@ func TestPrintWorkspaceCommandTrust(t *testing.T) {
 	evs, stderr, _ := headlessRun(t, ws, nil, 20*time.Second, "-p", "/explain src/text.py")
 	real, _ := filepath.EvalSymlinks(ws)
 	want := "abhed trust grant -commands-sha256 " + sum + " " + shellQuote(real)
-	if len(evs["user.message"]) != 0 || len(evs["session.started"]) != 0 || !strings.Contains(stderr, "workspace command /explain is not trusted (new)") || !strings.Contains(stderr, want) {
+	if len(evs["user.message"]) != 0 || len(evs["session.started"]) != 0 || !strings.Contains(stderr, "workspace command /explain is not trusted (new)") ||
+		!strings.Contains(stderr, "trust exactly those commands, and nothing else of the workspace, with: "+want) {
 		t.Fatalf("an untrusted command was not refused with the command to trust it: %v\n%s", evs["user.message"], stderr)
 	}
 
@@ -229,6 +230,78 @@ func TestPrintWorkspaceCommandTrust(t *testing.T) {
 	if store, _ := commandTrustStore(); func() bool { ok, _ := store.Decide(ws, sum); return ok }() {
 		t.Fatal("revoke kept the commands trusted")
 	}
+}
+
+// #12 review: -commands-sha256 alone trusts the commands and nothing else
+// of the workspace; a plain grant keeps its 1.2.9 meaning and trusts no
+// command, saying how; both pins together trust both, the commands hashed
+// once the configuration is decided.
+func TestCommandsGrantScope(t *testing.T) {
+	setup := func(t *testing.T) (string, string, string) {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv(config.TrustEnv, "")
+		ws := t.TempDir()
+		write(t, filepath.Join(ws, ".abhed", "config.json"), `{"permissions":{"allow":["bash(make*)"]}}`)
+		write(t, filepath.Join(ws, ".abhed", "commands", "explain.md"), "EXPLAIN $ARGUMENTS")
+		st, err := config.InspectWorkspace(ws)
+		if err != nil || st.SHA256 == "" {
+			t.Fatalf("%v %+v", err, st)
+		}
+		return ws, st.SHA256, inspectCommands(ws).sum
+	}
+	configTrusted := func(ws string) bool {
+		st, _ := config.InspectWorkspace(ws)
+		return st.Trusted
+	}
+
+	t.Run("commands pin alone", func(t *testing.T) {
+		ws, _, sum := setup(t)
+		var out bytes.Buffer
+		if code := trustCmd(ws, []string{"grant", "-commands-sha256", sum}, &out); code != 0 || !strings.Contains(out.String(), "nothing else of the workspace") {
+			t.Fatalf("%d %s", code, out.String())
+		}
+		if configTrusted(ws) {
+			t.Fatal("-commands-sha256 trusted the workspace configuration too")
+		}
+		if !inspectCommands(ws).trusted {
+			t.Fatal("the commands were not trusted")
+		}
+	})
+	t.Run("plain grant", func(t *testing.T) {
+		ws, _, sum := setup(t)
+		var out bytes.Buffer
+		if code := trustCmd(ws, []string{"grant"}, &out); code != 0 {
+			t.Fatalf("%d %s", code, out.String())
+		}
+		if !configTrusted(ws) {
+			t.Fatal("a plain grant did not trust the configuration")
+		}
+		if inspectCommands(ws).trusted {
+			t.Fatal("a plain grant trusted commands it never showed")
+		}
+		if !strings.Contains(out.String(), "command(s) were not trusted") || !strings.Contains(out.String(), "-commands-sha256 "+sum) {
+			t.Fatalf("no advice for the commands: %s", out.String())
+		}
+	})
+	t.Run("both pins", func(t *testing.T) {
+		ws, cfgSum, sum := setup(t)
+		var out bytes.Buffer
+		if code := trustCmd(ws, []string{"grant", "-sha256", cfgSum, "-commands-sha256", sum}, &out); code != 0 {
+			t.Fatalf("%d %s", code, out.String())
+		}
+		if !configTrusted(ws) || !inspectCommands(ws).trusted {
+			t.Fatal("both pins did not trust both")
+		}
+	})
+	t.Run("only commands, plain grant", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		ws := t.TempDir()
+		write(t, filepath.Join(ws, ".abhed", "commands", "explain.md"), "EXPLAIN")
+		var out bytes.Buffer
+		if code := trustCmd(ws, []string{"grant"}, &out); code != 1 || inspectCommands(ws).trusted {
+			t.Fatalf("a plain grant with only commands: %d", code)
+		}
+	})
 }
 
 // A trusted command that runs shell lines, or picks a model, is refused in

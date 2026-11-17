@@ -313,9 +313,15 @@ tools are in place; run them after it.
 A command that came with a repository is instructions to the agent. So the
 workspace's commands are listed but do not run until you trust them:
 `/commands trust` shows each file and its hash and asks. At a shell,
-`abhed trust` shows them with their hash, and `abhed trust grant` trusts
-them with the workspace's other content (`-commands-sha256 H` pins the
-grant to what you reviewed); `abhed trust revoke` forgets the decision.
+`abhed trust` shows them with their hash, and `abhed trust grant
+-commands-sha256 H` trusts exactly the commands with that hash and nothing
+else of the workspace. A plain `abhed trust grant` keeps its meaning (the
+workspace's configuration, agents, skills and accounts) and trusts no
+command; it prints the `-commands-sha256` line for them instead. Given with
+`-sha256` for the configuration, the commands are hashed once that
+configuration is trusted, as a session then reads them; folders named only
+by a run's `-settings` file are not part of that hash. `abhed trust revoke`
+forgets both decisions.
 The decision is kept in `~/.abhed/command-trust.json` for exactly that
 content; a change to any file needs trust again, and leaving the question
 unanswered decides nothing.
@@ -323,7 +329,8 @@ unanswered decides nothing.
 `abhed -p "/name args"` runs a trusted command as the terminal does,
 recorded as `command.invoked`. A workspace command that is not trusted is
 refused with exit code 2 before anything is recorded, and the message gives
-the exact `abhed trust grant -commands-sha256 …` line that trusts it. Since
+the exact `abhed trust grant -commands-sha256 …` line, which trusts those
+commands and nothing else. Since
 `-p` cannot ask, a command with `` !`…` `` shell lines, or with its own
 `model`, is refused there too; run it in the terminal. Only one command's turn waits at a time: a second command typed
 while one waits is refused, and runs when typed again. Starting with `--trust`, or with the workspace

@@ -308,8 +308,6 @@ func (b *Budget) CutAtBound(a model.Adapter) bool {
 	return b.USDLimited() || p.ReasoningTokens || p.Sampling.Think
 }
 
-// pricingHint says where a missing price is set: the person's own
-// configuration, or, under a dollar cap an administrator set, theirs.
 // usd is a dollar cap as a person reads it: cents, or every digit below a
 // cent, so a cap of a millionth never reads as $0.00.
 func usd(v float64) string {
@@ -319,6 +317,8 @@ func usd(v float64) string {
 	return fmt.Sprintf("$%.2f", v)
 }
 
+// pricingHint says where a missing price is set: the person's own
+// configuration, or, under a dollar cap an administrator set, theirs.
 func (b *Budget) pricingHint() string {
 	if b != nil && b.ManagedPrices {
 		return "an administrator sets it: in the machine's managed configuration, or, for a model served on this machine, at 0 in the org policy"

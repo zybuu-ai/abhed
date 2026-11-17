@@ -377,7 +377,7 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 		sum := fs.String("sha256", "", "grant only if the file still has this hash")
 		agentsSum := fs.String("agents-sha256", "", "grant only if the agent definitions still have this hash")
 		skillsSum := fs.String("skills-sha256", "", "grant only if the skills still have this hash")
-		commandsSum := fs.String("commands-sha256", "", "grant only if the workspace's commands still have this hash")
+		commandsSum := fs.String("commands-sha256", "", "trust the workspace's commands if they still have this hash; given alone, nothing else is trusted")
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
@@ -409,10 +409,19 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 			fmt.Fprintf(os.Stderr, "abhed: trust: %v\n", err)
 			return 1
 		}
-		cmds := inspectCommands(dir)
+		// A commands pin alone grants exactly those commands, and nothing
+		// else of the workspace: it is what the -p refusal hands the person.
+		if wantCommands != "" && want == "" && wantAgents == "" && wantSkills == "" {
+			return grantCommands(dir, wantCommands, out)
+		}
 		skills := len(st.Skills) > 0 && st.SkillsReason != "off"
-		if st.File == "" && len(st.Agents) == 0 && !skills && st.UsersFile == "" && len(cmds.files) == 0 {
-			fmt.Fprintf(os.Stderr, "abhed: trust: %s has no .abhed/config.json, .abhed/agents, .abhed/skills, .abhed/commands or .abhed/users.json to trust\n", st.Workspace)
+		if st.File == "" && len(st.Agents) == 0 && !skills && st.UsersFile == "" {
+			if cmds := inspectCommands(dir); len(cmds.files) > 0 && !cmds.trusted {
+				fmt.Fprintf(os.Stderr, "abhed: trust: %s has only commands to trust, which are trusted by their hash alone: review them with `abhed trust`, then run %s\n",
+					st.Workspace, commandsGrantLine(dir, cmds.sum))
+				return 1
+			}
+			fmt.Fprintf(os.Stderr, "abhed: trust: %s has no .abhed/config.json, .abhed/agents, .abhed/skills or .abhed/users.json to trust\n", st.Workspace)
 			return 1
 		}
 		if st.Reason == "home" || st.AgentsReason == "home" || st.SkillsReason == "home" {
@@ -432,11 +441,6 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 		if wantSkills != "" && wantSkills != st.SkillsSHA256 {
 			fmt.Fprintf(os.Stderr, "abhed: trust: the skills have changed: their sha256 is %s, not the %s you reviewed. "+
 				"Nothing was trusted; review them again with `abhed trust`\n", st.SkillsSHA256, config.Printable(wantSkills))
-			return 1
-		}
-		if wantCommands != "" && wantCommands != cmds.sum {
-			fmt.Fprintf(os.Stderr, "abhed: trust: the workspace's commands have changed: their sha256 is %s, not the %s you reviewed. "+
-				"Nothing was trusted; review them again with `abhed trust`\n", cmds.sum, config.Printable(wantCommands))
 			return 1
 		}
 		// The hashes are of the content just classified, not of a second read.
@@ -465,20 +469,18 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 		if skills {
 			fmt.Fprintf(out, "Trusted %d skill(s) (sha256 %s).\n", len(st.Skills), st.SkillsSHA256[:12])
 		}
-		if len(cmds.files) > 0 {
-			store, err := commandTrustStore()
-			if err == nil {
-				err = store.Record(dir, cmds.sum, true)
-			}
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "abhed: trust: %v\n", err)
-				return 1
-			}
-			fmt.Fprintf(out, "Trusted %d workspace command(s) (sha256 %s).\n", len(cmds.files), cmds.sum[:12])
+		// Accounts trust is not tied to a hash, so only the config, definitions and skills re-ask.
+		if st.File != "" || len(st.Agents) > 0 || skills {
+			fmt.Fprintln(out, "A later change to the file, a definition or a skill makes it untrusted again.")
 		}
-		// Accounts trust is not tied to a hash, so only the config, definitions, skills and commands re-ask.
-		if st.File != "" || len(st.Agents) > 0 || skills || len(cmds.files) > 0 {
-			fmt.Fprintln(out, "A later change to the file, a definition, a skill or a command makes it untrusted again.")
+		// Commands are trusted only by their hash, read now that the
+		// configuration that may name command folders is decided.
+		if wantCommands != "" {
+			return grantCommands(dir, wantCommands, out)
+		}
+		if cmds := inspectCommands(dir); len(cmds.files) > 0 && !cmds.trusted {
+			fmt.Fprintf(out, "The workspace's %d command(s) were not trusted: review them with `abhed trust`, then run %s\n",
+				len(cmds.files), commandsGrantLine(dir, cmds.sum))
 		}
 		return 0
 	case "revoke":
@@ -750,8 +752,41 @@ func warnUsersTracked(out io.Writer, workspace string) {
 	}
 }
 
+// grantCommands trusts the workspace's commands, and nothing else, when
+// they still have the hash the person reviewed.
+func grantCommands(dir, want string, out io.Writer) int {
+	cmds := inspectCommands(dir)
+	if len(cmds.files) == 0 {
+		fmt.Fprintf(os.Stderr, "abhed: trust: %s has no workspace commands to trust\n", config.Printable(dir))
+		return 1
+	}
+	if want != cmds.sum {
+		fmt.Fprintf(os.Stderr, "abhed: trust: the workspace's commands have changed: their sha256 is %s, not the %s you reviewed. "+
+			"The commands were not trusted; review them again with `abhed trust`\n", cmds.sum, config.Printable(want))
+		return 1
+	}
+	store, err := commandTrustStore()
+	if err == nil {
+		err = store.Record(dir, cmds.sum, true)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: trust: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(out, "Trusted %d workspace command(s) (sha256 %s), and nothing else of the workspace. A change to any of them makes them untrusted again.\n",
+		len(cmds.files), cmds.sum[:12])
+	return 0
+}
+
+// commandsGrantLine is the command that trusts exactly the workspace's
+// commands with this hash, and nothing else.
+func commandsGrantLine(dir, sum string) string {
+	return "`abhed trust grant -commands-sha256 " + sum + " " + shellQuote(dir) + "`"
+}
+
 // commandsTrust is what `abhed trust` shows about a workspace's commands.
 type commandsTrust struct {
+	dir     string
 	files   []customcmd.File
 	sum     string
 	trusted bool
@@ -759,7 +794,9 @@ type commandsTrust struct {
 }
 
 // inspectCommands reads a workspace's commands as a session started there
-// reads them, and the person's stored decision about exactly that content.
+// reads them, with the workspace configuration's trust as it stands now,
+// and the person's stored decision about exactly that content. Folders a
+// run's -settings file names are not known here, so are not in the hash.
 func inspectCommands(dir string) commandsTrust {
 	cfg, err := config.LoadWith(dir, config.LoadOptions{Quiet: true, Warn: func(string) {}})
 	if err != nil {
@@ -768,7 +805,7 @@ func inspectCommands(dir string) commandsTrust {
 		cfg = config.Config{}
 	}
 	_, files, sum, _ := workspaceCommands(cfg, dir)
-	ct := commandsTrust{files: files, sum: sum}
+	ct := commandsTrust{files: files, sum: sum, dir: dir}
 	if len(files) == 0 {
 		return ct
 	}
@@ -797,6 +834,6 @@ func printCommandsTrust(out io.Writer, ct commandsTrust) {
 		fmt.Fprintf(out, "  %s  %s  %s\n", config.Printable(f.Key), shortSum(config.HashOf(f.Data)), config.PrintableText(first))
 	}
 	if !ct.trusted {
-		fmt.Fprintf(out, "A command is instructions to the agent. Trust exactly these with `abhed trust grant -commands-sha256 %s`.\n", ct.sum)
+		fmt.Fprintf(out, "A command is instructions to the agent. A plain `abhed trust grant` does not trust them; trust exactly these, and nothing else of the workspace, with %s.\n", commandsGrantLine(ct.dir, ct.sum))
 	}
 }

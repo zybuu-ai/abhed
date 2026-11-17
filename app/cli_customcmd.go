@@ -464,8 +464,9 @@ func headlessCustom(cs *customState, ws, task string) (*customcmd.Command, strin
 		if cs.wsReason == "refused" {
 			return nil, "", fmt.Errorf("workspace command %s was not run: the workspace was started untrusted, so its commands stay off", c.Name)
 		}
-		return nil, "", fmt.Errorf("workspace command %s is not trusted (%s), so it was not run; review it with `abhed trust`, then trust exactly this content with: abhed trust grant -commands-sha256 %s %s",
-			c.Name, cs.wsReason, cs.wsSum, shellQuote(ws))
+		return nil, "", fmt.Errorf("workspace command %s is not trusted (%s), so it was not run; review the workspace's commands with `abhed trust %s`, "+
+			"then trust exactly those commands, and nothing else of the workspace, with: abhed trust grant -commands-sha256 %s %s",
+			c.Name, cs.wsReason, shellQuote(ws), cs.wsSum, shellQuote(ws))
 	}
 	return nil, "", nil
 }
