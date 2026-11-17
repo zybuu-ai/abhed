@@ -910,27 +910,34 @@ save is a recorded write, and the server reads only from the sandbox.
 ## The engine in a dev container (Abhed Studio)
 
 **Abhed: Reopen Folder in Dev Container…** runs the window's engine inside
-the image the folder's `.devcontainer/devcontainer.json` names, so its
-policy, sandbox and record are the container's; the editor stays on your
-computer. Set `abhed.devContainer.enginePath` to a Linux build of the engine
-for the container's architecture and `abhed.devContainer.engineSha256` to its
-SHA-256, in your user settings (a workspace cannot set either). Studio asks
-first, in a modal whose default is Stay Local, then runs the image with
-`podman` (else `docker`) with the folder read-write at the same path and the
-engine read-only, and nothing else: no environment variable, SSH agent, home
-folder, secret store or container socket is passed. The engine reads its
-own configuration and secrets inside (set them in an Abhed terminal, which
-runs there), and the record stays in the container. An image without
-bubblewrap has no process tier, so the engine refuses a session until the
-image has one or you lower `sandbox.min_tier` inside.
+the image the folder's `.devcontainer/devcontainer.json` names; the editor
+stays on your computer. The folder must be trusted first: the image is code
+its author chose. Set `abhed.devContainer.enginePath` to a Linux build of the
+engine for the container's architecture and `abhed.devContainer.engineSha256`
+to its SHA-256, in your user settings (a workspace cannot set either). Studio
+asks first, in a modal whose default is Stay Local, then runs the image with
+`podman` (else `docker`) with the folder read-write at the same path,
+Studio's own read-only copy of the engine, and a fresh volume as the
+engine's home. The image's `~/.abhed` and ABHED_* variables are not used,
+and an image with `/etc/abhed` is refused. No environment variable, SSH
+agent, home folder, secret store or container socket is passed. Set the
+engine's configuration and secrets inside (in an Abhed terminal, which runs
+there); the record stays on the volume. An image without bubblewrap has no
+process tier, so the engine refuses a session until the image has one or you
+lower `sandbox.min_tier` there.
+
+The image can change any file in the folder, including `.git`, and with the
+default network it reaches the internet and your computer's own services;
+`abhed.devContainer.network: none` gives it no network. Studio records the
+image the container was made from and, before every start, refuses a
+container whose image, engine, folder or home has changed.
 
 Only `image` is taken from `devcontainer.json`: a `build` or Compose file is
 refused, and lifecycle commands, mounts, `runArgs`, environments, ports and
 features are named as not applied. Adding an MCP server and signing in from
-Studio act on your computer's configuration, so they are refused in a
-dev-container window; run `abhed mcp` in an Abhed terminal instead. **Reopen
-Folder Locally** goes back to the engine on your computer and keeps the
-container; **Remove Dev Container…** deletes it and the record inside. The
-design and its threat model are in [Studio
-remote](../architecture/studio-remote.md); an SSH host is designed there and
-not built yet.
+Studio act on your computer's configuration, so they are not offered in a
+dev-container window; run `abhed mcp` in an Abhed terminal instead.
+**Reopen Folder Locally** goes back to the engine on your computer and keeps
+the container; **Remove Dev Container…** deletes it, its home volume and the
+record in it. The design and its threat model are in [Studio
+remote](../architecture/studio-remote.md).

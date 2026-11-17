@@ -252,9 +252,19 @@ shape or left out with why:
   variables are passed by name, so the server gets your own value; a value
   written in the file is never copied. A URL server keeps its URL; a header
   is kept only when its whole value is `${VARIABLE}` (as `headers_env`), and
-  sign in with `abhed mcp login` otherwise. A server whose URL, arguments or
-  headers hold what looks like a credential, or that uses `${…}` expansion
-  Abhed does not do, is left out.
+  sign in with `abhed mcp login` otherwise. A server is left out when its
+  command or URL holds a credential in a shape Studio recognises: a known
+  token shape, the value after a secret-named flag (`--api-key VALUE`,
+  `--token=VALUE`), a secret-named `NAME=VALUE` (as after docker's `-e`),
+  an Authorization, Basic or Bearer header, or a secret-named query
+  parameter (`client_secret`, `auth`, `token`, `key`, `sig`, `signature`,
+  `password` and the like); or when it uses `${…}` expansion Abhed does not
+  do. A credential in another shape is not recognised, so read the list
+  before you import.
+- A command or agent is written with a header Studio builds itself, never
+  the source's; one whose header does not read strictly (unclosed, nested,
+  a block value, a line that is not `key: value`, or text after it that
+  starts another header) is left out.
 - A command keeps `description`, `argument-hint` and `allowed-tools`, with
   tool names mapped to Abhed's (a rule such as `Bash(git diff:*)` becomes
   the `bash` tool, and the policy decides each call); another model and
@@ -269,9 +279,12 @@ They land in the folder's `.abhed`, untrusted: servers in
 and agents only once you trust their exact content, so nothing imported
 runs until you review it in Studio's Health and Trust view (or `abhed
 trust`) and, for commands, `/commands trust` in an Abhed terminal. Changing
-`.abhed/config.json` sets the whole file aside until you trust it again. The
-modal, whose default is Don't Import, names everything left out and every
-change made on the way, never a value.
+`.abhed/config.json` sets the whole file aside until you trust it again.
+Nothing is written through a symbolic link: if `.abhed`, its `config.json`,
+`commands`, `agents` or any file on the way is a link, the import stops.
+Items found in your home folder start unpicked, since the folder they go
+into may be committed and pushed. The modal, whose default is Don't Import,
+names everything left out and every change made on the way, never a value.
 
 For one run, `-mcp-config FILE` adds servers and `-strict-mcp-config` makes
 them the only ones; see [The command line](18-cli.md#settings-servers-and-roles-for-one-run).

@@ -132,13 +132,19 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
-- Abhed Studio can run a folder's engine in a dev container: **Abhed: Reopen
-  Folder in Dev Container…** runs the image `devcontainer.json` names with
-  the folder at the same path and a pinned Linux engine read-only, and
-  starts `abhed acp` inside through the runtime's `exec`, so the policy,
-  sandbox and record are the container's. No credential or environment is
-  passed in. The design, threat model and the SSH host still to build are
-  in `docs/architecture/studio-remote.md`.
+- Abhed Studio can run a trusted folder's engine in a dev container:
+  **Abhed: Reopen Folder in Dev Container…** runs the image
+  `devcontainer.json` names with the folder at the same path, Studio's own
+  read-only copy of a pinned Linux engine, and a fresh volume as the
+  engine's home, and starts `abhed acp` inside through the runtime's `exec`
+  with that home and the image's ABHED_* variables blanked. The image's
+  `~/.abhed` is not read and an image with `/etc/abhed` is refused. Before
+  every start Studio re-hashes its copy and inspects the container, refusing
+  another image, engine mount, folder mount or home. The image is code with
+  the folder (and `.git`) writable, and the default network reaches the
+  laptop's services; `abhed.devContainer.network: none` gives it none. No
+  credential or environment is passed in. Design and threat model:
+  `docs/architecture/studio-remote.md`.
 
 - Abhed Studio's settings import also takes another editor of the same
   family found by its folder's layout (an AI editor built on it: settings,
@@ -147,9 +153,15 @@ All notable changes to Abhed are recorded here. The format follows
   `.mcp.json`, a home-folder JSON file listing `mcpServers` (with its
   per-project servers), and a dot-folder's `mcp.json`, `commands/` and
   `agents/`. Each is mapped to Abhed's shape or left out with why; they land
-  in the folder's `.abhed`, untrusted until reviewed and trusted, and no
-  value that could be a secret is copied (environment variables are passed
-  by name).
+  in the folder's `.abhed`, untrusted until reviewed and trusted, never
+  through a symbolic link. Environment variables are passed by name, and a
+  server is left out when its command or URL holds a credential in a shape
+  Studio recognises (a known token, the value after a secret-named flag, a
+  secret-named `NAME=VALUE`, an Authorization, Basic or Bearer header, a
+  secret-named query parameter); other shapes are not recognised, which the
+  modal says. A command's or agent's header is always one Studio builds.
+  Items from the home folder start unpicked, with a warning that the folder
+  may be committed.
 
 - Abhed Studio signs in to a remote MCP server with OAuth.
   `abhed mcp login` takes `-confirm-fd N`: the yes is read from an inherited

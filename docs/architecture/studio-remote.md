@@ -31,53 +31,69 @@ before. The editor, its extensions and its files stay local.
 
 ## Dev container (built)
 
-**Opening.** *Abhed: Reopen Folder in Dev Container…* reads the folder's
-`.devcontainer/devcontainer.json` (or `.devcontainer.json`). The smallest
-version takes `image` only. A `build` section is refused with the reason,
-and `initializeCommand`, `postCreateCommand`, `mounts`, `runArgs`,
-`containerEnv`, `remoteEnv`, `forwardPorts` and `features` are listed as not
-applied. Studio asks in a modal whose default is No, saying exactly what
-will run. On a yes the engine host process runs the container runtime
-(`podman`, else `docker`, found on an absolute PATH entry) with an argv
-array, never a shell:
+**Opening.** *Abhed: Reopen Folder in Dev Container…* needs a trusted
+folder: its `devcontainer.json` chooses an image that runs as code. It reads
+`.devcontainer/devcontainer.json` (or `.devcontainer.json`) and takes `image`
+only. A `build` section or a Compose file is refused with the reason, and
+lifecycle commands, `mounts`, `runArgs`, `containerEnv`, `remoteEnv`,
+`forwardPorts` and `features` are listed as not applied. Studio asks in a
+modal whose default is No, saying what will run and what it can reach. On a
+yes the engine host process:
+
+1. refuses an engine build whose real path is inside the folder;
+2. checks the build against `abhed.devContainer.engineSha256` and copies it
+   to a folder of Studio's own (`<user data>/abhed-devcontainer/engines/<sha256>/`,
+   mode 700, the file 500), checking the copy too;
+3. makes a fresh, empty volume `abhed-devc-<12 hex>-home` for the engine's
+   home, removing an old one of that name;
+4. runs the container runtime (`podman`, else `docker`, found on an absolute
+   PATH entry) with an argv array, never a shell:
 
 ```
 run -d --name abhed-devc-<12 hex of the folder's SHA-256> --init
     --label zybuu.abhed.devcontainer=1
     --security-opt no-new-privileges
+    [--network none]                      abhed.devContainer.network: none
     -v <folder>:<folder>                  the folder, read-write, at the same path
-    -v <linux engine>:/opt/abhed/bin/abhed:ro
-    -w <folder> --entrypoint tail <image> -f /dev/null
+    -v <Studio's copy>:/opt/abhed/bin/abhed:ro
+    --mount type=volume,src=abhed-devc-<12 hex>-home,dst=/opt/abhed/home
+    -w <folder> --entrypoint tail -- <image> -f /dev/null
 ```
 
-The folder is mounted at the same absolute path, so the paths the editor and
-the engine use agree and no path is translated anywhere. The engine is a
-Linux build the person chose in `abhed.devContainer.enginePath` (a user
-setting, never a workspace one), pinned by `abhed.devContainer.engineSha256`
-and checked before every mount and every start. An existing container of
-that name is started, not recreated.
+5. refuses, and removes the container, when the image has `/etc/abhed`;
+6. inspects the container and records the image it was made from (its id,
+   and its registry digest when it has one), shown to the person.
 
 **Running.** The window's choice is kept in Studio's workspace storage on
 this computer, never in a file of the folder: a repository cannot point
-Studio at a container. With it set, the engine host process starts the
-engine as `exec -i -w <folder> <name> /opt/abhed/bin/abhed acp`. Only `acp`
-is passed, as locally. Nothing else changes for ACP.
+Studio at a container. Before every start of the engine Studio re-hashes its
+copy and inspects the container, refusing it when the image is not the one
+recorded, when anything but Studio's copy is mounted at the engine's path or
+that mount is writable, when the folder or the home volume is not where it
+was put, when there is any other mount, or when Studio did not make it. Then
+it runs `exec -i -w <folder> --env HOME=/opt/abhed/home --env
+XDG_CONFIG_HOME=/opt/abhed/home/.config [--env ABHED_X= for each ABHED_*
+the image sets] <name> /opt/abhed/bin/abhed acp`: the engine's home is
+Studio's volume, never the image's `~/.abhed`, and the image's ABHED_*
+variables are blanked. Only `acp` is passed. Nothing else changes for ACP.
 
 **Leaving.** *Reopen Folder Locally* restarts the engine on the laptop and
-keeps the container. *Remove Dev Container…* asks (default No) and runs
-`rm -f -v` on it, which deletes the record kept inside it.
+keeps the container (and remembers its image, so a reopen still checks it).
+*Remove Dev Container…* asks (default No) and removes the container and its
+home volume, which deletes the record kept in it.
 
 ### Threat model
 
 | Question | Answer |
 |---|---|
-| Who enforces policy? | The engine inside the container, with the configuration it reads there: its own `~/.abhed`, the folder's `.abhed` under the same workspace trust, and the container's `/etc/abhed` if the image has one. Studio enforces nothing new; it only chose where the engine runs. |
-| Which sandbox? | The engine's tiers, as available inside the container. The container is an outer boundary of its own, not a tier: an image without bubblewrap (or a container without user namespaces) gives the engine no process tier, and `sandbox.min_tier` (process by default) then refuses the session rather than fall to `none`; verified with a slim Debian image. The person may set `sandbox.min_tier: "none"` in the engine's own configuration inside, a choice made there and recorded there. The policy is the same whatever the tier. |
-| Where does the record live? | In the container, under the engine's `~/.abhed`. It goes with the container: *Remove Dev Container* deletes it. Shipping (`record.ship`) works from inside as anywhere. The laptop's record does not see the container's sessions. |
-| How do credentials travel? | They do not, by default. No environment variable, SSH agent socket, home folder, `~/.abhed`, secret store, container-runtime socket or credential helper is passed or mounted. The engine reads model keys and secrets from its own store inside the container, which the person fills there (`abhed secret set` in an Abhed terminal). Forwarding is not offered in 1.3.0. |
-| What does the container reach? | The folder (read-write) and the engine binary (read-only). Its network is the runtime's default; the engine's own egress rules apply to what the agent does. |
-| What still runs on the laptop? | The editor, its extensions, *New Host Terminal* and host-run tasks, which are on the host by design and say so, and the container runtime's CLI. Adding an MCP server or signing in (`abhed mcp add`, `abhed mcp login`) acts on the laptop's configuration, so in a dev-container window Studio refuses them and says to run them in an Abhed terminal, which is inside. |
-| Could a repository abuse this? | It can ship a `devcontainer.json` naming any image. Nothing happens until the person reads the image in the modal and says yes; the image then runs with the folder only, not the laptop's credentials. A repository cannot set the engine binary, its pin, or the window's choice. |
+| Who enforces policy? | The engine inside the container, with the configuration it reads: its own home on Studio's volume (empty until the person sets it, in an Abhed terminal), and the folder's `.abhed` under the same workspace trust. The image's `~/.abhed` is not read, its ABHED_* variables are blanked, and an image with `/etc/abhed` is refused. Studio enforces nothing new; it chose where the engine runs and what configuration it can read. |
+| Which sandbox? | The engine's tiers, as available inside the container. The container is an outer boundary of its own, not a tier: an image without bubblewrap (or a container without user namespaces) gives the engine no process tier, and `sandbox.min_tier` (process by default) then refuses the session rather than fall to `none`; verified with a slim Debian image. Only the person can lower it, in the engine's configuration on Studio's volume. |
+| What can the image do? | It is code chosen by whoever wrote `devcontainer.json`, and it runs with the folder mounted read-write: it can change any file in it, including `.git`, whose hooks and settings take effect when git runs on the laptop. It cannot change the engine (a read-only copy, re-hashed at every start) or its configuration home (Studio's volume; the image could still write there while it runs, since it shares the container, so a person who distrusts the image should not run it). |
+| Where does the record live? | On the engine's home volume. It goes with *Remove Dev Container*. Shipping (`record.ship`) works from inside as anywhere. The laptop's record does not see the container's sessions. |
+| How do credentials travel? | They do not, by default. No environment variable, SSH agent socket, home folder, `~/.abhed`, secret store, container-runtime socket or credential helper is passed or mounted. The engine reads model keys and secrets from its own store on the volume, which the person fills there (`abhed secret set` in an Abhed terminal). Forwarding is not offered in 1.3.0. |
+| What does the container reach? | The folder (read-write), Studio's copy of the engine (read-only) and the home volume. With the default network it reaches the internet and the laptop's own services through the runtime's host gateway (`host.containers.internal`, `host.docker.internal`); `abhed.devContainer.network: none` gives it no network at all. The engine's egress rules apply to what the agent does, not to the image's own processes. |
+| What still runs on the laptop? | The editor, its extensions, *New Host Terminal* and host-run tasks, which are on the host by design and say so, and the container runtime's CLI. Adding an MCP server or signing in (`abhed mcp add`, `abhed mcp login`) acts on the laptop's configuration, so in a dev-container window Studio does not offer them and says to run them in an Abhed terminal, which is inside. |
+| Could a repository abuse this? | It can ship a `devcontainer.json` naming any image. Nothing happens until the person has trusted the folder, read the image in the modal and said yes. The image then runs as code with the folder writable and the network above, but without the laptop's credentials, and it cannot choose the engine, its configuration home or its managed policy. A tag that later names another image is refused at the next start. |
 
 ## SSH host (designed, not built)
 
