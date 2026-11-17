@@ -21,8 +21,13 @@ import (
 // DirName is the state folder's name, under the home folder and in a workspace.
 const DirName = ".abhed"
 
-// EnvPerson hands the person's folder to Abhed's own child processes.
+// EnvPerson is a variable 1.3.0 development builds handed the person's
+// folder down in. It is never read: a folder named in the environment is
+// not proof that anyone signed in, so every process answers who is working
+// itself. It is removed from the environment so no child sees it.
 const EnvPerson = "ABHED_PERSON_ROOT"
+
+func init() { _ = os.Unsetenv(EnvPerson) }
 
 // Kinds of person folder, as the folder under ~/.abhed that holds them.
 const (
@@ -58,21 +63,15 @@ func MachinePath(elem ...string) (string, error) {
 	return filepath.Join(append([]string{m}, elem...)...), nil
 }
 
-// Person is the folder of the person working: the one SetPerson chose, or
-// the one a parent Abhed handed down in EnvPerson, or ~/.abhed. A handed-down
-// folder that is not one Abhed makes is an error, never a fallback.
+// Person is the folder of the person working: the one SetPerson chose for
+// this process after its sign-in gate, or ~/.abhed. Nothing from the
+// environment chooses it.
 func Person() (string, error) {
 	mu.RLock()
 	p := person
 	mu.RUnlock()
 	if p != "" {
 		return p, nil
-	}
-	if env := os.Getenv(EnvPerson); env != "" {
-		if err := Check(env); err != nil {
-			return "", fmt.Errorf("%s: %w", EnvPerson, err)
-		}
-		return filepath.Clean(env), nil
 	}
 	return Machine()
 }
@@ -127,8 +126,8 @@ func Check(root string) error {
 	return nil
 }
 
-// SetPerson makes root the person's folder for this process and the Abhed
-// processes it starts. "" goes back to ~/.abhed.
+// SetPerson makes root the person's folder for this process. "" goes back
+// to ~/.abhed. A child process answers who is working itself.
 func SetPerson(root string) error {
 	if root != "" {
 		if err := Check(root); err != nil {
@@ -138,10 +137,7 @@ func SetPerson(root string) error {
 	mu.Lock()
 	defer mu.Unlock()
 	person = root
-	if root == "" {
-		return os.Unsetenv(EnvPerson)
-	}
-	return os.Setenv(EnvPerson, root)
+	return nil
 }
 
 // ExpandState resolves a configured "~/.abhed/..." path to the person's

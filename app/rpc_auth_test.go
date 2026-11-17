@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/profiles"
@@ -171,5 +172,31 @@ func TestGuestRefusedWhereRecordsAreShipped(t *testing.T) {
 	_, err := resolvePrincipal(signInFlags{guest: true}, false, os.Stdin, io.Discard)
 	if !errors.Is(err, identity.ErrSignInRequired) || !strings.Contains(err.Error(), "ships every session's record") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// Naming a guest's or an account's folder in ABHED_PERSON_ROOT is not
+// signing in: under a required sign-in with guest off the start still
+// exits 10, and nothing runs in the named folder.
+func TestPersonRootFromTheEnvironmentIsNotASignIn(t *testing.T) {
+	signInTest(t)
+	withManaged(t, `{"auth":{"client":{"sign_in":"server","server":"https://abhed.corp","guest":false}}}`)
+	h, _ := os.UserHomeDir()
+	s, _ := identity.Open()
+	e, _, err := s.Create("victim", "correct horse", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{filepath.Join(h, ".abhed", "guest", "planted"), filepath.Join(s.Dir(), e.ID)} {
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(home.EnvPerson, root)
+		if code := enterPrincipal(signInFlags{}, false, os.Stdin, io.Discard); code != identity.ExitSignInRequired {
+			t.Errorf("%s: exit %d, want 10", root, code)
+		}
+		if p, _ := home.Person(); p == root {
+			t.Errorf("the run works in %s", root)
+		}
 	}
 }

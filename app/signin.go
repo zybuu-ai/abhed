@@ -105,13 +105,6 @@ func enterPrincipal(sf signInFlags, interactive bool, in *os.File, errOut io.Wri
 // resolvePrincipal is enterPrincipal returning a refusal to sign in as an
 // error, for the caller to report.
 func resolvePrincipal(sf signInFlags, interactive bool, in *os.File, errOut io.Writer) (int, error) {
-	if root := os.Getenv(home.EnvPerson); root != "" && !sf.guest && sf.account == "" {
-		// A child of a resolved Abhed works for the same person.
-		if err := home.Check(root); err != nil {
-			return 0, &identity.RequiredError{Why: err.Error()}
-		}
-		return 0, nil
-	}
 	if removed, err := identity.SweepGuests(); err != nil {
 		fmt.Fprintf(errOut, "abhed: removing what earlier guests left: %v\n", err)
 	} else if len(removed) > 0 && interactive {

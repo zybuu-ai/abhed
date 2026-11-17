@@ -65,15 +65,9 @@ func TestSetPersonMovesPersonPathsOnly(t *testing.T) {
 	if Legacy() {
 		t.Error("a person is chosen, but legacy")
 	}
-	// A child Abhed reads it from the environment.
-	if os.Getenv(EnvPerson) != root {
-		t.Errorf("%s = %q", EnvPerson, os.Getenv(EnvPerson))
-	}
-	mu.Lock()
-	person = ""
-	mu.Unlock()
-	if got, err := Person(); err != nil || got != root {
-		t.Errorf("child Person = %q, %v", got, err)
+	// Nothing is handed down in the environment.
+	if v := os.Getenv(EnvPerson); v != "" {
+		t.Errorf("%s = %q", EnvPerson, v)
 	}
 }
 
@@ -116,17 +110,14 @@ func TestCheckRefuses(t *testing.T) {
 	}
 }
 
-// A person folder handed down that Abhed did not make is an error, never
-// the machine's folder, so a child cannot be steered into another's state
-// and quietly fall back.
-func TestEnvPersonMustCheck(t *testing.T) {
+// A person folder named in the environment is never taken, real or not:
+// naming a folder is not signing in.
+func TestEnvPersonIsIgnored(t *testing.T) {
 	h := fakeHome(t)
-	t.Setenv(EnvPerson, filepath.Join(h, "elsewhere"))
-	if p, err := Person(); err == nil {
-		t.Fatalf("Person = %q with a bad %s", p, EnvPerson)
-	}
-	if _, err := PersonPath("records"); err == nil {
-		t.Fatal("PersonPath with a bad environment")
+	planted := mkRoot(t, h, AccountsDir, "planted")
+	t.Setenv(EnvPerson, planted)
+	if p, err := Person(); err != nil || p != filepath.Join(h, DirName) {
+		t.Fatalf("Person = %q, %v; the environment chose it", p, err)
 	}
 }
 
