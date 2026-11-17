@@ -176,6 +176,27 @@ func TestLinksAndEscapesRefused(t *testing.T) {
 	}
 }
 
+// A publisher's .git folder beside the bundle is not part of it.
+func TestDotFoldersLeftOut(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "b")
+	plugintest.Write(dir, sample())
+	if err := os.MkdirAll(filepath.Join(dir, ".git", "objects"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".git", "HEAD"), []byte("ref: x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := plugin.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for p := range b.Files {
+		if strings.HasPrefix(p, ".git") {
+			t.Fatalf("%s was read", p)
+		}
+	}
+}
+
 func TestUnderDeclaredCapabilitiesRefused(t *testing.T) {
 	spec := sample()
 	spec.Capabilities = &plugin.Capabilities{Tools: []string{"read", "grep"}, Hooks: []string{"tool_call"}, MCPServers: []string{"tickets"}}

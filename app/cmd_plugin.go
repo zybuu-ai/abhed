@@ -803,8 +803,15 @@ func packDir(dir string, out io.Writer) error {
 	}
 	files := map[string][]byte{}
 	err = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
 			return err
+		}
+		if d.IsDir() {
+			// .git and the like are left out, as Open leaves them out.
+			if rel, _ := filepath.Rel(dir, p); rel != "." && !strings.Contains(filepath.ToSlash(rel), "/") && strings.HasPrefix(rel, ".") {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if !d.Type().IsRegular() {
 			return fmt.Errorf("%s is a link or special file; a bundle holds regular files only", p)

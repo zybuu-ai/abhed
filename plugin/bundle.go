@@ -83,6 +83,9 @@ func readDir(root string) (map[string][]byte, error) {
 		}
 		rel = filepath.ToSlash(rel)
 		switch t := d.Type(); {
+		case t.IsDir() && !strings.Contains(rel, "/") && strings.HasPrefix(rel, "."):
+			// A publisher's .git or .github is not part of the bundle; nothing in it is read.
+			return filepath.SkipDir
 		case t.IsDir():
 			return nil
 		case !t.IsRegular():

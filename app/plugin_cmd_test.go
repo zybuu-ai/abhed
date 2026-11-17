@@ -484,3 +484,31 @@ func TestPluginInstallFromSource(t *testing.T) {
 		t.Fatalf("a swapped bundle installed: %s", out)
 	}
 }
+
+// pack fills in the files and capabilities a publisher then signs.
+func TestPluginPack(t *testing.T) {
+	dir := t.TempDir()
+	for p, c := range map[string]string{
+		plugin.ManifestName: `{"schema":1,"name":"acme-pack","version":"0.1.0","publisher":"Acme","files":[],"capabilities":{},"hooks":[{"name":"h","events":["stop"],"url":"https://hooks.acme.example/x"}]}`,
+		"agents/a.md":       "---\nname: acme-a\ndescription: d\ntools: [read]\n---\nx\n",
+		".git/HEAD":         "ref: x\n",
+		"docs/usage.md":     "use it\n",
+	} {
+		full := filepath.Join(dir, filepath.FromSlash(p))
+		_ = os.MkdirAll(filepath.Dir(full), 0o700)
+		if err := os.WriteFile(full, []byte(c), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out bytes.Buffer
+	if err := packDir(dir, &out); err != nil {
+		t.Fatal(err)
+	}
+	b, err := plugin.Open(dir)
+	if err != nil {
+		t.Fatalf("the packed bundle does not open: %v", err)
+	}
+	if c := b.Manifest.Capabilities; strings.Join(c.Tools, ",") != "read" || strings.Join(c.Egress, ",") != "hooks.acme.example" || len(b.Manifest.Files) != 2 {
+		t.Fatalf("packed manifest: %+v", b.Manifest)
+	}
+}
