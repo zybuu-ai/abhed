@@ -116,6 +116,9 @@ const sshPrelude = `set -eu; umask 077; ` +
 	`safe() { [ ! -L "$1" ] && [ -n "$(find "$1" -maxdepth 0 \( -user "$me" -o -user 0 \) ! -perm -0020 ! -perm -0002 -print 2>/dev/null)" ]; }; ` +
 	// The engine lives in ~/.abhed/bin, made private here; the folders above it must be the account's own.
 	`[ -n "${HOME:-}" ] && safe "$HOME" || fail "your home folder is writable by others or is not yours, so an engine kept there could be swapped"; ` +
+	// And every folder above it, by its real path: whoever can write one could replace the home itself.
+	`d=$(cd "$HOME" && pwd -P) || fail "your home folder cannot be read"; ` +
+	`while [ "$d" != / ]; do d=$(dirname "$d"); safe "$d" || fail "$d, above your home folder, is a link, not yours or root's, or writable by others"; done; ` +
 	`mkdir -p "$HOME/.abhed/bin"; chmod 700 "$HOME/.abhed" "$HOME/.abhed/bin"; ` +
 	`safe "$HOME/.abhed" && safe "$HOME/.abhed/bin" || fail "~/.abhed or ~/.abhed/bin is a link, not yours, or writable by others"; `
 

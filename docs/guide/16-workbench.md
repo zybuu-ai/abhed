@@ -963,8 +963,9 @@ Set in your user settings (a workspace cannot set them):
 The host's key must already be in known_hosts: an unknown or changed key is
 refused, and Studio never adds one. Nothing is forwarded: no agent, X11,
 ports or environment variable. The engine must have the pinned SHA-256,
-copied into `~/.abhed/bin` on the host and run from there; the home folder
-and that folder must be yours and writable by no one else. Studio asks
+copied into `~/.abhed/bin` on the host and run from there; the home folder,
+every folder above it and that folder must be yours or root's and writable by
+no one else. Studio asks
 first, in a modal whose default is Don't Connect, and connects later only to
 a host and folder you chose this way. Paths the engine reports are shown as
 the host's files, never read from your computer, and a file on your
@@ -973,6 +974,14 @@ are recorded on the host as yours, and Abhed's own state and paths the read
 rules withhold are not shown. Language servers, completions, debugging, the
 Run and Review views and Studio's git extension do not work on an SSH folder
 (the SCM view shows changes and diffs, read-only); the Abhed terminal runs
-on the host. **Reopen Folder Locally** leaves it. The command line's side is
+on the host.
+
+The SCM view's git runs in the session's sandbox. With no sandbox (the
+`none` tier) it runs only in a repository whose git configuration, in any
+scope, defines no filter, diff or merge driver, so anyone with git-lfs set up
+(a global `filter.lfs`) gets no SCM view there. The check and the `git
+status` that follows are two steps: a process already running unsandboxed
+could add a driver between them, but such a process can already run code as
+you, so the check guards against a repository, not against it. **Reopen Folder Locally** leaves it. The command line's side is
 `abhed ssh-acp`. Design and threat model: [Studio
 remote](../architecture/studio-remote.md).

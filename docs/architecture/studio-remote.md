@@ -127,8 +127,9 @@ uses:
   says which. The agent is never forwarded. Nothing is forwarded: no agent,
   no X11, no ports, and no environment variable is sent;
 - one remote step, through the account's shell, runs the engine: the home
-  folder must not be a link and must be owned by the account or root and
-  writable by neither group nor others; `~/.abhed` and `~/.abhed/bin` are
+  folder, and every folder above it by its real path up to `/`, must not be
+  a link and must be owned by the account or root and writable by neither
+  group nor others; `~/.abhed` and `~/.abhed/bin` are
   made 0700 and checked the same way; the engine is copied (from the pinned
   path `abhed.ssh.enginePath`, or earlier from an upload of
   `abhed.ssh.uploadEngine`) into `~/.abhed/bin/abhed-<16 hex>` beside its

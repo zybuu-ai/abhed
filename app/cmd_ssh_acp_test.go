@@ -113,6 +113,15 @@ func TestSSHStartScript(t *testing.T) {
 	if out, code := run(lax, sshStartScript(stub, want, folder), nil); code != 97 || !strings.Contains(out, "writable by others") {
 		t.Fatalf("a group-writable home: %d %s", code, out)
 	}
+	// A folder above the home that others can write.
+	above := filepath.Join(t.TempDir(), "shared")
+	if err := os.MkdirAll(filepath.Join(above, "home"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chmod(above, 0o777)
+	if out, code := run(filepath.Join(above, "home"), sshStartScript(stub, want, folder), nil); code != 97 || !strings.Contains(out, "above your home folder") {
+		t.Fatalf("a folder above the home others can write: %d %s", code, out)
+	}
 	// A planted .part link.
 	planted := newHome()
 	if err := os.MkdirAll(filepath.Join(planted, ".abhed", "bin"), 0o700); err != nil {
