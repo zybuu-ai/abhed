@@ -152,7 +152,7 @@ All notable changes to Abhed are recorded here. The format follows
   limit installs to plugin sources, and `plugins.org_source` names the org
   server's own index. A workspace's or your own file never sets `plugins`.
   Changes reach the record as `config.changed`, and each session records
-  `plugin.loaded` with every plugin in force (OCSF 5019). See guide 38 and
+  `plugin.loaded` with every plugin in force (OCSF 5019). See guide 41 and
   docs/architecture/plugins.md.
 - `abhed bg start` sends a snapshot of the repository it runs in, so a
   background job works on your code: the tracked files as they are in the

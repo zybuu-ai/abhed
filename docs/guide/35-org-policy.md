@@ -166,7 +166,7 @@ true`, `studio.disable_host_terminal: true`, `model.allowed_loopback: false`,
 `plugins.disabled: true`, `plugins.require_signature: true`,
 `plugins.allowed_publishers`, `plugins.allowed_bundles` and
 `plugins.org_source: true` (the server this machine enrolled with serves the
-plugin index; see [Plugins](38-plugins.md#policy)),
+plugin index; see [Plugins](41-plugins.md#policy)),
 and `model.default` pinned to a provider the machine's managed file defines
 (never one the person configured with their own key). Under the org's `model.allowed`,
 endpoints are bound as under the managed file's, but only the managed file
