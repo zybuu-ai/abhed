@@ -237,7 +237,7 @@ func Write(dir string, spec Spec) []byte {
 
 // SignDir signs dir's manifest and writes the signature beside it.
 func (s *Sigstore) SignDir(dir, identity, issuer string) {
-	m := must(os.ReadFile(filepath.Join(dir, plugin.ManifestName))) // #nosec G304 -- a test's own bundle
+	m := must(os.ReadFile(filepath.Join(dir, plugin.ManifestName)))                                                    // #nosec G304 -- a test's own bundle
 	if err := os.WriteFile(filepath.Join(dir, plugin.SignatureName), s.Sign(m, identity, issuer), 0o600); err != nil { // #nosec G703 -- a test's own bundle
 		panic(err)
 	}
