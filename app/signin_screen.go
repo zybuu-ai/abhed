@@ -169,7 +169,7 @@ func serverSignIn(s *identity.Store, p *prompter, url string, rules identity.Rul
 	if err != nil {
 		return identity.Principal{}, err
 	}
-	return signInViaLogin(s, rules, []string{base}, p.out, p.out)
+	return signInViaLogin(s, rules, []string{base}, p.out, p.out, openBrowser)
 }
 
 // loginAsPrincipal is abhed login on a machine no one is signed in to: the
@@ -185,7 +185,7 @@ func loginAsPrincipal(args []string, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "abhed: %v\n", err)
 		return 1
 	}
-	pr, err := signInViaLogin(s, rules, args, out, errOut)
+	pr, err := signInViaLogin(s, rules, args, out, errOut, openBrowser)
 	if err != nil {
 		fmt.Fprintf(errOut, "abhed: %v\n", err)
 		return 1
@@ -196,18 +196,17 @@ func loginAsPrincipal(args []string, out, errOut io.Writer) int {
 
 // signInViaLogin runs abhed login with args into a file of its own, then
 // keeps the profile in the server sign-in's folder and remembers it.
-func signInViaLogin(s *identity.Store, rules identity.Rules, args []string, out, errOut io.Writer) (identity.Principal, error) {
-	pending := filepath.Join(s.Dir(), ".pending-profiles.json")
-	_ = os.Remove(pending)
-	defer os.Remove(pending)
-	old, had := os.LookupEnv(profiles.EnvFile)
-	_ = os.Setenv(profiles.EnvFile, pending)
-	code := loginCmd("", args, out, errOut)
-	if had {
-		_ = os.Setenv(profiles.EnvFile, old)
-	} else {
-		_ = os.Unsetenv(profiles.EnvFile)
+func signInViaLogin(s *identity.Store, rules identity.Rules, args []string, out, errOut io.Writer, open func(string) error) (identity.Principal, error) {
+	// A file of this sign-in's own, so two at once never share one.
+	f, err := os.CreateTemp(s.Dir(), ".pending-profiles-*.json")
+	if err != nil {
+		return identity.Principal{}, err
 	}
+	pending := f.Name()
+	_ = f.Close()
+	_ = os.Remove(pending) // abhed login makes it, 0600
+	defer os.Remove(pending)
+	code := loginWith("", args, out, errOut, loginOpts{open: open, file: pending})
 	if code != 0 {
 		return identity.Principal{}, errors.New("the server sign-in did not complete")
 	}
@@ -219,11 +218,12 @@ func signInViaLogin(s *identity.Store, rules identity.Rules, args []string, out,
 	if err != nil {
 		return identity.Principal{}, err
 	}
-	e, err := s.AddServer(prof.URL, prof.Username, prof.Display, name)
-	if err != nil {
+	// Checked before anything is kept, so a refused server leaves no entry.
+	if err := rules.Admits(identity.Entry{Kind: identity.KindServer, URL: prof.URL}); err != nil {
 		return identity.Principal{}, err
 	}
-	if err := rules.Admits(e); err != nil {
+	e, err := s.AddServer(prof.URL, prof.Username, prof.Display, name)
+	if err != nil {
 		return identity.Principal{}, err
 	}
 	root, err := s.Root(e)

@@ -199,3 +199,29 @@ func TestACPAuthenticateRacesSessionNew(t *testing.T) {
 		})
 	}
 }
+
+// Only an https sign-in page, or an http one on this machine or at the
+// server itself, is handed to the client to open.
+func TestSignInPageAllowed(t *testing.T) {
+	for _, ok := range []struct{ page, base string }{
+		{"https://idp.example/authorize?x=1", "https://abhed.corp"},
+		{"http://127.0.0.1:5556/dex/auth", "https://abhed.corp"},
+		{"http://abhed.lan:8080/cli/login", "http://abhed.lan:8080"},
+	} {
+		if err := signInPageAllowed(ok.page, ok.base); err != nil {
+			t.Errorf("%s: %v", ok.page, err)
+		}
+	}
+	for _, bad := range []struct{ page, base string }{
+		{"vscode://abhed.corp/open?x", "https://abhed.corp"},
+		{"x-handler://abhed.corp/", "https://abhed.corp"},
+		{"javascript:alert(1)", "https://abhed.corp"},
+		{"file:///etc/passwd", "https://abhed.corp"},
+		{"http://evil.example/", "https://abhed.corp"},
+		{"https://u:p@abhed.corp/", "https://abhed.corp"},
+	} {
+		if err := signInPageAllowed(bad.page, bad.base); err == nil {
+			t.Errorf("%s was allowed", bad.page)
+		}
+	}
+}

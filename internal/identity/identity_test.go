@@ -138,3 +138,18 @@ func TestRequiredErrorNamesTheWayOut(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// A managed server URL is compared as a URL, not byte for byte.
+func TestAdmitsNormalisesServerURLs(t *testing.T) {
+	r := Rules{SignIn: config.SignInServer, Server: "https://Abhed.corp:443/"}
+	for _, u := range []string{"https://abhed.corp", "https://ABHED.corp/", "https://abhed.corp:443"} {
+		if err := r.Admits(Entry{Kind: KindServer, URL: u}); err != nil {
+			t.Errorf("%s: %v", u, err)
+		}
+	}
+	for _, u := range []string{"http://abhed.corp", "https://abhed.corp:8443", "https://evil.corp"} {
+		if err := r.Admits(Entry{Kind: KindServer, URL: u}); err == nil {
+			t.Errorf("%s admitted", u)
+		}
+	}
+}

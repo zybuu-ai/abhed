@@ -9,6 +9,7 @@ package identity
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,7 +101,7 @@ func (r Rules) guestOff() string {
 func (r Rules) Admits(e Entry) error {
 	switch r.SignIn {
 	case config.SignInServer:
-		if e.Kind != KindServer || strings.TrimRight(e.URL, "/") != r.Server {
+		if e.Kind != KindServer || NormalServerURL(e.URL) != NormalServerURL(r.Server) {
 			return fmt.Errorf("your organisation requires a sign-in to %s", r.Server)
 		}
 	}
@@ -277,3 +278,19 @@ func OwnerOf(e Entry) string {
 
 // GuestPrincipal is guest; its folder is made by Enter.
 func GuestPrincipal() Principal { return Principal{Kind: Guest, Owner: GuestOwner} }
+
+// NormalServerURL is a server's URL as sign-ins compare it: scheme and host
+// lowercased, the scheme's default port and a trailing slash dropped.
+func NormalServerURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return strings.TrimRight(strings.TrimSpace(raw), "/")
+	}
+	u.Scheme, u.Host = strings.ToLower(u.Scheme), strings.ToLower(u.Host)
+	if p := u.Port(); (u.Scheme == "https" && p == "443") || (u.Scheme == "http" && p == "80") {
+		u.Host = u.Hostname()
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	u.RawQuery, u.Fragment = "", ""
+	return u.String()
+}

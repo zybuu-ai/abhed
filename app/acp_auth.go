@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"net/url"
 	"errors"
 	"fmt"
 	"os"
@@ -176,13 +177,16 @@ func (c *acpConn) serverSignIn(url string) error {
 	if err != nil {
 		return err
 	}
-	old := openBrowser
-	openBrowser = func(u string) error {
+	// The page comes from the server's discovery: only an https page, or an
+	// http one on this machine or the server itself, is passed to the client.
+	open := func(u string) error {
+		if err := signInPageAllowed(u, base); err != nil {
+			return err
+		}
 		c.notification("_abhed/auth/openUrl", map[string]any{"url": u})
 		return nil
 	}
-	defer func() { openBrowser = old }()
-	pr, err := signInViaLogin(s, rules, []string{"-browser", base}, os.Stderr, os.Stderr)
+	pr, err := signInViaLogin(s, rules, []string{"-browser", base}, os.Stderr, os.Stderr, open)
 	if err != nil {
 		return fmt.Errorf("the server sign-in did not complete: %w", err)
 	}
@@ -192,4 +196,24 @@ func (c *acpConn) serverSignIn(url string) error {
 	}
 	setPendingSignIn(nil)
 	return nil
+}
+
+// signInPageAllowed reports why a server sign-in page may not be handed to a
+// client to open: anything but https, or http on loopback or at the server
+// signed in to, could start another program through the client's handlers.
+func signInPageAllowed(page, base string) error {
+	u, err := url.Parse(page)
+	if err != nil || u.Host == "" || u.User != nil {
+		return fmt.Errorf("the server's sign-in page %q is not one Abhed opens", page)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		b, _ := url.Parse(base)
+		if profiles.Loopback(u.Hostname()) || (b != nil && b.Scheme == "http" && strings.EqualFold(b.Host, u.Host)) {
+			return nil
+		}
+	}
+	return fmt.Errorf("the server's sign-in page %q is not https; Abhed does not open it", page)
 }
