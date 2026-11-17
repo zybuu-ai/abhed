@@ -50,9 +50,17 @@ const Subagent = "agent"
 // UnclaimedPrefix begins the owner of a session no identity owns any more.
 const UnclaimedPrefix = "unclaimed:"
 
+// Guest is the owner of what a guest records on a machine. No server
+// identity may equal it.
+const Guest = "guest"
+
+// DevicePrefix begins the owner of what an account on a machine records.
+const DevicePrefix = "device:"
+
 // reservedOwners are the bare owners with a meaning of their own. Only the
-// no-identity and subagent cases produce them; a subject equal to one is namespaced.
-var reservedOwners = []string{Anonymous, Subagent}
+// no-identity, subagent and guest cases produce them; a subject equal to one
+// is namespaced.
+var reservedOwners = []string{Anonymous, Subagent, Guest}
 
 // SchedulePrefix begins the owner of a scheduled run, which no identity owns.
 const SchedulePrefix = "schedule:"
@@ -64,7 +72,7 @@ const NobodyPrefix = "nobody:"
 // reservedPrefixes are the namespaces owners are built in. A subject from a
 // proxy or an unnamed provider that starts with one is namespaced again.
 var reservedPrefixes = []string{"local:", UnclaimedPrefix, "oidc:", "github:", "proxy:",
-	"subject:", SchedulePrefix, NobodyPrefix}
+	"subject:", SchedulePrefix, NobodyPrefix, DevicePrefix}
 
 // Owner is the principal that owns what this identity creates: sessions,
 // approvals it answers, and the rows its subagents write. It is the one
