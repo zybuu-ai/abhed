@@ -214,7 +214,7 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 		})
 	}
 	if err != nil {
-		return fail(err)
+		return fail(profiles.GrantRemoved(base, err))
 	}
 	p.Method = m.Name
 	p.ClientID = m.ClientID

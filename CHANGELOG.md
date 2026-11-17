@@ -539,6 +539,16 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- After the organisation removed a person's access (SCIM deprovisioning or
+  a revocation), `abhed policy refresh` said only "the org server refused
+  the sign-in (401); run abhed login". It, the refresh as a session starts,
+  the policy key fetch, `abhed login` and the identity check after a
+  sign-in now say the organisation removed the access, with the server's
+  reason, that signing in again will not restore it, and to ask the
+  organisation's Abhed administrator for that server, as the record
+  shipping banner already did. A local-account sign-in an edition refuses
+  this way is answered `access_revoked`, not `access_denied`. A sign-in
+  that only lapsed still says to run `abhed login`.
 - `abhed bg` rough edges. `bg start -name N` and `-mode M` were refused with
   "-name does not apply to bg" although `bg -h` lists them; both are now
   the job's. `bg logs` and `bg attach` show the agent's reply whole, below
