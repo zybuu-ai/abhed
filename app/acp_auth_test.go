@@ -115,3 +115,30 @@ func (cl *studioClient) refusedMsg(method string, params any) string {
 	}
 	return m.Error.Message
 }
+
+// The identity names whose history it is, and _abhed/auth/signout makes the
+// next start ask again.
+func TestACPIdentityOwnerAndSignOut(t *testing.T) {
+	signInTest(t)
+	acpModelsEnv(t, `{}`)
+	s, _ := identity.Open()
+	e, _, err := s.Create("a1", "correct horse", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Remember(e.ID); err != nil {
+		t.Fatal(err)
+	}
+	if code := enterPrincipalForClient(signInFlags{}, &strings.Builder{}); code != 0 {
+		t.Fatal(code)
+	}
+	cl := newStudioClient(t, t.TempDir(), true)
+	_, who := initAuth(t, cl)
+	if who["owner"] != "device:a1" || who["chosen"] != true || who["adopted"] != nil {
+		t.Fatalf("identity %v", who)
+	}
+	cl.ok("_abhed/auth/signout", map[string]any{}, nil)
+	if _, ok, _ := s.Remembered(nil); ok {
+		t.Error("still remembered after signout")
+	}
+}

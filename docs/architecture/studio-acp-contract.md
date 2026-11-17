@@ -88,6 +88,8 @@ interface AbhedAgentMeta {
     display: string;
     chosen: boolean;               // false: no one chose; show the sign-in choice
     pending?: string;              // a sign-in is required and none is held
+    owner?: string;                // whose history this is: device:<name>, guest, …
+    adopted?: true;                // the account that took over the history from before sign-in
   };
 }
 ```
@@ -110,7 +112,12 @@ switching ends the engine. While `identity.pending` is set, every method
 but `initialize` and `authenticate` is refused with -32000 and
 `data.authRequired: true`.
 
-Studio keeps nothing of a guest in its own storage.
+Studio keeps each person's chat history apart, keyed by `identity.owner`
+(the unkeyed history from before sign-in belongs to the `adopted` account
+and to `legacy`), and keeps nothing of a guest: a guest window's chat
+history lives in memory and is dropped when the person changes.
+`_abhed/auth/signout` (feature `auth`) makes the machine forget the
+remembered sign-in; Studio then restarts the engine, whose next start asks.
 
 `features` names every `abhed/*` area the engine serves: `sessions`, `fork`,
 `events`, `record.verify`, `hawkeye`, `export`, `tasks`, `tasks.review`,

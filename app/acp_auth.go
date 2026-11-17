@@ -56,13 +56,48 @@ func acpAuthMethods() []any {
 // acpIdentity is who is working, for initialize's _meta: chosen is false
 // when no one chose (a guest by default, or a sign-in pending), so the
 // client should show the choice.
+//
+// owner names whose history this is, so the client can keep each person's
+// apart (Studio keys its chat history by it); adopted is set for the account
+// that took over the data from before sign-in, whose history is that data's.
 func acpIdentity() map[string]any {
 	r := principalReport()
 	out := map[string]any{"kind": r.Kind, "display": r.Display, "chosen": r.Pending == "" && !guestByDefault()}
 	if r.Pending != "" {
 		out["pending"] = r.Pending
+		return out
+	}
+	p := currentPrincipal()
+	if p.Kind != identity.Legacy {
+		out["owner"] = cliUser()
+	}
+	if p.Entry.LegacyUser != "" {
+		out["adopted"] = true
 	}
 	return out
+}
+
+// signOut is _abhed/auth/signout: the machine forgets the remembered
+// sign-in, so the engine's next start asks who is working. The engine
+// keeps working as who it is until it is restarted.
+func (c *acpConn) signOut(msg rpcMessage) {
+	switch currentPrincipal().Kind {
+	case identity.Account, identity.Server:
+		s, err := identity.Open()
+		if err == nil {
+			err = s.Forget()
+		}
+		if err != nil {
+			c.reply(msg.ID, nil, refusal(errRefused, "%s", err.Error()))
+			return
+		}
+	}
+	c.reply(msg.ID, map[string]any{"restart": true}, nil)
+}
+
+func init() {
+	handle(map[string]func(*acpConn, rpcMessage){"_abhed/auth/signout": (*acpConn).signOut})
+	liveFeatures = append(liveFeatures, "auth")
 }
 
 type acpAuthParams struct {
