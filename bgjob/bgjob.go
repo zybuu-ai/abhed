@@ -136,10 +136,14 @@ type Approval struct {
 	// Args are the call's arguments as the session's record keeps them,
 	// secrets withheld: what the owner is asked to allow. Sent to the owner
 	// only, never to an administrator or a notice.
-	Args     json.RawMessage `json:"args,omitempty"`
-	Reason   string          `json:"reason,omitempty"`
-	Subagent string          `json:"subagent,omitempty"`
-	Since    time.Time       `json:"since"`
+	Args   json.RawMessage `json:"args,omitempty"`
+	Reason string          `json:"reason,omitempty"`
+	// Scope is the rule "always for this job" remembers: answered with it,
+	// the job's session runs the later calls it covers without asking, and
+	// the record says so. Empty when the ask offers none.
+	Scope    string    `json:"scope,omitempty"`
+	Subagent string    `json:"subagent,omitempty"`
+	Since    time.Time `json:"since"`
 	// Deadline is when the job is stopped if the ask is still unanswered.
 	Deadline time.Time `json:"deadline"`
 }

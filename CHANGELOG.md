@@ -607,6 +607,41 @@ All notable changes to Abhed are recorded here. The format follows
   record a key is a command ssh accepts (`ssh -p 12222 root@127.0.0.1`, not
   `ssh root@127.0.0.1:12222`). A host in `ssh.hosts` is no longer told to
   retry with `ssh_connect`'s `accept_host_key`.
+- After the organisation removed a person's access (SCIM deprovisioning or
+  a revocation), `abhed policy refresh` said only "the org server refused
+  the sign-in (401); run abhed login". It, the refresh as a session starts,
+  the policy key fetch, `abhed login` and the identity check after a
+  sign-in now say the organisation removed the access, with the server's
+  reason, that signing in again will not restore it, and to ask the
+  organisation's Abhed administrator for that server, as the record
+  shipping banner already did. A local-account sign-in an edition refuses
+  this way is answered `access_revoked`, not `access_denied`. A sign-in
+  that only lapsed still says to run `abhed login`. New exported API:
+  `profiles.AccessRemovedError`, `profiles.RemovedFrom` and
+  `profiles.GrantRemoved`.
+- `abhed bg` rough edges. `bg start -name N` and `-mode M` were refused with
+  "-name does not apply to bg" although `bg -h` lists them; both are now
+  the job's. `bg logs` and `bg attach` show the agent's reply whole, below
+  its line, instead of a line per streamed fragment of the reply and its
+  reasoning (`-o json` still has every event). When an ask offers a rule to
+  remember, attach shows it and asks `Allow it? [y/N/a]`: `a` allows the
+  call and, on that job's session only, every later call the rule covers,
+  recorded as the answer's granted scope. `GET /v1/bg/jobs/{id}` carries it
+  as `waiting.scope` (`PendingAsk.Scope` for an edition's job list), and a
+  rule the record would redact is not offered. Why a job stopped is now in
+  the table too: `list` shows `failed (max_budget)`, a budget stop's line
+  shows its message rather than its kind, a run's end its detail, and
+  attach's last line the budget's words. Where a workspace's four-eyes rule
+  lets the owner only refuse, an approval is refused and attach offers to
+  refuse or to leave the ask to the approvers, following on; any other 403
+  still ends attach with its reason. A reply streamed but never finished is
+  shown from its fragments. `abhed bg start -C DIR` snapshots DIR when
+  written before the prompt; `start`'s flags now end at the prompt's first
+  word, so `-C`, `-y` or any flag-like word after it is the prompt's text
+  (the other bg commands still refuse `-C`).
+  New exported API: `bgjob.Approval.Scope`, `bgjob.Client.AnswerAlways`,
+  `bgjob.AnswerRefused` and `bgjob.IsAnswerRefused`, and
+  `server.PendingAsk.Scope`.
 - A model reply that only reasons, with no text or tool call, is cut past
   `limits.reasoning_stall_tokens` reasoning tokens (8000 by default, or the
   request's thinking budget if larger), with `limits.reasoning_stall_seconds`

@@ -29,7 +29,14 @@ abhed bg attach ID
 abhed bg cancel ID
 ```
 
-- `start` sends the prompt and, if given, a name, a mode and a provider.
+- `start` snapshots the repository you run it in, or the one `-C DIR`
+  names, written before `start` or after it but before the prompt; the
+  other commands take no `-C`. `start`'s flags come before the prompt:
+  from its first word on, every word is the prompt's, so in
+  `abhed bg start -y run make -C /tmp` the job is asked to run
+  `make -C /tmp` and the snapshot is of the folder you are in.
+- `start` sends the prompt and, if given, a name (`-name`, a label for
+  `list`), a mode and a provider.
   Who the job runs as is your sign-in, and its sandbox, secrets and network
   are the server's. A mode wider than the server's is refused as it is for
   a session.
@@ -54,8 +61,13 @@ abhed bg cancel ID
   rules or your secrets store cannot be read, no snapshot is sent.
   `-no-snapshot` starts in an empty folder; outside a repository `start`
   asks for it.
-- `list` shows your jobs, newest first, with the tool a waiting job asks for.
-- `logs` prints the job's record so far; `-patch` prints what it changed
+- `list` shows your jobs, newest first, with the tool a waiting job asks
+  for, and why a job that did not end done stopped: `failed (max_budget)`.
+- `logs` prints the job's record so far, one line an event and the agent's
+  replies whole, below their line; the fragments a reply or its reasoning
+  streamed in are left out, as the whole text follows (`-o json` keeps every
+  event). A budget stop shows what it said, such as `stopped: the budget of
+  20000 tokens is spent (26278)`, not only its kind. `-patch` prints what it changed
   as one unified diff. A job that started from a snapshot keeps its patch
   when it ends; otherwise the patch is there while the server that ran it
   still holds the originals.
@@ -63,9 +75,25 @@ abhed bg cancel ID
   shows the tool, the reason and the call's arguments (a command in full,
   each value cut at 2,000 characters, secrets withheld as the record keeps
   them) and, in a terminal, asks `Allow it? [y/N]`; only `y` allows, and
-  the answer names the request shown. Without a terminal it only says what
+  the answer names the request shown. When the ask offers a rule to
+  remember, such as `bash(python3 -m unittest tests.test_text)`, it is shown
+  and the question is `Allow it? [y/N/a]`: `a` allows this call and, for
+  the rest of this job only, every later call the rule covers, without
+  asking again. It is remembered on the job's session, not for your other
+  jobs or sessions, and the record keeps it as the answer's granted scope
+  (`action.approved`), with each later call it covered noted as answered by
+  that scope. An ask rule or a destructive command offers no rule, and a
+  rule the record would redact is not offered. Where the workspace needs
+  other approvers you may only refuse your own request: an approval (`y` or
+  `a`) is refused, and attach says why and asks
+  `[n = refuse, Enter = leave it]`; left, the ask waits for the workspace's
+  approvers while attach keeps following. Any other refusal, such as your
+  access having been removed, ends attach with its reason. If the record
+  ends with a reply streamed but never finished, its fragments are shown
+  joined. Without a terminal it only says what
   waits and until when. Ctrl-C leaves, at the question too; the job runs
-  on. It exits 0 only for a job that ended done.
+  on. It exits 0 only for a job that ended done; its last line says why it
+  did not, with the budget stop's words when the budget stopped it.
 - `cancel` stops the job and every background task it started.
 
 Everything the server sends is shown with hidden characters escaped, so a
@@ -88,10 +116,10 @@ session's own routes.
 | `POST /v1/bg/jobs` | start: `{"prompt", "name", "mode", "provider", "workspace": {"kind": "session"}}`, or `"workspace": {"kind": "snapshot", "snapshot": ID}`; 202 with the job |
 | `GET /v1/bg/jobs/{id}/patch` | the patch a job kept when it ended (its `result`), as text |
 | `GET /v1/bg/jobs` | your jobs: `{"jobs": [...]}` |
-| `GET /v1/bg/jobs/{id}` | one job; `waiting` holds the ask it waits on: tool, reason, the redacted `args`, `request_id` and `deadline` |
+| `GET /v1/bg/jobs/{id}` | one job; `waiting` holds the ask it waits on: tool, reason, the redacted `args`, `request_id`, `deadline` and, when it offers one, the `scope` "always for this job" remembers |
 | `POST /v1/bg/jobs/{id}/cancel` | stop it |
 | `GET /v1/bg/approvals` | every ask your jobs wait on |
-| `POST /v1/sessions/{session_id}/approve` | answer one: `{"approved", "request_id"}` |
+| `POST /v1/sessions/{session_id}/approve` | answer one: `{"approved", "request_id"}`, with `"scope"` (exactly the ask's) to allow it always for this job |
 | `GET /v1/sessions/{session_id}/replay`, `/changes` | the record and the changes |
 
 A job's `state` is `running`, `waiting`, or one it does not leave: `done`,
