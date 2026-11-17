@@ -49,7 +49,6 @@ ApprovalHandler = Callable[[ApprovalRequest], Decision]
 StreamItem = Union[Event, ApprovalRequest, Answer]
 
 _STDERR_KEEP = 64 * 1024
-_MAX_LINE = 8 << 20
 
 
 class _Pending:
@@ -253,7 +252,9 @@ class Abhed:
         out = self._proc.stdout
         assert out is not None
         while True:
-            line = out.readline(_MAX_LINE + 1)
+            # No cap: an export of a long session is one line, and a line cut
+            # short would leave its request waiting forever.
+            line = out.readline()
             if not line:
                 break
             line = line.strip()

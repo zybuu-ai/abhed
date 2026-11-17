@@ -186,6 +186,10 @@ class ClientTest(unittest.TestCase):
             s.prompt("hello")
         ab.close()
 
+    def test_a_line_over_8_mib(self):
+        with stub() as ab:
+            self.assertEqual(len(ab.start().prompt("big").text), 9 << 20)
+
     def test_missing_binary(self):
         with self.assertRaises(ProcessExited):
             Abhed("/nonexistent/abhed")

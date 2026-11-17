@@ -107,6 +107,8 @@ async function prompt(r) {
     case "stray-error":
       out({ type: "error", error: "1 queued steer message(s) were not delivered: test" });
       return out({ id, type: "answer", answer: "ok" });
+    case "big":
+      return out({ id, type: "answer", answer: "x".repeat(9 << 20) });
     case "die":
       process.stderr.write("abhed: boom\n");
       process.exit(3);

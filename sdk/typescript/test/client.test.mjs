@@ -179,6 +179,12 @@ test("the process dying fails the request with its code and stderr", async () =>
   assert.equal(await ab.close(), 3);
 });
 
+test("a line over 8 MiB", async () => {
+  const ab = stub();
+  assert.equal((await (await ab.start()).prompt("big")).text.length, 9 << 20);
+  await ab.close();
+});
+
 test("a missing binary", async () => {
   const ab = Abhed.spawn({ binary: "/nonexistent/abhed" });
   await assert.rejects(ab.providers(), ProcessExited);

@@ -110,6 +110,8 @@ def prompt(r):
     elif text == "stray-error":
         out({"type": "error", "error": "1 queued steer message(s) were not delivered: test"})
         out({"id": rid, "type": "answer", "answer": "ok"})
+    elif text == "big":
+        out({"id": rid, "type": "answer", "answer": "x" * (9 << 20)})
     elif text == "die":
         sys.stderr.write("abhed: boom\n")
         sys.stderr.flush()
