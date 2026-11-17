@@ -44,7 +44,7 @@ type Definition struct {
 	Background *bool
 	// Color is how /agents shows the role; it changes nothing enforced.
 	Color string
-	// Source is builtin, managed, workspace or operator.
+	// Source is builtin, managed, workspace, operator, plugin or session.
 	Source string
 	// Path is the file it was read from; SHA256 is that file's content hash.
 	Path   string
@@ -63,6 +63,8 @@ const (
 	SourceOperator  = "operator"
 	// SourceSession is a definition given for one run, with -agents.
 	SourceSession = "session"
+	// SourcePlugin is a definition an approved plugin added.
+	SourcePlugin = "plugin"
 )
 
 // ReservedNames are the built-in roles' names. A file cannot redefine them:

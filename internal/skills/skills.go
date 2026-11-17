@@ -59,6 +59,8 @@ type Skill struct {
 	// decision. The listing says so, and it has no Dir: its folder is in
 	// .abhed, which the agent cannot read.
 	Workspace bool
+	// Plugin names the plugin the skill came with, "" for none.
+	Plugin string
 }
 
 // Registry holds the discovered skills.
@@ -184,8 +186,11 @@ func (r *Registry) Listing() string {
 		"Do not guess at a skill's contents from its description.\n\n")
 	for i, s := range all {
 		from := ""
-		if s.Workspace {
+		switch {
+		case s.Workspace:
 			from = " (from this workspace)"
+		case s.Plugin != "":
+			from = " (from the plugin " + s.Plugin + ")"
 		}
 		line := fmt.Sprintf("- `%s`%s — %s\n", s.Name, from, s.Description)
 		if b.Len()+len(line)+tailRoom(i, len(all)) > ListingBudget {

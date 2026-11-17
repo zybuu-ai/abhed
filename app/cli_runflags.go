@@ -293,6 +293,7 @@ func recordRunFlags(start map[string]any, cfg config.Config, mcp []flagSource, s
 // takes away; the organisation's are kept.
 func bareConfig(cfg config.Config) config.Config {
 	cfg.Bare = true
+	cfg.DropPlugins()
 	var kept []config.ExtensionConfig
 	for _, e := range cfg.Extensions {
 		if cfg.ExtensionLayer(e.Name) == config.LayerManaged {

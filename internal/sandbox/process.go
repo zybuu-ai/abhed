@@ -509,6 +509,8 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 			fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", st)
 			// Skills are the one part of it a command may need: a skill can ship a script.
 			fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", filepath.Join(st, "skills"))
+			// So are plugins: a hook or server may run a script its plugin ships.
+			fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", filepath.Join(st, "plugins"))
 		}
 	}
 

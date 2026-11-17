@@ -53,6 +53,7 @@ model you point it at, and records everything it does.
 | [Parallel subagents](14-parallel-subagents.md) | several at once, each in its own git worktree |
 | [Running on Kubernetes](27-kubernetes.md) | the Helm chart: the restricted pod, probes, preflight, TLS, Postgres, ingress and OpenShift |
 | [Agent definitions](17-agent-definitions.md) | subagent roles of your own: instructions, tools, model |
+| [Plugins](41-plugins.md) | signed bundles of agents, skills, commands, hooks and MCP servers: install, approve, upgrade, remove; Sigstore or a pin; the managed plugin policy |
 | [Input, memory and commands](19-input-and-memory.md) | `@` files, `!` commands, `#` notes, `ABHED.md` memory, custom slash commands |
 
 Scheduled runs are a Team feature, and exporting the event log as

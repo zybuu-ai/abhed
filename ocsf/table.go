@@ -113,6 +113,7 @@ var table = map[agent.EventType]rule{
 	agent.EvPermissionChanged:    {fn: configChange, classes: []int{5019}},
 	agent.EvPolicyLayer:          {fn: configChange, classes: []int{5019}},
 	agent.EvStartupTrusted:       {fn: configChange, classes: []int{5019}},
+	agent.EvPluginLoaded:         {fn: configChange, classes: []int{5019}},
 	agent.EvConfigRefused:        {fn: mapConfigAttempt, classes: []int{5019}},
 	agent.EvConfigNarrowed:       {fn: mapConfigAttempt, classes: []int{5019}},
 	agent.EvConfigChanged:        {fn: mapConfigChanged, classes: []int{5019}},

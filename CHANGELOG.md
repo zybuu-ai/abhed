@@ -196,6 +196,54 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Plugin bundles: `abhed plugin install|approve|list|show|remove|publishers|
+  trusted-root|pack`. A plugin bundles agent definitions, skills, custom
+  commands, simple hooks and MCP servers under one manifest. The manifest lists
+  every file's SHA-256 and the tools, egress hosts, hook events, servers and
+  header environment variables it requests.
+  - **Install** reads and checks the bundle without running anything, and shows
+    what it adds and requests, every server header included. Manifest strings
+    with control or invisible characters are refused. The bundle stays off until
+    you approve that exact content (`-sha256` approves without a prompt).
+  - **Trust** comes from a Sigstore keyless signature (bundle 0.2 or 0.3, Rekor
+    v1), checked offline and checked again at every load, from a publisher you
+    trust. An allow list counts only a signature that verifies against the
+    managed `plugins.trusted_root`, or the public-good root built into Abhed.
+    Your own root counts for your own publishers. A SHA-256 pin serves air-gapped sites. A server's
+    `headers_env` may not name a variable that looks like a credential.
+  - **A plugin adds content, never policy.** Its hooks only block and run in the
+    sandbox. Its servers face `mcp.allowed`/`mcp.denied` and never get the
+    host's files. It never takes a name already in use.
+  - **Upgrade and remove.** An upgrade shows the diff, and the approved version
+    keeps loading until the new one is approved. Remove takes every file.
+  - **Policy.** The managed configuration and the signed org policy each set an
+    allow list, and a bundle must pass both. An org whose keys the machine does
+    not pin only narrows.
+    A trusted source's word at install is kept as the approval of that exact
+    digest. Turning a source off later does not unload a plugin installed from
+    it; the allow lists and `disabled` do. Install and approve refuse a bundle
+    that would not load.
+  - **Where plugins never load:** `abhed serve` sessions and `-bare` runs.
+  - **Record.** Changes reach the record as `config.changed`, and each session
+    records `plugin.loaded` (OCSF 5019).
+
+  See guide 41 and docs/architecture/plugins.md.
+- New public package `github.com/zybuu-ai/abhed/plugin`: the bundle reader,
+  the offline Sigstore verifier, the plugin store, the policy and the
+  plugin-source index types. It is an experimental API until 2.0 and may
+  change in a minor release.
+  - Package `config` gains the `plugins` section: `PluginsConfig`, with
+    `disabled`, `require_signature`, `allowed_publishers`, `allowed_bundles`,
+    `sources`, `org_source` and `trusted_root`. It is managed-only.
+  - New methods and functions: `Config.PluginPolicy`, `Config.PluginRoots`,
+    `Config.LoadedPlugins`, `Config.DropPlugins`, `Config.PluginServer`,
+    `PluginLayer`, `IsPluginLayer` and `SetVersion`.
+  - New constants: `OrgSourceName` and `OrgPluginIndex`.
+  - `LoadedPlugins`, `PluginPolicy` and `PluginRoots` return types from
+    package `plugin`, so they are experimental with it.
+  - The `plugin` package embeds a dated snapshot of the public-good Sigstore
+    trusted root (`PublicGoodRoot`, `PublicGoodRootSnapshot`). Loading and
+    `abhed plugin list` warn once the snapshot is more than a year old.
 - `abhed bg start` sends a snapshot of the repository it runs in, so a
   background job works on your code: the tracked files as they are in the
   working tree, without anything your read rules withhold, anything named
