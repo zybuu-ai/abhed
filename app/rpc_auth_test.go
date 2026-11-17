@@ -160,8 +160,53 @@ func TestUnreachableServerKeepsTheSignIn(t *testing.T) {
 	if _, err := resolvePrincipal(signInFlags{}, false, os.Stdin, io.Discard); err != nil {
 		t.Fatalf("offline: %v", err)
 	}
-	if p := currentPrincipal(); p.Kind != identity.Server {
+	if p := currentPrincipal(); p.Kind != identity.Server || !p.Unverified {
 		t.Fatalf("principal %+v", p)
+	}
+	if v := principalStart()["verified"]; v != false {
+		t.Errorf("session.started verified = %v, want false", v)
+	}
+}
+
+// A remembered server sign-in that holds nothing to sign in with is not a
+// sign-in: under sign_in "server" the start exits 10, whether the profiles
+// file, the profile or its token is missing, or the server refuses it.
+func TestServerSignInWithoutCredentialFailsClosed(t *testing.T) {
+	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"invalid_token"}`))
+	}))
+	defer refusing.Close()
+	for name, c := range map[string]struct {
+		url     string
+		profile *profiles.Profile // nil: no profiles file
+		name    string
+	}{
+		"no profiles file":      {"https://abhed.corp", nil, "org"},
+		"no such profile":       {"https://abhed.corp", &profiles.Profile{URL: "https://abhed.corp", Token: "abhcli_x"}, "other"},
+		"empty token":           {"https://abhed.corp", &profiles.Profile{URL: "https://abhed.corp"}, "org"},
+		"the server refuses it": {refusing.URL, &profiles.Profile{URL: refusing.URL, Token: "abhcli_x"}, "org"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			signInTest(t)
+			withManaged(t, `{"auth":{"client":{"sign_in":"server","server":"`+c.url+`"}}}`)
+			s, _ := identity.Open()
+			e, _ := s.AddServer(c.url, "mallory", "", c.name)
+			root, _ := s.Root(e)
+			if c.profile != nil {
+				reg := &profiles.File{Profiles: map[string]*profiles.Profile{"org": c.profile}, Current: "org"}
+				if err := profiles.Save(filepath.Join(root, "profiles.json"), reg); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_ = s.Remember(e.ID)
+			if code := enterPrincipal(signInFlags{}, false, os.Stdin, io.Discard); code != identity.ExitSignInRequired {
+				t.Fatalf("exit %d, want 10; principal %+v", code, currentPrincipal())
+			}
+			if _, ok, _ := s.Remembered(nil); ok {
+				t.Error("the credential-less sign-in is still remembered")
+			}
+		})
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,8 +131,18 @@ func resolvePrincipal(sf signInFlags, interactive bool, in *os.File, errOut io.W
 		return 0, err
 	}
 	if out.Principal.Kind == identity.Server {
-		if err := serverStillAdmits(s, out.Principal); err != nil {
+		verified, err := serverStillAdmits(s, out.Principal)
+		switch {
+		case errors.Is(err, errNoServerCredential) && rules.SignIn == "":
+			// Not a sign-in at all: forgotten, and the start goes on as if there
+			// had been none.
+			if out, err = identity.Resolve(s, sf.request(interactive, rules)); err != nil {
+				return 0, err
+			}
+		case err != nil:
 			return 0, err
+		default:
+			out.Principal.Unverified = !verified
 		}
 	}
 	p := out.Principal
@@ -303,34 +314,51 @@ func whoLine(p identity.Principal) string {
 // offline machine starts on what it remembers.
 var serverCheckWait = 3 * time.Second
 
+// errNoServerCredential is a remembered server sign-in that holds nothing to
+// sign in with: no profile, or no token.
+var errNoServerCredential = errors.New("no credential")
+
 // serverStillAdmits asks a remembered server sign-in's server whether it
-// still admits the person. When the organisation has removed their access
-// (deprovisioned, revoked) the remembered sign-in ends here too, and the
-// person's data on this machine is kept, not deleted. A server that cannot
-// be reached is not a refusal: the machine may be offline.
-func serverStillAdmits(s *identity.Store, p identity.Principal) error {
+// still admits the person, and reports whether it could ask. Holding no
+// credential is not a sign-in: it fails closed, forgotten. When the
+// organisation has removed the person's access, or the server refuses the
+// token, the remembered sign-in ends too, and the person's data on this
+// machine is kept, not deleted. Only a server that cannot be reached is let
+// through (the machine may be offline), unverified.
+func serverStillAdmits(s *identity.Store, p identity.Principal) (verified bool, err error) {
+	gone := func(why string) (bool, error) {
+		_ = s.Forget()
+		return false, fmt.Errorf("%w: %w", errNoServerCredential, &identity.RequiredError{Why: why,
+			Next: "run abhed login " + p.Entry.URL + " in a terminal"})
+	}
 	reg, err := profiles.Load(filepath.Join(p.Root, "profiles.json"))
 	if err != nil {
-		return nil
+		return gone("the sign-in to " + p.Entry.URL + " cannot be read on this machine")
 	}
 	_, prof, err := reg.Get(p.Entry.Profile)
-	if err != nil {
-		return nil
+	if err != nil || prof.Token == "" {
+		return gone("the sign-in to " + p.Entry.URL + " holds no credential on this machine")
 	}
 	c, err := prof.HTTPClient()
 	if err != nil {
-		return nil
+		return gone("the sign-in to " + p.Entry.URL + " cannot be used: " + err.Error())
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), serverCheckWait)
 	defer cancel()
 	_, err = profiles.Whoami(ctx, c, prof)
 	var removed *profiles.AccessRemovedError
-	if errors.As(err, &removed) {
+	var transport *url.Error
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.As(err, &removed):
 		_ = s.Forget()
-		return &identity.RequiredError{Why: "your organisation removed your access to " + p.Entry.URL +
+		return false, &identity.RequiredError{Why: "your organisation removed your access to " + p.Entry.URL +
 			"; signing in again will not restore it, so ask its Abhed administrator (your data on this machine is kept)"}
+	case errors.As(err, &transport) || errors.Is(err, context.DeadlineExceeded):
+		return false, nil
 	}
-	return nil
+	return gone("the server " + p.Entry.URL + " no longer takes this sign-in (" + err.Error() + ")")
 }
 
 // principalStart is who is working, as session.started records it, so the
@@ -339,6 +367,10 @@ func serverStillAdmits(s *identity.Store, p identity.Principal) error {
 func principalStart() map[string]any {
 	p := currentPrincipal()
 	out := map[string]any{"kind": string(p.Kind)}
+	if p.Kind == identity.Server {
+		// false: the server could not be reached at start to confirm the sign-in.
+		out["verified"] = !p.Unverified
+	}
 	if owner := cliUser(); owner != "" {
 		out["owner"] = owner
 	}

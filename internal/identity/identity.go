@@ -46,6 +46,9 @@ type Principal struct {
 	Owner string
 	// Root is the person's folder; "" is ~/.abhed (legacy).
 	Root string
+	// Unverified is a server sign-in whose server could not be reached at
+	// start to confirm it.
+	Unverified bool
 }
 
 // Display is who the principal is, to a person.

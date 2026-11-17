@@ -183,7 +183,10 @@ revocation, or SCIM deprovisioning on a Team server), the next start that
 can reach the server ends the remembered sign-in and says so; signing in
 again does not restore it. The person's data on the machine is kept. A
 server that cannot be reached does not end a sign-in: the machine may be
-offline.
+offline, and the session's `session.started` then says
+`"verified": false`. A remembered server sign-in that holds no credential
+(no profile, no token) or that the server refuses is not a sign-in: it is
+forgotten, and where a sign-in is required the run exits 10.
 
 Signing in through an identity provider (OIDC, including Google and
 Microsoft, and GitHub), group roles, SCIM deprovisioning and requiring a
