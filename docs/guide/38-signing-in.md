@@ -163,6 +163,21 @@ tighten them.
 None of these can be set in your own `~/.abhed/config.json` or a
 workspace's.
 
+Under `"server"` with no `auth.client.server`, the server is the one the
+machine takes its org policy from. On such a machine `abhed login SERVER`
+is how a person signs in, even though nothing else runs before it.
+
+Where the managed configuration ships every session's record to the org
+server (`record.ship`), guest is refused: a guest holds no sign-in to ship
+it with.
+
+When the organisation removes a person's access (an administrator's
+revocation, or SCIM deprovisioning on a Team server), the next start that
+can reach the server ends the remembered sign-in and says so; signing in
+again does not restore it. The person's data on the machine is kept. A
+server that cannot be reached does not end a sign-in: the machine may be
+offline.
+
 Signing in through an identity provider (OIDC, including Google and
 Microsoft, and GitHub), group roles, SCIM deprovisioning and requiring a
 sign-in to the organisation's server are Team features, documented with the

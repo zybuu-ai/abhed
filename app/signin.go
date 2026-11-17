@@ -1,18 +1,22 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/term"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/identity"
+	"github.com/zybuu-ai/abhed/profiles"
 )
 
 // Who is working, for this process: set once by the gate before anything
@@ -131,6 +135,11 @@ func resolvePrincipal(sf signInFlags, interactive bool, in *os.File, errOut io.W
 	out, err := identity.Resolve(s, sf.request(interactive, rules))
 	if err != nil {
 		return 0, err
+	}
+	if out.Principal.Kind == identity.Server {
+		if err := serverStillAdmits(s, out.Principal); err != nil {
+			return 0, err
+		}
 	}
 	p := out.Principal
 	if unresolvedIsLegacy && (out.Ask || p.Kind == identity.Guest && out.Note != "") {
@@ -295,4 +304,38 @@ func whoLine(p identity.Principal) string {
 		return "Sign-in is not set up yet; Abhed works as before. /account to create your account."
 	}
 	return "Signed in as " + p.Display() + ". /account to switch."
+}
+
+// serverCheckWait bounds the check of a server sign-in at start, so an
+// offline machine starts on what it remembers.
+var serverCheckWait = 3 * time.Second
+
+// serverStillAdmits asks a remembered server sign-in's server whether it
+// still admits the person. When the organisation has removed their access
+// (deprovisioned, revoked) the remembered sign-in ends here too, and the
+// person's data on this machine is kept, not deleted. A server that cannot
+// be reached is not a refusal: the machine may be offline.
+func serverStillAdmits(s *identity.Store, p identity.Principal) error {
+	reg, err := profiles.Load(filepath.Join(p.Root, "profiles.json"))
+	if err != nil {
+		return nil
+	}
+	_, prof, err := reg.Get(p.Entry.Profile)
+	if err != nil {
+		return nil
+	}
+	c, err := prof.HTTPClient()
+	if err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), serverCheckWait)
+	defer cancel()
+	_, err = profiles.Whoami(ctx, c, prof)
+	var removed *profiles.AccessRemovedError
+	if errors.As(err, &removed) {
+		_ = s.Forget()
+		return &identity.RequiredError{Why: "your organisation removed your access to " + p.Entry.URL +
+			"; signing in again will not restore it, so ask its Abhed administrator (your data on this machine is kept)"}
+	}
+	return nil
 }

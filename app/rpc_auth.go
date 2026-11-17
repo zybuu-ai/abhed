@@ -57,7 +57,11 @@ func switchPrincipal(method, username, password, email string) (string, error) {
 	switch method {
 	case "auth.guest":
 		if !rules.GuestAllowed {
-			return "", &identity.RequiredError{Why: "your organisation has turned guest off"}
+			why := rules.GuestOff
+			if why == "" {
+				why = "your organisation has turned guest off"
+			}
+			return "", &identity.RequiredError{Why: why}
 		}
 		next = identity.GuestPrincipal()
 	case "auth.signin":

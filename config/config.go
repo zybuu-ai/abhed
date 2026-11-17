@@ -1049,12 +1049,16 @@ type ClientAuthConfig struct {
 // GuestAllowed reports whether guest may be chosen.
 func (c ClientAuthConfig) GuestAllowed() bool { return c.Guest == nil || *c.Guest }
 
-// SignInServer is the server whose sign-in counts under sign_in "server".
+// SignInServer is the server whose sign-in counts under sign_in "server":
+// auth.client.server, else the org policy's server the machine names, else
+// the one it took its org policy from.
 func (c Config) SignInServer() string {
-	if s := strings.TrimRight(c.Auth.Client.Server, "/"); s != "" {
-		return s
+	for _, s := range []string{c.Auth.Client.Server, c.Org.URL, c.OrgPolicy.URL} {
+		if s = strings.TrimRight(s, "/"); s != "" {
+			return s
+		}
 	}
-	return strings.TrimRight(c.Org.URL, "/")
+	return ""
 }
 
 func (c Config) validateClientAuth() error {
@@ -1063,7 +1067,7 @@ func (c Config) validateClientAuth() error {
 	case SignInOptional, SignInRequired:
 	case SignInServer:
 		if c.SignInServer() == "" {
-			return fmt.Errorf("auth.client.sign_in is server, but neither auth.client.server nor org_policy.url names one")
+			return fmt.Errorf("auth.client.sign_in is server, but neither auth.client.server, org_policy.url nor an org policy names one")
 		}
 	default:
 		return fmt.Errorf("unknown auth.client.sign_in %q (want required or server, or leave it out)", a.SignIn)

@@ -370,18 +370,28 @@ func Main(args []string, opts ...Option) int {
 			return 1
 		}
 		if personCommands[rest[0]] && !(len(rest) > 1 && isHelpArg(rest[1])) {
-			enter := func() int { return enterPrincipal(f.signIn, false, os.Stdin, os.Stderr) }
-			if rest[0] == "rpc" || rest[0] == "acp" {
-				enter = func() int { return enterPrincipalForClient(f.signIn, os.Stderr) }
-			}
-			if code := enter(); code != 0 {
-				return code
-			}
-			if rest[0] == "login" && guestByDefault() {
-				// No one is signed in: abhed login is signing in, as the start's
-				// "sign in to a server" is.
-				endGuest()
-				return loginAsPrincipal(rest[1:], os.Stdout, os.Stderr)
+			if rest[0] == "login" {
+				// With no one signed in, abhed login is signing in, as the start's
+				// "sign in to a server" is, whether or not a sign-in is required.
+				code, err := resolvePrincipal(f.signIn, false, os.Stdin, os.Stderr)
+				if errors.Is(err, identity.ErrSignInRequired) || err == nil && code == 0 && guestByDefault() {
+					endGuest()
+					return loginAsPrincipal(rest[1:], os.Stdout, os.Stderr)
+				}
+				if err != nil {
+					return refusedSignIn(err, os.Stderr)
+				}
+				if code != 0 {
+					return code
+				}
+			} else {
+				enter := func() int { return enterPrincipal(f.signIn, false, os.Stdin, os.Stderr) }
+				if rest[0] == "rpc" || rest[0] == "acp" {
+					enter = func() int { return enterPrincipalForClient(f.signIn, os.Stderr) }
+				}
+				if code := enter(); code != 0 {
+					return code
+				}
 			}
 			if err := guestSubcommand(rest); err != nil {
 				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)

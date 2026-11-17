@@ -65,13 +65,32 @@ type Rules struct {
 	SignIn       string
 	Server       string
 	GuestAllowed bool
+	// GuestOff is why guest is not allowed, when it is not.
+	GuestOff     string
 	RememberDays *int
 }
 
-// RulesOf reads the rules from cfg.
+// RulesOf reads the rules from cfg. Where the organisation ships every
+// session's record, a guest, who holds no credential to ship it with, is
+// refused rather than run unshipped.
 func RulesOf(cfg config.Config) Rules {
-	return Rules{SignIn: cfg.Auth.Client.SignIn, Server: cfg.SignInServer(),
+	r := Rules{SignIn: cfg.Auth.Client.SignIn, Server: cfg.SignInServer(),
 		GuestAllowed: cfg.Auth.Client.GuestAllowed(), RememberDays: cfg.Auth.Client.RememberDays}
+	switch {
+	case !r.GuestAllowed:
+		r.GuestOff = "your organisation has turned guest off"
+	case cfg.Record.Ship.Enabled && cfg.ManagedSets("record.ship"):
+		r.GuestAllowed = false
+		r.GuestOff = "your organisation ships every session's record, which needs a sign-in"
+	}
+	return r
+}
+
+func (r Rules) guestOff() string {
+	if r.GuestOff != "" {
+		return r.GuestOff
+	}
+	return "your organisation has turned guest off"
 }
 
 // Admits reports why the rules refuse e, or nil.
@@ -155,7 +174,7 @@ var LegacyItems = []string{"records", "history", "drafts", "projects", "ABHED.md
 func Resolve(s *Store, r Request) (Outcome, error) {
 	if r.Guest {
 		if !r.Rules.GuestAllowed {
-			return Outcome{}, &RequiredError{Why: "your organisation has turned guest off", Next: signInHint(r.Rules)}
+			return Outcome{}, &RequiredError{Why: r.Rules.guestOff(), Next: signInHint(r.Rules)}
 		}
 		return Outcome{Principal: GuestPrincipal()}, nil
 	}
@@ -196,7 +215,7 @@ func Resolve(s *Store, r Request) (Outcome, error) {
 	if required || !r.Rules.GuestAllowed {
 		why := "your organisation requires it"
 		if !required {
-			why = "no one is signed in and your organisation has turned guest off"
+			why = "no one is signed in, and " + r.Rules.guestOff()
 		}
 		return Outcome{}, &RequiredError{Why: why, Next: signInHint(r.Rules)}
 	}

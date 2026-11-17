@@ -97,3 +97,18 @@ func withManagedFile(t *testing.T, path string) {
 	managed.ConfigFile = path
 	t.Cleanup(func() { managed.ConfigFile = old })
 }
+
+// An org policy that requires a sign-in to its server names that server:
+// the one the machine took the policy from.
+func TestOrgPolicySignInServerIsItsOwn(t *testing.T) {
+	noManaged(t)
+	f := newOrg(t)
+	f.write(t, `{"auth":{"client":{"sign_in":"server"}}}`, time.Now())
+	cfg, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Auth.Client.SignIn != SignInServer || cfg.SignInServer() != "https://org.example" {
+		t.Fatalf("sign_in %q server %q", cfg.Auth.Client.SignIn, cfg.SignInServer())
+	}
+}

@@ -2,13 +2,18 @@ package app
 
 import (
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/profiles"
 )
 
 // signInTest runs a test as a real start would: no test-only fallback, and
@@ -98,4 +103,73 @@ func withManaged(t *testing.T, body string) {
 	old := managed.ConfigFile
 	managed.ConfigFile = path
 	t.Cleanup(func() { managed.ConfigFile = old })
+}
+
+// A remembered server sign-in whose server says the organisation removed
+// the person's access ends at start: the run is refused, the sign-in is
+// forgotten, and the person's data on this machine stays.
+func TestRemovedAccessEndsTheRememberedServerSignIn(t *testing.T) {
+	signInTest(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"access_revoked","access_removed":true,"reason":"removed by the organisation"}`))
+	}))
+	defer srv.Close()
+	s, _ := identity.Open()
+	e, err := s.AddServer(srv.URL, "pat", "pat@example.com", "org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, _ := s.Root(e)
+	reg := &profiles.File{Profiles: map[string]*profiles.Profile{"org": {URL: srv.URL, Username: "pat", Token: "abhcli_x"}}, Current: "org"}
+	if err := profiles.Save(filepath.Join(root, "profiles.json"), reg); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(root, "history", "h.jsonl")
+	_ = os.MkdirAll(filepath.Dir(keep), 0o700)
+	_ = os.WriteFile(keep, []byte("{}\n"), 0o600)
+	if err := s.Remember(e.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = resolvePrincipal(signInFlags{}, false, os.Stdin, io.Discard)
+	if !errors.Is(err, identity.ErrSignInRequired) || !strings.Contains(err.Error(), "removed your access") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, ok, _ := s.Remembered(nil); ok {
+		t.Error("the removed sign-in is still remembered")
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Error("the person's data went with the access")
+	}
+}
+
+// A server that cannot be reached does not end a remembered sign-in.
+func TestUnreachableServerKeepsTheSignIn(t *testing.T) {
+	signInTest(t)
+	old := serverCheckWait
+	serverCheckWait = 200 * time.Millisecond
+	t.Cleanup(func() { serverCheckWait = old })
+	s, _ := identity.Open()
+	e, _ := s.AddServer("http://127.0.0.1:1", "pat", "", "org")
+	root, _ := s.Root(e)
+	reg := &profiles.File{Profiles: map[string]*profiles.Profile{"org": {URL: "http://127.0.0.1:1", Username: "pat", Token: "abhcli_x"}}, Current: "org"}
+	_ = profiles.Save(filepath.Join(root, "profiles.json"), reg)
+	_ = s.Remember(e.ID)
+	if _, err := resolvePrincipal(signInFlags{}, false, os.Stdin, io.Discard); err != nil {
+		t.Fatalf("offline: %v", err)
+	}
+	if p := currentPrincipal(); p.Kind != identity.Server {
+		t.Fatalf("principal %+v", p)
+	}
+}
+
+// Where the organisation ships every record, a guest is refused.
+func TestGuestRefusedWhereRecordsAreShipped(t *testing.T) {
+	signInTest(t)
+	withManaged(t, `{"record":{"ship":{"enabled":true}},"org_policy":{"url":"https://org.example"}}`)
+	_, err := resolvePrincipal(signInFlags{guest: true}, false, os.Stdin, io.Discard)
+	if !errors.Is(err, identity.ErrSignInRequired) || !strings.Contains(err.Error(), "ships every session's record") {
+		t.Fatalf("err = %v", err)
+	}
 }
