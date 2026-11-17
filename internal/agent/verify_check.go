@@ -1804,14 +1804,19 @@ func (ix *recordIndex) changedAny() bool {
 	return false
 }
 
-// changedWork reports a change of the agent's that succeeded and whose
-// effect the checks read: a write or an edit, or a shell line read as known
-// writers, or whose files are known and in the workspace. Another tool's
-// call (a cluster, an issue tracker) is no change of the work.
+// changedWork reports a change of the agent's that succeeded, in the
+// workspace, whose effect the checks read: a write or an edit of a file in
+// it, or a shell line whose every target is known and in it. Another tool's
+// call (a cluster, an issue tracker), a file outside the workspace, or a
+// line whose targets are not known is no change of the work.
 func (ix *recordIndex) changedWork() bool {
-	ws := ""
-	if ix.workDir != "" {
-		ws = filepath.Clean(ix.workDir) + "/"
+	if ix.workDir == "" {
+		return false
+	}
+	ws := filepath.Clean(ix.workDir) + "/"
+	inside := func(p string) bool {
+		q := ix.inWorkspace(p)
+		return q != "" && strings.HasPrefix(q+"/", ws) && q+"/" != ws
 	}
 	for _, m := range ix.mutations {
 		if m.person || m.failed {
@@ -1819,15 +1824,19 @@ func (ix *recordIndex) changedWork() bool {
 		}
 		switch m.tool {
 		case "write", "edit":
-			return true
-		case "bash":
-			if m.writer {
+			if m.path != "" && inside(m.path) {
 				return true
 			}
+		case "bash":
+			if !m.known || len(m.targets) == 0 {
+				continue
+			}
+			all := true
 			for _, t := range m.targets {
-				if m.known && ws != "" && strings.HasPrefix(filepath.Clean(t)+"/", ws) {
-					return true
-				}
+				all = all && inside(t)
+			}
+			if all {
+				return true
 			}
 		}
 	}

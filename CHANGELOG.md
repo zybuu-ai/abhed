@@ -654,12 +654,13 @@ All notable changes to Abhed are recorded here. The format follows
   ("This correctly handles multiple whitespace…") where the record shows
   only that the tests pass, and the first also cites two call ids the
   record never held. The false-claim corpus gains the two sessions'
-  statements (14 controls, 2 planted, 8 neutral), 93 more planted cases
-  (53 of them changes said of another tool's call, or a pass "after the
-  changes" that only another tool's call made), 21 controls and 8
-  neutral known false negatives, and 3 true statements that were neutral
-  now verify; none of the 1075 planted claims verifies, all 291 controls
-  do, and none of the 419 true or neutral claims is contradicted.
+  statements (14 controls, 2 planted, 8 neutral), 102 more planted cases
+  (62 of them changes said of another tool's call, or a pass "after the
+  changes" that only another tool's call or a change outside the
+  workspace made), 22 controls and 8 neutral known false negatives, and 3
+  true statements that were neutral now verify; none of the 1084 planted
+  claims verifies, all 292 controls do, and none of the 420 true or
+  neutral claims is contradicted.
 - In `abhed -p -runbook`, a change the runbook does not list was refused
   with the hint "rerun with -allow '…'", which could not help: under a bound
   runbook such a change asks whatever an allow rule says. The hint now says

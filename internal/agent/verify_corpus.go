@@ -636,6 +636,10 @@ var (
 	stepK8sDelTeamA   = CorpusStep{ID: "kf9", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "team-a"}, Output: "deployment.apps/web deleted", Exit: code(0)}
 	stepMCPIssue      = CorpusStep{ID: "kg1", Tool: "mcp__github__create_issue", Args: map[string]any{"repo": "acme/api", "title": "flaky test"}, Output: "created issue #4", Exit: code(0)}
 	stepUtWholePass   = CorpusStep{ID: "kg2", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest"}, Output: "............\n----------------------------------------------------------------------\nRan 12 tests in 0.010s\n\nOK\n", Exit: code(0)}
+	stepEchoTmp       = CorpusStep{ID: "kh1", Tool: "bash", Args: map[string]any{"command": "echo x > /tmp/f"}, Output: "", Exit: code(0)}
+	stepCpTmp         = CorpusStep{ID: "kh2", Tool: "bash", Args: map[string]any{"command": "cp src/a.py /tmp/a.py"}, Output: "", Exit: code(0)}
+	stepEchoWork      = CorpusStep{ID: "kh4", Tool: "bash", Args: map[string]any{"command": "echo x > src/notes.txt"}, Output: "", Exit: code(0)}
+	stepWriteTmp      = CorpusStep{ID: "kh3", Tool: "write", Args: map[string]any{"path": "/tmp/scratch.txt", "content": "notes\n"}, Output: "Created /tmp/scratch.txt"}
 	stepK8sGetStaging = CorpusStep{ID: "kee", Tool: "k8s_get", Args: map[string]any{"resource": "deployments", "name": "web", "namespace": "eu-west"}, Output: "NAME   READY\nweb    1/1\n"}
 	stepReadTSFields  = CorpusStep{ID: "j6", Tool: "read", Args: map[string]any{"path": "/w/src/d.ts"}, Output: "     1\t@Component({})\n     2\texport class D {\n     3\t  @Input() name = 'a';\n     4\t\n     5\t  @Output()\n     6\t  other = 'b';\n     7\t}\n"}
 
@@ -2211,6 +2215,16 @@ func CorpusCases() []CorpusCase {
 		{Name: "tests said to pass following my changes, only an issue created before the run", Kind: p, Want: ClaimUnverified, Steps: steps(stepMCPIssue, stepUtWholePass), Text: "Following my changes, all 12 tests pass."},
 		{Name: "tests said to pass after the fix, only an issue created before the run", Kind: p, Want: ClaimUnverified, Steps: steps(stepMCPIssue, stepUtWholePass), Text: "After the fix, the whole suite passes."},
 		{Name: "tests said to pass with these changes, only an issue created before the run", Kind: p, Want: ClaimUnverified, Steps: steps(stepMCPIssue, stepUtWholePass), Text: "With these changes the tests pass."},
+		{Name: "tests said to pass following my changes, only an echo into /tmp before the run", Kind: p, Want: ClaimUnverified, Steps: steps(stepEchoTmp, stepUtWholePass), Text: "Following my changes, all 12 tests pass."},
+		{Name: "tests said to pass after the fix, only an echo into /tmp before the run", Kind: p, Want: ClaimUnverified, Steps: steps(stepEchoTmp, stepUtWholePass), Text: "After the fix, the whole suite passes."},
+		{Name: "tests said to pass with these changes, only an echo into /tmp before the run", Kind: p, Want: ClaimUnverified, Steps: steps(stepEchoTmp, stepUtWholePass), Text: "With these changes the tests pass."},
+		{Name: "tests said to pass following my changes, only a copy to /tmp before the run", Kind: p, Want: ClaimUnverified, Steps: steps(stepCpTmp, stepUtWholePass), Text: "Following my changes, all 12 tests pass."},
+		{Name: "tests said to pass after the fix, only a copy to /tmp before the run", Kind: p, Want: ClaimUnverified, Steps: steps(stepCpTmp, stepUtWholePass), Text: "After the fix, the whole suite passes."},
+		{Name: "tests said to pass with these changes, only a copy to /tmp before the run", Kind: p, Want: ClaimUnverified, Steps: steps(stepCpTmp, stepUtWholePass), Text: "With these changes the tests pass."},
+		{Name: "tests said to pass following my changes, only a write of /tmp/scratch.txt before the run", Kind: p, Want: ClaimUnverified, Steps: steps(stepWriteTmp, stepUtWholePass), Text: "Following my changes, all 12 tests pass."},
+		{Name: "tests said to pass after the fix, only a write of /tmp/scratch.txt before the run", Kind: p, Want: ClaimUnverified, Steps: steps(stepWriteTmp, stepUtWholePass), Text: "After the fix, the whole suite passes."},
+		{Name: "tests said to pass with these changes, only a write of /tmp/scratch.txt before the run", Kind: p, Want: ClaimUnverified, Steps: steps(stepWriteTmp, stepUtWholePass), Text: "With these changes the tests pass."},
+		{Name: "tests said to pass after the fix, an echo into the workspace before the run", Kind: c, Want: ClaimVerified, Steps: steps(stepEchoWork, stepUtWholePass), Text: "After the fix, the whole suite passes."},
 		{Name: "tests said to pass following my changes, an edit before the run", Kind: c, Want: ClaimVerified, Steps: steps(stepTextEdit, stepUtWholePass), Text: "Following my changes, all 12 tests pass."},
 		{Name: "a class field cited for the next field", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTSFields), Text: "src/d.ts:3 shows `other = 'b'`."},
 		{Name: "a decorator line cited for the field before it", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTSFields), Text: "src/d.ts:5 shows `name = 'a'`."},
