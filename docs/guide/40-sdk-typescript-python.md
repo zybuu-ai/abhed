@@ -111,10 +111,17 @@ interrupted, and an answer that arrives with the stop is not applied.
 
 **Show arguments through `visible()`.** A tool call's arguments are the
 model's, unescaped: a value can hold a right-to-left override, a terminal
-escape or a zero-width character that makes it read as something else.
-`visible()` shows each such character as `\u{XXXX}`; it marks more than the
-engine's own check (`args_hidden`), never less. Consider refusing outright
-when `args_hidden` is set.
+escape, a zero-width character, or a run of blanks that pushes the rest of
+a line out of view. `visible()` shows each as a marked escape (`⟨U+202E⟩`,
+`⟨\e⟩`, `⟨80 spaces⟩`) and drops nothing; `args_hidden()` (`argsHidden()`)
+says whether a call's arguments hold any, at any depth. Both are ports of
+the engine's own escaper and tested against its answers for a shared set of
+cases (`sdk/testdata/visible.json`, written by the engine's
+`TestSDKVisibleCases`), but the approval's own `args_hidden` field is the
+engine's verdict and the one to rely on: consider refusing outright when it
+is set. The ports can differ where Unicode's tables do (a character newer
+than one side's), and TypeScript marks a lone surrogate, which the engine
+never sends.
 
 ## Verdicts and errors
 

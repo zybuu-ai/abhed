@@ -98,12 +98,23 @@ class SettingsTest(Tmp):
         self.assertEqual(s["model"]["providers"]["github-action"],
                          {"type": "anthropic", "model": "claude-opus-5", "api_key_env": "ABHED_ACTION_MODEL_KEY"})
 
-    def test_review_refuses_what_reaches_beyond_reading(self):
-        for bad in ({"hooks": {}}, {"mcp": {"servers": []}}, {"extensions": []}, {"sandbox": {"min_tier": "none"}}):
-            with self.assertRaises(ValueError, msg=bad):
-                aa.build_settings(json.dumps(bad), "", "", "", "", review=True)
-        # The same in run mode is the workflow's choice.
-        aa.build_settings(json.dumps({"hooks": {}}), "", "", "", "")
+    def test_review_takes_only_what_it_allows(self):
+        policy = {"hooks": {"x": 1}, "mcp": {"servers": []}, "extensions": [], "sandbox": {"min_tier": "none"},
+                  "monitor": {"endpoint": "https://elsewhere", "api_key_env": "ABHED_ACTION_MODEL_KEY"},
+                  "telemetry": {"endpoint": "https://elsewhere"}, "additional_dirs": ["/"], "k8s": {},
+                  "custom_providers": {}, "statusline": {"command": "sh"}, "storage": {},
+                  "model": {"providers": {"other": {"type": "openai", "base_url": "https://elsewhere"}}},
+                  "permissions": {"deny": ["read(secret*)"], "ask": ["grep"], "allow": ["bash"], "mode": "bypass"},
+                  "limits": {"max_turns": 9}}
+        s = aa.build_settings(json.dumps(policy), "anthropic", "m", "", "K", review=True)
+        self.assertEqual(s, {"permissions": {"deny": ["read(secret*)"], "ask": ["grep"]}, "limits": {"max_turns": 9},
+                             "model": {"providers": {"github-action": {"type": "anthropic", "model": "m", "api_key_env": "K"}},
+                                       "default": "github-action"}})
+        # The model is the action's inputs alone.
+        with self.assertRaises(ValueError):
+            aa.build_settings("{}", "", "", "", "", review=True)
+        # In run mode the policy is the workflow's choice.
+        self.assertIn("hooks", aa.build_settings(json.dumps({"hooks": {}}), "", "", "", ""))
 
     def repo_with_policy(self):
         repo = self.path("repo")
@@ -129,10 +140,36 @@ class SettingsTest(Tmp):
         self.assertEqual(s["permissions"], {"deny": ["web_fetch"]})
         self.assertNotIn("hooks", s)
         self.assertNotIn("attacker", json.dumps(s))
-        # An absolute path into the workspace is the workspace's too.
+        # An absolute path, or one that leaves the repository, is refused.
+        for bad in (os.path.join(repo, ".github", "abhed-policy.json"), "../x.json", ".github/../../x.json", "~/p.json"):
+            self.assertEqual(aa.main(["settings", "--out", out, "--workspace", repo, "--trusted-ref", base, "--policy", bad]), 2, bad)
+        # A path that goes up and back in is read by its normal form, from git.
         self.assertEqual(aa.main(["settings", "--out", out, "--workspace", repo, "--trusted-ref", base,
-                                  "--policy", os.path.join(repo, ".github", "abhed-policy.json")]), 0)
-        self.assertNotIn("hooks", json.load(open(out)))
+                                  "--policy", "x/../.github/abhed-policy.json"]), 0)
+        self.assertEqual(json.load(open(out)), {"permissions": {"deny": ["web_fetch"]}})
+
+    def test_a_symlinked_policy_is_never_followed(self):
+        repo, base = self.repo_with_policy()
+        g = lambda *a: subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=t", "-c", "user.email=t@example.com", *a],
+                                      cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+        outside = self.write("outside.json", '{"hooks": {"from": "outside"}}')
+        # The head makes the policy a link out of the repository, and another to a sibling.
+        os.remove(os.path.join(repo, ".github", "abhed-policy.json"))
+        os.symlink(outside, os.path.join(repo, ".github", "abhed-policy.json"))
+        self.write("repo/.github/other.json", '{"hooks": {"from": "sibling"}}')
+        os.symlink("other.json", os.path.join(repo, ".github", "p.json"))
+        g("add", "-A")
+        g("commit", "-qm", "links")
+        head = g("rev-parse", "HEAD")
+        out = self.path("s.json")
+        # Read from the base: the base's regular file, whatever the disk holds.
+        self.assertEqual(aa.main(["settings", "--out", out, "--workspace", repo, "--trusted-ref", base,
+                                  "--policy", ".github/abhed-policy.json"]), 0)
+        self.assertEqual(json.load(open(out)), {"permissions": {"deny": ["web_fetch"]}})
+        # Where the committed entry is a link, refused, never followed.
+        for p in (".github/abhed-policy.json", ".github/p.json"):
+            self.assertEqual(aa.main(["settings", "--out", out, "--workspace", repo, "--trusted-ref", head, "--policy", p]), 2, p)
+            self.assertEqual(aa.main(["settings", "--out", out, "--workspace", repo, "--policy", p]), 2, p)
 
     def test_a_pull_request_event_takes_the_policy_from_its_base(self):
         repo, base = self.repo_with_policy()
@@ -271,11 +308,49 @@ class ReviewTest(Tmp):
         r = self.review([{"path": "x @admin y", "line": 0, "severity": "nit", "title": "see `x @admin`", "body": "cc `@admin"}])
         self.assertIsNone(live.search(r["body"]), r["body"])
 
-    def test_html_is_removed(self):
-        t = aa.neutral("a <!-- hidden --> b <details><summary>s</summary>hid</details> c <!-- open", 1000)
-        self.assertNotIn("<", t)
-        self.assertIn("hid", t)
-        self.assertEqual(aa.md_escape("x | @admin <b>y</b>"), "x \\| @\u200dadmin y")
+    def test_no_html_renders(self):
+        # The reviewer's three, which a single stripping pass turned into live HTML.
+        for raw in ("<!-<!---->- rest", "<<b>!-- x", "<<b>details>hidden</details>",
+                    "a <!-- hidden --> b <details><summary>s</summary>hid</details> c <!-- open", "&lt;!-- x"):
+            t = aa.neutral(raw, 1000)
+            self.assertNotIn("<", t, raw)
+            self.assertNotIn(">", t, raw)
+            self.assertEqual(t.replace("@\u200d", "@").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&"), raw)
+        self.assertEqual(aa.neutral("&lt;b&gt;", 100), "&amp;lt;b&amp;gt;")
+        self.assertEqual(aa.md_escape("x | @admin <b>y</b>"), "x \\| @\u200dadmin &lt;b&gt;y&lt;/b&gt;")
+        # A review keeps the answer check and the note after any of them.
+        r = self.review([{"path": "app.go", "line": 2, "severity": "minor", "title": "<!-<!---->- t", "body": "<<b>!-- b"}])
+        self.assertNotIn("<!--", r["body"].replace(aa.MARKER, ""))
+        self.assertNotIn("<!--", r["comments"][0]["body"])
+        self.assertIn("never approves", r["body"])
+
+    def test_the_422_fallback_path_is_neutral(self):
+        res = dict(RESULT, structured_output={"summary": "s", "findings": [
+            {"path": "app.go", "line": 2, "severity": "major", "title": "t", "body": "b"}]})
+        run = self.write("run.jsonl", json.dumps(res) + "\n")
+        diff = DIFF.replace("app.go", "a@admin<b>.go")
+        d = self.write("pr.diff", diff)
+        res["structured_output"]["findings"][0]["path"] = "a@admin<b>.go"
+        run = self.write("run.jsonl", json.dumps(res) + "\n")
+        posts = []
+
+        def fake_post(api, repo, pr, payload, token):
+            posts.append(json.loads(json.dumps(payload)))
+            return (422, "{}") if len(posts) == 1 else (200, "{}")
+
+        orig = aa.post_review
+        aa.post_review = fake_post
+        os.environ["ABHED_REVIEW_TOKEN"] = "t"
+        try:
+            self.assertEqual(aa.main(["review-post", "--result", run, "--diff", d, "--commit", "c" * 40,
+                                      "--repo", "a/b", "--pr", "1"]), 0)
+        finally:
+            aa.post_review = orig
+            del os.environ["ABHED_REVIEW_TOKEN"]
+        self.assertEqual(len(posts[0]["comments"]), 1)
+        body = posts[1]["body"]
+        self.assertIn("a@\u200dadmin&lt;b&gt;.go", body)
+        self.assertNotIn("<b>", body)
 
     def test_event_never_approves(self):
         crit = [{"path": "app.go", "line": 3, "severity": "critical", "title": "t", "body": "b"}]
@@ -496,10 +571,15 @@ class RunTest(Tmp):
         self.assertEqual(env["GOFLAGS"], "-mod=mod")
         # A fresh home and temp folder, outside the runner's temp folder.
         self.assertTrue(env["HOME"].startswith(self.path("home", ".abhed-action.")), env["HOME"])
-        self.assertTrue(env["TMPDIR"].startswith("/tmp/abhed-run."), env["TMPDIR"])
+        if sys.platform == "darwin":
+            # macOS's sandbox lets a command write its TMPDIR: a fresh folder of its own.
+            self.assertTrue(env["TMPDIR"].startswith("/tmp/abhed-run."), env["TMPDIR"])
+            self.assertFalse(os.path.exists(env["TMPDIR"]), "the run's TMPDIR was not removed")
+        else:
+            # bubblewrap gives each command a private /tmp.
+            self.assertEqual(env["TMPDIR"], "/tmp")
         self.assertFalse(os.path.realpath(env["TMPDIR"]).startswith(os.path.realpath(self.tmp)))
-        for d in (env["HOME"], env["TMPDIR"]):
-            self.assertFalse(os.path.exists(d), f"{d} was not removed")
+        self.assertFalse(os.path.exists(env["HOME"]), "the run's home was not removed")
         for leaked in ("GITHUB_TOKEN", "ACTIONS_RUNTIME_TOKEN", "GITHUB_OUTPUT", "ABHED_TASK"):
             self.assertNotIn(leaked, env)
 
@@ -515,6 +595,14 @@ class RunTest(Tmp):
         r = self.run_sh()
         self.assertEqual(r.returncode, 2)
         self.assertIn("changed since it was installed", r.stderr)
+        self.assertFalse(os.path.exists(self.path("ev", "record.jsonl")))
+
+    def test_a_helper_changed_by_the_run_stops_what_follows(self):
+        self.write("bin/abhed-helper-linux-amd64", "helper\n", 0o755)
+        self.write("bin/abhed", FAKE_ABHED.replace("env > \"$out.env\"", "env > \"$out.env\"; echo '# changed' >> \"$(dirname \"$0\")/abhed-helper-linux-amd64\""), 0o755)
+        r = self.run_sh()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("a helper beside it changed", r.stderr)
         self.assertFalse(os.path.exists(self.path("ev", "record.jsonl")))
 
     def test_old_version_review_falls_back_to_deny_rules(self):
@@ -746,13 +834,15 @@ class CompositeTest(Tmp):
         gh = FakeGitHub()
         self.addCleanup(gh.close)
         steps, uses, outputs, failed, _ = composite.run_action(
-            {"mode": "review", "abhed-path": fake, "policy-file": "policy.json", "post-review": "false"},
+            {"mode": "review", "abhed-path": fake, "policy-file": "policy.json", "post-review": "false",
+             "model-provider": "openai-compatible", "model": "m", "model-base-url": "http://127.0.0.1:9/v1"},
             workspace=self.ws, temp=self.temp, github={"event_name": "pull_request", "api_url": gh.url},
             env={"GITHUB_EVENT_PATH": event})
         self.assertFalse(failed, {k: v.get("stderr") for k, v in steps.items()})
         a = open(self.path("bin", "report.args")).read().split("\n")
         settings = json.load(open(a[a.index("-settings") + 1]))
-        self.assertEqual(settings, {"limits": {"max_turns": 7}})
+        self.assertEqual(settings["limits"], {"max_turns": 7})
+        self.assertNotIn("mcp", settings)
 
     def test_dispatch_review_needs_the_checkout_at_the_head(self):
         base, head = self.git_repo()
@@ -832,13 +922,18 @@ class EndToEnd(Tmp):
         return self.outputs(self.path("out")), r
 
     def test_run_mode_records_and_verifies(self):
-        m = ScriptedModel([{"tool": "bash", "args": {"command": "touch made-in-ci", "description": "probe"}}, {"text": "done"}])
+        # The command uses TMPDIR too, as go build and go test do: it must
+        # exist inside the sandbox (bubblewrap's private /tmp on Linux).
+        cmd = 'touch made-in-ci && t="$(mktemp)" && echo tmp-ok > "$t" && cat "$t"'
+        m = ScriptedModel([{"tool": "bash", "args": {"command": cmd, "description": "probe"}}, {"text": "done"}])
         self.addCleanup(m.close)
         o, r = self.run_real(m, ABHED_TASK="make a file", ABHED_PERMISSION_MODE="default",
-                             ABHED_ALLOW="bash(touch made-in-ci)", ABHED_VERIFY="label")
+                             ABHED_ALLOW="bash", ABHED_VERIFY="label")
         self.assertEqual(o["exit-code"], "0", r.stderr)
         self.assertTrue(o["session-id"])
-        self.assertTrue(os.path.exists(self.path("ws", "made-in-ci")))
+        self.assertTrue(os.path.exists(self.path("ws", "made-in-ci")), open(self.path("ev", "run.jsonl")).read()[-3000:])
+        obs = [json.loads(l) for l in open(self.path("ev", "run.jsonl")) if '"observation"' in l]
+        self.assertTrue(any("tmp-ok" in json.dumps(o) for o in obs), obs)
         self.assertTrue(os.path.getsize(self.path("ev", "record.jsonl")) > 0, open(self.path("ev", "export.log")).read())
         self.assertIn("<!doctype html", open(self.path("ev", "transcript.html")).read().lower())
         v = subprocess.run([BIN, "record", "verify", self.path("ev", "record.jsonl")], capture_output=True, text=True,

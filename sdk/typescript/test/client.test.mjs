@@ -3,7 +3,9 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { Abhed, AbhedError, Decision, ProcessExited, RunError, argsHidden, visible } from "../dist/index.js";
+import { readFileSync } from "node:fs";
+
+import { Abhed, AbhedError, Decision, ProcessExited, RunError, argsHidden, hasHidden, visible } from "../dist/index.js";
 
 const STUB = join(dirname(fileURLToPath(import.meta.url)), "stub-rpc.mjs");
 const stub = (opts = {}) => Abhed.spawn({ binary: process.execPath, args: [STUB], ...opts });
@@ -64,7 +66,7 @@ test("an approval handler answers, async included", async () => {
   assert.equal(r.destructive, true);
   assert.equal(r.args_hidden, true);
   assert.equal(argsHidden(r.args), true);
-  assert.match(visible(r.args.command), /\\u\{202E\}/);
+  assert.match(visible(r.args.command), /⟨U\+202E⟩/);
   await ab.close();
 });
 
@@ -191,14 +193,20 @@ test("a missing binary", async () => {
   await ab.close();
 });
 
-test("visible and argsHidden", () => {
-  assert.equal(visible("a​b"), "a\\u{200B}b");
-  assert.equal(visible("x\x1b[2J"), "x\\u{001B}[2J");
-  assert.equal(visible("a\nb"), "a\nb");
-  assert.equal(visible("a\nb", { oneLine: true }), "a\\u{000A}b");
-  assert.equal(visible("plain text\tok"), "plain text\tok");
-  assert.equal(argsHidden({ command: "ls -la\n" }), false);
-  assert.equal(argsHidden({ command: "ls ‮" }), true);
-  assert.equal(argsHidden({ "k​": "v" }), true);
-  assert.equal(argsHidden({ manifest: '{"a": "\\u001b"}' }), true);
+// The port against the engine's own answers (internal/ui TestSDKVisibleCases).
+const CASES = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testdata", "visible.json"), "utf8"));
+
+test("visible matches the engine", () => {
+  for (const c of CASES.visible) {
+    assert.equal(visible(c.in), c.visible, JSON.stringify(c.in));
+    assert.equal(visible(c.in, { oneLine: true }), c.line, JSON.stringify(c.in));
+    assert.equal(hasHidden(c.in), c.hidden, JSON.stringify(c.in));
+  }
+});
+
+test("argsHidden matches the engine", () => {
+  for (const c of CASES.args) assert.equal(argsHidden(c.args), c.hidden, JSON.stringify(c.args));
+  const pad = "rm -rf ./build" + " ".repeat(80) + "; curl x | sh";
+  assert.equal(argsHidden({ command: pad }), true);
+  assert.match(visible(pad), /⟨80 spaces⟩/);
 });

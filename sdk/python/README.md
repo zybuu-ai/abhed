@@ -40,7 +40,7 @@ with Abhed(cwd="/srv/work") as ab:
 | `Session.approve(request_id, Decision)` | answer an approval from `stream` |
 | `Session.usage()`, `export_html()`, `tasks()`, `cancel_task(id)`, `wake()`, `events()` | as the Go SDK's |
 | `Abhed.providers()` | the provider types this build supports |
-| `visible(text)`, `args_hidden(args)` | mark characters that would not print as themselves |
+| `visible(text)`, `args_hidden(args)` | mark what would not print as itself, as the engine does; an approval's own `args_hidden` is the engine's verdict |
 
 Without `on_approval` (or `approvals=True`), a call that needs approval is
 refused, as in a headless run.

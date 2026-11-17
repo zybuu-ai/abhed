@@ -12,7 +12,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out() { [ -n "${GITHUB_OUTPUT:-}" ] && printf '%s=%s\n' "$1" "$2" >> "$GITHUB_OUTPUT"; return 0; }
 fail() { echo "::error::abhed install: $*" >&2; exit 1; }
-sha() { if command -v sha256sum >/dev/null; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi; }
+. "$here/lib/digest.sh"
 
 if [ -n "${ABHED_PATH:-}" ]; then
   [ -x "$ABHED_PATH" ] || fail "abhed-path $ABHED_PATH is not an executable file"
@@ -20,7 +20,7 @@ if [ -n "${ABHED_PATH:-}" ]; then
   bin="$dir/$(basename "$ABHED_PATH")"
   [ -n "${GITHUB_PATH:-}" ] && echo "$dir" >> "$GITHUB_PATH"
   out path "$bin"
-  out bin-sha256 "$(sha "$bin")"
+  out bin-sha256 "$(digest "$bin")"
   out version "$("$bin" -version 2>/dev/null | head -1 || true)"
   exit 0
 fi
@@ -78,8 +78,8 @@ bin="$dest/$name/abhed"
 [ -x "$bin" ] || fail "the archive holds no $name/abhed"
 [ -n "${GITHUB_PATH:-}" ] && echo "$dest/$name" >> "$GITHUB_PATH"
 out path "$bin"
-# Checked again before each later run of it.
-out bin-sha256 "$(sha "$bin")"
+# Checked again before each later run of it, with its helpers.
+out bin-sha256 "$(digest "$bin")"
 out version "$version"
 out archive "$archive"
 echo "abhed $version ($os-$arch), SHA-256 $got"

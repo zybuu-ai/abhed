@@ -56,11 +56,14 @@ and head commits, and both must be in the checkout.
 3. **Reviews it read-only.** `abhed -p` runs in `plan` mode with the tools
    `read`, `glob` and `grep` only (`-tools`), without the repository's memory
    files, extensions or skills (`-bare`), and with the workspace's
-   `.abhed/config.json` untrusted, so it can only tighten. Its settings are
-   the action's own inputs, and a `policy-file` in the workspace is read
-   from the pull request's base commit, never its head; a review refuses a
-   policy that sets `hooks`, `mcp`, `extensions`, `skills`, `agents`, the web
-   tools, `rag`, `kubernetes` or `ssh`, or `sandbox.min_tier: none`. The diff is the
+   `.abhed/config.json` untrusted, so it can only tighten. Its model is the
+   action's own inputs (`model-provider` and `model` are required), and
+   from a policy (`policy-file`, read with git from the pull request's base
+   commit, never its head, a symbolic link refused; or the `policy` input)
+   it takes only `permissions.deny`, `permissions.ask` and `limits`.
+   Everything else a policy sets (hooks, MCP servers, extensions, skills,
+   agents, monitors, telemetry, extra folders, other providers, the
+   sandbox, the mode) is set aside, and the log names what was. The diff is the
    run's input; the answer must match a JSON schema of a summary and
    findings (path, line, severity, title, body). Answers are labelled
    (`verify: label`), and the label goes in the review.
@@ -73,9 +76,10 @@ and head commits, and both must be in the checkout.
      line of the new version; the others are listed in the review's body
      with their file and line. At most 50 inline comments.
    - Text from the model is made safe to post, in every field and path:
-     each `@` is followed by a zero-width joiner, so no mention notifies
-     anyone whatever surrounds it, in code or not; HTML comments and tags
-     are removed, so none renders; and every field is bounded. Markdown
+     every `&`, `<` and `>` is escaped, so no HTML renders, no comment or
+     tag among them, however it is nested; each `@` is followed by a
+     zero-width joiner, so no mention notifies anyone whatever surrounds it,
+     in code or not; and every field is bounded. Markdown
      itself is kept, so a finding can still be laid out to mislead (a
      link's text and target differ, say): read it as the model's text.
    - If GitHub refuses an inline line, the review is posted again with the
@@ -90,8 +94,9 @@ and head commits, and both must be in the checkout.
 
 `-tools` and `-bare` are new in 1.3.0, and the action pins v1.2.9 until
 1.3.0 is published. On an older release the review still runs: `plan` mode,
-with deny rules for every built-in tool but `read`, `glob` and `grep`
-(the answer's own tool excepted), and a warning in the log. Two things
+with deny rules for every built-in tool of 1.2.9 but `read`, `glob` and
+`grep` (the answer's own tool excepted; `toolchain`, `todo`, `search`,
+`recall` and `task_status` included), and a warning in the log. Two things
 differ: a deny rule names the tools that exist, where `-tools` names the
 only ones allowed, and the repository's `ABHED.md` reaches the model,
 another place for the pull request's text to try to steer it. Set
@@ -131,8 +136,8 @@ open it from a fork. Everything the agent reads is theirs.
 | Threat | Defence |
 |---|---|
 | The pull request's code runs on the runner (a test, a build script, a git hook, a textconv driver) | Nothing is built or tested. The diff is taken with hooks, external diff and textconv off. The agent has `read`, `glob` and `grep` only, in `plan` mode: no `bash`, no writes, no network tools. |
-| The pull request's configuration loosens the run, or points the model key elsewhere | The workspace's `.abhed/config.json` is untrusted: only what tightens applies. `-bare` drops its memory files, extensions and skills. A `policy-file` in the workspace is read from the base commit, never the head, and a review takes no hooks, MCP servers, extensions, skills, web tools or `min_tier: none` from any policy. The provider the inputs name replaces any policy entry of that name whole, so the key's variable is never bound to a `base_url` the pull request wrote. |
-| Prompt injection: text in the diff tells the agent to approve, to post something, or to leak a secret | The review's event is chosen by the action from the findings' severities, never by the model, and is never `APPROVE`. The model's text is posted only as review text, with every `@` defused and HTML removed. The agent holds no token and cannot reach the network, so it has nothing to leak and no way to send it. Injection can still make a review wrong or noisy: it is advice, and the job never merges anything. |
+| The pull request's configuration loosens the run, or points the model key elsewhere | The workspace's `.abhed/config.json` is untrusted: only what tightens applies. `-bare` drops its memory files, extensions and skills. A `policy-file` is read with git from the base commit, never from the head or the disk, and one committed as a symbolic link is refused. A review takes only deny and ask rules and limits from any policy, and its model only from the action's inputs, so no setting can bind the key's variable to another host. |
+| Prompt injection: text in the diff tells the agent to approve, to post something, or to leak a secret | The review's event is chosen by the action from the findings' severities, never by the model, and is never `APPROVE`. The model's text is posted only as review text, with every `@` defused and every `&`, `<` and `>` escaped. The agent holds no token and cannot reach the network, so it has nothing to leak and no way to send it. Injection can still make a review wrong or noisy: it is advice, and the job never merges anything. |
 | The job's token is used by the agent | The token is in the posting step's environment only. The agent runs under `env -i`, which drops every GitHub credential, and the action refuses a checkout that kept the token in `.git/config` (`persist-credentials: false`). |
 | The model key is taken | It is a secret, masked in logs, passed in one variable to Abhed only, never on a command line or in a file. A fork's `pull_request` run never has it. The agent has no command tool to read its environment. |
 | The workflow is changed by the pull request | On `pull_request` the workflow file comes from the pull request, so a pull request can change its own run, but that run has no secrets (fork) or comes from someone with write access already (same repository). `permissions:` limits the token to `contents: read` and `pull-requests: write`. |
@@ -151,6 +156,9 @@ open it from a fork. Everything the agent reads is theirs.
   the pull request, but the runner's own state is outside this model.
 - Cost. A large or adversarial diff costs tokens; set `max-turns` (and
   `max-budget-usd` from 1.3.0) and a job `timeout-minutes`.
+- An old base branch. A pull request may target any branch, and its
+  policy is that branch's: protect the branches pull requests may target,
+  or give the policy in the `policy` input.
 - Who reads the evidence. On a public repository anyone signed in can
   download it; see [The evidence](38-github-action.md#the-evidence).
 

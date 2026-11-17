@@ -69,19 +69,27 @@ ready to copy.
    `github-action`. That provider replaces any entry of the same name
    whole, so a policy cannot keep its own `base_url` beside your key; the
    key is not written there, only the name of the variable that holds it.
-   A `policy-file` inside the workspace is read from the checkout only when
-   the checkout is the workflow's own ref. On a `pull_request` event it is
-   read from the pull request's base commit (`git cat-file`, so nothing the
-   repository configures runs), and a file the base lacks is an error: the
-   change under review never chooses its own policy. That needs the base in
-   the checkout (`fetch-depth: 0`).
+   `policy-file` is a path in the repository, relative to it; an absolute
+   path, or one that leaves the repository, is refused. It is read with git
+   alone, never from the checkout on disk: on a `pull_request` event at the
+   pull request's base commit, otherwise at the checkout's own commit
+   (`HEAD`), so an uncommitted change does not count. The path is
+   normalised as text, and a file committed as a symbolic link is refused,
+   never followed. A file the commit lacks is an error. The change under
+   review never chooses its own policy, by content or by link. Reading the
+   base needs it in the checkout (`fetch-depth: 0`). A pull request,
+   a fork's included, may target any branch, so "the base" is the policy on
+   that branch: on an old branch, the old policy. Protect the branches
+   pull requests may target, or put the policy in the `policy` input,
+   which is the workflow's own text, to make it one policy everywhere.
 4. **Runs the task** with `abhed -p -output-format stream-json`, the task
    after `--` so one starting with `-` is not read as a flag.
 5. **Keeps the evidence** and uploads it as the `abhed-evidence` artifact
-   (`upload-evidence`, `evidence-name`, `evidence-retention-days`). The
-   binary's SHA-256 is checked again before each later run of it (the
-   record's export and check), so nothing the run reached decides what
-   runs after it.
+   (`upload-evidence`, `evidence-name`, `evidence-retention-days`). One
+   SHA-256 over the binary and every `abhed-helper-*` beside it is taken at
+   install and checked again before each run of it (the version probe, the
+   task, the record's export and check), so nothing the run reached decides
+   what runs after it.
 6. **Fails the job** when `abhed` exited non-zero (`fail-on-error`), after
    the upload, so a failed run still leaves its evidence.
 
@@ -92,7 +100,7 @@ ready to copy.
 | `task` | | the task |
 | `model-provider`, `model`, `model-base-url` | | the provider type (`anthropic`, `openai`, `openai-compatible`, ...), model id and base URL; empty uses the policy file's model |
 | `model-api-key` | | the provider's key; pass a secret |
-| `policy-file` | | a JSON settings file: `permissions`, `sandbox`, `limits`, `verify`, `model`; see above for where it is read from |
+| `policy-file` | | a JSON settings file in the repository: `permissions`, `sandbox`, `limits`, `verify`, `model`; see above for where it is read from |
 | `policy` | | the same as inline JSON, laid over `policy-file` |
 | `permission-mode` | `default` | `default`, `accept-edits`, `plan` or `auto` |
 | `allow`, `deny` | | rules, one per line; a line may hold several, comma-separated |
@@ -163,11 +171,15 @@ away from anything private.
 - **Its own home and temp folder.** With `isolate-home` (the default) the
   run's home is a fresh folder under the runner user's home, so a
   self-hosted runner's `~/.abhed/config.json` neither loosens the run nor
-  collects its record. Its `TMPDIR` is a fresh folder under `/tmp`. Neither
-  is under the runner's temp folder, which holds the job's file commands
-  (`GITHUB_ENV`, `GITHUB_PATH`), the evidence and the installed binary:
-  macOS's process sandbox lets a command write its `TMPDIR`, and these must
-  stay out of its reach. Both are removed when the step ends. Toolchain
+  collects its record. The sandbox keeps the runner user's own home
+  unreadable to commands as well as the run's: it denies both `$HOME` and
+  the account's home. On macOS the run's `TMPDIR` is a fresh folder under
+  `/tmp`, since the process sandbox lets a command write its `TMPDIR`; on
+  Linux it is `/tmp`, which bubblewrap makes private to each command.
+  Neither is the runner's temp folder, which holds the job's file commands
+  (`GITHUB_ENV`, `GITHUB_PATH`), the evidence and the installed binary, so
+  these stay out of the commands' reach. Both folders are removed when the
+  step ends. Toolchain
   caches under the home start empty; set their own variables (`GOMODCACHE`,
   say) and pass them with `env-passthrough` to reuse them. The file-command
   variables and `RUNNER_TEMP` are never passed.

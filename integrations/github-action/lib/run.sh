@@ -22,11 +22,12 @@ ev="${ABHED_EVIDENCE_DIR:?}"
 mkdir -p "$ev"
 chmod 700 "$ev"
 
-sha() { if command -v sha256sum >/dev/null; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi; }
-# The binary is checked before every run of it: what the agent's run could
-# have reached must not decide what runs after it, outside the sandbox.
-want_sha="${ABHED_BIN_SHA256:-$(sha "$bin")}"
-check_bin() { [ "$(sha "$bin")" = "$want_sha" ] || fail "$bin changed since it was installed; nothing more is run"; }
+. "$here/digest.sh"
+# The binary and its helpers are checked before every run of them: what the
+# agent's run could have reached must not decide what runs after it.
+want_sha="${ABHED_BIN_SHA256:-$(digest "$bin")}"
+check_bin() { [ "$(digest "$bin")" = "$want_sha" ] || fail "$bin or a helper beside it changed since it was installed; nothing more is run"; }
+check_bin
 
 # A token actions/checkout left in the checkout's git configuration is
 # readable by the agent; refuse to run beside it unless told otherwise.
@@ -36,12 +37,21 @@ if [ "${ABHED_ALLOW_PERSISTED_CREDENTIALS:-false}" != "true" ] && git -C "$ws" r
   fi
 fi
 
-# The run's own temp folder and home, fresh, never under the runner's temp
-# folder: RUNNER_TEMP holds the file commands (GITHUB_ENV, GITHUB_PATH),
-# the evidence and the binary. The home, which holds the run's record, is
-# not under /tmp either, which macOS's sandbox lets every command write.
-run_tmp="$(mktemp -d /tmp/abhed-run.XXXXXXXX)"
-chmod 700 "$run_tmp"
+# The run's own temp folder and home, never under the runner's temp folder:
+# RUNNER_TEMP holds the file commands (GITHUB_ENV, GITHUB_PATH), the
+# evidence and the binary. On macOS a command may write its TMPDIR, so that
+# is a fresh folder under /tmp; on Linux bubblewrap gives each command a
+# private /tmp of its own and binds nothing else there, so TMPDIR is /tmp,
+# which exists inside the sandbox. The home, which holds the run's record,
+# is a fresh folder under the runner user's home.
+run_tmp=""
+if [ "$(uname -s)" = Darwin ]; then
+  run_tmp="$(mktemp -d /tmp/abhed-run.XXXXXXXX)"
+  chmod 700 "$run_tmp"
+  tmpdir="$run_tmp"
+else
+  tmpdir=/tmp
+fi
 home="$HOME"
 made_home=""
 if [ "${ABHED_ISOLATE_HOME:-true}" = "true" ]; then
@@ -50,16 +60,16 @@ if [ "${ABHED_ISOLATE_HOME:-true}" = "true" ]; then
   chmod 700 "$home"
   made_home="$home"
 fi
-cleanup() { rm -rf "$run_tmp" ${made_home:+"$made_home"} 2>/dev/null || true; }
+cleanup() { rm -rf ${run_tmp:+"$run_tmp"} ${made_home:+"$made_home"} 2>/dev/null || true; }
 trap cleanup EXIT
 if [ -n "${RUNNER_TEMP:-}" ]; then
   rt="$(cd "$RUNNER_TEMP" && pwd -P)"
-  for d in "$run_tmp" "$home"; do
+  for d in "$tmpdir" "$home"; do
     case "$(cd "$d" && pwd -P)/" in "$rt/"*) fail "the run's folders would be inside RUNNER_TEMP" ;; esac
   done
 fi
 
-envs=("PATH=$PATH" "HOME=$home" "LANG=${LANG:-C.UTF-8}" "TMPDIR=$run_tmp" "CI=true")
+envs=("PATH=$PATH" "HOME=$home" "LANG=${LANG:-C.UTF-8}" "TMPDIR=$tmpdir" "CI=true")
 [ -n "${USER:-}" ] && envs+=("USER=$USER")
 [ -n "${ABHED_KEY_ENV:-}" ] && envs+=("$ABHED_KEY_ENV=${ABHED_ACTION_MODEL_KEY:-}")
 for name in ${ABHED_ENV_PASSTHROUGH//,/ }; do

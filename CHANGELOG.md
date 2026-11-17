@@ -506,12 +506,15 @@ All notable changes to Abhed are recorded here. The format follows
   artifact; and fails the job on a non-zero exit. Inputs take the task, the
   model provider (its key from a secret, masked, in one variable, its entry
   never merged with a policy's), a policy as `-settings` (a file in the
-  workspace is read from the pull request's base commit on a pull request),
+  repository, read with git alone at the pull request's base commit on a
+  pull request and at `HEAD` otherwise, never from the disk; a symbolic link
+  is refused),
   allow and deny rules, limits, and the variables to pass through. The
   agent runs under `env -i`: no GitHub token reaches it, and a checkout that
-  kept its token in `.git/config` is refused. Its home and `TMPDIR` are
-  fresh folders outside the runner's temp folder, and the binary's hash is
-  checked again before every later run of it. A flag newer than the pinned
+  kept its token in `.git/config` is refused. Its home is a fresh folder
+  outside the runner's temp folder, and so is its `TMPDIR` on macOS (on
+  Linux, bubblewrap's private `/tmp`); one hash over the binary and its
+  helpers is checked again before every later run of them. A flag newer than the pinned
   release is refused before the run. `pull_request_target` is refused.
   See [The GitHub Action](docs/guide/38-github-action.md).
 - Pull request review, the action's `mode: review`. It takes the diff
@@ -521,7 +524,8 @@ All notable changes to Abhed are recorded here. The format follows
   findings) and posts one review: `COMMENT`, or `REQUEST_CHANGES` at a
   severity you set, never `APPROVE`, with an inline comment on each finding
   whose line is in the diff. Every `@` in the model's text is defused and
-  HTML is removed. Only the posting step holds the token. On a release
+  every `&`, `<` and `>` escaped. From a policy a review takes only deny and
+  ask rules and limits; its model comes from the action's inputs alone. Only the posting step holds the token. On a release
   before 1.3.0, which lacks `-tools` and `-bare`, deny rules narrow the
   tools instead. On
   `pull_request` a fork's pull request has no model key and is skipped with
@@ -532,11 +536,19 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed rpc` as a child process: start a session, prompt or stream its
   events, steer, answer approvals with a handler or from the stream,
   verdicts and `RunError` with the terminal reason, usage, export,
-  background tasks and wake. No runtime dependencies and no network call of
-  their own. Not yet published. See
+  background tasks and wake, and `visible` and `args_hidden` ported from the
+  engine's escaper and tested against its answers
+  (`sdk/testdata/visible.json`). No runtime dependencies and no network call
+  of their own. Not yet published. See
   [TypeScript and Python SDKs](docs/guide/40-sdk-typescript-python.md).
 
 ### Changed
+
+- On macOS, the process sandbox keeps the account's own home unreadable to
+  commands when `HOME` names another folder, as well as `$HOME`: its state
+  folder and credential paths too. Moving `HOME` (as a CI run given a fresh
+  one does) no longer opens the real home's `~/.ssh` and the rest to the
+  agent's commands.
 
 - Providers of type `ollama` now send one request at a time unless
   `max_concurrent_requests` says more, matching Ollama's documented

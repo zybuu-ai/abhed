@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import posixpath
 import re
 import secrets
 import subprocess
@@ -40,9 +41,31 @@ def deep_merge(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-# Settings a review never takes, whoever wrote the policy: each runs or
-# reaches something beyond reading the checkout.
-REVIEW_REFUSED = ("hooks", "mcp", "extensions", "skills", "agents", "web_fetch", "web_search", "rag", "kubernetes", "ssh")
+# What a review takes from a policy: rules that refuse or ask, and limits.
+# Everything else (hooks, MCP, extensions, monitors, telemetry, extra
+# folders, providers, the sandbox) reaches beyond reading the checkout or
+# moves the key, and is dropped; the model is the action's own inputs.
+REVIEW_KEEPS = {"permissions": ("deny", "ask"), "limits": None}
+
+
+def review_settings(policy: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+    """The part of a policy a review takes, and what it dropped."""
+    kept: Dict[str, Any] = {}
+    dropped: List[str] = []
+    for k, v in policy.items():
+        if k not in REVIEW_KEEPS:
+            dropped.append(k)
+            continue
+        sub = REVIEW_KEEPS[k]
+        if sub is None:
+            kept[k] = v
+            continue
+        if not isinstance(v, dict):
+            dropped.append(k)
+            continue
+        kept[k] = {sk: sv for sk, sv in v.items() if sk in sub}
+        dropped += [f"{k}.{sk}" for sk in v if sk not in sub]
+    return kept, dropped
 
 
 def build_settings(policy_text: str, provider_type: str, model: str, base_url: str, key_env: str,
@@ -60,12 +83,12 @@ def build_settings(policy_text: str, provider_type: str, model: str, base_url: s
             raise ValueError("the policy must be a JSON object")
         settings = v
     if review:
-        bad = [k for k in REVIEW_REFUSED if k in settings]
-        if bad:
-            raise ValueError("a review takes no " + ", ".join(bad) + " from the policy: it only reads the checkout")
-        sb = settings.get("sandbox")
-        if isinstance(sb, dict) and sb.get("min_tier") == "none":
-            raise ValueError("a review never runs with sandbox.min_tier none")
+        settings, dropped = review_settings(settings)
+        if dropped:
+            print("abhed: a review takes only permissions.deny, permissions.ask and limits from the policy; "
+                  "set aside: " + ", ".join(sorted(dropped)), file=sys.stderr)
+        if not (provider_type and model):
+            raise ValueError("a review needs model-provider and model: its model comes from the action's inputs only")
     if provider_type or model or base_url:
         if not (provider_type and model):
             raise ValueError("model-provider and model are needed together")
@@ -83,11 +106,21 @@ def build_settings(policy_text: str, provider_type: str, model: str, base_url: s
 
 
 def git_blob(workspace: str, ref: str, rel: str) -> str:
-    """A file as committed at ref, read as a blob: no textconv, no filter, no hook."""
-    p = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "cat-file", "blob", f"{ref}:{rel}"], cwd=workspace,
-                       capture_output=True, text=True, errors="replace")
+    """A regular file as committed at ref, read with git alone: no textconv,
+    no filter, no hook, and never the checkout on disk. A link is refused."""
+    g = ["git", "-c", "core.hooksPath=/dev/null"]
+    ls = subprocess.run([*g, "ls-tree", "-z", ref, "--", rel], cwd=workspace, capture_output=True, text=True, errors="replace")
+    entry = ls.stdout.split("\0", 1)[0]
+    if ls.returncode != 0 or not entry:
+        raise ValueError(f"{rel} is not committed at {ref[:12]} (and the checkout must be made with fetch-depth: 0)")
+    mode, kind = entry.split(" ", 2)[:2]
+    if mode == "120000":
+        raise ValueError(f"{rel} is a symbolic link at {ref[:12]}; a policy must be a regular file")
+    if kind != "blob" or mode not in ("100644", "100755"):
+        raise ValueError(f"{rel} is not a regular file at {ref[:12]}")
+    p = subprocess.run([*g, "cat-file", "blob", f"{ref}:{rel}"], cwd=workspace, capture_output=True, text=True, errors="replace")
     if p.returncode != 0:
-        raise ValueError(f"{rel} could not be read from {ref[:12]} (is it committed there, and the checkout made with fetch-depth: 0?)")
+        raise ValueError(f"{rel} could not be read from {ref[:12]}")
     return p.stdout
 
 
@@ -105,25 +138,30 @@ def event_base() -> str:
         return ""
 
 
+def policy_rel(path: str) -> str:
+    """The policy's path in the repository, normalised by text alone: no link
+    is followed, and an absolute path or one that leaves the repository is
+    refused."""
+    if not path or os.path.isabs(path) or path.startswith("~"):
+        raise ValueError(f"policy-file {path!r} must be a path in the repository, relative to it")
+    rel = posixpath.normpath(path.replace(os.sep, "/"))
+    if rel in (".", "") or rel == ".." or rel.startswith("../"):
+        raise ValueError(f"policy-file {path!r} leaves the repository")
+    return rel
+
+
 def read_policy(path: str, workspace: str, trusted_ref: str) -> Tuple[str, str]:
     """The policy file's text, and where it was read from.
 
-    A file in the workspace is the checkout's, which a pull request writes.
-    On a pull request it is read from trusted_ref (the base commit) instead,
-    so the change under review never chooses its own policy; elsewhere the
-    checkout is the workflow's own ref. A file outside the workspace is the
-    workflow's.
+    It is read from git, never from the checkout on disk, which the change
+    under review writes: at trusted_ref (the pull request's base commit) on a
+    pull request, else at the checkout's own commit, HEAD.
     """
-    ws = os.path.realpath(workspace)
-    full = os.path.realpath(path if os.path.isabs(path) else os.path.join(ws, path))
-    inside = full == ws or full.startswith(ws + os.sep)
-    if inside and trusted_ref:
-        if not SHA.match(trusted_ref):
-            raise ValueError(f"{trusted_ref!r} is not a commit id")
-        rel = os.path.relpath(full, ws)
-        return git_blob(ws, trusted_ref, rel), f"{rel} at {trusted_ref[:12]}"
-    with open(full, encoding="utf-8") as f:
-        return f.read(), full
+    rel = policy_rel(path)
+    ref = trusted_ref or "HEAD"
+    if trusted_ref and not SHA.match(trusted_ref):
+        raise ValueError(f"{trusted_ref!r} is not a commit id")
+    return git_blob(workspace, ref, rel), f"{rel} at {ref[:12]}"
 
 
 def cmd_settings(a: argparse.Namespace) -> int:
@@ -417,22 +455,19 @@ def commentable_lines(diff: str) -> Dict[str, Set[int]]:
 
 
 ZWJ = "\u200d"
-HTML_COMMENT = re.compile(r"<!--.*?(-->|$)", re.S)
-HTML_TAG = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>")
 
 
 def neutral(text: str, limit: int) -> str:
     """Text the model wrote, made safe to post in every field and path:
-    each @ is followed by a zero-width joiner, so no mention notifies anyone
-    whatever surrounds it; HTML comments and tags are removed; and it is
-    bounded."""
+    every &, < and > is escaped, so no HTML renders (no comment or tag can
+    hide what follows), and each @ is followed by a zero-width joiner, so no
+    mention notifies anyone whatever surrounds it. It is bounded before it
+    is escaped."""
     text = text.replace("\r", "")
-    text = HTML_COMMENT.sub("", text)
-    text = HTML_TAG.sub("", text)
-    text = text.replace("@", "@" + ZWJ)
     if len(text) > limit:
         text = text[: limit - 20] + "\n\n[cut for length]"
-    return text
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return text.replace("@", "@" + ZWJ)
 
 
 MARKER = "<!-- abhed-review -->"
@@ -524,7 +559,7 @@ def cmd_review_post(a: argparse.Namespace) -> int:
     status, text = post_review(a.api, a.repo, a.pr, payload, token)
     if status == 422 and payload["comments"]:
         # A line GitHub will not take: post the findings in the body instead.
-        moved = [f"- `{c['path']}` line {c['line']}: {c['body']}" for c in payload["comments"]]
+        moved = [f"- `{neutral(c['path'], 300)}` line {c['line']}: {c['body']}" for c in payload["comments"]]
         payload["body"] += "\n\nFindings GitHub would not place on a line:\n\n" + "\n".join(moved)
         payload["comments"] = []
         status, text = post_review(a.api, a.repo, a.pr, payload, token)

@@ -30,7 +30,7 @@ from ._types import (
     Woken,
     WorkspaceTrust,
 )
-from ._visible import args_hidden, visible
+from ._visible import args_hidden, has_hidden, visible
 
 __all__ = [
     "Abhed",
@@ -53,6 +53,7 @@ __all__ = [
     "Woken",
     "WorkspaceTrust",
     "args_hidden",
+    "has_hidden",
     "visible",
 ]
 

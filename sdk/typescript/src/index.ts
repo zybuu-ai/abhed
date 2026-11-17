@@ -23,4 +23,4 @@ export {
   type Woken,
   type WorkspaceTrust,
 } from "./types.js";
-export { argsHidden, visible } from "./visible.js";
+export { argsHidden, hasHidden, visible } from "./visible.js";

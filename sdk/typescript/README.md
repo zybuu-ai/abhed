@@ -46,7 +46,7 @@ try {
 | `session.approve(requestId, decision)` | answer an approval from `stream` |
 | `session.usage()`, `exportHtml()`, `tasks()`, `cancelTask(id)`, `wake()`, `events()` | as the Go SDK's |
 | `ab.providers()` | the provider types this build supports |
-| `visible(text)`, `argsHidden(args)` | mark characters that would not print as themselves |
+| `visible(text)`, `argsHidden(args)` | mark what would not print as itself, as the engine does; an approval's own `args_hidden` is the engine's verdict |
 
 Without `onApproval` (or `approvals: true`), a call that needs approval is
 refused, as in a headless run.

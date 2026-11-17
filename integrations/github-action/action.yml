@@ -294,7 +294,7 @@ runs:
           export ABHED_JSON_SCHEMA="$(cat "$REVIEW_DIR/schema.json")"
           export ABHED_PERMISSION_MODE=plan ABHED_TOOLS="read,glob,grep" ABHED_BARE=true
           # Before 1.3.0, which has no -tools: every other built-in tool denied.
-          export ABHED_TOOLS_FALLBACK_DENY="bash,write,edit,web_fetch,web_search,task,tasks,task_cancel,ssh,ssh_connect,ssh_get,ssh_put,memory_write,skill,ask_user,shell_output,shell_kill,tool_search"
+          export ABHED_TOOLS_FALLBACK_DENY="bash,write,edit,web_fetch,web_search,search,task,tasks,task_status,task_cancel,ssh,ssh_connect,ssh_get,ssh_put,memory_write,recall,todo,toolchain,skill,ask_user,shell_output,shell_kill,tool_search"
           export ABHED_VERIFY="${ABHED_VERIFY_INPUT:-label}"
         else
           export ABHED_TASK="$ABHED_TASK_INPUT"
