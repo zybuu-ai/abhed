@@ -656,6 +656,15 @@ func TestUnattendedRunGetsNoClarifyNote(t *testing.T) {
 		{"Speed up the project by running things in parallel", UnattendedClarifyNote},
 		{"review the three packages in parallel", ParallelNote},
 		{"fix the failing test in pkg/auth", ""},
+		// Ordinary work that mentions subagents or "at once" is done, not
+		// turned into a plan.
+		{"Fix the subagent timeout handling in the loop", ""},
+		{"Delete these three files at once", ""},
+		{"Update the copyright year in all files at once", ""},
+		{"Bump the version in all three manifests at once", ""},
+		{"Fix the bug where two tabs opened at the same time crash the editor", ""},
+		// Subagents named with no speed or parallel word: nothing to clarify.
+		{"use subagents for this", ""},
 	} {
 		l, adapter, _ := noteLoop(t, true, nil)
 		l.Unattended = true

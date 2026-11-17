@@ -956,16 +956,21 @@ All notable changes to Abhed are recorded here. The format follows
   waits for stdin to end however late its input starts.
 - A vague request for parallel work or speed under `abhed -p` (or any run
   nobody can answer) went straight to code edits: it got no note, since the
-  note that asks a question cannot be answered there. It now gets a note to
-  make no code edits for it and answer with a plan of both readings, or the
-  question it would ask. Explicit parallel requests still get the note that
-  starts subagents.
+  note that asks a question cannot be answered there. A message that names
+  speed or parallelism and no concrete task now gets a note: if it only
+  asks to speed things up or run things in parallel, make no code edits for
+  it, and answer with a plan of both readings or the question it would ask.
+  A message that names work ("delete these three files at once") gets no
+  note and is done as asked; explicit parallel requests still get the note
+  that starts subagents.
 - The `-p` relevance check marked an answer `off_topic` when the question
   named one of the session's tools ("call the ssh_connect tool, then show
   the uptime"). A tool name is no longer taken as what the answer must
   mention.
-- A run stopped for late stdin input is recorded as `stdin_late`, not
-  `user_interrupt`, in `session.ended` and the text footer.
+- A run stopped while running because input came late on stdin is recorded
+  as `stdin_late`, not `user_interrupt`, in `session.ended` and the text
+  footer. Input that comes only after the run has ended still exits 9, but
+  the record keeps the reason the run ended with, usually `completed`.
 - First-run setup lists a local Ollama's models in name order, so the
   default choice no longer changes between runs.
 - A managed price that replaces your own `pricing` entry for the same model

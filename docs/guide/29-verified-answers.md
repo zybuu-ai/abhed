@@ -877,12 +877,13 @@ names something (a quoted phrase, a file, an identifier) and the answer
 mentions none of it, or the question has several topic words and the answer
 shares none. The name of one of the session's tools ("call the ssh_connect
 tool, then show the uptime") says how to work, not what to answer about, so
-it is not one of those names; with no other, the topic words decide. An `off_topic` answer adds "the answer may not address the
-question: …" to the `note`, and the text output's verdict line ends "may
-not address the question". It is a note only: the outcome, the exit code
-and the revision turn are never changed by it, so a script that wants to act
-on it reads `relevance`. A custom command's turn, whose text is the
-command's and not the person's question, is not checked.
+it is not one of those names; with no other, the topic words decide. An
+`off_topic` answer adds "the answer may not address the question: …" to the
+`note`, and the text output's verdict line ends "may not address the
+question". It is a note only: the outcome, the exit code and the revision
+turn are never changed by it, so a script that wants to act on it reads
+`relevance`. A custom command's turn, whose text is the command's and not
+the person's question, is not checked.
 
 ## Measuring it
 

@@ -675,7 +675,6 @@ func warnScoped(w warnSink, c Config, want func(string) bool) {
 	}
 }
 
-// warnSetAside warns of each set-aside setting.
 // warnOverriddenPrices says, once per file and model, that the managed
 // configuration's price replaced the one a lower layer set, which the guide
 // promises; a price already said to be set aside is not said twice.
@@ -712,6 +711,7 @@ func priceModel(key string) string {
 	return m
 }
 
+// warnSetAside warns of each set-aside setting.
 func warnSetAside(w warnSink, keys []SetAsideKey) {
 	for _, k := range keys {
 		w.emit("aside\x00"+k.File+"\x00"+k.Key+"\x00"+k.Value, k.String())

@@ -66,11 +66,14 @@ notes after your message for the model.
   concurrently, it should ask one short question before acting; the
   terminal, Studio and the console get it. A run nobody can answer, such as
   `abhed -p`, a script through the SDK or rpc, or an unattended server run,
-  gets a note in its place: unless the message asks in so many words to
-  change the program to run concurrently, make no code edits for it, and
-  answer with a short plan that describes both readings, or with the one
-  question it would ask. A vague "speed up the project by running things in
-  parallel" under `-p` so gets a plan, not a change to the code.
+  gets no question. Only a vague request there, one that names speed or
+  parallelism and no concrete task (no action with an object such as fix,
+  delete or update, no bug, file or symbol), gets a note in its place: if
+  the message only asks to speed things up or run things in parallel, make
+  no code edits for it, and answer with a short plan that describes both
+  readings, or with the one question it would ask; otherwise do the work. A
+  vague "speed up the project by running things in parallel" under `-p` so
+  gets a plan, while "delete these three files at once" is done as asked.
 
 The parallel phrases are "in parallel", "at the same time", "at once",
 "simultaneously", "side by side", "parallelize" (or "parallelise"), "fan out",

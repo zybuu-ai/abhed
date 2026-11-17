@@ -156,9 +156,13 @@ only through the actor: `user` for a reviewer's refusal, `system` for policy.
 
 **Terminal reasons** are an enum, not a string — CI exit codes and the eval harness both
 depend on distinguishing them (§09):
-`completed · max_turns · max_budget · policy_denied · user_interrupt · error · shutdown · retry_exhausted · stalled · deadline · unverified`
+`completed · max_turns · max_budget · policy_denied · user_interrupt · error · shutdown · retry_exhausted · stalled · deadline · unverified · stdin_late`
 
 `unverified` means strict verification or a completion contract could not verify the answer after its one revision turn (exit code 8).
+
+`stdin_late` means a `-p` run was stopped because input came on its stdin after `-stdin-wait` (exit code 9);
+before 1.3.0 such a stop was recorded as `user_interrupt`. Input that comes only after the run has already
+ended still exits 9, but the record keeps the reason the run ended with, usually `completed`.
 
 `deadline` means the run's own time limit passed (a context deadline, as the eval harness sets per task);
 it used to be recorded as `user_interrupt`.

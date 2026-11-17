@@ -398,14 +398,39 @@ const ClarifyNote = "[Abhed: this message mentions parallel work. If it is uncle
 	"concurrently, ask one short question before acting.]"
 
 // UnattendedClarifyNote is the clarify note for a run nobody can answer
-// (-p, rpc, a server's unattended run): the question cannot be asked, so a
-// real model went straight to making the program concurrent. It holds the
-// model to a plan or a question instead of a code change.
-const UnattendedClarifyNote = "[Abhed: this message mentions parallel work or speed, and nobody can answer a " +
-	"question in this run. Unless it asks in so many words to change the program to run concurrently, make no " +
-	"code edits for it: answer with a short plan that describes both readings (independent pieces of work " +
-	"started as subagents, or the program itself changed to run concurrently), or with the one question you " +
-	"would ask.]"
+// (-p, rpc, a server's unattended run), given only to a vague request (see
+// vagueSpeedRequest): the question cannot be asked, and a real model went
+// straight to making the program concurrent. It stays conditional, as the
+// note that asks does, so work the message does ask for is still done.
+const UnattendedClarifyNote = "[Abhed: nobody can answer a question in this run. If this message only asks to " +
+	"speed things up or to run things in parallel, and names no concrete change, it is unclear whether the person " +
+	"wants independent pieces of work started as subagents or the program itself changed to run concurrently: " +
+	"then make no code edits for it, and answer with a short plan that describes both readings, or with the one " +
+	"question you would ask. Otherwise do the work it asks for.]"
+
+var (
+	// speedOrParallel names speed or parallelism itself.
+	speedOrParallel = regexp.MustCompile(`(?i)\b(in[ -]parallel|at the same time|at once|simultaneously|side[ -]by[ -]side|` +
+		`paralleli[sz]\w*|concurrent(ly)?|speed(s|ing)? up|faster|quicker|slow|slower|performance)\b`)
+	// concreteTask is a task the message names: an action with an object, a
+	// bug, or a file or symbol.
+	concreteTask = regexp.MustCompile(`(?i)\b(fix|fixes|fixing|delete|deletes|deleting|remove|removes|removing|update|updates|updating|` +
+		`bump|bumps|bumping|add|adds|adding|rename|renames|renaming|move|moves|moving|edit|edits|editing|change|changes|changing|` +
+		`replace|replaces|replacing|migrate|migrates|migrating|install|installs|upgrade|upgrades|upgrading|write|writes|writing|` +
+		`create|creates|creating|refactor|refactors|refactoring|review|reviews|reviewing|test|tests|testing|document|documents|` +
+		`translate|convert|converts|format|formats|lint|clean|cleans|generate|generates|handle|handles|handling|` +
+		`bug|bugs|crash|crashes|crashing|error|errors|fail|fails|failing|failure|broken|timeout|timeouts|regression|issue|issues)\b`)
+	// namedThing is a file, a path or an identifier.
+	namedThing = regexp.MustCompile(`[A-Za-z0-9_./-]*(?:[a-z][A-Z]|_[A-Za-z]|\.[A-Za-z]{1,5}\b|/[A-Za-z])[A-Za-z0-9_./-]*`)
+)
+
+// vagueSpeedRequest reports a message that names speed or parallelism and no
+// concrete task: no action with an object, bug, file or symbol. Only such a
+// message gets the unattended note; "Delete these three files at once" is
+// work to do.
+func vagueSpeedRequest(typed string) bool {
+	return speedOrParallel.MatchString(typed) && !concreteTask.MatchString(typed) && !namedThing.MatchString(typed)
+}
 
 // parallelNote is the note for the person's own words, typed, or "". Only a
 // top-level loop that can still start a subagent with tasks adds it: a
@@ -423,9 +448,13 @@ func (l *Loop) parallelNote(typed string) string {
 		return ParallelNote
 	case clarifyNote:
 		// A question nobody can answer would end the run with it: an
-		// unattended run answers with a plan or the question, and edits nothing.
+		// unattended run gets a note only for a vague request, which it
+		// answers with a plan or the question.
 		if l.Unattended {
-			return UnattendedClarifyNote
+			if vagueSpeedRequest(typed) {
+				return UnattendedClarifyNote
+			}
+			return ""
 		}
 		return ClarifyNote
 	}
