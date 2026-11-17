@@ -1698,11 +1698,43 @@ _abhed/complete/warm { sessionId } → { warmed: boolean, ms?: number, recent?: 
   completions endpoint, or a 400 saying it or `suffix` is not supported,
   switches the session to chat. Each request is sent once, no retries; under
   `local_only` no provider follows a redirect off the machine. Text only, no
-  tools. The answer is cleaned before it is offered: reasoning a model wrote
+  tools. The suffix sent is never empty: at the end of a file it is a
+  newline, since Ollama applies a model's fill-in-the-middle template only
+  to a request with a suffix, and without one a coder model answers the
+  prefix in prose. The answer is cleaned before it is offered: reasoning a model wrote
   into its text (`<think>`, `analysis…final` channels) is removed, a fenced
   block gives its code, code repeated from either side of the cursor is
-  trimmed, and an answer that reads as prose is dropped, with `dropped`
-  saying so.
+  trimmed (a one-line answer that ends with the rest of the cursor's line
+  loses that rest, so it is not inserted twice; a rest of brackets alone
+  only when keeping it would close more than the cursor's line opened), and
+  an answer that reads as prose is dropped, with `dropped` saying so: one
+  that opens as a chat answer does ("Here's", "Sure,", "It looks like"), or
+  as an English sentence that opens with no constant or keyword (`None`,
+  `True`, `Self`, `Some`…) and has a contraction, a pronoun, or an article
+  in six words or more ("None if x is None else x" is code), unless the
+  cursor is in a comment, a docstring or a string, or the language is
+  written in sentences (Markdown, plain text, YAML and the like). A string
+  that spans lines counts, each in the languages that have it: in Go,
+  JavaScript and TypeScript an odd count of backticks before the cursor
+  (escaped ones aside); in Rust a raw string (`r"`, `r#"`, `br#"`) left
+  open; in Ruby, shell, Perl and PHP a heredoc whose closing line has not
+  come; in any language an open triple quote. With no language named, every
+  rule applies. The counts are rough: a stray backtick in a Go comment, say,
+  keeps the prose filter quiet for the rest of the file, where Studio's
+  parse check below still applies. Studio also parses the
+  document with the suggestion inserted, where it has the language's
+  grammar and the document is at most 256 KB (larger ones are left to the
+  engine's filter), and drops one whose own text holds a syntax error or
+  that leaves more syntax errors than there were. It parses the document
+  once per version and each suggestion incrementally, on the renderer.
+- Completions go first on a model server they share with next edits and
+  agent turns: a completion waiting for one of the server's request slots
+  (`max_concurrent_requests`, one for `ollama`) is given the next free one
+  ahead of requests that waited without the mark, and fill-in-the-middle
+  requests now take a slot too, rather than waiting in the server's own
+  queue. While a completion is asked for, from its arrival to its answer,
+  next-edit model calls to that server wait, and one in flight is cancelled
+  (§7.11), on a server that queues requests only.
 - Recorded as `completion.enabled` just before the first request is sent,
   and again with `mode: "chat"` before a fallback's first chat request (if
   it cannot be recorded, nothing is sent) and `completion.summary` when
@@ -1780,6 +1812,22 @@ _abhed/nextEdit { sessionId, uri, cursor: { line, character },
   any function the window shows and no sites were sent.
   Studio re-parses the document with any suggestion applied before showing
   it, and drops it when the parse fails or is cut short.
+- Completions go first (§7.10): a model call waits while a completion to
+  the same server is asked for, and is cancelled when one arrives while it
+  runs, answered `cancelled: "a completion went first"`. A rename finished
+  from the file asks no model and never waits. This holds only on a server
+  that queues requests (one on this machine, `ollama`, or one with
+  `max_concurrent_requests`); a hosted server serves both side by side and
+  nothing waits or is cancelled there. A call cancelled while it waited for
+  the server's request slot was never sent and is not charged. The answer is
+  bounded by the window it rewrites: `max_tokens` is half the window's bytes
+  plus 64, at least 128 and at most 1,024. An answer cut at that bound
+  (`finish_reason` `length`, `max_tokens` or `MAX_TOKENS`) is `dropped`
+  ("the model's answer was cut short"), never read as the window, so the
+  lines it did not reach are never offered as deletions.
+- `_abhed/nextEdit/cancel { sessionId, seq? }` → `{}` (feature
+  `nextEditCancel`) ends the request in flight, as Studio sends on each
+  keystroke: with `seq`, only that one.
 - Rate limits, `seq` ordering, supersede and cancel as §7.10. Recorded as
   `next_edit.enabled` before the first request and `next_edit.summary` when
   the session closes, which counts renames finished from the file as

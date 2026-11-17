@@ -245,9 +245,16 @@ closed when the session is next opened. The CLI shows it as a dim
 agent's; Studio shows a card titled `Language server: gopls` that completes
 when the server is up. A start that was not allowed completes as
 information, naming the allow rule (`bash(gopls)`) that would start it. It never enters the agent's conversation, and the
-answer checker does not count it as a change. Diagnostics are off, with nothing
-recorded, where commands have no sandbox, the server is not installed, or
-the file is not Go, Python, TypeScript, JavaScript or Rust. A
+answer checker does not count it as a change. Where the server is not
+installed, nothing is put to policy and diagnostics for the language are off
+for the session, with one note (`lsp.diagnostics` with `skipped`, and in a
+`-p` run one `abhed: note: no python diagnostics: basedpyright-langserver
+is not installed where commands run; install it with: abhed toolchain
+install -lsp python` line on stderr), never a permission denial. A start
+that was not allowed is the same kind of note in `-p`, not an entry in
+`permission_denials`. Diagnostics are off, with nothing recorded, where
+commands have no sandbox, or the file is not Go, Python, TypeScript,
+JavaScript or Rust. A
 `rust-analyzer.toml` in the workspace keeps rust-analyzer from starting
 (nobody is there to be asked), and one written while it runs stops it. A
 server that fails to start, or ends on its own three times, is off for the

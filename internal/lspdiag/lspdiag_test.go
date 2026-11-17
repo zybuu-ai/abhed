@@ -291,10 +291,11 @@ func TestDiagnosticsFollowPolicy(t *testing.T) {
 	}
 }
 
-// Off, with nothing recorded, where no server can run: no sandbox, a server
-// not installed, a language with none, or a file of no language.
+// Off, with nothing recorded, where no server can run: no sandbox, a
+// language with none, or a file of no language. A server not installed is
+// one note, and nothing is put to policy: no request, no refusal.
 func TestDiagnosticsOffWithoutAServer(t *testing.T) {
-	r := newRig(t, policy.ModeBypass)
+	r := newRig(t, policy.ModeDefault)
 	p := r.write(t, "a.go", "// BAD\n")
 	Tier = func(tools.Bash) string { return "none" }
 	d := New(opts(ModeAuto))
@@ -304,8 +305,16 @@ func TestDiagnosticsOffWithoutAServer(t *testing.T) {
 	Tier = func(tools.Bash) string { return "process" }
 	o := opts(ModeAuto)
 	o.Find = func(string) bool { return false }
-	if _, ok := New(o).Diagnose(context.Background(), r.loop, "c1", p); ok {
-		t.Fatal("diagnosed with no server installed")
+	missing := New(o)
+	got, ok := missing.Diagnose(context.Background(), r.loop, "c1", p)
+	if !ok || got.Skipped != "no go diagnostics: gopls is not installed where commands run; install it with: abhed toolchain install -lsp go" {
+		t.Fatalf("no server installed: %+v %v", got, ok)
+	}
+	if _, ok := missing.Diagnose(context.Background(), r.loop, "c2", p); ok {
+		t.Fatal("the missing server was noted twice")
+	}
+	if n := len(r.events(t, agent.EvActionRequested)) + len(r.events(t, agent.EvActionDenied)); n != 0 {
+		t.Fatalf("a server that is not installed was put to policy: %d events", n)
 	}
 	for _, f := range []string{"a.py", "notes.txt"} {
 		if _, ok := New(opts(ModeAuto)).Diagnose(context.Background(), r.loop, "c1", r.write(t, f, "BAD\n")); ok {
