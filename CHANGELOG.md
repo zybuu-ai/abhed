@@ -8,6 +8,32 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A wildcard entry in `ssh.read_commands` approved more than it named.
+  `*` matched any text, spaces included, so `tail -n * /var/log/app/app.log`
+  also ran `tail -n 100 /etc/shadow /var/log/app/app.log` without asking,
+  and `cat /var/log/*` ran `cat /var/log/../../etc/shadow`. A `*` or `?` now
+  stands within one argument: an entry matches only a call with the same
+  number of arguments, each matching the entry's word in its place. A word
+  a wildcard matches may hold nothing the remote shell would expand (an
+  unquoted glob, brace or `~`, or a `$`), so `cat /var/log/.[.]/.[.]/etc/shadow`
+  and `grep -i /etc/s* …` ask; only the entry's own word, written as in the
+  entry, may hold its glob. A `*` standing for an operand never matches an
+  option before a `--`, so `grep -i --file=/etc/shadow …` and `grep -i -r …`
+  ask under `grep -i * …`; one standing for an option's value is
+  unchanged. No wildcard stands for a `..` segment the entry does not write;
+  this is a rule about the text, and a symbolic link under an allowed folder
+  still reaches its target. A word that is `**` alone stands for one or
+  more whole arguments, each judged as a read form, and with a program that
+  prints files it matches only calls that print none unless
+  `ssh.read_contents` is set. Nor does a wildcard entry reach `getent
+  shadow` or `gshadow` without it. An entry with a wildcard in a path part
+  that starts with `.` (`/var/log/.*`), which some shells expand to `..`, is
+  refused at load. `abhed doctor` warns of an entry whose wildcard can name
+  any file for a program that prints files (`cat **`, `head -n 5 *`,
+  `getent *`); name the files, or a folder (`/var/log/app/*`).
+  Affected: every release with wildcard `ssh.read_commands` entries, on any
+  host, `ssh_connect`'s included. Exact entries, permission rules and the
+  read-only classifier are unchanged.
 - Abhed Studio's debug setup could overwrite a file outside the workspace.
   When a person chose to run a workspace's commands in a container, Abhed
   raised `sandbox.min_tier` in `.abhed/config.json` by writing a fixed
@@ -79,6 +105,16 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.9
 
+- A `*` or `?` in an `ssh.read_commands` entry now stands within one
+  argument. An entry that relied on `*` spanning several words, such as
+  `journalctl *` for `journalctl -u app -n 50`, no longer matches such a
+  call, which asks instead. Rewrite it with one wildcard per argument
+  (`journalctl -u * -n *`), or as exact entries. An entry with a wildcard in
+  a path part that starts with `.` (`ls -l /var/log/.*`) no longer loads. `**` as a word of its own
+  keeps any read form of a program that prints no file (`df **`); for one
+  that does (`cat`, `grep`, `journalctl`, …) it needs `ssh.read_contents`. A
+  call whose word holds a glob, brace, `~` or `$` the remote shell would
+  expand, other than the entry's own word as written, now asks.
 - Secret names beginning `MCP_OAUTH_` are now kept for Abhed's own MCP
   logins: `abhed secret set` and `abhed secret rm` refuse them (the server's
   secrets API answers 400), and a command or tool is never given one by
@@ -539,6 +575,38 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- In `abhed -p -runbook`, a change the runbook does not list was refused
+  with the hint "rerun with -allow '…'", which could not help: under a bound
+  runbook such a change asks whatever an allow rule says. The hint now says
+  no flag allows it, and to add the call to the runbook or run it
+  interactively. Found with the new `scripts/dev/k8s-kind-runbook/run.sh`,
+  which runs a runbook flow against a throwaway kind cluster.
+- `ssh_connect` called with the name of a host in `ssh.hosts` was asked
+  about, refused in `-p` as one that "can make changes", and offered
+  `-allow 'ssh_connect(app1)'`, which could never help: a declared name is
+  not for `ssh_connect`. It is now answered before any approval, in plan
+  mode too, that the host is ready for the `ssh` tool, and nothing is
+  connected; `-p` names no flag for it. The `ssh` tool's description lists the declared hosts as
+  ready with no connect needed, and `ssh_connect`'s says it is not for them;
+  a declared host that did not load is named as such, never as ready.
+- A log read on a declared host (`tail`, `grep`, `cat`, …) without
+  `ssh.read_contents` was refused as "ssh can make changes". The reason now
+  says the program prints the contents of files, which runs unasked only
+  where the operator sets `ssh.read_contents: true` or lists the command in
+  `ssh.read_commands`; any other command a declared host asks for gives the
+  classifier's reason too. What runs unasked is unchanged. The SSH guide
+  shows `read_commands` entries for log reads, with what a `*` matches.
+- The SSH client refused a host that OpenSSH accepts when `known_hosts` held
+  one key type for it, as `ssh` itself writes it. The client offered the
+  library's own order of host key types (ecdsa before ed25519), so a server
+  with several keys showed one not on file. It now offers the types on file
+  for that host first, as OpenSSH does, and offers ssh-rsa's SHA-1 form or
+  ssh-dss only for a key of that type on file, never in FIPS mode.
+  Verification is unchanged: only a key on file is accepted. A key of a known type that does not match is now
+  reported as a mismatch, with no advice to accept it, and the advice to
+  record a key is a command ssh accepts (`ssh -p 12222 root@127.0.0.1`, not
+  `ssh root@127.0.0.1:12222`). A host in `ssh.hosts` is no longer told to
+  retry with `ssh_connect`'s `accept_host_key`.
 - A model reply that only reasons, with no text or tool call, is cut past
   `limits.reasoning_stall_tokens` reasoning tokens (8000 by default, or the
   request's thinking budget if larger), with `limits.reasoning_stall_seconds`
