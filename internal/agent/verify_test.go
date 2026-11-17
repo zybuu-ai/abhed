@@ -1292,11 +1292,14 @@ func TestEvidenceObjects(t *testing.T) {
 	}
 }
 
-// The recorded strict fix, replayed through strict mode: with its two
-// invented citations it ends unverified on those two alone; without them
-// the correct fix ends completed. Its explanations are shown apart.
+// The recorded strict fix, replayed through strict mode. Its code, run and
+// edit claims verify; its explanations of old code are shown apart. It
+// still ends unverified: on its two invented citations, and on the claims
+// that its own change works ("This correctly handles …", "The new logic
+// ensures …", "This allows it to correctly handle …"), which are work the
+// record does not show.
 func TestStrictRecordedFix(t *testing.T) {
-	run := func(t *testing.T, answer string) (TerminalReason, []AnswerVerdict) {
+	run := func(t *testing.T, answer string) (TerminalReason, []string) {
 		l, store, _, dir := verifyHarness(t, VerifyStrict, true, nil)
 		for _, s := range []CorpusStep{realStrictFixStep0, realStrictFixStep1, realStrictFixStep2, realStrictFixStep3} {
 			raw, _ := json.Marshal(s.Args)
@@ -1312,24 +1315,16 @@ func TestStrictRecordedFix(t *testing.T) {
 			{calls: []model.ToolCall{{ID: "a2", Name: "answer", Args: json.RawMessage(answer)}}},
 		}
 		reason, _ := l.Run(context.Background(), realStrictFixPrompt)
-		return reason, answerVerdicts(store)
-	}
-	t.Run("as given", func(t *testing.T) {
-		reason, vs := run(t, realStrictFixAnswers[0])
-		if reason != TermUnverified || len(vs) == 0 {
-			t.Fatalf("got %s", reason)
-		}
+		vs := answerVerdicts(store)
 		var bad []string
 		for _, c := range vs[len(vs)-1].Claims {
 			if c.LoadBearing && c.Verdict != ClaimVerified && !c.Explains {
-				bad = append(bad, c.Reason)
+				bad = append(bad, clipRunes(c.Text, 30))
 			}
 		}
-		if len(bad) != 2 || !strings.Contains(bad[0], `"bash_0"`) || !strings.Contains(bad[1], `"bash_2"`) {
-			t.Fatalf("want only the two invented citations unverified: %q", bad)
-		}
-	})
-	t.Run("without the invented citations", func(t *testing.T) {
+		return reason, bad
+	}
+	withoutInvented := func() string {
 		var a map[string]any
 		_ = json.Unmarshal([]byte(realStrictFixAnswers[0]), &a)
 		var kept []any
@@ -1341,14 +1336,39 @@ func TestStrictRecordedFix(t *testing.T) {
 		}
 		a["claims"] = kept
 		raw, _ := json.Marshal(a)
-		reason, vs := run(t, string(raw))
-		if reason != TermCompleted || vs[0].Outcome != ClaimVerified || vs[0].Explained() == 0 {
-			t.Fatalf("the correct fix did not pass strict: %s %+v", reason, vs)
+		return string(raw)
+	}
+	for _, c := range []struct {
+		name, answer string
+		bad          []string
+	}{
+		{"as given", realStrictFixAnswers[0], []string{"The initial test run showed 5 …", "The final test run after the f…",
+			"This correctly handles multipl…", "The new logic ensures that chu…"}},
+		{"without the invented citations", withoutInvented(), []string{"This correctly handles multipl…", "The new logic ensures that chu…"}},
+		{"the second answer", realStrictFixAnswers[1], []string{"This allows it to correctly ha…"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			reason, bad := run(t, c.answer)
+			if reason != TermUnverified || strings.Join(bad, "|") != strings.Join(c.bad, "|") {
+				t.Fatalf("got %s, unverified work %q, want %q", reason, bad, c.bad)
+			}
+		})
+	}
+	// The reviewer's case: a claim that the new code works, with only an
+	// unrelated module passing, fails strict.
+	l, _, _, dir := verifyHarness(t, VerifyStrict, false, nil)
+	for _, s := range []CorpusStep{stepTextFail, stepTextEdit, stepTextOtherPass} {
+		raw, _ := json.Marshal(s.Args)
+		cwd := ""
+		if s.Tool == "bash" {
+			cwd = dir
 		}
-	})
-	t.Run("the second answer", func(t *testing.T) {
-		if reason, vs := run(t, realStrictFixAnswers[1]); reason != TermCompleted {
-			t.Fatalf("got %s %+v", reason, vs)
-		}
-	})
+		_, _ = l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: s.ID, Tool: s.Tool, Args: raw})
+		_, _ = l.Recorder.Record(EvObservation, ActorTool, Untrusted, Observation{CallID: s.ID, Tool: s.Tool, Content: s.Output, Cwd: cwd, ExitCode: s.Exit, IsError: s.Exit != nil && *s.Exit != 0})
+	}
+	reply := "The new implementation correctly handles tabs and newlines."
+	l.Adapter.(*scriptedAdapter).turns = []scriptedTurn{{text: reply}, {text: reply}}
+	if reason, _ := l.Run(context.Background(), "fix src/text.py"); reason != TermUnverified {
+		t.Fatalf("strict completed on a claim that the new code works: %s", reason)
+	}
 }

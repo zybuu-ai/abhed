@@ -621,11 +621,16 @@ counts (`12 tests`, `replicas: 3`). Then:
 - **`file:line` cites are checked against what a read showed.** The lines
   of a current read of that file, as the read numbered them, come first; the
   file as it is now is read only when no read of it is current. Code the
-  statement names must be within three lines of the cited one (models cite
-  a method's line for its class, a call's line for its result); one code
-  span there is enough, and the others are checked as any code is. A cite
-  further off, or of a file that cannot be read, leaves the statement
-  unverified.
+  statement says is there must be within three lines of the cited one and
+  inside the same definition (`def`, `class`, `func`, `fn`, a JavaScript
+  `function` or `class`, read by indentation): models cite a method's line
+  for its class or a call's line for its result, never a line of the next
+  function. In a file whose definitions are not read here (Python, Go,
+  JavaScript and TypeScript, and Rust are), only the cited line counts.
+  "`f` (a.py:L)" or "… in `f`" needs L inside `f`; "`f` is defined at
+  a.py:L" needs `f`'s definition at L (or one line off past blank or
+  decorator lines). A cite further off, or of a file that cannot be read,
+  leaves the statement unverified.
 - **A command is shown by the call that ran it.** "The tests were run
   using `python3 -m unittest tests.test_text` and passed" is matched to the
   bash call whose command that is (or, for a test run, to the test names it
@@ -639,24 +644,36 @@ counts (`12 tests`, `replicas: 3`). Then:
   the claim says was replaced is found in what the edit took away, not in
   output after it. The file's own name and the tests a claim names are not
   read as code that changed. "I fixed the bugs in `src/utils/text.py`" is
-  shown by a change to that file and a test run that passed after the last
-  change; "after the changes" or "following the fix" needs the session to
-  have changed something.
+  shown by a change to that file and, after the last change, a test run
+  that passed and covers what the last failing run before the change
+  covered (the same test module, package or names, or more); with no
+  failing run before it, a whole run or one of the file's folder. An
+  unrelated module passing shows no fix. "After the changes" or "following
+  the fix" needs the session to have changed something.
+- **A change made by another tool is read from its call.** "web in demo
+  was scaled to 2" is shown by a call of the agent's own (`k8s_apply`
+  here) that succeeded, whose action or tool name is the claim's verb,
+  whose `name` the claim says, and every number of the claim one of its
+  arguments; a refused or failed call, a scale to 5, or a scale of another
+  deployment shows nothing.
 - **An explanation of code is not checked, and never fails an answer.** A
-  statement that only says how or why code the session read or changed
-  behaves ("This correctly handles multiple whitespace…", "The previous
-  implementation skipped the tail if it didn't fit", "The new logic
-  ensures that chunks continue to be added…") is shown as "explanation:
-  not checked", counted in the footer and in the verdict's `note`, and
-  never verified. It qualifies only when it holds no pass, count, number,
-  change, deed, run, `file:line`, state, outcome, judgement or citation,
-  says no event but what code does ("skipped", "to be added", "is
-  covered", "the new logic"), and names something one of the session's
-  reads or edits holds. So strict mode passes a correct fix whose
-  answer explains it, and still fails on any unverified claim about the
-  work: "This ensures all 12 tests pass", "…, so the deploy succeeded",
-  "This handles retries, which I added" and an invented citation all
-  stay unverified work.
+  statement that only says how or why code the session read behaves, or
+  what code did before the session changed it ("The previous
+  implementation skipped the tail if it didn't fit"), is shown as
+  "explanation: not checked", counted in the footer and in the verdict's
+  `note`, and never verified. It qualifies only when it holds no pass,
+  count, number, change, deed, run, `file:line`, state, outcome, judgement
+  or citation, says no event but what code does ("skipped", "to be
+  added"), and names something one of the session's reads or edits holds.
+  A statement that the session's own change works is not an explanation
+  but a claim about the work, whatever its wording: its subject is the new
+  code, implementation or logic, "this", the fix or change, or a function
+  or file the session edited, with a word such as correctly, properly,
+  now, works, allows, lets, supports, fixes, ensures, prevents or handles
+  ("This correctly handles multiple whitespace…", "The new logic ensures
+  …"). Strict mode fails on it until the record shows it. So do "This
+  ensures all 12 tests pass", "…, so the deploy succeeded", "This handles
+  retries, which I added" and an invented citation.
 - **Evidence may be given as objects.** A claim's `evidence` may list
   `{"call_id": …, "quote": …}` as well as ids; such a quote is used only
   when the cited output holds it. A later clause that opens with its verb
@@ -912,7 +929,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 992 plant a wrong claim. Some cite the result that shows them wrong
+session. 1011 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -1018,11 +1035,11 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 992
+tail, a port not listening, a file not in a response). Today none of the 1011
 planted claims is shown as verified (33 are contradicted: 31 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
-shows; the rest unverified), all 271 controls are verified,
-and none of the 391 true or neutral claims is contradicted. Among the
+shows; the rest unverified), all 276 controls are verified,
+and none of the 396 true or neutral claims is contradicted. Among the
 controls are the claims of two real sessions on a local model, recorded as
 they were given: a review that cited `file:line` and a fix checked in
 strict mode. 19 of the

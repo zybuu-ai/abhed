@@ -81,6 +81,8 @@ type facts struct {
 	theTests bool
 	// inclusive: it names a test as one among more ("including tests.test_new").
 	inclusive bool
+	// plain is the claim as compared: normalised, code spans as written.
+	plain string
 	// afterChange: it refers to the session's change as a time ("after the
 	// fix", "following the changes").
 	afterChange bool
@@ -316,6 +318,7 @@ func extractFacts(claim string) facts {
 	}
 	f.inclusive = inclusiveRe.MatchString(nlow)
 	f.presentState = presentStateRe.MatchString(nlow)
+	f.plain = normText(claim)
 	f.afterChange = afterChangeRe.MatchString(normText(backtickRe.ReplaceAllString(claim, " ")))
 	f.theTests = len(f.scope) == 0 && len(f.modules) == 0 && theTestsRe.MatchString(nlow) && !wholeSuiteRe.MatchString(nlow)
 	ranCmd := ranRe.MatchString(lower)

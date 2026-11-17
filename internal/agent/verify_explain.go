@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -255,12 +256,12 @@ func unsaid(ix *recordIndex, c Claim, v ClaimVerdict) string {
 		w = w[strings.LastIndexByte(w, ' ')+1:]
 		// "I fixed the bugs in src/a.py": a fix is shown by the change to the
 		// file it names and a test run that passed after the last change.
-		if fixWords[w] && len(f.paths) > 0 && ix.passedAfterLastChange() {
-			allChanged := true
+		if fixWords[w] && len(f.paths) > 0 {
+			shown := true
 			for _, p := range f.paths {
-				allChanged = allChanged && ix.changedPath(p).out == matched
+				shown = shown && ix.changedPath(p).out == matched && ix.fixShown(p)
 			}
-			if allChanged {
+			if shown {
 				continue
 			}
 		}
@@ -351,6 +352,60 @@ func rationale(ix *recordIndex, c Claim) bool {
 			if strings.Contains(h, w) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+var (
+	// ownChangeSubjectRe names the session's change as what does something.
+	ownChangeSubjectRe = regexp.MustCompile(`\b(?:the\s+(?:new|updated|changed|fixed|rewritten|current)\s+(?:code|implementation|logic|version|loop|function|method|regex|check|handling)|this|these changes|the (?:fix|change|changes|patch|edit|edits|update|rewrite)|my (?:fix|change|changes|edit)|our (?:fix|change|changes|edit))\b`)
+	// capabilityRe says code works, or can do something.
+	capabilityRe = regexp.MustCompile(`\b(?:correctly|properly|now|works?|working|allows?|lets|supports?|fixes|ensures?|prevents?|handles?|can now)\b`)
+	// oldBehaviourRe says what code did before the change.
+	oldBehaviourRe = regexp.MustCompile(`\b(?:previous|previously|old|original|originally|before the (?:change|fix|edit))\b`)
+)
+
+// saysOwnChangeWorks reports a claim that the session's own change is
+// correct or can do something: its subject is the new code, "this", the fix
+// or change, or a function or file the session edited, with a correctness,
+// capability or outcome word. Said of what the code did before the change,
+// it is not.
+func saysOwnChangeWorks(ix *recordIndex, text string) bool {
+	low := normText(backtickRe.ReplaceAllString(text, " "))
+	if !capabilityRe.MatchString(low) || oldBehaviourRe.MatchString(low) {
+		return false
+	}
+	if ownChangeSubjectRe.MatchString(low) {
+		return true
+	}
+	for _, sp := range codeSpans(text) {
+		if ix.editedName(strings.TrimSpace(sp)) {
+			return true
+		}
+	}
+	return false
+}
+
+// editedName reports a name the session's own edits put in, or the base
+// name of a file they changed.
+func (ix *recordIndex) editedName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, m := range ix.mutations {
+		if m.failed || m.person {
+			continue
+		}
+		if m.path != "" && (filepath.Base(m.path) == name || strings.HasSuffix(m.path, "/"+name)) {
+			return true
+		}
+		var a struct {
+			New     string `json:"new_string"`
+			Content string `json:"content"`
+		}
+		if json.Unmarshal([]byte(m.text), &a) == nil && (strings.Contains(a.New, name) || strings.Contains(a.Content, name)) {
+			return true
 		}
 	}
 	return false

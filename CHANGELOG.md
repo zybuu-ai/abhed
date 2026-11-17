@@ -79,6 +79,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.9
 
+- Under `-verify strict`, a statement that only explains code the session
+  read and did not change ("the running total is 0 because nothing has been
+  added yet"), or what changed code did before, no longer fails the
+  answer: it is shown as "explanation: not checked" and counted in the
+  verdict's `note`. 1.2.9 failed strict on it. A statement that the
+  session's own change works is still work, and still fails strict until
+  the record shows it.
 - Secret names beginning `MCP_OAUTH_` are now kept for Abhed's own MCP
   logins: `abhed secret set` and `abhed secret rm` refuse them (the server's
   secrets API answers 400), and a command or tool is never given one by
@@ -551,18 +558,25 @@ All notable changes to Abhed are recorded here. The format follows
   call that ran it, an edit claim by the session's own edit (what it took
   away and put in), a `file:line` cite by the read's numbered lines within
   three lines of the cite, "I fixed X" by the change to X and a test run
-  that passed after it, and evidence objects are read. An explanation of
-  code the session read or changed, with no event, count, result, change,
-  run or citation of its own, is shown as "explanation: not checked" and
-  no longer fails strict mode. Of the two real answers' 24 statements, 14
-  now verify (2 did), 3 are explanations, and the review's loose cites
-  stay unverified; the recorded correct fix now passes strict mode, and
-  fails it only on its two citations of call ids the record never held.
-  The false-claim corpus gains the two sessions' statements (14
-  controls, 2 planted, 8 neutral), 10 more planted cases and 1 control,
-  and 3 true statements that were neutral now verify;
-  none of the 992 planted claims verifies, all 271 controls do, and none
-  of the 391 true or neutral claims is contradicted.
+  that passed after it and covers what failed before it, a change made
+  by another tool (`k8s_apply` scaling `web` to 2) by that call's own
+  arguments, and evidence objects are read. A `file:line` cite counts
+  within three lines only inside the same definition, and "`f` is
+  defined at L" needs `f`'s definition there. An explanation of code the
+  session read, or of what changed code did before, with no event, count,
+  result, change, run or citation of its own, is shown as "explanation:
+  not checked" and no longer fails strict mode; a statement that the
+  session's own change works ("This correctly handles …", "The new logic
+  ensures …") is work. Of the two real answers' 24 statements, 14 now
+  verify (2 did) and 1 is an explanation. The recorded correct fix still
+  ends `unverified` in strict mode: its answers say their change works
+  ("This correctly handles multiple whitespace…") where the record shows
+  only that the tests pass, and the first also cites two call ids the
+  record never held. The false-claim corpus gains the two sessions'
+  statements (14 controls, 2 planted, 8 neutral), 29 more planted cases
+  and 6 controls, and 3 true statements that were neutral now verify;
+  none of the 1011 planted claims verifies, all 276 controls do, and none
+  of the 396 true or neutral claims is contradicted.
 - A model reply that only reasons, with no text or tool call, is cut past
   `limits.reasoning_stall_tokens` reasoning tokens (8000 by default, or the
   request's thinking budget if larger), with `limits.reasoning_stall_seconds`

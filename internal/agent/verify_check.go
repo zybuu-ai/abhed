@@ -117,6 +117,7 @@ type obsRec struct {
 	path    string // a file tool's path
 	args    string // every string argument, decoded
 	argMap  map[string]string
+	rawArgs string
 	content string
 	exit    *int
 	isError bool
@@ -295,6 +296,7 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 				args.Path = filepath.Join(ix.workDir, args.Path)
 			}
 			rec.command, rec.path, rec.args, rec.argMap = args.Command, args.Path, argText(r.a.Args), argMap(r.a.Args)
+			rec.rawArgs = string(r.a.Args)
 			var line lineFacts
 			if o.Tool == "bash" || o.Tool == "ssh" {
 				// The folder the bash tool ran the command in, as the record
@@ -550,14 +552,17 @@ func checkOne(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	}
 	// Explaining what a read showed is shown apart, and only shown: it never
 	// makes an answer verified.
-	if explainsOn && v.Verdict == ClaimUnverified && v.LoadBearing && explains(ix, c) {
+	// A claim that the session's own change works ("the new implementation
+	// correctly handles tabs") is work, whatever its wording.
+	ownChange := saysOwnChangeWorks(ix, c.Text)
+	if explainsOn && v.Verdict == ClaimUnverified && v.LoadBearing && !ownChange && explains(ix, c) {
 		v.Explains = true
 	}
 	// So is a rationale for code the session read or changed ("this
 	// correctly handles tabs", "the previous implementation skipped the
 	// tail"): it is not checked, and it holds no event, count, result,
 	// change, run or citation of its own.
-	if explainsOn && v.Verdict == ClaimUnverified && v.LoadBearing && !v.Explains && rationale(ix, c) {
+	if explainsOn && v.Verdict == ClaimUnverified && v.LoadBearing && !v.Explains && !ownChange && rationale(ix, c) {
 		v.Explains = true
 	}
 	if v.Explains {
@@ -600,7 +605,8 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	// even with nothing else in it; a participle alone ("a compiled
 	// language") is not.
 	workEvent := f.deed || f.observe || f.changeWord || f.changeAct && f.event != "" || f.overclaim || f.mergeClean || f.presentState ||
-		len(ix.denials) > 0 && refusalWordRe.MatchString(normText(c.Text))
+		len(ix.denials) > 0 && refusalWordRe.MatchString(normText(c.Text)) ||
+		saysOwnChangeWorks(ix, c.Text)
 	switch kind {
 	case KindObserved, KindDerived, KindKnowledge:
 	case "":
@@ -756,7 +762,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 	// needs no tool result as well.
 	atLine := map[string]bool{} // literals found other than in a tool result
 	for _, fl := range f.fileLines {
-		fd, lit := ix.checkFileLine(env, fl, f.literals)
+		fd, lit := ix.checkFileLine(env, fl, f)
 		findings = append(findings, fd)
 		if fd.out == matched {
 			atLine[lit] = true
@@ -811,6 +817,13 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		}
 		if len(f.paths) == 0 {
 			fd, put := ix.changeNamed(f, "")
+			// "web was scaled to 2": a change made by a tool's call, read
+			// from the call's own arguments.
+			if fd.out != matched {
+				if tf := ix.toolCallChange(f); tf.out == matched {
+					fd, put = tf, nil
+				}
+			}
 			fd.kind, fd.call = "change", fd.out == matched
 			findings = append(findings, fd)
 			if fd.out == matched {
@@ -1852,7 +1865,8 @@ func (ix *recordIndex) ranCommand(cmd string) finding {
 
 // checkFileLine checks a path:line cite against the file as it is now, and,
 // where the claim quotes something, that the line or its neighbours hold it.
-func (ix *recordIndex) checkFileLine(env checkEnv, fl fileLine, literals []string) (finding, string) {
+func (ix *recordIndex) checkFileLine(env checkEnv, fl fileLine, f facts) (finding, string) {
+	literals := f.literals
 	label := fmt.Sprintf("%s:%d", fl.path, fl.line)
 	// The lines a current read of the file showed come first: what the
 	// session saw, numbered as the read numbered them.
@@ -1879,16 +1893,51 @@ func (ix *recordIndex) checkFileLine(env checkEnv, fl fileLine, literals []strin
 		return finding{out: missing, why: fmt.Sprintf("%s cites line %d; the file has %d", label, fl.line, len(lines)),
 			conflict: &Conflict{Excerpt: fmt.Sprintf("%s has %d lines", fl.path, len(lines))}}, ""
 	}
-	// A cite within three lines of what it names counts: models cite the
-	// line of a method for its class, or the call for its result.
+	// A cite within three lines of what it names counts, in the same
+	// definition: models cite the line of a method for its class, or the
+	// call for its result, never a line of the next function. Where the
+	// file's definitions cannot be told, only the line itself counts.
+	blocks, known := codeBlocks(fl.path, lines)
+	if why := citeOwner(f, fl, lines, blocks, known); why != "" {
+		return finding{out: missing, why: label + " " + why}, ""
+	}
+	own := innermostBlock(blocks, fl.line)
 	var window []string
 	for n := fl.line - 3; n <= fl.line+3; n++ {
-		if l, at := lines[n]; at {
-			window = append(window, l)
+		l, at := lines[n]
+		if !at || !known && n != fl.line || known && innermostBlock(blocks, n) != own {
+			continue
 		}
+		window = append(window, l)
 	}
 	ev := prepareEvidence(strings.Join(window, "\n"), false)
-	var first string
+	// Code the claim says is at the line, other than the definition it is
+	// of, must all be there; with none, the definition's name is enough.
+	owner := normText(citeOwnerName(f, blocks))
+	var first, hit string
+	for _, lit := range literals {
+		if strings.Contains(lit, normText(fl.path)) || strings.Contains(normText(fl.path), lit) || !isSpanLiteral(f, lit) {
+			continue
+		}
+		if lit == owner {
+			if ev.hasLiteral(lit) && hit == "" {
+				hit = lit
+			}
+			continue
+		}
+		if !ev.hasLiteral(lit) {
+			return finding{out: missing, why: fmt.Sprintf("%s does not show %q within three lines of its own definition", label, clipRunes(lit, 60))}, lit
+		}
+		if first == "" {
+			first = lit
+		}
+	}
+	if first != "" {
+		return finding{out: matched, what: fmt.Sprintf("%q at %s", first, label)}, first
+	}
+	if hit != "" {
+		return finding{out: matched, what: fmt.Sprintf("%q at %s", hit, label)}, hit
+	}
 	for _, lit := range literals {
 		if strings.Contains(lit, normText(fl.path)) || strings.Contains(normText(fl.path), lit) {
 			continue
@@ -1901,7 +1950,7 @@ func (ix *recordIndex) checkFileLine(env checkEnv, fl fileLine, literals []strin
 		}
 	}
 	if first != "" {
-		return finding{out: missing, why: fmt.Sprintf("%s does not show %q within three lines", label, clipRunes(first, 60))}, first
+		return finding{out: missing, why: fmt.Sprintf("%s does not show %q within three lines of its own definition", label, clipRunes(first, 60))}, first
 	}
 	return finding{}, "" // the line exists; with nothing quoted there is nothing more to compare
 }
@@ -2396,17 +2445,300 @@ func (ix *recordIndex) changeTookAway(lit string) *mutation {
 	return nil
 }
 
-// passedAfterLastChange reports a test run of this session's own that
-// exited 0, and ran tests, after its last change.
-func (ix *recordIndex) passedAfterLastChange() bool {
-	last := ix.lastChange()
+// fixShown reports a fix of p shown by the runs: after the session's last
+// change, a test run passed that covers what the last test run to fail
+// before p's last change covered (the same test names, module or package,
+// or more), or, with no such failure, a whole run or one of p's folder.
+func (ix *recordIndex) fixShown(p string) bool {
+	abs := ix.inWorkspace(p)
+	var changeAt float64 = -1
+	for _, m := range ix.mutations {
+		if !m.failed && (m.path != "" && samePathAs(m.path, abs) || touches(m.targets, abs)) {
+			changeAt = m.pos
+		}
+	}
+	if changeAt < 0 {
+		return false
+	}
+	var pool []*obsRec
+	for _, o := range ix.obs {
+		if o.usable() {
+			pool = append(pool, o)
+		}
+	}
+	shows := func(scope []string) bool {
+		return ix.success(pool, "test", scope, false, false).out == matched
+	}
 	for i := len(ix.obs) - 1; i >= 0; i-- {
 		o := ix.obs[i]
-		if last != nil && o.pos < last.pos {
-			return false
+		if o.pos >= changeAt || o.tool != "bash" || o.child != "" || o.exit == nil || *o.exit == 0 || !o.line.shape ||
+			commandKind(o.line.final) != "test" {
+			continue
 		}
-		if o.tool == "bash" && o.child == "" && o.usable() && o.exit != nil && o.line.shape && commandKind(o.line.final) == "test" {
-			return *o.exit == 0 && !ranNothing(o)
+		pats, ok := runScope(o.line.final, o.line.finalCwd)
+		if !ok {
+			return shows(nil)
+		}
+		var scope []string
+		for _, pt := range pats {
+			if pt.rec {
+				scope = append(scope, pt.dir+"/...")
+			} else {
+				scope = append(scope, pt.dir)
+			}
+		}
+		return shows(scope)
+	}
+	return shows(nil) || shows([]string{filepath.Dir(abs)})
+}
+
+// toolCallChange reads a change a claim reports from a call of a tool other
+// than bash or the file tools ("scaled web to 2" from k8s_apply's action
+// scale, name web, replicas 2): the latest such call of the agent's own
+// that succeeded, whose action or tool name is the claim's verb, whose name
+// the claim says, and every number of the claim one of its arguments. A
+// refused call has no result, so it shows nothing.
+func (ix *recordIndex) toolCallChange(f facts) finding {
+	words := map[string]bool{}
+	for _, w := range strings.FieldsFunc(f.plain, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' && r != '_' }) {
+		words[w] = true
+	}
+	for i := len(ix.obs) - 1; i >= 0; i-- {
+		o := ix.obs[i]
+		if !o.usable() || o.child != "" || o.isError || o.tool == "bash" || o.tool == "write" || o.tool == "edit" || readers[o.tool] {
+			continue
+		}
+		args := o.argMap
+		verb := strings.ToLower(args["action"])
+		if verb == "" {
+			verb = strings.ToLower(o.tool)
+		}
+		// The verb as the claim may say it: "scale" as scaled or scaling.
+		stem := strings.TrimRight(verb, "ey")
+		said := false
+		for w := range words {
+			said = said || len(stem) >= 3 && strings.HasPrefix(w, stem) && len(w) <= len(verb)+3
+		}
+		if !said {
+			continue
+		}
+		if name := strings.ToLower(args["name"]); name == "" || !words[name] {
+			continue
+		}
+		vals := map[string]bool{}
+		for _, v := range args {
+			vals[normNumber(strings.ToLower(v))] = true
+		}
+		for k, v := range o.numArgs() {
+			_ = k
+			vals[v] = true
+		}
+		ok := true
+		for _, n := range f.numbers {
+			ok = ok && vals[n]
+		}
+		if ok {
+			return finding{out: matched, what: fmt.Sprintf("%s %s of #%d", o.tool, verb, o.seq), seq: o.seq}
+		}
+	}
+	return finding{out: missing, why: "no call of this session's own is read as that change"}
+}
+
+// numArgs are a call's number arguments, normalised: argMap holds strings
+// only.
+func (o *obsRec) numArgs() map[string]string {
+	out := map[string]string{}
+	var m map[string]any
+	if json.Unmarshal([]byte(o.rawArgs), &m) != nil {
+		return out
+	}
+	for k, v := range m {
+		if n, ok := v.(float64); ok {
+			out[k] = normNumber(strconv.FormatFloat(n, 'f', -1, 64))
+		}
+	}
+	return out
+}
+
+// codeBlock is a definition a read shows: its name and the lines it spans.
+type codeBlock struct {
+	name       string
+	start, end int
+	indent     int
+}
+
+var (
+	// defLineRes find a definition's line and name, by language.
+	defLineRes = map[string]*regexp.Regexp{
+		".py": regexp.MustCompile(`^(\s*)(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)`),
+		".go": regexp.MustCompile(`^(\s*)(?:func\s*(?:\([^)]*\)\s*)?([A-Za-z_]\w*)|type\s+([A-Za-z_]\w*))`),
+		".js": regexp.MustCompile(`^(\s*)(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s*\*?\s*([A-Za-z_$][\w$]*)|class\s+([A-Za-z_$][\w$]*))`),
+		".rs": regexp.MustCompile(`^(\s*)(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:fn|struct|enum|impl|trait|mod)\s+([A-Za-z_]\w*)`),
+	}
+	closingLineRe = regexp.MustCompile(`^\s*[\])}]+[;,]?\s*$`)
+	identSpanRe   = regexp.MustCompile(`^[A-Za-z_][\w]*$`)
+	definedAtRe   = regexp.MustCompile(`\b(?:is\s+)?defined\s+(?:at|on|in)\b`)
+	decoratorRe   = regexp.MustCompile(`^\s*@`)
+)
+
+// codeBlocks are the definitions in a read's numbered lines, each running
+// until the next line at or below its indentation (a closing brace at its
+// indentation included). known is false for a language not read here.
+func codeBlocks(path string, lines map[int]string) ([]codeBlock, bool) {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".ts", ".tsx", ".jsx", ".mjs", ".cjs":
+		ext = ".js"
+	}
+	re := defLineRes[ext]
+	if re == nil {
+		return nil, false
+	}
+	var nums []int
+	for n := range lines {
+		nums = append(nums, n)
+	}
+	sort.Ints(nums)
+	indentOf := func(l string) int { return len(l) - len(strings.TrimLeft(l, " \t")) }
+	var out []codeBlock
+	for i, n := range nums {
+		m := re.FindStringSubmatch(lines[n])
+		if m == nil {
+			continue
+		}
+		name := ""
+		for _, g := range m[2:] {
+			if g != "" {
+				name = g
+				break
+			}
+		}
+		b := codeBlock{name: name, start: n, end: n, indent: len(m[1])}
+		for _, k := range nums[i+1:] {
+			l := lines[k]
+			if strings.TrimSpace(l) == "" {
+				continue
+			}
+			if indentOf(l) <= b.indent {
+				if closingLineRe.MatchString(l) && indentOf(l) == b.indent {
+					b.end = k
+				}
+				break
+			}
+			b.end = k
+		}
+		out = append(out, b)
+	}
+	return out, true
+}
+
+// innermostBlock is the definition nearest around line n, or nil.
+func innermostBlock(bs []codeBlock, n int) *codeBlock {
+	var best *codeBlock
+	for i := range bs {
+		if b := &bs[i]; b.start <= n && n <= b.end && (best == nil || b.start > best.start) {
+			best = b
+		}
+	}
+	return best
+}
+
+// citeOwner is why a cite cannot be the line it is said to be, or "": "X is
+// defined at L" needs X's definition at L (or one line off, past blank or
+// decorator lines); a cite of a named definition ("`f` (a.py:L)", "… in
+// `f`") needs L inside it.
+func citeOwner(f facts, fl fileLine, lines map[int]string, bs []codeBlock, known bool) string {
+	if !known {
+		return ""
+	}
+	var named []string
+	for _, t := range f.tokens {
+		if identSpanRe.MatchString(t) {
+			for _, b := range bs {
+				if b.name == t {
+					named = append(named, t)
+					break
+				}
+			}
+		}
+	}
+	if len(named) == 0 {
+		return ""
+	}
+	if definedAtRe.MatchString(f.plain) {
+		for _, b := range bs {
+			if b.name != named[0] {
+				continue
+			}
+			if b.start == fl.line {
+				return ""
+			}
+			// One line off, past blank or decorator lines only: the cite's
+			// own line, and any between, hold nothing else.
+			lo, hi := min(b.start, fl.line), max(b.start, fl.line)
+			if hi-lo <= 2 && func() bool {
+				for n := lo; n <= hi; n++ {
+					if n == b.start {
+						continue
+					}
+					if l := lines[n]; strings.TrimSpace(l) != "" && !decoratorRe.MatchString(l) {
+						return false
+					}
+				}
+				return true
+			}() {
+				return ""
+			}
+		}
+		return fmt.Sprintf("is not where %s is defined", named[0])
+	}
+	// The definition the cite is of: one said "in `f`", else the first named.
+	owner := named[0]
+	for _, t := range named {
+		lt := strings.ToLower(t)
+		if strings.Contains(f.plain, "in "+lt) || strings.Contains(f.plain, "in `"+lt+"`") || strings.Contains(f.plain, "inside `"+lt+"`") {
+			owner = t
+			break
+		}
+	}
+	for _, b := range bs {
+		if b.name == owner && b.start <= fl.line && fl.line <= b.end {
+			return ""
+		}
+	}
+	return fmt.Sprintf("is not in %s", owner)
+}
+
+// citeOwnerName is the definition a cite is of, as citeOwner reads it, or "".
+func citeOwnerName(f facts, bs []codeBlock) string {
+	var named []string
+	for _, t := range f.tokens {
+		if identSpanRe.MatchString(t) {
+			for _, b := range bs {
+				if b.name == t {
+					named = append(named, t)
+					break
+				}
+			}
+		}
+	}
+	if len(named) == 0 {
+		return ""
+	}
+	for _, t := range named {
+		lt := strings.ToLower(t)
+		if strings.Contains(f.plain, "in `"+lt+"`") || strings.Contains(f.plain, "inside `"+lt+"`") {
+			return t
+		}
+	}
+	return named[0]
+}
+
+// isSpanLiteral reports a literal that is one of the claim's code spans.
+func isSpanLiteral(f facts, lit string) bool {
+	for _, t := range f.tokens {
+		if nt := normText(t); nt == lit || len(lit) > 2 && strings.HasPrefix(nt, lit) {
+			return true
 		}
 	}
 	return false
