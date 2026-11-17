@@ -121,8 +121,11 @@ func resolvePrincipal(sf signInFlags, interactive bool, in *os.File, errOut io.W
 		fmt.Fprintf(errOut, "abhed: %v\n", err)
 		return 1, nil
 	}
-	if resumed, err := identity.ResumeMigration(s); err != nil {
-		fmt.Fprintf(errOut, "abhed: finishing the move of your earlier data: %v\n", err)
+	// Never resolve while the earlier data is being moved: wait a little for
+	// another abhed's move, finish one a crash left, else stop.
+	if resumed, err := identity.SettleMigration(s, migrationWait); err != nil {
+		fmt.Fprintf(errOut, "abhed: %v\n", err)
+		return 1, nil
 	} else if resumed {
 		fmt.Fprintln(errOut, "abhed: finished moving your earlier data into your account")
 	}
@@ -309,6 +312,10 @@ func whoLine(p identity.Principal) string {
 	}
 	return "Signed in as " + p.Display() + ". /account to switch."
 }
+
+// migrationWait is how long a start waits for another abhed's move of the
+// data from before sign-in.
+var migrationWait = 30 * time.Second
 
 // serverCheckWait bounds the check of a server sign-in at start, so an
 // offline machine starts on what it remembers.

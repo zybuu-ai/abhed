@@ -2,10 +2,12 @@ package identity
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/home"
@@ -245,5 +247,152 @@ func TestMigrateRefusesWhileASessionIsHeld(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(machine, "records")); err != nil {
 		t.Error("the record moved while a session was held")
+	}
+}
+
+var errCrash = errors.New("crash")
+
+// crashAt makes the move stop at step as a crash would, once.
+func crashAt(t *testing.T, step string) {
+	t.Helper()
+	old := migrateStep
+	fired := false
+	migrateStep = func(s string) error {
+		if !fired && s == step {
+			fired = true
+			return errCrash
+		}
+		return nil
+	}
+	t.Cleanup(func() { migrateStep = old })
+}
+
+// A crash at any step leaves what the next start finishes: every item in
+// the account, the heads unchanged, the account the data's owner. A crash
+// before the journal is written leaves the data where it was.
+func TestMigrateCrashAtEachStepIsFinishedByTheNextStart(t *testing.T) {
+	steps := []string{"journal", "legacy", "complete"}
+	for _, it := range []string{"records", "history", "ABHED.md"} {
+		steps = append(steps, "renamed:"+it, "noted:"+it)
+	}
+	for _, step := range steps {
+		t.Run(step, func(t *testing.T) {
+			s := testStore(t)
+			machine, files := legacyHome(t)
+			before, _ := recordHeads(filepath.Join(machine, "records"))
+			e, _, _ := s.Create("yuvraj", pw, "", "")
+			crashAt(t, step)
+			if _, err := Migrate(s, e, "yuvraj"); !errors.Is(err, errCrash) {
+				t.Fatalf("the crash did not happen: %v", err)
+			}
+			resumed, err := SettleMigration(s, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if step == "journal" {
+				if resumed {
+					t.Fatal("a move with no journal was resumed")
+				}
+				for rel := range files {
+					if _, err := os.Stat(filepath.Join(machine, rel)); err != nil {
+						t.Errorf("%s left ~/.abhed: %v", rel, err)
+					}
+				}
+				return
+			}
+			root := filepath.Join(s.Dir(), e.ID)
+			after, _ := recordHeads(filepath.Join(root, "records"))
+			if !sameHeads(before, after) {
+				t.Fatal("heads differ after the resumed move")
+			}
+			for rel := range files {
+				if _, err := os.Stat(filepath.Join(root, rel)); err != nil {
+					t.Errorf("%s not moved: %v", rel, err)
+				}
+			}
+			if owner, taken, _ := s.LegacyOwner(); !taken || owner.ID != e.ID {
+				t.Error("the account does not own the earlier data")
+			}
+		})
+	}
+}
+
+// A second start while a move is in progress neither runs on half the data
+// nor resolves to the account: it waits, and then gets ErrMigrationBusy.
+func TestStartDuringAMoveWaitsOrRefuses(t *testing.T) {
+	s := testStore(t)
+	legacyHome(t)
+	e, _, _ := s.Create("yuvraj", pw, "", "")
+	reached, release := make(chan struct{}), make(chan struct{})
+	old := migrateStep
+	migrateStep = func(step string) error {
+		if step == "renamed:records" {
+			close(reached)
+			<-release
+		}
+		return nil
+	}
+	t.Cleanup(func() { migrateStep = old })
+	done := make(chan error, 1)
+	go func() { _, err := Migrate(s, e, "yuvraj"); done <- err }()
+	<-reached
+	if _, err := SettleMigration(s, 50*time.Millisecond); !errors.Is(err, ErrMigrationBusy) {
+		t.Fatalf("a start during the move: %v", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SettleMigration(s, time.Second); err != nil {
+		t.Fatalf("after the move: %v", err)
+	}
+}
+
+// Something in the account's place: an empty folder is taken over; anything
+// else moves everything back rather than stopping half done.
+func TestMigrateWithTheDestinationInTheWay(t *testing.T) {
+	t.Run("empty folder", func(t *testing.T) {
+		s := testStore(t)
+		legacyHome(t)
+		e, _, _ := s.Create("yuvraj", pw, "", "")
+		root, _ := s.Root(e)
+		_ = os.MkdirAll(filepath.Join(root, "records"), 0o700)
+		if _, err := Migrate(s, e, "yuvraj"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("files", func(t *testing.T) {
+		s := testStore(t)
+		machine, files := legacyHome(t)
+		e, _, _ := s.Create("yuvraj", pw, "", "")
+		root, _ := s.Root(e)
+		_ = os.MkdirAll(filepath.Join(root, "history"), 0o700)
+		_ = os.WriteFile(filepath.Join(root, "history", "x.jsonl"), []byte("{}\n"), 0o600)
+		if _, err := Migrate(s, e, "yuvraj"); err == nil || !strings.Contains(err.Error(), "everything is back") {
+			t.Fatalf("err = %v", err)
+		}
+		for rel := range files {
+			if _, err := os.Stat(filepath.Join(machine, rel)); err != nil {
+				t.Errorf("%s not back in ~/.abhed: %v", rel, err)
+			}
+		}
+		if resumed, _ := ResumeMigration(s); resumed {
+			t.Error("the abandoned move is resumed")
+		}
+	})
+}
+
+// A journal naming anything but the data this release moves is refused.
+func TestMigrateRefusesATamperedJournal(t *testing.T) {
+	s := testStore(t)
+	legacyHome(t)
+	e, _, _ := s.Create("yuvraj", pw, "", "")
+	_, _ = s.Root(e)
+	j := journal{Account: e.ID, LegacyUser: "yuvraj", State: stateMoving, Items: []string{"../../.ssh"}, Heads: map[string]string{}}
+	if err := writeJSON(s.journalPath(e), j); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResumeMigration(s); err == nil || !strings.Contains(err.Error(), "not data from before sign-in") {
+		t.Fatalf("err = %v", err)
 	}
 }

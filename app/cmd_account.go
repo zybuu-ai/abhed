@@ -172,7 +172,7 @@ and answers are read from the terminal, or one per line from stdin.`)
 	arg := fs.Arg(0)
 	switch verb {
 	case "create":
-		e, code, err := createAccount(s, p, arg, *email, *name)
+		e, code, err := createAccount(s, p, arg, *email, *name, true)
 		if err != nil {
 			return fail(err)
 		}
@@ -313,7 +313,7 @@ and answers are read from the terminal, or one per line from stdin.`)
 			return fail(err)
 		}
 		_ = s.Forget()
-		fmt.Fprintf(out, "Moved %d item(s) back to ~/.abhed. Earlier versions see them again; sessions recorded since sign-in stay this account's.\n", n)
+		fmt.Fprintf(out, "Moved %d item(s) back to ~/.abhed, the record verified before and after. Earlier versions see them again, except the sessions recorded since sign-in: those are recorded as the account and an earlier version does not list them.\n", n)
 		return 0
 	case "rm", "remove":
 		if arg == "" {
@@ -374,7 +374,7 @@ func accountName(s *identity.Store, p *prompter, name string) (string, error) {
 }
 
 // createAccount asks for what an account needs, makes it, and signs it in.
-func createAccount(s *identity.Store, p *prompter, username, email, name string) (identity.Entry, string, error) {
+func createAccount(s *identity.Store, p *prompter, username, email, name string, remember bool) (identity.Entry, string, error) {
 	var err error
 	for username == "" || identity.CheckUsername(strings.ToLower(username)) != nil {
 		if username != "" {
@@ -394,6 +394,9 @@ func createAccount(s *identity.Store, p *prompter, username, email, name string)
 	e, code, err := s.Create(username, pw, email, name)
 	if err != nil {
 		return identity.Entry{}, "", err
+	}
+	if !remember {
+		return e, code, nil
 	}
 	if err := s.Remember(e.ID); err != nil {
 		return identity.Entry{}, "", err

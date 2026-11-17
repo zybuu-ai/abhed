@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/identity"
+	"github.com/zybuu-ai/abhed/store"
+	"github.com/zybuu-ai/abhed/store/local"
 )
 
 // accountHome is a fresh home with fast hashes.
@@ -138,5 +141,32 @@ func TestAccountAdoptAndUnmigrate(t *testing.T) {
 	}
 	if _, err := os.Stat(legacy); err != nil {
 		t.Fatal("the history did not come back")
+	}
+}
+
+// The first account is remembered only once the earlier data has moved: a
+// move that fails leaves it unremembered, so no other start runs as it on
+// half the data.
+func TestCreateAndAdoptRemembersOnlyAfterTheMove(t *testing.T) {
+	h := accountHome(t)
+	records := filepath.Join(h, ".abhed", "records")
+	st, err := local.Open(local.Options{Dir: records, Tenant: "default", User: "yuvraj"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.CreateSession(context.Background(), store.SessionRecord{ID: "s-1", User: "yuvraj", Workspace: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Acquire("s-1"); err != nil { // another abhed writing it
+		t.Fatal(err)
+	}
+	p, _ := answers(t, "yuvraj\ncorrect horse\ncorrect horse\n")
+	s, _ := identity.Open()
+	if _, err := createAndAdopt(s, p); err == nil {
+		t.Fatal("the move went ahead while a session was being written")
+	}
+	if _, ok, _ := s.Remembered(nil); ok {
+		t.Fatal("the account is remembered though its data did not move")
 	}
 }

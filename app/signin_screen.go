@@ -59,7 +59,7 @@ func chooseWho(s *identity.Store, rules identity.Rules, p *prompter) (identity.P
 		}
 		if !legacy {
 			add("Create an account  on this machine; nothing leaves it", func() (identity.Principal, error) {
-				e, code, err := createAccount(s, p, "", "", "")
+				e, code, err := createAccount(s, p, "", "", "", true)
 				if err != nil {
 					return identity.Principal{}, err
 				}
@@ -144,7 +144,9 @@ func onlyName(list []identity.Entry) string {
 // createAndAdopt makes the first account and moves the data from before
 // sign-in into it.
 func createAndAdopt(s *identity.Store, p *prompter) (identity.Principal, error) {
-	e, code, err := createAccount(s, p, "", "", "")
+	// Remembered only once the data has moved: until then no other start may
+	// resolve to the account and run on half of it.
+	e, code, err := createAccount(s, p, "", "", "", false)
 	if err != nil {
 		return identity.Principal{}, err
 	}
@@ -152,6 +154,9 @@ func createAndAdopt(s *identity.Store, p *prompter) (identity.Principal, error) 
 	res, err := identity.Migrate(s, e, legacyUser())
 	if err != nil {
 		return identity.Principal{}, fmt.Errorf("your account was made, but the earlier data did not move (%w); nothing was lost, and abhed account adopt tries again", err)
+	}
+	if err := s.Remember(e.ID); err != nil {
+		return identity.Principal{}, err
 	}
 	fmt.Fprintf(p.out, "Moved %d item(s) into your account; %d session record(s) verified before and after.\n", res.Moved, res.Sessions)
 	return s.Principal(e), nil

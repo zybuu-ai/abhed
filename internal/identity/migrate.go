@@ -53,11 +53,56 @@ func (s *Store) journalPath(e Entry) string { return filepath.Join(s.dir, e.ID, 
 // Migrate moves the data from before sign-in into e's folder. legacyUser is
 // who the record wrote those sessions as, so they stay e's.
 func Migrate(s *Store, e Entry, legacyUser string) (MigrateResult, error) {
-	unlock, err := filelock.Lock(filepath.Join(s.dir, ".migrate.lock"), 0, "%s is held: another abhed is moving data (%s)")
+	unlock, err := s.lockMigration(0)
 	if err != nil {
 		return MigrateResult{}, err
 	}
 	defer unlock()
+	return migrateLocked(s, e, legacyUser)
+}
+
+// ErrMigrationBusy is another Abhed moving the data from before sign-in.
+var ErrMigrationBusy = errors.New("another abhed is moving your earlier data into an account; start again once it has finished")
+
+func (s *Store) lockMigration(wait time.Duration) (func(), error) {
+	unlock, err := filelock.Lock(filepath.Join(s.dir, ".migrate.lock"), wait, "%s is held (%s)")
+	if err != nil {
+		return nil, fmt.Errorf("%w (%v)", ErrMigrationBusy, err)
+	}
+	return unlock, nil
+}
+
+// migrateStep is told each step of a move, so tests can stop it there as a
+// crash would; an error ends the move at once, leaving what a crash leaves.
+var migrateStep = func(string) error { return nil }
+
+// validJournal refuses a journal that names anything but the items this
+// release moves, or another account.
+func validJournal(j journal, e Entry) error {
+	if j.Account != e.ID {
+		return fmt.Errorf("the move's journal names another account")
+	}
+	for _, list := range [][]string{j.Items, j.Done} {
+		for _, it := range list {
+			if !slices.Contains(LegacyItems, it) {
+				return fmt.Errorf("the move's journal names %q, which is not data from before sign-in", it)
+			}
+		}
+	}
+	return nil
+}
+
+// emptyDir reports whether p is a folder with nothing in it.
+func emptyDir(p string) bool {
+	fi, err := os.Lstat(p)
+	if err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	entries, err := os.ReadDir(p)
+	return err == nil && len(entries) == 0
+}
+
+func migrateLocked(s *Store, e Entry, legacyUser string) (MigrateResult, error) {
 	if owner, taken, err := s.LegacyOwner(); err != nil {
 		return MigrateResult{}, err
 	} else if taken && owner.ID != e.ID {
@@ -74,7 +119,11 @@ func Migrate(s *Store, e Entry, legacyUser string) (MigrateResult, error) {
 	var j journal
 	if ok, err := readJSON(s.journalPath(e), &j); err != nil {
 		return MigrateResult{}, err
-	} else if !ok || j.State == stateComplete {
+	} else if ok && j.State == stateMoving {
+		if err := validJournal(j, e); err != nil {
+			return MigrateResult{}, err
+		}
+	} else {
 		j = journal{Account: e.ID, LegacyUser: legacyUser, State: stateMoving, At: time.Now().UTC()}
 		for _, it := range LegacyItems {
 			if _, err := os.Lstat(filepath.Join(m, it)); err == nil {
@@ -90,6 +139,9 @@ func Migrate(s *Store, e Entry, legacyUser string) (MigrateResult, error) {
 	if j.Heads == nil {
 		if j.Heads, err = recordHeads(filepath.Join(m, "records")); err != nil {
 			return MigrateResult{}, fmt.Errorf("verify the record before moving it: %w", err)
+		}
+		if err := migrateStep("journal"); err != nil {
+			return MigrateResult{}, err
 		}
 		if err := writeJSON(s.journalPath(e), j); err != nil {
 			return MigrateResult{}, err
@@ -108,7 +160,17 @@ func Migrate(s *Store, e Entry, legacyUser string) (MigrateResult, error) {
 			continue
 		}
 		if _, err := os.Lstat(to); err == nil {
-			return MigrateResult{}, fmt.Errorf("%s is already in the account; nothing more was moved", to)
+			// Something made it since (an empty folder a run created): take its
+			// place; anything else in the way moves everything back.
+			if emptyDir(to) {
+				_ = os.Remove(to)
+			} else {
+				if _, rerr := moveBack(s, e, j); rerr != nil {
+					return MigrateResult{}, fmt.Errorf("%s is already in the account, and moving back failed: %v", to, rerr)
+				}
+				_ = os.Remove(s.journalPath(e))
+				return MigrateResult{}, fmt.Errorf("%s is already in the account, so nothing was moved: everything is back in ~/.abhed; move or remove it, then run abhed account adopt", to)
+			}
 		}
 		if err := os.MkdirAll(filepath.Dir(to), 0o700); err != nil {
 			return MigrateResult{}, err
@@ -116,8 +178,14 @@ func Migrate(s *Store, e Entry, legacyUser string) (MigrateResult, error) {
 		if err := os.Rename(from, to); err != nil {
 			return MigrateResult{}, fmt.Errorf("move %s: %w", it, err)
 		}
+		if err := migrateStep("renamed:" + it); err != nil {
+			return MigrateResult{}, err
+		}
 		j.Done = append(j.Done, it)
 		if err := writeJSON(s.journalPath(e), j); err != nil {
+			return MigrateResult{}, err
+		}
+		if err := migrateStep("noted:" + it); err != nil {
 			return MigrateResult{}, err
 		}
 	}
@@ -131,7 +199,13 @@ func Migrate(s *Store, e Entry, legacyUser string) (MigrateResult, error) {
 		}
 		return MigrateResult{}, fmt.Errorf("%w; everything was moved back", err)
 	}
-	if err := s.SetLegacyUser(e.ID, legacyUser); err != nil {
+	if err := migrateStep("legacy"); err != nil {
+		return MigrateResult{}, err
+	}
+	if err := s.SetLegacyUser(e.ID, j.LegacyUser); err != nil {
+		return MigrateResult{}, err
+	}
+	if err := migrateStep("complete"); err != nil {
 		return MigrateResult{}, err
 	}
 	j.State = stateComplete
@@ -145,6 +219,28 @@ func Migrate(s *Store, e Entry, legacyUser string) (MigrateResult, error) {
 
 // ResumeMigration finishes a move a crash interrupted, if there is one.
 func ResumeMigration(s *Store) (bool, error) {
+	unlock, err := s.lockMigration(0)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	return resumeLocked(s)
+}
+
+// SettleMigration makes sure no move of the data from before sign-in is in
+// progress before a start resolves who is working: it waits up to wait for
+// one another Abhed is making, and finishes one a crash left. A start never
+// runs on half the data; it gets ErrMigrationBusy instead.
+func SettleMigration(s *Store, wait time.Duration) (bool, error) {
+	unlock, err := s.lockMigration(wait)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	return resumeLocked(s)
+}
+
+func resumeLocked(s *Store) (bool, error) {
 	list, err := s.List()
 	if err != nil {
 		return false, err
@@ -154,7 +250,7 @@ func ResumeMigration(s *Store) (bool, error) {
 		if ok, err := readJSON(s.journalPath(e), &j); err != nil || !ok || j.State != stateMoving {
 			continue
 		}
-		_, err := Migrate(s, e, j.LegacyUser)
+		_, err := migrateLocked(s, e, j.LegacyUser)
 		return true, err
 	}
 	return false, nil
@@ -163,7 +259,7 @@ func ResumeMigration(s *Store) (bool, error) {
 // Unmigrate moves the data back to ~/.abhed, for going back to an earlier
 // version. It returns how many items moved.
 func Unmigrate(s *Store) (int, error) {
-	unlock, err := filelock.Lock(filepath.Join(s.dir, ".migrate.lock"), 0, "%s is held: another abhed is moving data (%s)")
+	unlock, err := s.lockMigration(0)
 	if err != nil {
 		return 0, err
 	}
@@ -181,6 +277,9 @@ func Unmigrate(s *Store) (int, error) {
 	} else if !ok {
 		return 0, errors.New("the account has no record of what moved")
 	}
+	if err := validJournal(j, e); err != nil {
+		return 0, err
+	}
 	root, err := s.Root(e)
 	if err != nil {
 		return 0, err
@@ -190,9 +289,20 @@ func Unmigrate(s *Store) (int, error) {
 		return 0, err
 	}
 	defer release()
+	before, err := recordHeads(filepath.Join(root, "records"))
+	if err != nil {
+		return 0, fmt.Errorf("verify the record before moving it back: %w", err)
+	}
 	n, err := moveBack(s, e, j)
 	if err != nil {
 		return n, err
+	}
+	m, err := home.Machine()
+	if err != nil {
+		return n, err
+	}
+	if after, err := recordHeads(filepath.Join(m, "records")); err != nil || !sameHeads(before, after) {
+		return n, fmt.Errorf("the record's heads differ after moving it back (%v): %s; it is in ~/.abhed/records, check it with abhed record verify", err, diffHeads(before, after))
 	}
 	if err := s.SetLegacyUser(e.ID, ""); err != nil {
 		return n, err
