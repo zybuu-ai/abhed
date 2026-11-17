@@ -138,8 +138,10 @@ with the latest one:
   `local_only` is: a loopback address, `localhost`, or a local server type
   at its default endpoint. A proxy on this machine that forwards to a model
   elsewhere counts as local, so its model is warmed through it (still with
-  no code). Opening a file never starts the engine or opens a session for
-  a warm-up alone.
+  no code). Once you have clicked or typed in the window, opening a
+  workspace file opens the editor session (with the engine running) and
+  warms the model then, before your first keystroke; editors restored at
+  start-up, untouched, warm nothing and start nothing.
 - **Completions first.** A local server often answers one request at a
   time. A completion waiting for the server goes ahead of next-edit calls
   and agent turns that wait for it, and while one is asked for, next-edit
@@ -148,7 +150,9 @@ with the latest one:
   finished from the file needs no model and is shown at once; on the
   renamed line, in the languages the engine finishes renames in by itself
   (Python, Go, JavaScript, TypeScript, Java), Studio shows it instead of
-  asking for ghost text.
+  asking for ghost text. In the editor, next-edit suggestions yield to ghost
+  text: while a completion is shown at the cursor the next-edit model is not
+  asked, so ghost text never waits for it.
 - **Debounce and cancel.** Studio waits briefly after a keystroke before
   asking and sends its `seq`; a newer keystroke supersedes the older
   request, and Studio cancels a request whose place in the file has gone,
