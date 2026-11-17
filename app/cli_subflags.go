@@ -58,6 +58,12 @@ func takesGlobal(sub, name string) bool {
 	return false
 }
 
+// bgStartWorkspace reports whether flag is -C on abhed bg start, the one bg
+// command that reads the workspace: its snapshot is of that repository.
+func bgStartWorkspace(sub []string, flag string) bool {
+	return flag == "C" && len(sub) > 1 && sub[0] == "bg" && sub[1] == "start"
+}
+
 // ignoredBefore names the top-level flags set on the command line that the
 // subcommand does not read; written before it they used to be ignored. -C
 // before any subcommand stays allowed: it only says where abhed runs.
@@ -109,7 +115,7 @@ func hoistGlobalFlags(fs *flag.FlagSet, sub []string) ([]string, error) {
 			left = append(left, arg)
 			continue
 		}
-		if !takesGlobal(name, flagName) {
+		if !takesGlobal(name, flagName) && !bgStartWorkspace(sub, flagName) {
 			return nil, fmt.Errorf("-%s does not apply to %s; see abhed %s -h", flagName, name, name)
 		}
 		if !hasValue {

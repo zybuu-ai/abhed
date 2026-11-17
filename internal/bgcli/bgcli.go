@@ -640,25 +640,35 @@ func (r *runner) ask(interactive bool, w bgjob.Approval) error {
 	} else {
 		fmt.Fprint(r.Err, "Allow it? [y/N] ")
 	}
-	ans, err := r.readLine()
-	if r.Ctx.Err() != nil {
-		fmt.Fprintln(r.Err)
-		return errDetached
-	}
+	a, err := r.answer()
 	if err != nil {
-		ans = "" // no answer is a no
+		return err
 	}
-	a := strings.TrimSpace(ans)
 	always := w.Scope != "" && (a == "a" || a == "A")
 	ok := always || a == "y" || a == "Y"
 	if always {
 		err = r.cl.AnswerAlways(r.Ctx, w)
+		if err != nil && r.Ctx.Err() == nil && bgjob.StatusOf(err) == http.StatusForbidden {
+			// A workspace that needs other approvers refuses "always": this
+			// call alone may still be answered.
+			fmt.Fprintf(r.Err, "abhed: always for this job was refused: %s\nAnswer this call only. Allow it? [y/N] ", line(err.Error()))
+			if a, err = r.answer(); err != nil {
+				return err
+			}
+			always, ok = false, a == "y" || a == "Y"
+			err = r.cl.Answer(r.Ctx, w, ok)
+		}
 	} else {
 		err = r.cl.Answer(r.Ctx, w, ok)
 	}
 	if err != nil {
 		if r.Ctx.Err() != nil {
 			return errDetached
+		}
+		if bgjob.StatusOf(err) == http.StatusForbidden {
+			// Refused, not failed: the ask stays pending for whoever may answer it.
+			fmt.Fprintf(r.Err, "abhed: the answer was refused: %s; the ask still waits\n", line(err.Error()))
+			return nil
 		}
 		return err
 	}
@@ -671,6 +681,20 @@ func (r *runner) ask(interactive bool, w bgjob.Approval) error {
 		fmt.Fprintln(r.Err, "denied")
 	}
 	return nil
+}
+
+// answer is the person's answer to a question, trimmed; no answer is "",
+// a no. Ctrl-C at the question is errDetached.
+func (r *runner) answer() (string, error) {
+	ans, err := r.readLine()
+	if r.Ctx.Err() != nil {
+		fmt.Fprintln(r.Err)
+		return "", errDetached
+	}
+	if err != nil {
+		ans = ""
+	}
+	return strings.TrimSpace(ans), nil
 }
 
 // maxArg bounds what one argument shows; the record has it whole.

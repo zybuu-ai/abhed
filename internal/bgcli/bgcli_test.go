@@ -32,6 +32,9 @@ type fakeServer struct {
 	noBG bool
 	// events, when set, is the job's record.
 	events []bgjob.Event
+	// fourEyes refuses "always" as a workspace that needs other approvers
+	// does; ownApproval refuses the owner's approval too.
+	fourEyes, ownApproval bool
 }
 
 func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -76,6 +79,14 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var a map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&a)
 		f.answers = append(f.answers, a)
+		if f.fourEyes && a["scope"] != nil {
+			http.Error(w, `{"error":"answer refused: \"always allow\" would skip four-eyes approval for later calls; approve this call only"}`, http.StatusForbidden)
+			return
+		}
+		if f.ownApproval && a["approved"] == true {
+			http.Error(w, `{"error":"answer refused: workspace w1 needs 1 other approver(s) for bash; you may only refuse your own request"}`, http.StatusForbidden)
+			return
+		}
 		f.job.Waiting = nil
 		f.job.State = bgjob.StateDone
 		reply(map[string]bool{"ok": true})
@@ -394,5 +405,45 @@ func TestBudgetReasonInTableOutput(t *testing.T) {
 	if res.code != ExitFailed || !strings.Contains(res.out, "budget.stopped         "+msg) ||
 		!strings.Contains(res.out, "max_budget: the daily budget") || !strings.Contains(res.err, "max_budget ("+msg+")") {
 		t.Fatalf("attach: %+v", res)
+	}
+}
+
+// Under four-eyes the server refuses "always": attach says so and asks
+// about this call alone, and a refusal of that too leaves the ask waiting
+// for the workspace's approvers rather than ending attach.
+func TestAlwaysRefusedUnderFourEyes(t *testing.T) {
+	waiting := func(r *rig) {
+		r.srv.job.Waiting = &bgjob.Approval{JobID: "bg_1", SessionID: "sess_1", RequestID: "req_9", Tool: "bash",
+			Scope: "bash(make test)", Deadline: time.Now().Add(time.Hour)}
+	}
+	r := newRig(t)
+	r.srv.fourEyes = true
+	waiting(r)
+	res := r.run("a\ny\n", true, "", "attach", "bg_1")
+	if res.code != ExitOK || !strings.Contains(res.err, "always for this job was refused") ||
+		!strings.Contains(res.err, "four-eyes") || !strings.Contains(res.err, "Answer this call only. Allow it? [y/N]") ||
+		!strings.Contains(res.err, "allowed\n") {
+		t.Fatalf("attach: %+v", res)
+	}
+	if len(r.srv.answers) != 2 || r.srv.answers[1]["approved"] != true || r.srv.answers[1]["scope"] != nil {
+		t.Fatalf("answered %v", r.srv.answers)
+	}
+
+	r = newRig(t)
+	r.srv.fourEyes, r.srv.ownApproval = true, true
+	waiting(r)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	var out, errOut bytes.Buffer
+	code := Main(Env{Ctx: ctx, ProfilesPath: r.profiles, In: strings.NewReader("a\ny\n"), Out: &out, Err: &errOut,
+		Interactive: true, Poll: 5 * time.Millisecond}, []string{"attach", "bg_1"})
+	if code != ExitOK || !strings.Contains(errOut.String(), "you may only refuse your own request (403); the ask still waits") ||
+		!strings.Contains(errOut.String(), "detached; job bg_1 runs on") {
+		t.Fatalf("attach: %d %q", code, errOut.String())
+	}
+	r.srv.mu.Lock()
+	defer r.srv.mu.Unlock()
+	if len(r.srv.answers) != 2 || r.srv.job.State != bgjob.StateRunning {
+		t.Fatalf("answered %v, state %s", r.srv.answers, r.srv.job.State)
 	}
 }

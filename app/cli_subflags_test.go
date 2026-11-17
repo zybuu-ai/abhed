@@ -65,6 +65,10 @@ func TestHoistGlobalFlags(t *testing.T) {
 		{args: []string{"bg", "start", "-name", "nightly", "-mode", "plan", "-y", "fix it"},
 			left: "bg start -name nightly -mode plan -y fix it"},
 		{args: []string{"bg", "start", "-model", "x", "fix it"}, err: "-model does not apply to bg"},
+		// start snapshots the workspace, so -C names it; the other bg commands read none.
+		{args: []string{"bg", "start", "-C", "/repo", "-y", "fix it"}, left: "bg start -y fix it", workdir: "/repo"},
+		{args: []string{"bg", "list", "-C", "/repo"}, err: "-C does not apply to bg"},
+		{args: []string{"bg", "attach", "bg_1", "-C", "/repo"}, err: "-C does not apply to bg"},
 	} {
 		var f cliFlags
 		fs := newFlagSet(&f)

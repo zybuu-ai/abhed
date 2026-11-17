@@ -561,7 +561,11 @@ All notable changes to Abhed are recorded here. The format follows
   rule the record would redact is not offered. Why a job stopped is now in
   the table too: `list` shows `failed (max_budget)`, a budget stop's line
   shows its message rather than its kind, a run's end its detail, and
-  attach's last line the budget's words.
+  attach's last line the budget's words. Where a workspace's four-eyes rule
+  refuses "always", attach says so and asks about that call alone; a
+  refused answer leaves the ask waiting and attach following, rather than
+  exiting. `abhed bg start -C DIR` snapshots DIR (the other bg commands
+  still refuse `-C`, which means nothing to them).
 - A model reply that only reasons, with no text or tool call, is cut past
   `limits.reasoning_stall_tokens` reasoning tokens (8000 by default, or the
   request's thinking budget if larger), with `limits.reasoning_stall_seconds`
