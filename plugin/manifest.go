@@ -2,6 +2,8 @@
 // slash commands, simple hooks, MCP server definitions and docs under one
 // manifest. A bundle adds content, never policy, and nothing in it runs at
 // install. See docs/architecture/plugins.md.
+//
+// It is an experimental API until 2.0, and may change in a minor release.
 package plugin
 
 import (

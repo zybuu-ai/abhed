@@ -148,7 +148,9 @@ capabilities, and the signature against the server's trusted root when it has
 one), then serves the index (`GET /v1/plugins/index`) and the archives to
 signed-in laptops. The org policy turns on `plugins.org_source`. Community knows
 only the index format and how to fetch it with the profile's token, so the
-boundary between editions is a document format, not code.
+boundary between editions is a document format, not code. The reader,
+verifier and index types are the public package `plugin` (an experimental API
+until 2.0), which the Team server imports.
 
 ## Out of scope for now
 

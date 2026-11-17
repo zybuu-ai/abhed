@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zybuu-ai/abhed/internal/plugin"
-	"github.com/zybuu-ai/abhed/internal/plugin/plugintest"
 	"github.com/zybuu-ai/abhed/internal/testenv"
+	"github.com/zybuu-ai/abhed/plugin"
+	"github.com/zybuu-ai/abhed/plugin/plugintest"
 )
 
 func TestMain(m *testing.M) { testenv.Main(m) }

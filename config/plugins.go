@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/zybuu-ai/abhed/internal/plugin"
+	"github.com/zybuu-ai/abhed/plugin"
 )
 
 // PluginsConfig governs plugin bundles. Managed only: the managed file or

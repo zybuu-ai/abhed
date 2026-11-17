@@ -27,9 +27,9 @@ import (
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/nlink"
-	"github.com/zybuu-ai/abhed/internal/plugin"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/toolchain"
+	"github.com/zybuu-ai/abhed/plugin"
 )
 
 type Config struct {

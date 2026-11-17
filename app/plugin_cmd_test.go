@@ -13,10 +13,10 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/managed"
-	"github.com/zybuu-ai/abhed/internal/plugin"
-	"github.com/zybuu-ai/abhed/internal/plugin/plugintest"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/toolset"
+	"github.com/zybuu-ai/abhed/plugin"
+	"github.com/zybuu-ai/abhed/plugin/plugintest"
 )
 
 const (

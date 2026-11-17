@@ -27,7 +27,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zybuu-ai/abhed/internal/plugin"
+	"github.com/zybuu-ai/abhed/plugin"
 )
 
 // Sigstore is a certificate authority and a log, as a trusted root names them.

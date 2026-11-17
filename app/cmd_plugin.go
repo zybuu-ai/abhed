@@ -19,7 +19,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/zybuu-ai/abhed/config"
-	"github.com/zybuu-ai/abhed/internal/plugin"
+	"github.com/zybuu-ai/abhed/plugin"
 	"github.com/zybuu-ai/abhed/profiles"
 )
 
@@ -237,28 +237,16 @@ func (pc *pluginCtx) fetch(arg string) (*fetched, error) {
 
 var pluginNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,38}$`)
 
-// IndexEntry is one bundle a plugin source lists.
-type pluginIndexEntry struct {
-	Name        string `json:"name"`
-	Version     string `json:"version"`
-	URL         string `json:"url"`
-	SHA256      string `json:"sha256"`
-	Publisher   string `json:"publisher,omitempty"`
-	Description string `json:"description,omitempty"`
-}
-
-func (pc *pluginCtx) lookup(s plugin.Source, name, version string) (*pluginIndexEntry, error) {
+func (pc *pluginCtx) lookup(s plugin.Source, name, version string) (*plugin.IndexEntry, error) {
 	body, err := pc.get(s.URL, 4<<20)
 	if err != nil {
 		return nil, err
 	}
-	var idx struct {
-		Plugins []pluginIndexEntry `json:"plugins"`
-	}
+	var idx plugin.Index
 	if err := json.Unmarshal(body, &idx); err != nil {
 		return nil, fmt.Errorf("the index: %w", err)
 	}
-	var found *pluginIndexEntry
+	var found *plugin.IndexEntry
 	for i, e := range idx.Plugins {
 		if e.Name != name || (version != "" && e.Version != version) {
 			continue
