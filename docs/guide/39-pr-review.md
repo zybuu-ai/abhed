@@ -86,7 +86,10 @@ and head commits, and both must be in the checkout.
      `(no file)` when it names none. A finding listed in the body has its
      text as blocks of its own inside the list item, so a fence in it starts
      a line, and findings that would pass GitHub's size limit are left out
-     whole, never cut, so the closing note is always there. CI parses
+     whole, never cut, least severe first (findings are listed by severity,
+     and the last are dropped), and counted, so the closing note is always
+     there. After a refused inline line, the body is rendered again from
+     every finding, so the count stays exact. CI parses
      thousands of generated reviews with commonmark.js to hold this.
      Each `@`, in code or not, is followed by a zero-width joiner, so no
      mention notifies anyone; and every field is bounded. Markdown

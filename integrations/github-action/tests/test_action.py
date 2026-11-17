@@ -374,6 +374,38 @@ class ReviewTest(Tmp):
         self.assertIn("``a`@\u200dadmin<b>.go``", r["body"])
         self.assertIn("t &#96;x&#96; &lt;b&gt;", r["body"])
 
+    def test_a_422_near_the_limit_counts_what_it_leaves_out(self):
+        def review(k):
+            loose = [{"path": "z.go", "line": 0, "severity": sev, "title": f"loose {i}", "body": "<" * k}
+                     for i, sev in enumerate(["minor", "nit", "nit", "major"])]
+            inline = {"path": "app.go", "line": 2, "severity": "critical", "title": "the inline one", "body": "x"}
+            return aa.build_review({"summary": "s", "findings": loose + [inline]}, {"outcome": "verified"},
+                                   DIFF, "a" * 40, "never", "https://run")
+        # The largest bodies that still keep all four loose findings in the body.
+        lo, hi = 1, 4000
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if "cut for length" in review(mid)["body"]:
+                hi = mid - 1
+            else:
+                lo = mid
+        r = review(lo)
+        self.assertGreater(len(r["body"]), 59900)
+        self.assertNotIn("cut for length", r["body"])
+        self.assertEqual(len(r["comments"]), 1)
+        moved = aa.move_comments_to_body(r)
+        body = moved["body"]
+        self.assertLessEqual(len(body), aa.BODY_LIMIT)
+        self.assertEqual(moved["comments"], [])
+        # The head stays whole, the note ends it, and the count is exact.
+        self.assertIn("1 critical, 1 major, 1 minor, 2 nit.", body)
+        self.assertIn("\n\n" + aa.NOTE + "\n\n", body)
+        kept = [t for t in ("the inline one", "loose 3", "loose 0", "loose 1", "loose 2") if f": {t}**" in body]
+        self.assertEqual(kept, ["the inline one", "loose 3", "loose 0", "loose 1", "loose 2"][:len(kept)],
+                         "the most severe are kept first")
+        self.assertIn(f"{5 - len(kept)} more finding(s) cut for length", body)
+        self.assertNotIn("_layout", aa.wire(moved))
+
     def test_a_path_that_names_no_file(self):
         for p in ("", " ", "\r", "\t\n"):
             self.assertEqual(aa.path_span(p), "(no file)", repr(p))
@@ -634,9 +666,9 @@ class RunTest(Tmp):
         # A fresh home and temp folder, outside the runner's temp folder.
         self.assertTrue(env["HOME"].startswith(self.path("home", ".abhed-action.")), env["HOME"])
         if sys.platform == "darwin":
-            # macOS's sandbox lets a command write its TMPDIR: a fresh folder of its own.
-            self.assertTrue(env["TMPDIR"].startswith("/tmp/abhed-run."), env["TMPDIR"])
-            self.assertFalse(os.path.exists(env["TMPDIR"]), "the run's TMPDIR was not removed")
+            # The account's own temp folder, where macOS's mktemp writes whatever TMPDIR says.
+            want = subprocess.run(["getconf", "DARWIN_USER_TEMP_DIR"], capture_output=True, text=True).stdout.strip().rstrip("/")
+            self.assertEqual(env["TMPDIR"], want)
         else:
             # bubblewrap gives each command a private /tmp.
             self.assertEqual(env["TMPDIR"], "/tmp")
@@ -1049,26 +1081,43 @@ class EndToEnd(Tmp):
         settings = self.path("settings.json")
         with open(settings, "w") as f:
             json.dump(aa.build_settings("", "openai-compatible", "m", model.url, ""), f)
-        e = {"PATH": os.environ["PATH"], "HOME": self.path("home"), "RUNNER_TEMP": self.runner_temp(),
+        # The process tier, forced: container engines on PATH answer nothing,
+        # so the session gets what a GitHub runner gets and the test cannot
+        # pass by landing on a container or VM tier.
+        shims = self.path("no-engines")
+        os.makedirs(shims, exist_ok=True)
+        for name in ("podman", "docker", "runsc", "nerdctl"):
+            self.write(f"no-engines/{name}", "#!/bin/sh\nexit 1\n", 0o755)
+        e = {"PATH": shims + os.pathsep + os.environ["PATH"], "HOME": self.path("home"), "RUNNER_TEMP": self.runner_temp(),
              "GITHUB_OUTPUT": self.path("out"), "ABHED_BIN": BIN, "ABHED_WORKSPACE": ws,
              "ABHED_EVIDENCE_DIR": self.path("ev"), "ABHED_SETTINGS": settings, **env}
         r = subprocess.run(["bash", os.path.join(LIB, "run.sh")], env=e, capture_output=True, text=True, timeout=300)
         self.assertEqual(r.returncode, 0, r.stderr)
         return self.outputs(self.path("out")), r
 
+    def remove_made_temp(self):
+        # The command's mktemp file, named by the command itself.
+        for l in open(self.path("ev", "run.jsonl")) if os.path.exists(self.path("ev", "run.jsonl")) else []:
+            for m in re.findall(r"made (/[^\\\s\"]*abhed-e2e[^\\\s\"]*)", l):
+                if os.path.isfile(m):
+                    os.remove(m)
+
     def test_run_mode_records_and_verifies(self):
         # The command uses TMPDIR too, as go build and go test do: it must
         # exist inside the sandbox (bubblewrap's private /tmp on Linux).
-        cmd = 'touch made-in-ci && t="$(mktemp)" && echo tmp-ok > "$t" && cat "$t"'
+        cmd = 'touch made-in-ci && t="$(mktemp -t abhed-e2e)" && echo tmp-ok > "$t" && cat "$t" && echo "made $t"'
         m = ScriptedModel([{"tool": "bash", "args": {"command": cmd, "description": "probe"}}, {"text": "done"}])
         self.addCleanup(m.close)
         o, r = self.run_real(m, ABHED_TASK="make a file", ABHED_PERMISSION_MODE="default",
                              ABHED_ALLOW="bash", ABHED_VERIFY="label")
+        self.remove_made_temp()
         self.assertEqual(o["exit-code"], "0", r.stderr)
         self.assertTrue(o["session-id"])
         self.assertTrue(os.path.exists(self.path("ws", "made-in-ci")), open(self.path("ev", "run.jsonl")).read()[-3000:])
         obs = [json.loads(l) for l in open(self.path("ev", "run.jsonl")) if '"observation"' in l]
         self.assertTrue(any("tmp-ok" in json.dumps(o) for o in obs), obs)
+        tiers = {o["payload"].get("sandbox") for o in obs}
+        self.assertEqual(tiers, {"process"}, obs)
         self.assertTrue(os.path.getsize(self.path("ev", "record.jsonl")) > 0, open(self.path("ev", "export.log")).read())
         self.assertIn("<!doctype html", open(self.path("ev", "transcript.html")).read().lower())
         v = subprocess.run([BIN, "record", "verify", self.path("ev", "record.jsonl")], capture_output=True, text=True,

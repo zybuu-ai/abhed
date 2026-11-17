@@ -598,7 +598,8 @@ def build_review(structured: Any, verdict: Optional[Dict[str, Any]], diff: str, 
     lines = commentable_lines(diff)
     findings = [f for f in (structured.get("findings") or []) if isinstance(f, dict)]
     comments: List[Dict[str, Any]] = []
-    loose: List[str] = []
+    loose: List[Tuple[int, str]] = []
+    placed: List[Tuple[int, str]] = []
     rank = {s: i for i, s in enumerate(SEVERITIES)}
     findings.sort(key=lambda f: rank.get(str(f.get("severity")), 9))
     for f in findings:
@@ -612,11 +613,13 @@ def build_review(structured: Any, verdict: Optional[Dict[str, Any]], diff: str, 
         except (TypeError, ValueError):
             ln = 0
         text = f"**{sev}: {title}**\n\n{body}"
+        where = path_span(path) + (f" line {ln}" if ln > 0 else "")
+        item = (rank[sev], list_item(f"{where}: **{sev}: {title}**", body))
         if path in lines and ln in lines[path] and len(comments) < 50:
             comments.append({"path": path, "line": ln, "side": "RIGHT", "body": text})
+            placed.append(item)
         else:
-            where = path_span(path) + (f" line {ln}" if ln > 0 else "")
-            loose.append(list_item(f"{where}: **{sev}: {title}**", body))
+            loose.append(item)
     counts = {s: sum(1 for f in findings if f.get("severity") == s) for s in SEVERITIES}
     head = [MARKER, "### Abhed review", "", neutral(str(structured.get("summary", "")).strip(), 4000), ""]
     if findings:
@@ -634,8 +637,10 @@ def build_review(structured: Any, verdict: Optional[Dict[str, Any]], diff: str, 
     threshold = {"critical": 0, "major": 1, "minor": 2, "nit": 3}.get(request_changes_on)
     if threshold is not None and any(rank.get(str(f.get("severity")), 9) <= threshold for f in findings):
         event = "REQUEST_CHANGES"
-    body = render_body(head, "Findings outside the diff's lines:", loose, tail)
-    return {"commit_id": commit, "event": event, "body": body, "comments": comments}
+    body = render_body(head, "Findings outside the diff's lines:", [t for _, t in loose], tail)
+    # _layout is kept off the wire: what a re-render after a 422 needs.
+    return {"commit_id": commit, "event": event, "body": body, "comments": comments,
+            "_layout": {"head": head, "tail": tail, "loose": loose, "placed": placed}}
 
 
 NOTE = "This review was written by an agent that could only read the repository. It never approves and never pushes."
@@ -668,7 +673,7 @@ def render_body(head: List[str], heading: str, items: List[str], tail: List[str]
 
 def post_review(api: str, repo: str, pr: int, payload: Dict[str, Any], token: str) -> Tuple[int, str]:
     url = f"{api.rstrip('/')}/repos/{repo}/pulls/{pr}/reviews"
-    req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST", headers={
+    req = urllib.request.Request(url, data=json.dumps(wire(payload)).encode(), method="POST", headers={
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
@@ -683,16 +688,19 @@ def post_review(api: str, repo: str, pr: int, payload: Dict[str, Any], token: st
 
 
 def move_comments_to_body(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """The payload with its inline comments listed in the body instead."""
-    moved = [list_item(f"{path_span(c['path'])} line {c['line']}:", c["body"]) for c in payload["comments"]]
-    body = payload["body"]
-    cut = body.rfind("\n\n" + NOTE)
-    at = body.rfind("\n\nAnswer check: ", 0, cut) if cut >= 0 else -1
-    split = at if at >= 0 else cut
-    if split < 0:
-        raise ValueError("the review body has no note to keep")
-    head, tail = body[:split].split("\n"), body[split:].split("\n")
-    return dict(payload, body=render_body(head, "Findings GitHub would not place on a line:", moved, tail), comments=[])
+    """The payload with its inline comments listed in the body instead: the
+    whole body rendered again from one list of every finding, by severity,
+    so what is left out for length is the least severe and counted once."""
+    lay = payload["_layout"]
+    items = sorted(lay["loose"] + lay["placed"], key=lambda it: it[0])
+    body = render_body(lay["head"], "Findings GitHub would not place on a line, and those outside the diff's lines:",
+                       [t for _, t in items], lay["tail"])
+    return dict(payload, body=body, comments=[], _layout=dict(lay, loose=items, placed=[]))
+
+
+def wire(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """The payload as GitHub takes it, without the keys kept for ourselves."""
+    return {k: v for k, v in payload.items() if not k.startswith("_")}
 
 
 def cmd_review_post(a: argparse.Namespace) -> int:
@@ -705,7 +713,7 @@ def cmd_review_post(a: argparse.Namespace) -> int:
     payload = build_review(r.get("structured_output"), r.get("verdict"), diff, a.commit, a.request_changes_on, a.run_url)
     if a.dry_run:
         with open(a.dry_run, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
+            json.dump(wire(payload), f, indent=2)
         return 0
     token = os.environ.get("ABHED_REVIEW_TOKEN", "")
     if not token:

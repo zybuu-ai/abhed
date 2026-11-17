@@ -37,31 +37,32 @@ if [ "${ABHED_ALLOW_PERSISTED_CREDENTIALS:-false}" != "true" ] && git -C "$ws" r
   fi
 fi
 
-# The run's own temp folder and home, never under the runner's temp folder:
-# RUNNER_TEMP holds the file commands (GITHUB_ENV, GITHUB_PATH), the
-# evidence and the binary. On macOS a command may write its TMPDIR, so that
-# is a fresh folder under /tmp; on Linux bubblewrap gives each command a
-# private /tmp of its own and binds nothing else there, so TMPDIR is /tmp,
-# which exists inside the sandbox. The home, which holds the run's record,
-# is a fresh folder under the runner user's home.
-run_tmp=""
+# The run's TMPDIR and home, never under the runner's temp folder, which
+# holds the file commands (GITHUB_ENV, GITHUB_PATH), the evidence and the
+# binary. On Linux, bubblewrap gives each command a private /tmp and binds
+# nothing else there, so TMPDIR is /tmp. On macOS it is the account's own
+# temp folder (getconf DARWIN_USER_TEMP_DIR), as for any local run: the
+# process sandbox lets a command write it, and macOS's mktemp writes there
+# whatever TMPDIR says, so any other folder breaks mktemp. The home, which
+# holds the run's record, is a fresh folder under the runner user's home,
+# removed on every way out of this script.
 if [ "$(uname -s)" = Darwin ]; then
-  run_tmp="$(mktemp -d /tmp/abhed-run.XXXXXXXX)"
-  chmod 700 "$run_tmp"
-  tmpdir="$run_tmp"
+  tmpdir="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
+  tmpdir="${tmpdir%/}"
+  [ -n "$tmpdir" ] && [ -d "$tmpdir" ] || fail "the account's temp folder (getconf DARWIN_USER_TEMP_DIR) is not available"
 else
   tmpdir=/tmp
 fi
 home="$HOME"
 made_home=""
+cleanup() { [ -n "$made_home" ] && rm -rf "$made_home" 2>/dev/null; return 0; }
+trap cleanup EXIT
 if [ "${ABHED_ISOLATE_HOME:-true}" = "true" ]; then
   mkdir -p "$HOME"
-  home="$(mktemp -d "$HOME/.abhed-action.XXXXXXXX")"
+  made_home="$(mktemp -d "$HOME/.abhed-action.XXXXXXXX")"
+  home="$made_home"
   chmod 700 "$home"
-  made_home="$home"
 fi
-cleanup() { rm -rf ${run_tmp:+"$run_tmp"} ${made_home:+"$made_home"} 2>/dev/null || true; }
-trap cleanup EXIT
 if [ -n "${RUNNER_TEMP:-}" ]; then
   rt="$(cd "$RUNNER_TEMP" && pwd -P)"
   for d in "$tmpdir" "$home"; do

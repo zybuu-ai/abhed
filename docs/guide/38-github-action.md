@@ -174,13 +174,15 @@ away from anything private.
   self-hosted runner's `~/.abhed/config.json` neither loosens the run nor
   collects its record. The sandbox keeps the runner user's own home
   unreadable to commands as well as the run's: it denies both `$HOME` and
-  the account's home. On macOS the run's `TMPDIR` is a fresh folder under
-  `/tmp`, since the process sandbox lets a command write its `TMPDIR`; on
-  Linux it is `/tmp`, which bubblewrap makes private to each command.
-  Neither is the runner's temp folder, which holds the job's file commands
-  (`GITHUB_ENV`, `GITHUB_PATH`), the evidence and the installed binary, so
-  these stay out of the commands' reach. Both folders are removed when the
-  step ends. Toolchain
+  the account's home. The run's `TMPDIR` is, on Linux, `/tmp`, which
+  bubblewrap makes private to each command; on macOS, the account's own
+  temp folder (`getconf DARWIN_USER_TEMP_DIR`), as for any local run, since
+  macOS's `mktemp` writes there whatever `TMPDIR` says and the process
+  sandbox lets commands write it. Neither is the runner's temp folder,
+  which holds the job's file commands (`GITHUB_ENV`, `GITHUB_PATH`), the
+  evidence and the installed binary, so these stay out of the commands'
+  reach; the action refuses to run if either would be inside it. The home
+  is removed however the step ends. Toolchain
   caches under the home start empty; set their own variables (`GOMODCACHE`,
   say) and pass them with `env-passthrough` to reuse them. The file-command
   variables and `RUNNER_TEMP` are never passed.

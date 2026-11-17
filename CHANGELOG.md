@@ -556,8 +556,9 @@ All notable changes to Abhed are recorded here. The format follows
   allow and deny rules, limits, and the variables to pass through. The
   agent runs under `env -i`: no GitHub token reaches it, and a checkout that
   kept its token in `.git/config` is refused. Its home is a fresh folder
-  outside the runner's temp folder, and so is its `TMPDIR` on macOS (on
-  Linux, bubblewrap's private `/tmp`); one hash over the binary and its
+  outside the runner's temp folder, and its `TMPDIR` is bubblewrap's
+  private `/tmp` on Linux and the account's temp folder on macOS, never the
+  runner's; one hash over the binary and its
   helpers is checked again before every later run of them. A flag newer than the pinned
   release is refused before the run. `pull_request_target` is refused.
   See [The GitHub Action](docs/guide/38-github-action.md).

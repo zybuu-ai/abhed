@@ -291,6 +291,28 @@ jobs:
           ABHED_BIN="$RUNNER_TEMP/abhed" npm test 2>&1 | tee "$RUNNER_TEMP/ts.log"
           grep -q "^# skipped 0" "$RUNNER_TEMP/ts.log" || grep -qE "ℹ skipped 0" "$RUNNER_TEMP/ts.log"
 
+  # The action's real-engine runs on macOS, where the process tier is
+  # Seatbelt: a GitHub macOS runner gets it, and its temp folder rules
+  # differ from bubblewrap's. The tests force the process tier.
+  integrations-macos:
+    name: GitHub Action on macOS
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.10"
+      - name: Build abhed
+        run: go build -o "$RUNNER_TEMP/abhed" ./cmd/abhed
+      - name: The action's run script and real runs
+        working-directory: integrations/github-action
+        run: |
+          set -euo pipefail
+          ABHED_BIN="$RUNNER_TEMP/abhed" python3 -m unittest tests.test_action.RunTest tests.test_action.EndToEnd -v 2>&1 | tee "$RUNNER_TEMP/action.log"
+          ! grep -E "skipped '" "$RUNNER_TEMP/action.log"
+
   # The process tier on Linux is bubblewrap, and denying network needs a
   # namespace the hosted runner will not grant. A privileged container can, so
   # this is where the egress, credential and state boundaries are actually
