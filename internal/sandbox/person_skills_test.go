@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -70,3 +71,49 @@ func TestFenceSpecGrantsOnlyThePersonsSkills(t *testing.T) {
 		t.Errorf("deny lacks ~/.abhed: %v", s.Deny)
 	}
 }
+
+// A command on the process tier and on the fence reads neither the accounts
+// store, another account's folder, nor a guest's: all of it is inside the
+// denied ~/.abhed. Run for real where the tier is available.
+func TestCommandsCannotReachAccountsOrGuests(t *testing.T) {
+	mine, theirs := personHome(t)
+	h, _ := os.UserHomeDir()
+	m := filepath.Join(h, home.DirName)
+	secrets := map[string]string{
+		filepath.Join(m, home.AccountsDir, "accounts.json"):                    "HASH-CANARY",
+		filepath.Join(filepath.Dir(theirs), "history", "h.jsonl"):              "THEIR-CANARY",
+		filepath.Join(filepath.Dir(mine), "records", "default", "s.jsonl"):     "MINE-CANARY",
+		filepath.Join(m, home.GuestDir, "g1", "records", "default", "s.jsonl"): "GUEST-CANARY",
+	}
+	for p, body := range secrets {
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tiers := map[string]Sandbox{"process": NewProcess(DefaultPolicy(workspace(t)))}
+	fp := fencePolicy(t)
+	t.Setenv("HOME", h) // fencePolicy moved HOME; the canaries are under this one
+	tiers["fence"] = NewFence(fp)
+	ran := 0
+	for name, sb := range tiers {
+		if ok, why := sb.Available(); !ok {
+			t.Logf("%s: not available here (%s)", name, why)
+			continue
+		}
+		ran++
+		for p, body := range secrets {
+			out, err := sb.Command(context.Background(), workspace(t), "cat "+shellQuote(p)).CombinedOutput()
+			if err == nil || strings.Contains(string(out), body) {
+				t.Errorf("%s: a command read %s: %v %q", name, p, err, out)
+			}
+		}
+	}
+	if ran == 0 {
+		t.Skip("no confining tier available on this machine")
+	}
+}
+
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
