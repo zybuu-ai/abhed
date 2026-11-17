@@ -2,9 +2,9 @@ package app
 
 import (
 	"encoding/json"
-	"net/url"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -129,6 +129,10 @@ func (c *acpConn) authenticate(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errRefused, "who is working is fixed once a session has opened; restart the engine to change it"))
 		return
 	}
+	if why := inAgentCommand(); why != "" {
+		c.reply(msg.ID, nil, refusal(errPolicy, "signing in is refused inside an agent's command (%s)", why))
+		return
+	}
 	a := p.Meta[acpMetaKey]
 	var code string
 	var err error
@@ -155,6 +159,9 @@ func (c *acpConn) authenticate(msg rpcMessage) {
 	res := map[string]any{"_meta": map[string]any{acpMetaKey: map[string]any{"identity": acpIdentity()}}}
 	if code != "" {
 		res["_meta"].(map[string]any)[acpMetaKey].(map[string]any)["recoveryCode"] = code
+	}
+	if n := takeSignInNotice(); n != "" {
+		res["_meta"].(map[string]any)[acpMetaKey].(map[string]any)["notice"] = n
 	}
 	c.reply(msg.ID, res, nil)
 }

@@ -226,6 +226,9 @@ func usePrincipal(p identity.Principal) error {
 			return fmt.Errorf("make the guest folder: %w", err)
 		}
 		p.Root = g.Root
+		// Each guest is its own owner: no guest reads another's sessions where
+		// an organisation keeps them.
+		p.Owner = identity.GuestOwner + ":" + filepath.Base(g.Root)
 		principalMu.Lock()
 		guestNow = g
 		principalMu.Unlock()

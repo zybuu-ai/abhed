@@ -2,9 +2,29 @@ package app
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/zybuu-ai/abhed/internal/identity"
 )
+
+// signInNotice is what the last sign-in must tell the person, such as a
+// password reset since their previous one; the surface that signed them in
+// shows it and takes it.
+var signInNotice string
+
+func setSignInNotice(s string) {
+	principalMu.Lock()
+	signInNotice = s
+	principalMu.Unlock()
+}
+
+func takeSignInNotice() string {
+	principalMu.Lock()
+	defer principalMu.Unlock()
+	n := signInNotice
+	signInNotice = ""
+	return n
+}
 
 // rpcPrincipal is who is working, as rpc and acp report it.
 type rpcPrincipal struct {
@@ -37,13 +57,17 @@ func rpcAuth(req rpcRequest, started bool) rpcResponse {
 	if err != nil {
 		return fail(err)
 	}
-	return rpcResponse{ID: req.ID, Type: "auth", Principal: principalReport(), RecoveryCode: code}
+	return rpcResponse{ID: req.ID, Type: "auth", Principal: principalReport(), RecoveryCode: code, Notice: takeSignInNotice()}
 }
 
 // switchPrincipal signs in, registers or turns guest for a client that asks
 // on behalf of the person (rpc, acp), before anything has started. It
 // returns the recovery code of a new account.
 func switchPrincipal(method, username, password, email string) (string, error) {
+	// Who is working is the person's to say, never the agent's (as selfAdmin).
+	if why := inAgentCommand(); why != "" {
+		return "", fmt.Errorf("signing in is refused inside an agent's command (%s)", why)
+	}
 	rules, err := clientRules()
 	if err != nil {
 		return "", err
@@ -75,6 +99,9 @@ func switchPrincipal(method, username, password, email string) (string, error) {
 		}
 		if err := s.Remember(e.ID); err != nil {
 			return "", err
+		}
+		if r, _ := s.TakeReset(e.ID); r != nil {
+			setSignInNotice(resetNote(r))
 		}
 		next = s.Principal(e)
 	case "auth.register":

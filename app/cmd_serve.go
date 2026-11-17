@@ -56,7 +56,9 @@ func (a *App) serveCmd(workspace, addr string) int {
 	}
 	addr, ok := serveSignInChoice(cfg, addr, terminalBoth(), newPrompter(os.Stdin, os.Stderr))
 	if !ok {
-		return 0
+		// Not a clean stop: a supervisor or wrapper must see that nothing serves.
+		fmt.Fprintln(os.Stderr, "abhed: not serving: set up sign-in first, or choose to serve without it")
+		return 2
 	}
 	if err := vaultLoads(); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)

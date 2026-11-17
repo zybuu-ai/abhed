@@ -15,3 +15,9 @@ func TestGuestAndDeviceOwnersAreReserved(t *testing.T) {
 		}
 	}
 }
+
+func TestGuestPrefixIsReserved(t *testing.T) {
+	if got := (&Identity{Provider: ProviderProxy, Subject: "guest:abc"}).Owner(); got == "guest:abc" {
+		t.Errorf("a server identity owns %q", got)
+	}
+}

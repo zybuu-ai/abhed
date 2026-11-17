@@ -72,7 +72,7 @@ const NobodyPrefix = "nobody:"
 // reservedPrefixes are the namespaces owners are built in. A subject from a
 // proxy or an unnamed provider that starts with one is namespaced again.
 var reservedPrefixes = []string{"local:", UnclaimedPrefix, "oidc:", "github:", "proxy:",
-	"subject:", SchedulePrefix, NobodyPrefix, DevicePrefix}
+	"subject:", SchedulePrefix, NobodyPrefix, DevicePrefix, Guest + ":"}
 
 // Owner is the principal that owns what this identity creates: sessions,
 // approvals it answers, and the rows its subagents write. It is the one

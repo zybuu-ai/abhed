@@ -245,3 +245,58 @@ func TestPersonRootFromTheEnvironmentIsNotASignIn(t *testing.T) {
 		}
 	}
 }
+
+// Signing in over rpc or ACP is refused from inside an agent's command.
+func TestSignInRefusedInsideAnAgentCommand(t *testing.T) {
+	signInTest(t)
+	old := inAgentCommand
+	inAgentCommand = func() string { return "ABHED_SANDBOX is set" }
+	t.Cleanup(func() { inAgentCommand = old })
+	s, _ := identity.Open()
+	_, _, _ = s.Create("a1", "correct horse", "", "")
+	for _, m := range []string{"auth.signin", "auth.register", "auth.guest"} {
+		if _, err := switchPrincipal(m, "a1", "correct horse", ""); err == nil || !strings.Contains(err.Error(), "agent's command") {
+			t.Errorf("%s: %v", m, err)
+		}
+	}
+	if e, _ := s.Get("a1"); e.Failed != 0 {
+		t.Error("an agent's tries counted against the account")
+	}
+}
+
+// A reset since the last sign-in is told on rpc and ACP too, once.
+func TestResetNoticeOnEverySignInSurface(t *testing.T) {
+	signInTest(t)
+	s, _ := identity.Open()
+	_, _, _ = s.Create("a1", "correct horse", "", "")
+	if err := s.ResetAsOSUser("a1", "another horse", "pat", "mac"); err != nil {
+		t.Fatal(err)
+	}
+	r := rpcAuth(rpcRequest{ID: "1", Method: "auth.signin", Username: "a1", Password: "another horse"}, false)
+	if !strings.Contains(r.Notice, "without the recovery code") {
+		t.Fatalf("rpc notice %q (%s)", r.Notice, r.Error)
+	}
+	endGuest()
+	r = rpcAuth(rpcRequest{ID: "2", Method: "auth.signin", Username: "a1", Password: "another horse"}, false)
+	if r.Notice != "" {
+		t.Errorf("told twice: %q", r.Notice)
+	}
+}
+
+// Each guest records as an owner of its own, so no guest reads another's
+// sessions as its own.
+func TestEachGuestIsItsOwnOwner(t *testing.T) {
+	signInTest(t)
+	if err := usePrincipal(identity.GuestPrincipal()); err != nil {
+		t.Fatal(err)
+	}
+	first := cliUser()
+	endGuest()
+	if err := usePrincipal(identity.GuestPrincipal()); err != nil {
+		t.Fatal(err)
+	}
+	second := cliUser()
+	if !strings.HasPrefix(first, "guest:") || first == second || isMe(first) {
+		t.Fatalf("guest owners %q and %q", first, second)
+	}
+}

@@ -444,6 +444,9 @@ type rpcResponse struct {
 	Principal *rpcPrincipal `json:"principal,omitempty"`
 	// RecoveryCode, on auth.register, is shown once.
 	RecoveryCode string `json:"recovery_code,omitempty"`
+	// Notice, on auth.signin, is what the person must be told, such as a
+	// password reset since their last sign-in.
+	Notice string `json:"notice,omitempty"`
 }
 
 // rpcRunsOn reports whether a prompt's run goes on for messages queued as it
