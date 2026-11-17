@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // The editor's file system over ACP, for an engine on another machine: inside
@@ -231,5 +232,20 @@ func TestGitDrivers(t *testing.T) {
 	}
 	if d := gitDrivers(context.Background(), dir); d != "filter.x.clean" {
 		t.Fatalf("drivers %q", d)
+	}
+}
+
+// The none tier wraps a command but holds nothing: the SCM view's git then
+// gets the no-sandbox check (gitDrivers), not the wrapper.
+func TestGitSandboxNoneTier(t *testing.T) {
+	wrap := func(ctx context.Context, cwd, line string) *exec.Cmd { return exec.Command("true") }
+	if gitSandbox(tools.Bash{Sandbox: wrap, Isolation: tools.Isolation{Tier: "none"}}) != nil {
+		t.Fatal("the none tier counted as a sandbox")
+	}
+	if gitSandbox(tools.Bash{Sandbox: wrap, Isolation: tools.Isolation{Tier: "process"}, RanUnder: func() string { return "none" }}) != nil {
+		t.Fatal("a sandbox chosen as none after start counted as one")
+	}
+	if gitSandbox(tools.Bash{Sandbox: wrap, Isolation: tools.Isolation{Tier: "process"}}) == nil {
+		t.Fatal("the process tier did not count")
 	}
 }

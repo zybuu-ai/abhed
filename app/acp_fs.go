@@ -20,6 +20,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -902,7 +903,7 @@ func (c *acpConn) fsGit(msg rpcMessage) {
 	var sandboxed func(ctx context.Context, cwd, command string) *exec.Cmd
 	if t, ok := s.parts.Loop.Tools.Get("bash"); ok {
 		if b, ok := t.(tools.Bash); ok {
-			sandboxed = b.Sandbox
+			sandboxed = gitSandbox(b)
 		}
 	}
 	ctx, cancel := context.WithTimeout(c.root(), 20*time.Second)
@@ -947,6 +948,22 @@ func (c *acpConn) fsGit(msg rpcMessage) {
 		changes = append(changes, map[string]any{"x": entry[:1], "y": entry[1:2], "path": abs})
 	}
 	c.reply(msg.ID, map[string]any{"root": root, "changes": changes}, nil)
+}
+
+// gitSandbox is what holds the SCM view's git: the bash tool's sandbox, or
+// nil for none at all, as the none tier is (it wraps a command and holds
+// nothing), so git then gets the no-sandbox check.
+func gitSandbox(b tools.Bash) func(ctx context.Context, cwd, command string) *exec.Cmd {
+	tier := b.Isolation.Tier
+	if b.RanUnder != nil {
+		if t := b.RanUnder(); t != "" {
+			tier = t
+		}
+	}
+	if tier == string(sandbox.TierNone) {
+		return nil
+	}
+	return b.Sandbox
 }
 
 // gitDrivers names the filter, diff and merge drivers the repository's git
