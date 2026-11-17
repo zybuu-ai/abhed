@@ -52,6 +52,7 @@ func TestInfillReportsAnEndpointError(t *testing.T) {
 // chatOnly answers every turn with a fixed text, as a chat model would.
 type chatOnly struct {
 	reply string
+	stop  string
 	seen  Request
 }
 
@@ -63,7 +64,7 @@ func (c *chatOnly) Complete(_ context.Context, req Request) (<-chan Chunk, error
 	ch := make(chan Chunk, 3)
 	ch <- Chunk{Type: ChunkReasoning, Text: "thinking about it"}
 	ch <- Chunk{Type: ChunkText, Text: c.reply}
-	ch <- Chunk{Type: ChunkDone, Usage: &Usage{InputTokens: 20, OutputTokens: 4}}
+	ch <- Chunk{Type: ChunkDone, Usage: &Usage{InputTokens: 20, OutputTokens: 4}, StopReason: c.stop}
 	close(ch)
 	return ch, nil
 }

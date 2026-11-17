@@ -51,7 +51,7 @@ func (h *denialHints) observe(ev agent.Event) (permissionDenial, bool) {
 		var a agent.ActionRequested
 		// The engine's own start of a language server is no call of the
 		// agent's: a refusal of it is a note (diagnosticsNote), not a denial.
-		if json.Unmarshal(ev.Payload, &a) == nil && a.CallID != "" && a.Via != agent.DiagnosticsVia {
+		if json.Unmarshal(ev.Payload, &a) == nil && a.CallID != "" && (a.Via != agent.DiagnosticsVia || ev.Actor != agent.ActorSystem) {
 			h.asked[a.CallID] = a
 		}
 	case agent.EvActionDenied:

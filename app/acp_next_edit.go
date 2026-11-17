@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf16"
 
@@ -34,10 +35,11 @@ func init() {
 func (c *acpConn) nextEditCancel(msg rpcMessage) { c.featureCancel(msg, "next_edit") }
 
 // nextEditTokens bounds the answer by the window sent: the model writes the
-// window back with one edit, so much more than the window (code runs near
-// four bytes a token) is a model that has run on.
+// window back with one edit. Half the window's bytes in tokens (code runs
+// near four bytes a token, dense or non-ASCII code nearer two) leaves room
+// for a real hunk; an answer cut at the bound is dropped, never offered.
 func nextEditTokens(window string) int {
-	return min(nextEditMaxTokens, max(64, len(window)/3+32))
+	return min(nextEditMaxTokens, max(128, len(window)/2+64))
 }
 
 // Next-edit bounds: the window sent, the recent edits, and the answer.
@@ -237,14 +239,28 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 	defer release()
 	window := strings.Join(shown, "")
 	capTokens := nextEditTokens(window)
+	// A call ended while it waited for the server's request slot was never sent: nothing to charge.
+	var queued, sent atomic.Bool
+	mctx = model.WithSlotWait(mctx, func(_ model.SlotWait, done bool) {
+		if done {
+			sent.Store(true)
+		} else {
+			queued.Store(true)
+		}
+	})
 	res, err := nextEditCall(mctx, a, model.NextEditRequest{
 		File: rel, Language: req.Language, Recent: recent.String(),
 		Window: window, CursorLine: req.Cursor.Line - req.Window.StartLine, MaxTokens: capTokens,
 	})
 	cancelled := err != nil && mctx.Err() != nil
 	preempted := cancelled && errors.Is(context.Cause(mctx), errCompletionFirst)
-	tokIn, tokOut, usd, unpriced, estimated := editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, err, cancelled,
-		recent.Len()+len(window), len(res.Window), capTokens)
+	var tokIn, tokOut int
+	var usd *float64
+	var unpriced, estimated bool
+	if err == nil || !queued.Load() || sent.Load() {
+		tokIn, tokOut, usd, unpriced, estimated = editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, err, cancelled,
+			recent.Len()+len(window), len(res.Window), capTokens)
+	}
 	if err == nil {
 		k.took(time.Since(arrived))
 	}

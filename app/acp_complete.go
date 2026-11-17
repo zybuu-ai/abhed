@@ -435,7 +435,9 @@ func (c *acpConn) complete(msg rpcMessage) {
 		return
 	}
 	// From now to the answer, next-edit calls to this server wait, and one in flight is cancelled.
-	defer c.pool.completing(editorServer(provider))()
+	if key := editorServer(provider); key != "" {
+		defer c.pool.completing(key)()
+	}
 	k.mu.Lock()
 	_, canFIM := a.(model.Infiller)
 	fim := canFIM && fimTypes[provider.Type] && !k.chatOnly
@@ -531,7 +533,7 @@ func (c *acpConn) complete(msg rpcMessage) {
 	elapsed := time.Since(arrived)
 	// A reply that carries a secret is dropped, not edited into the code.
 	text, _ := model.OneBlock(prefix, res.Text)
-	text = model.DropLineRest(text, suffix)
+	text = model.DropLineRest(text, prefix, suffix)
 	if clean(text) != text {
 		text = ""
 	}
@@ -675,12 +677,16 @@ func (k *acpCompleter) count(f func(*agent.CompletionSummary)) {
 
 func (c *acpConn) completeCancel(msg rpcMessage) { c.featureCancel(msg, "complete") }
 
-// editorServer is the model server a provider's requests go to, for the pool.
+// editorServer is the model server a provider's requests go to, for the
+// pool, or "" where completions need not go first: a hosted server, which
+// serves requests side by side and bills a cancelled one all the same. Only
+// a server on this machine, or one held to a bound of requests (ollama, or
+// max_concurrent_requests), queues them.
 func editorServer(p config.ProviderConfig) string {
-	if p.BaseURL == "" {
-		return "type:" + p.Type + "/" + p.Model
+	if p.BaseURL == "" || !p.OnThisMachine() && p.Type != "ollama" && p.MaxConcurrentRequests <= 0 {
+		return ""
 	}
-	return poolKey(p.BaseURL)
+	return model.ServerKey(p.BaseURL)
 }
 
 // featureCancel cancels an editor feature's request in flight: with seq,

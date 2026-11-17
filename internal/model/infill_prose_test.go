@@ -92,6 +92,14 @@ func TestReadsAsProse(t *testing.T) {
 		{"ValueError(\"overlap must be smaller than size\")", "raise ", "python", false},
 		{"SELECT id FROM users WHERE name = ?", "q = ", "go", false},
 		{"Optional[int] = None", "x: ", "python", false},
+		// Code with a sentence's shape (architect review r1): constants and keywords open it, and it has
+		// no contraction, pronoun or article.
+		{"None if x is None else x", "y = ", "python", false},
+		{"True if a and b else False", "ok = ", "python", false},
+		{"False if v is None else True", "z = ", "python", false},
+		{"Self is not None", "assert ", "python", false},
+		{"Some value if ready else none", "x = ", "rust", false},
+		{"Count words in text and return them", "def f(text):\n    ", "python", false},
 		{"\n    return total", "def f(a, b):\n    total = a + b", "python", false},
 		// Words where words belong: a comment, a docstring, a string, a prose language.
 		{"Count the words in text and return how many there are.", "def f(text):\n    # ", "python", false},
@@ -110,17 +118,38 @@ func TestReadsAsProse(t *testing.T) {
 // The rest of the cursor's line, written again at the end of a one-line
 // suggestion, is not inserted twice.
 func TestDropLineRest(t *testing.T) {
-	for _, tc := range []struct{ text, suffix, want string }{
-		{" = size - overlap", " = size - overlap\n    for start in range(0, len(text), step):\n", ""},
-		{"a, b)", ")\n", "a, b"},
-		{"len(x))", "))", "len(x"},
-		{"return x", "\n}\n", "return x"},
-		{"x + 1", " # note\n", "x + 1"},
-		{"foo()\nbar()", "()\n", "foo()\nbar()"},
-		{" + 1", "   \n", " + 1"},
+	for _, tc := range []struct{ text, prefix, suffix, want string }{
+		{" = size - overlap", "    stride", " = size - overlap\n    for start in range(0, len(text), step):\n", ""},
+		{"a, b)", "foo(", ")\n", "a, b"},
+		{"len(x))", "print(", "))", "len(x"},
+		// Brackets alone: kept where the line opened them (architect review r1).
+		{"x)", "f(g(", ")", "x)"},
+		{"1, 2]", "m = [[", "]\n", "1, 2]"},
+		{"return x", "\t", "\n}\n", "return x"},
+		{"x + 1", "y = ", " # note\n", "x + 1"},
+		{"foo()\nbar()", "", "()\n", "foo()\nbar()"},
+		{" + 1", "x", "   \n", " + 1"},
 	} {
-		if got := DropLineRest(tc.text, tc.suffix); got != tc.want {
-			t.Errorf("DropLineRest(%q, %q) = %q, want %q", tc.text, tc.suffix, got, tc.want)
+		if got := DropLineRest(tc.text, tc.prefix, tc.suffix); got != tc.want {
+			t.Errorf("DropLineRest(%q after %q, before %q) = %q, want %q", tc.text, tc.prefix, tc.suffix, got, tc.want)
 		}
+	}
+}
+
+// A next-edit answer cut at its token bound is not the window: the lines it
+// never reached would read as deletions. It is dropped, whatever the provider
+// calls the stop.
+func TestNextEditCutShortIsDropped(t *testing.T) {
+	window := "a := 1\nb := 2\nc := 3\nd := 4\n"
+	for _, stop := range []string{"length", "max_tokens", "MAX_TOKENS"} {
+		c := &chatOnly{reply: "a := 1\nb := 3\n", stop: stop}
+		res, err := NextEditByChat(context.Background(), c, NextEditRequest{Window: window, MaxTokens: 64})
+		if err != nil || res.Window != "" || !strings.Contains(res.Dropped, "cut short") {
+			t.Fatalf("%s: %+v %v", stop, res, err)
+		}
+	}
+	c := &chatOnly{reply: "a := 1\nb := 3\nc := 3\nd := 4\n", stop: "stop"}
+	if res, err := NextEditByChat(context.Background(), c, NextEditRequest{Window: window}); err != nil || res.Dropped != "" || res.Window == "" {
+		t.Fatalf("a whole answer: %+v %v", res, err)
 	}
 }

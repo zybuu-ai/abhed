@@ -60,6 +60,13 @@ func endpointKey(baseURL, model string) string {
 	return strings.ToLower(u.Scheme) + "://" + host + strings.TrimRight(u.Path, "/") + "\x00" + model
 }
 
+// ServerKey is a server's base URL as the slot pools key it, without the
+// model: two spellings of one server give one key.
+func ServerKey(baseURL string) string {
+	k, _, _ := strings.Cut(endpointKey(baseURL, ""), "\x00")
+	return k
+}
+
 // poolFor is the shared pool for a model on a server; n above 0 bounds it,
 // lowering any larger bound it had. The bound never rises within the
 // process: a configuration that raises it takes effect at the next start.

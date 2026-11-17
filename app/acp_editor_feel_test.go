@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/zybuu-ai/abhed/config"
 )
 
 // editorModel is one model server for completions and next edits, as a
@@ -25,6 +27,7 @@ type editorModel struct {
 	arrived  chan string
 	fim      string
 	chat     string
+	finish   string // the chat answer's finish_reason; "stop" when empty
 }
 
 func newEditorModel(t *testing.T, fim, chat string) *editorModel {
@@ -58,7 +61,11 @@ func newEditorModel(t *testing.T, fim, chat string) *editorModel {
 			}
 		}
 		if kind == "chat" {
-			out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": m.chat}, "finish_reason": "stop"}}})
+			finish := m.finish
+			if finish == "" {
+				finish = "stop"
+			}
+			out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": m.chat}, "finish_reason": finish}}})
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", out)
 		} else {
@@ -266,5 +273,40 @@ func TestStudioCompletionsAtTheEndAndMidLine(t *testing.T) {
 	m.mu.Unlock()
 	if len(suffixes) != 2 || suffixes[1] != "\n" {
 		t.Fatalf("suffixes sent %q", suffixes)
+	}
+}
+
+// A next edit cut at its token bound is dropped: the lines the model never
+// reached are not offered as deletions (architect review r1).
+func TestStudioNextEditCutShortIsNotADeletion(t *testing.T) {
+	m := newEditorModel(t, "x", "def chunk(text, size, overlap):\n    chunks = list()\n")
+	m.finish = "length"
+	r := completionRig(t, m.URL, "")
+	noHold(t)
+	id := r.open()
+	var res nextEdits
+	r.cl.ok("_abhed/nextEdit", nextEditParams(id, "file://"+r.ws+"/text.py"), &res)
+	if len(res.Edits) != 0 || !strings.Contains(res.Dropped, "cut short") {
+		t.Fatalf("%+v", res)
+	}
+}
+
+// Completions go first only on a server that queues requests: one on this
+// machine, ollama, or one held to max_concurrent_requests; a hosted server
+// serves them side by side, so nothing waits and nothing is cancelled there.
+func TestEditorServerQueues(t *testing.T) {
+	for _, tc := range []struct {
+		p    config.ProviderConfig
+		want string
+	}{
+		{config.ProviderConfig{Type: "openai-compatible", BaseURL: "http://127.0.0.1:11434/v1/"}, "http://127.0.0.1:11434/v1"},
+		{config.ProviderConfig{Type: "ollama", BaseURL: "HTTP://Box.lan:80/v1"}, "http://box.lan/v1"},
+		{config.ProviderConfig{Type: "vllm", BaseURL: "https://gpu.example/v1", MaxConcurrentRequests: 2}, "https://gpu.example/v1"},
+		{config.ProviderConfig{Type: "openai-compatible", BaseURL: "https://api.example/v1"}, ""},
+		{config.ProviderConfig{Type: "anthropic"}, ""},
+	} {
+		if got := editorServer(tc.p); got != tc.want {
+			t.Errorf("%+v: %q, want %q", tc.p, got, tc.want)
+		}
 	}
 }

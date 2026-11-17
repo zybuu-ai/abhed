@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // Fill in the middle: text to insert between a prefix and a suffix, for an
@@ -304,10 +305,39 @@ func ReadsAsProse(text, prefix, language string) bool {
 	}
 	for _, l := range strings.Split(text, "\n") {
 		if l = strings.TrimSpace(l); l != "" {
-			return sentence.MatchString(l) || chatOpener.MatchString(l)
+			if chatOpener.MatchString(l) {
+				return true
+			}
+			first, _, _ := strings.Cut(l, " ")
+			// A sentence's shape is not enough: "None if x is None else x" has
+			// it. It must also open with a word code does not (no constant or
+			// keyword) and hold what only language has: a contraction, a
+			// pronoun, or an article in a run of words.
+			return sentence.MatchString(l) && !codeWords[strings.TrimRight(first, ",")] && naturalLanguage(l)
 		}
 	}
 	return false
+}
+
+// codeWords open a line of code in some language: constants, keywords and
+// type names written capitalised.
+var codeWords = map[string]bool{"None": true, "True": true, "False": true, "Self": true, "Some": true, "Ok": true, "Err": true,
+	"Nil": true, "Null": true, "Nothing": true, "Just": true, "Left": true, "Right": true, "Is": true, "Not": true, "And": true,
+	"Or": true, "If": true, "Else": true, "Then": true, "End": true, "Return": true, "Select": true, "From": true, "Where": true,
+	"Insert": true, "Update": true, "Delete": true, "Set": true, "Dim": true, "Sub": true, "Function": true, "Private": true,
+	"Public": true, "Static": true, "Const": true, "Let": true, "Var": true, "New": true, "Await": true, "Async": true, "Yield": true}
+
+// pronouns, articles and contractions are what prose has and code does not.
+var (
+	contraction  = regexp.MustCompile(`(?i)\b[a-z]+'(?:re|s|ll|ve|d|m|t)\b`)
+	pronoun      = regexp.MustCompile(`(?i)\b(?:you|your|i|we|our|let's|me|my)\b`)
+	article      = regexp.MustCompile(`(?i)\b(?:the|a|an)\b`)
+	wordsOfProse = regexp.MustCompile(`[A-Za-z']+`)
+)
+
+// naturalLanguage reports a line with a feature only language has.
+func naturalLanguage(l string) bool {
+	return contraction.MatchString(l) || pronoun.MatchString(l) || article.MatchString(l) && len(wordsOfProse.FindAllString(l, -1)) >= 6
 }
 
 // cleanFor is CleanInfill for req, with an answer that reads as prose where
@@ -322,17 +352,29 @@ func cleanFor(text string, req InfillRequest, fim bool) (string, string) {
 
 // DropLineRest takes off the end of a one-line suggestion what already
 // follows the cursor on its line: the model wrote it again, and inserted it
-// would be there twice ("stride = size - overlap = size - overlap").
-func DropLineRest(text, suffix string) string {
+// would be there twice ("stride = size - overlap = size - overlap"). A rest
+// of brackets alone is taken off only when keeping it would close more than
+// the cursor's line opens: after "f(g(", "x)" before ")" is right as it is.
+func DropLineRest(text, prefix, suffix string) string {
 	rest, _, _ := strings.Cut(suffix, "\n")
 	rest = strings.TrimRight(rest, " \t\r")
 	if strings.TrimSpace(rest) == "" || strings.Contains(text, "\n") {
 		return text
 	}
-	if t := strings.TrimRight(text, " \t"); strings.HasSuffix(t, rest) {
-		return strings.TrimSuffix(t, rest)
+	t := strings.TrimRight(text, " \t")
+	if !strings.HasSuffix(t, rest) {
+		return text
 	}
-	return text
+	if !strings.ContainsFunc(rest, func(r rune) bool { return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) }) {
+		line := prefix[strings.LastIndexByte(prefix, '\n')+1:]
+		open, _ := depthOf(line)
+		inText, _ := depthOf(t)
+		inRest, _ := depthOf(rest)
+		if open+inText+inRest >= 0 {
+			return text // every bracket closed is one opened: nothing is twice
+		}
+	}
+	return strings.TrimSuffix(t, rest)
 }
 
 // maxInfillLines bounds a suggestion; an inline completion is a few lines.
@@ -432,6 +474,7 @@ func NextEditByChat(ctx context.Context, a Adapter, req NextEditRequest) (NextEd
 	}
 	var b strings.Builder
 	var res NextEditResult
+	cut := false
 	for c := range ch {
 		if c.Err != nil {
 			return NextEditResult{}, c.Err
@@ -442,9 +485,19 @@ func NextEditByChat(ctx context.Context, a Adapter, req NextEditRequest) (NextEd
 		if c.Usage != nil {
 			res.InputTokens, res.OutputTokens = c.Usage.InputTokens, c.Usage.OutputTokens
 		}
+		if c.Type == ChunkDone && CutShort(c.StopReason) {
+			cut = true
+		}
 		if b.Len() > maxInfillAnswer {
+			cut = true
 			break
 		}
+	}
+	// A window cut short is not the window: the lines the model never wrote
+	// would read as lines to delete.
+	if cut {
+		res.Dropped = "the model's answer was cut short"
+		return res, nil
 	}
 	text := b.String()
 	if m := harmonyFinal.FindStringIndex(text); m != nil {
@@ -464,6 +517,16 @@ func NextEditByChat(ctx context.Context, a Adapter, req NextEditRequest) (NextEd
 		res.Dropped = "the model gave no window back"
 	}
 	return res, nil
+}
+
+// CutShort reports a stop reason that says the answer reached its token
+// bound, as each provider names it.
+func CutShort(reason string) bool {
+	switch strings.ToLower(reason) {
+	case "length", "max_tokens", "max_output_tokens", "model_length":
+		return true
+	}
+	return false
 }
 
 // CommitMessageResult is a commit message and what it cost; Dropped says why

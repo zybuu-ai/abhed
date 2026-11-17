@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 )
 
@@ -28,11 +27,6 @@ type editorPool struct {
 	// next are the next-edit calls in flight, by server.
 	next map[string]map[uint64]context.CancelCauseFunc
 	n    uint64
-}
-
-// poolKey is the server a provider's requests go to: one queue per base URL.
-func poolKey(baseURL string) string {
-	return strings.TrimRight(strings.ToLower(baseURL), "/")
 }
 
 // completing marks a completion asked for on key, from its arrival to its
@@ -67,10 +61,15 @@ func (p *editorPool) completing(key string) (done func()) {
 	}
 }
 
-// nextEditTurn waits until no completion is asked for on key, then gives a
+// nextEditTurn waits until no completion is asked for on key ("" waits for
+// nothing: a server that does not queue), then gives a
 // next-edit call a context a completion arriving later cancels (its cause
 // errCompletionFirst); done releases it. It fails when ctx ends first.
 func (p *editorPool) nextEditTurn(ctx context.Context, key string) (context.Context, func(), error) {
+	if key == "" {
+		cctx, cancel := context.WithCancelCause(ctx)
+		return cctx, func() { cancel(nil) }, nil
+	}
 	for {
 		p.mu.Lock()
 		ch := p.idle[key]

@@ -558,7 +558,11 @@ All notable changes to Abhed are recorded here. The format follows
   completion is asked for, and one in flight is cancelled
   (`cancelled: "a completion went first"`). Studio cancels the next edit in
   flight on each keystroke (`_abhed/nextEdit/cancel`), and a next-edit
-  answer is bounded by the window it rewrites rather than 1,024 tokens.
+  answer is bounded by the window it rewrites rather than 1,024 tokens; one
+  cut at that bound is dropped, never read as lines to delete. This applies
+  on servers that queue requests (local, `ollama`, or
+  `max_concurrent_requests`); a call that never left the queue is not
+  charged.
 - After a rename, Tab could insert the rest of the line a second time
   (`stride = size - overlap  = size - overlap`): a completion that wrote the
   text already after the cursor was offered whole. That text is now taken

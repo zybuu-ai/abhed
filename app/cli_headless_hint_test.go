@@ -198,9 +198,14 @@ func TestHeadlessDiagnosticsStartIsNoDenial(t *testing.T) {
 		Args: json.RawMessage(`{"command":"basedpyright-langserver --stdio"}`)})
 	den, _ := json.Marshal(map[string]string{"call_id": "diag-python-1", "step": "default", "by": "policy", "reason": "nobody is asked for it: can make changes"})
 	h := newDenialHints(policy.New(policy.ModeAcceptEdits), config.Default(), tools.NewRegistry(tools.Bash{}))
-	h.observe(agent.Event{Type: agent.EvActionRequested, Payload: req})
+	h.observe(agent.Event{Type: agent.EvActionRequested, Actor: agent.ActorSystem, Payload: req})
 	if d, ok := h.observe(agent.Event{Type: agent.EvActionDenied, Payload: den}); ok || len(h.denials) != 0 {
 		t.Fatalf("an engine start was reported as a denial: %+v", d)
+	}
+	// The mark is the engine's only when the engine records it: a call of the agent's that claims it is still a denial.
+	h.observe(agent.Event{Type: agent.EvActionRequested, Actor: agent.ActorAgent, Payload: req})
+	if _, ok := h.observe(agent.Event{Type: agent.EvActionDenied, Payload: den}); !ok {
+		t.Fatal("a call of the agent's marked via diagnostics was not reported")
 	}
 	skipped, _ := json.Marshal(agent.LSPDiagnostics{Language: "python", Path: "a.py",
 		Skipped: "no python diagnostics: basedpyright-langserver is not installed where commands run; install it with: abhed toolchain install -lsp python"})

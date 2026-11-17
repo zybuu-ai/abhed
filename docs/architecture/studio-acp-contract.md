@@ -1705,11 +1705,15 @@ _abhed/complete/warm { sessionId } → { warmed: boolean, ms?: number, recent?: 
   into its text (`<think>`, `analysis…final` channels) is removed, a fenced
   block gives its code, code repeated from either side of the cursor is
   trimmed (a one-line answer that ends with the rest of the cursor's line
-  loses that rest, so it is not inserted twice), and an answer that reads as
-  prose is dropped, with `dropped` saying so: one that opens as an English
-  sentence ("It looks like you're working on…"), unless the cursor is in a
-  comment, a docstring or a string, or the language is written in sentences
-  (Markdown, plain text, YAML and the like). Studio also re-parses the
+  loses that rest, so it is not inserted twice; a rest of brackets alone
+  only when keeping it would close more than the cursor's line opened), and
+  an answer that reads as prose is dropped, with `dropped` saying so: one
+  that opens as a chat answer does ("Here's", "Sure,", "It looks like"), or
+  as an English sentence that opens with no constant or keyword (`None`,
+  `True`, `Self`, `Some`…) and has a contraction, a pronoun, or an article
+  in six words or more ("None if x is None else x" is code), unless the
+  cursor is in a comment, a docstring or a string, or the language is
+  written in sentences (Markdown, plain text, YAML and the like). Studio also re-parses the
   document with the suggestion inserted, where it has the language's
   grammar, and drops one that leaves more syntax errors than there were.
 - Completions go first on a model server they share with next edits and
@@ -1719,7 +1723,7 @@ _abhed/complete/warm { sessionId } → { warmed: boolean, ms?: number, recent?: 
   requests now take a slot too, rather than waiting in the server's own
   queue. While a completion is asked for, from its arrival to its answer,
   next-edit model calls to that server wait, and one in flight is cancelled
-  (§7.11).
+  (§7.11), on a server that queues requests only.
 - Recorded as `completion.enabled` just before the first request is sent,
   and again with `mode: "chat"` before a fallback's first chat request (if
   it cannot be recorded, nothing is sent) and `completion.summary` when
@@ -1800,9 +1804,16 @@ _abhed/nextEdit { sessionId, uri, cursor: { line, character },
 - Completions go first (§7.10): a model call waits while a completion to
   the same server is asked for, and is cancelled when one arrives while it
   runs, answered `cancelled: "a completion went first"`. A rename finished
-  from the file asks no model and never waits. The answer is bounded by the
-  window it rewrites: `max_tokens` is a third of the window's bytes plus 32,
-  at least 64 and at most 1,024.
+  from the file asks no model and never waits. This holds only on a server
+  that queues requests (one on this machine, `ollama`, or one with
+  `max_concurrent_requests`); a hosted server serves both side by side and
+  nothing waits or is cancelled there. A call cancelled while it waited for
+  the server's request slot was never sent and is not charged. The answer is
+  bounded by the window it rewrites: `max_tokens` is half the window's bytes
+  plus 64, at least 128 and at most 1,024. An answer cut at that bound
+  (`finish_reason` `length`, `max_tokens` or `MAX_TOKENS`) is `dropped`
+  ("the model's answer was cut short"), never read as the window, so the
+  lines it did not reach are never offered as deletions.
 - `_abhed/nextEdit/cancel { sessionId, seq? }` → `{}` (feature
   `nextEditCancel`) ends the request in flight, as Studio sends on each
   keystroke: with `seq`, only that one.
