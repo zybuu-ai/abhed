@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"regexp"
@@ -74,7 +75,8 @@ func sshACPCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		local = data
 	}
-	h, err := remote.NewHost(remote.HostConfig{Name: *host, Addr: *host + ":" + strconv.Itoa(*port), User: *user,
+	bare := strings.TrimSuffix(strings.TrimPrefix(*host, "["), "]")
+	h, err := remote.NewHost(remote.HostConfig{Name: bare, Addr: net.JoinHostPort(bare, strconv.Itoa(*port)), User: *user,
 		IdentityFile: *identity, KnownHostsFile: *knownHosts})
 	if err != nil {
 		return fail("%v", err)
@@ -83,18 +85,9 @@ func sshACPCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	path := *engine
-	if path == "" {
-		path = `"$HOME/.abhed/bin/abhed-` + want[:16] + `"`
-	} else {
-		path = shellQuote(path)
-	}
 	if local != nil {
-		// Copied beside its final name and checked there before it is put in place.
-		put := sshEngineCheck(path, want) + ` && exit 0; ` +
-			`umask 077; mkdir -p "$(dirname ` + path + `)" && t=` + path + `.part && cat > "$t" && ` +
-			`[ "$(sum "$t")" = ` + want + ` ] && chmod 500 "$t" && mv -f "$t" ` + path
-		out, err := h.RunInput(ctx, "sh -c "+shellQuote(sshSumFunc+put), 0, local)
+		// The build arrives on stdin, into the account's private engine folder.
+		out, err := h.RunInput(ctx, "sh -c "+shellQuote(sshPutScript(want)), 0, local)
 		if err != nil {
 			return fail("%v", err)
 		}
@@ -102,10 +95,7 @@ func sshACPCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return fail("the engine could not be copied to %s: %s", *host, strings.TrimSpace(out.Stderr))
 		}
 	}
-	// Checked at every start, then run in place of the shell.
-	script := sshSumFunc + sshEngineCheck(path, want) + ` || { echo "abhed: the engine on this host (` + strings.ReplaceAll(path, `"`, ``) + `) is missing or does not have the pinned SHA-256 ` + want + `; refused" >&2; exit 97; }; ` +
-		`cd ` + shellQuote(folder) + ` || exit 98; exec ` + path + ` acp`
-	code, err := h.Stream(ctx, "sh -c "+shellQuote(script), stdin, stdout, stderr)
+	code, err := h.Stream(ctx, "sh -c "+shellQuote(sshStartScript(*engine, want, folder)), stdin, stdout, stderr)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return 130
@@ -115,15 +105,64 @@ func sshACPCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return code
 }
 
+// sshPrelude is the shell both scripts start with: strict, private files, a
+// refusal that prints its words as data, sum FILE (its SHA-256, with whichever
+// tool the host has), and safe PATH: not a link, owned by the account or
+// root, writable by neither group nor others.
+const sshPrelude = `set -eu; umask 077; ` +
+	`fail() { printf 'abhed: %s\n' "$*" >&2; exit 97; }; ` +
+	`sum() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d" " -f1; }; ` +
+	`me=$(id -u); ` +
+	`safe() { [ ! -L "$1" ] && [ -n "$(find "$1" -maxdepth 0 \( -user "$me" -o -user 0 \) ! -perm -0020 ! -perm -0002 -print 2>/dev/null)" ]; }; ` +
+	// The engine lives in ~/.abhed/bin, made private here; the folders above it must be the account's own.
+	`[ -n "${HOME:-}" ] && safe "$HOME" || fail "your home folder is writable by others or is not yours, so an engine kept there could be swapped"; ` +
+	`mkdir -p "$HOME/.abhed/bin"; chmod 700 "$HOME/.abhed" "$HOME/.abhed/bin"; ` +
+	`safe "$HOME/.abhed" && safe "$HOME/.abhed/bin" || fail "~/.abhed or ~/.abhed/bin is a link, not yours, or writable by others"; `
+
+// sshEngineFile is where the verified engine is run from: a private folder of the account's.
+func sshEngineFile(want string) string { return `"$HOME/.abhed/bin/abhed-` + want[:16] + `"` }
+
+// sshPlace copies from (a shell word, or empty for stdin) to the engine's
+// place beside it, checks the copy's hash, and puts it there; a link where the
+// copy goes is refused.
+func sshPlace(from, want string) string {
+	src := ""
+	if from != "" {
+		src = " < " + from
+	}
+	return `e=` + sshEngineFile(want) + `; t="$e.part"; ` +
+		`[ ! -L "$t" ] || fail "$t is a link"; rm -f "$t"; ` +
+		`(set -C; cat` + src + ` > "$t") || fail "the engine could not be copied"; ` +
+		`chmod 500 "$t"; ` +
+		`[ "$(sum "$t")" = ` + want + ` ] || { rm -f "$t"; fail "the engine does not have the pinned SHA-256 ` + want + `; refused"; }; ` +
+		`mv -f "$t" "$e"; `
+}
+
+// sshPutScript receives an uploaded build on stdin into the private folder,
+// unless a verified copy is there already.
+func sshPutScript(want string) string {
+	return sshPrelude + `e=` + sshEngineFile(want) + `; ` +
+		`if [ -f "$e" ] && safe "$e" && [ "$(sum "$e")" = ` + want + ` ]; then cat >/dev/null; exit 0; fi; ` +
+		sshPlace("", want)
+}
+
+// sshStartScript is the one remote step that runs the engine: the pinned
+// binary (from enginePath, when given) is copied into the private folder if a
+// verified copy is not there, the copy's place, owner, mode and hash are
+// checked, and that path is exec'd, so what is checked is what runs and no
+// other account can swap it in between.
+func sshStartScript(enginePath, want, folder string) string {
+	s := sshPrelude + `e=` + sshEngineFile(want) + `; `
+	if enginePath != "" {
+		s += `if ! { [ -f "$e" ] && safe "$e" && [ "$(sum "$e")" = ` + want + ` ]; }; then ` +
+			`[ -f ` + shellQuote(enginePath) + ` ] || fail "there is no engine at" ` + shellQuote(enginePath) + `; ` +
+			sshPlace(shellQuote(enginePath), want) + `fi; `
+	}
+	return s + `[ -f "$e" ] && safe "$e" && [ "$(sum "$e")" = ` + want + ` ] || fail "the engine on this host is missing or does not have the pinned SHA-256 ` + want + `; refused"; ` +
+		`cd ` + shellQuote(folder) + ` || exit 98; exec "$e" acp`
+}
+
 var (
 	hostRE = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]{0,252})$|^\[?[0-9a-fA-F:.]+\]?$`)
 	userRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.-]{0,63}$`)
 )
-
-// sshSumFunc defines sum FILE: its SHA-256, with whichever tool the host has.
-const sshSumFunc = `sum() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d" " -f1; }; `
-
-// sshEngineCheck is a shell test that path is a regular file with the pinned hash.
-func sshEngineCheck(path, want string) string {
-	return `{ [ -f ` + path + ` ] && [ ! -L ` + path + ` ] && [ "$(sum ` + path + `)" = ` + want + ` ]; }`
-}
