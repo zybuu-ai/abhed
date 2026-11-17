@@ -91,13 +91,22 @@ func clientRules() (identity.Rules, error) {
 // required and none is held. A process an Abhed started inherits its
 // parent's answer.
 func enterPrincipal(sf signInFlags, interactive bool, in *os.File, errOut io.Writer) int {
+	code, err := resolvePrincipal(sf, interactive, in, errOut)
+	if err != nil {
+		return refusedSignIn(err, errOut)
+	}
+	return code
+}
+
+// resolvePrincipal is enterPrincipal returning a refusal to sign in as an
+// error, for the caller to report.
+func resolvePrincipal(sf signInFlags, interactive bool, in *os.File, errOut io.Writer) (int, error) {
 	if root := os.Getenv(home.EnvPerson); root != "" && !sf.guest && sf.account == "" {
 		// A child of a resolved Abhed works for the same person.
 		if err := home.Check(root); err != nil {
-			fmt.Fprintf(errOut, "abhed: %v\n", err)
-			return identity.ExitSignInRequired
+			return 0, &identity.RequiredError{Why: err.Error()}
 		}
-		return 0
+		return 0, nil
 	}
 	if removed, err := identity.SweepGuests(); err != nil {
 		fmt.Fprintf(errOut, "abhed: removing what earlier guests left: %v\n", err)
@@ -107,12 +116,12 @@ func enterPrincipal(sf signInFlags, interactive bool, in *os.File, errOut io.Wri
 	rules, err := clientRules()
 	if err != nil {
 		fmt.Fprintf(errOut, "abhed: %v\n", err)
-		return 1
+		return 1, nil
 	}
 	s, err := identity.Open()
 	if err != nil {
 		fmt.Fprintf(errOut, "abhed: %v\n", err)
-		return 1
+		return 1, nil
 	}
 	if resumed, err := identity.ResumeMigration(s); err != nil {
 		fmt.Fprintf(errOut, "abhed: finishing the move of your earlier data: %v\n", err)
@@ -121,7 +130,7 @@ func enterPrincipal(sf signInFlags, interactive bool, in *os.File, errOut io.Wri
 	}
 	out, err := identity.Resolve(s, sf.request(interactive, rules))
 	if err != nil {
-		return refusedSignIn(err, errOut)
+		return 0, err
 	}
 	p := out.Principal
 	if unresolvedIsLegacy && (out.Ask || p.Kind == identity.Guest && out.Note != "") {
@@ -129,12 +138,12 @@ func enterPrincipal(sf signInFlags, interactive bool, in *os.File, errOut io.Wri
 	}
 	if out.Ask {
 		if p, err = chooseWho(s, rules, newPrompter(in, errOut)); err != nil {
-			return refusedSignIn(err, errOut)
+			return 0, err
 		}
 	}
 	if err := usePrincipal(p); err != nil {
 		fmt.Fprintf(errOut, "abhed: %v\n", err)
-		return 1
+		return 1, nil
 	}
 	if out.Note != "" {
 		principalMu.Lock()
@@ -142,7 +151,7 @@ func enterPrincipal(sf signInFlags, interactive bool, in *os.File, errOut io.Wri
 		principalMu.Unlock()
 		fmt.Fprintln(errOut, out.Note)
 	}
-	return 0
+	return 0, nil
 }
 
 // guestByDefault reports whether this process is guest only because no one
@@ -151,6 +160,37 @@ func guestByDefault() bool {
 	principalMu.Lock()
 	defer principalMu.Unlock()
 	return byDefault && principal.Kind == identity.Guest
+}
+
+// pending is why a protocol client (rpc, acp) cannot start yet: a sign-in
+// is required and none is held. It asks over the protocol instead.
+var pending error
+
+func pendingSignIn() error {
+	principalMu.Lock()
+	defer principalMu.Unlock()
+	return pending
+}
+
+func setPendingSignIn(err error) {
+	principalMu.Lock()
+	pending = err
+	principalMu.Unlock()
+}
+
+// enterPrincipalForClient is enterPrincipal for rpc and acp, whose client can
+// sign the person in over the protocol: a required sign-in it does not have
+// waits for that instead of ending the process.
+func enterPrincipalForClient(sf signInFlags, errOut io.Writer) int {
+	code, err := resolvePrincipal(sf, false, os.Stdin, errOut)
+	if errors.Is(err, identity.ErrSignInRequired) {
+		setPendingSignIn(err)
+		return 0
+	}
+	if err != nil {
+		return refusedSignIn(err, errOut)
+	}
+	return code
 }
 
 func refusedSignIn(err error, errOut io.Writer) int {

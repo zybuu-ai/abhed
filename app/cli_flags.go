@@ -367,7 +367,11 @@ func Main(args []string, opts ...Option) int {
 			return 1
 		}
 		if personCommands[rest[0]] && !(len(rest) > 1 && isHelpArg(rest[1])) {
-			if code := enterPrincipal(f.signIn, false, os.Stdin, os.Stderr); code != 0 {
+			enter := func() int { return enterPrincipal(f.signIn, false, os.Stdin, os.Stderr) }
+			if rest[0] == "rpc" || rest[0] == "acp" {
+				enter = func() int { return enterPrincipalForClient(f.signIn, os.Stderr) }
+			}
+			if code := enter(); code != 0 {
 				return code
 			}
 			if rest[0] == "login" && guestByDefault() {
