@@ -37,6 +37,9 @@ type Record struct {
 	// Expiry is when the access token ends, in Unix seconds; 0 when unsaid.
 	Expiry int64  `json:"expires_at,omitempty"`
 	Scope  string `json:"scope,omitempty"`
+	// RefreshRefused is when the authorization server refused the refresh
+	// token, in Unix seconds; 0 while it has not. A new token clears it.
+	RefreshRefused int64 `json:"refresh_refused,omitempty"`
 }
 
 // ErrNoLogin is a server no one has signed in to.
@@ -136,6 +139,55 @@ func Status(store *secrets.Store, server, serverURL string) (signedIn bool, issu
 	return true, rec.Issuer, expiry, nil
 }
 
+// LoginState is a server's login as a person is shown it, without its tokens.
+type LoginState struct {
+	// Held is whether a login is kept for the server at all.
+	Held bool
+	// OtherURL is a login made for another URL than the server's now.
+	OtherURL bool
+	Issuer   string
+	// Expiry is when the access token ends; zero when unsaid.
+	Expiry time.Time
+	// Refreshable is whether a refresh token is kept.
+	Refreshable bool
+	// RefreshRefused is when the authorization server refused the refresh
+	// token; zero when it has not.
+	RefreshRefused time.Time
+}
+
+// Usable is whether the login can still give a token: held for this URL,
+// not refused at refresh, and either live or refreshable.
+func (s LoginState) Usable(now time.Time) bool {
+	if !s.Held || s.OtherURL || !s.RefreshRefused.IsZero() {
+		return false
+	}
+	return s.Refreshable || s.Expiry.IsZero() || now.Before(s.Expiry)
+}
+
+// State describes a server's login; a store that cannot be read, or a
+// record that does not, is the error.
+func State(store *secrets.Store, server, serverURL string) (LoginState, error) {
+	rec, err := load(store, server)
+	if errors.Is(err, ErrNoLogin) {
+		return LoginState{}, nil
+	}
+	if err != nil {
+		return LoginState{}, err
+	}
+	st := LoginState{Held: true, Issuer: rec.Issuer, Refreshable: rec.RefreshToken != ""}
+	if rec.bound(serverURL) != nil {
+		st.OtherURL = true
+		return st, nil
+	}
+	if rec.Expiry > 0 {
+		st.Expiry = time.Unix(rec.Expiry, 0)
+	}
+	if rec.RefreshRefused > 0 {
+		st.RefreshRefused = time.Unix(rec.RefreshRefused, 0)
+	}
+	return st, nil
+}
+
 // bound refuses a login made for another URL than the server's now.
 func (r Record) bound(serverURL string) error {
 	c, err := Canonical(serverURL)
@@ -224,7 +276,7 @@ func (r *Record) apply(tr tokenResponse, now time.Time) {
 	if tr.Scope != "" {
 		r.Scope = tr.Scope
 	}
-	r.Expiry = 0
+	r.Expiry, r.RefreshRefused = 0, 0
 	if n, err := tr.ExpiresIn.Int64(); err == nil && n > 0 {
 		r.Expiry = now.Add(time.Duration(n) * time.Second).Unix()
 	}
@@ -375,10 +427,22 @@ func (a *Authorizer) refresh(ctx context.Context) error {
 	if a.rec.RefreshToken == "" {
 		return fmt.Errorf("the login for MCP server %s has ended and cannot be refreshed; run abhed mcp login %s", a.server, a.server)
 	}
+	refused := fmt.Errorf("the login for MCP server %s was refused at refresh; run abhed mcp login %s", a.server, a.server)
+	// A refresh token already refused is not sent again.
+	if stored.RefreshRefused > 0 && stored.RefreshToken == a.rec.RefreshToken {
+		a.rec.RefreshRefused = stored.RefreshRefused
+		return refused
+	}
 	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {a.rec.RefreshToken}, "resource": {a.rec.URL}}
 	tr, err := tokenRequest(ctx, a.hc, a.rec, form)
 	if errors.Is(err, errInvalidGrant) {
-		return fmt.Errorf("the login for MCP server %s was refused at refresh; run abhed mcp login %s", a.server, a.server)
+		// Kept, so abhed mcp list and Studio say the login is dead, not signed in.
+		next := a.rec
+		next.RefreshRefused = a.now().Unix()
+		if serr := saveLocked(a.store, next); serr == nil {
+			a.rec = next
+		}
+		return refused
 	}
 	if err != nil {
 		return err

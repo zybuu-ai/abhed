@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -826,6 +827,9 @@ func mcpView(cfg config.Config, set *toolset.Set) []any {
 			v["error"] = mcpError(st.Err)
 		}
 		v["status"] = status
+		if m.URL != "" {
+			v["auth"] = mcpAuthView(m, known && st.Err != nil && errors.Is(st.Err, mcp.ErrUnauthorized), time.Now())
+		}
 		if refused := refusedNames(st.Refused); len(refused) > 0 {
 			v["refusedTools"] = refused
 		}

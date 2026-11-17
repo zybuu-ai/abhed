@@ -132,6 +132,16 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Abhed Studio signs in to a remote MCP server with OAuth.
+  `abhed mcp login` takes `-confirm-fd N`: the yes is read from an inherited
+  descriptor in place of a terminal, and the browser is left to the editor
+  that asked. Studio's engine host process runs it after a modal whose
+  default is No and opens the printed address; the tokens stay in the
+  engine's store, and Studio never sees one. `_abhed/capabilities` gives
+  each URL server an `auth` object (state, issuer, expiry, a refused
+  refresh, and whether a sign-in is wanted), never a token; feature
+  `mcp.login`.
+
 - `abhed bg start` sends a snapshot of the repository it runs in, so a
   background job works on your code: the tracked files as they are in the
   working tree, without anything your read rules withhold, anything named
@@ -538,6 +548,12 @@ All notable changes to Abhed are recorded here. The format follows
   by `path`.
 
 ### Fixed
+
+- `abhed mcp list` said "(signed in)" after the authorization server had
+  refused the refresh token. The refusal is now kept with the login, the
+  refused token is not sent again, and the list reads "not signed in: the
+  login was refused at refresh" with the time until `abhed mcp login` runs
+  again; a login that ended with no refresh token reads "the login ended".
 
 - A model reply that only reasons, with no text or tool call, is cut past
   `limits.reasoning_stall_tokens` reasoning tokens (8000 by default, or the

@@ -1000,7 +1000,8 @@ interface Capabilities {
          status: "connected" | "starting" | "stopped" | "error" | "refused"; error?: string;
          tools: string[]; source: "user" | "workspace" | "managed";
          pinned: boolean;                                   // digest-pinned command or image
-         refusedTools?: string[] }[];                       // offered, not registered for their name
+         refusedTools?: string[];                           // offered, not registered for their name
+         auth?: McpAuth }[];                                // URL servers only (1.3.0, `mcp.login`)
   extensions: { name: string; events: string[];            // Abhed hook extensions
                 status: "running" | "stopped" | "not started"; error?: string; source: string }[];
   web: { search: boolean; fetch: boolean; allowed_hosts: string[]; ask: boolean };
@@ -1056,6 +1057,26 @@ interface Capabilities {
     would never start), and inside an agent's command, recorded as
     `config.refused {key: "mcp.servers", value: "<name> sha256:<hash>",
     principal}`; -32000 when the file already has a server of that name.
+- **Signing in to a URL server** (1.3.0; `mcp.login` in `features`). A
+  sign-in hands the agent a credential, so it is not an ACP method either;
+  `_abhed/mcp/login` does not exist, and no token ever crosses ACP.
+  ```ts
+  interface McpAuth {
+    state: "none" | "signed-in" | "refused" | "ended" | "other-url" | "unreadable";
+    issuer?: string; expiresAt?: number;                    // Unix seconds
+    refreshable: boolean; refusedAt?: number;               // when a refresh was refused
+    needsLogin: boolean;                                    // a 401, or a login that cannot give a token
+    error?: string }                                        // "unreadable" only, redacted
+  ```
+  On the person's Sign In, Studio asks in a modal whose default is No, then
+  its engine host process runs `abhed mcp login -confirm-fd 3 NAME` with an
+  argv array and writes `y` on descriptor 3. The command line refuses inside
+  an agent's command, fails when no yes is read, prints the authorization
+  address (`  https://…` on the line after "Sign in to MCP server NAME in
+  your browser:") and does not open a browser itself: Studio opens that
+  address, and only an `http(s)` one. The engine keeps the tokens in its
+  store and logs `by: "login -confirm-fd"`; `/mcp restart` takes the new
+  login up. Cancelling ends that process only.
 - `_abhed/index/status {sessionId}` and `_abhed/index/rebuild {sessionId}`
   (recorded `by: user`; progress as events).
 - `_abhed/infra/status {sessionId}` is `infra` alone, for polling.

@@ -307,7 +307,22 @@ browser's apart, goes under the egress allowlist (`sandbox.network:
 corporate upstream proxy. `login` and `logout` are refused inside an
 agent's command, and `login` needs a person at a terminal; each is written
 to `~/.abhed/config-changes.jsonl`, never a token. `abhed mcp list` says
-which servers are signed in.
+which servers are signed in: "signed in" only while the login can still give
+a token. When the authorization server refuses the refresh token, the
+refusal is kept with the login, the refused token is not sent again, and
+`mcp list` shows "not signed in: the login was refused at refresh" with the
+time, until you run `login` again; a login that ended with no refresh token
+reads "the login ended".
+
+Abhed Studio signs in through the same command. A URL server in the
+Agents, Skills and MCP view shows its sign-in state and when the token
+ends, and Sign In when it answered `401` or its login cannot give a token.
+Studio asks in a modal whose default is No, then its engine host process
+runs `abhed mcp login -confirm-fd 3 NAME`, writing the yes on descriptor 3:
+`-confirm-fd` stands in for the terminal, fails when no yes is read, leaves
+opening the browser to Studio (which opens the printed address), and is
+logged as `by: "login -confirm-fd"`. The tokens stay in the engine's store;
+Studio never reads or keeps one.
 
 The login is read from the operator's store, by the terminal, an editor's
 sessions, the SDK and an `abhed serve` that no accounts sign in to. OAuth
