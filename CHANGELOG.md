@@ -132,6 +132,28 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Plugin bundles: `abhed plugin install|approve|list|show|remove|publishers|
+  trusted-root|pack`. A plugin bundles agent definitions, skills, custom
+  commands, simple hooks and MCP servers under one manifest that lists every
+  file's SHA-256 and the tools, egress hosts, hook events and servers it
+  requests. Install reads and checks the bundle without running anything,
+  shows what it adds and requests, and keeps it off until you approve that
+  exact content (`-sha256` approves without a prompt). A bundle is trusted by
+  a Sigstore keyless signature from a publisher you trust, checked offline
+  against a trusted root, or by a SHA-256 pin for air-gapped sites. A plugin
+  adds content, never policy: its hooks only block and run in the sandbox,
+  its servers face `mcp.allowed`/`mcp.denied`, never get the host's files and
+  take credentials only from the environment, and it never takes a name
+  already in use. An upgrade shows the diff, and the approved version keeps
+  loading until the new one is approved. Remove takes every file. Each
+  approved plugin is hashed again on every load. The managed configuration
+  or the signed org policy can turn plugins off, require signatures, or allow
+  only listed publishers or bundle digests. The machine's managed file can
+  limit installs to plugin sources, and `plugins.org_source` names the org
+  server's own index. A workspace's or your own file never sets `plugins`.
+  Changes reach the record as `config.changed`, and each session records
+  `plugin.loaded` with every plugin in force (OCSF 5019). See guide 38 and
+  docs/architecture/plugins.md.
 - `abhed bg start` sends a snapshot of the repository it runs in, so a
   background job works on your code: the tracked files as they are in the
   working tree, without anything your read rules withhold, anything named

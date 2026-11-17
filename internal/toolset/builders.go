@@ -165,6 +165,24 @@ func LoadSkills(cfg config.Config, warn func(string, ...any)) (*skills.Registry,
 	for _, err := range errs {
 		warn("%v", err)
 	}
+	// Plugins' skills come after the installed ones and never take a name.
+	for _, l := range cfg.LoadedPlugins {
+		for _, ps := range l.Skills {
+			s, err := skills.FromContent(ps.Dir, ps.SkillMD, ps.Pipeline)
+			if err != nil {
+				warn("skills: the plugin %s's skill %s: %v", l.Name, ps.Name, err)
+				continue
+			}
+			s.Source, s.Plugin = l.Root, l.Name
+			if !asciiName(s.Name) {
+				warn("skills: the plugin %s's skill %s is not loaded: a plugin skill's name is ASCII letters, digits, '-', '_' and '.'", l.Name, config.Printable(s.Name))
+				continue
+			}
+			if !reg.AddNew(s) {
+				warn("skills: the plugin %s's skill %s is not loaded: a skill the organisation or you installed has that name", l.Name, config.Printable(s.Name))
+			}
+		}
+	}
 	// At home, .abhed/skills is ~/.abhed/skills, loaded above already.
 	if ws := cfg.Workspace; ws.SkillsTrusted && ws.SkillsReason != "home" && !cfg.Skills.DisableWorkspace {
 		for _, w := range ws.SkillFiles() {
@@ -285,6 +303,11 @@ func LoadAgents(cfg config.Config, ws config.WorkspaceTrust, session []*agent.De
 	}
 	if ws.AgentsTrusted {
 		o.Workspace = ws.AgentFiles()
+	}
+	for _, l := range cfg.LoadedPlugins {
+		for _, f := range l.Agents {
+			o.Plugins = append(o.Plugins, agentdefs.PluginFile{Plugin: l.Name, Path: f.Path, Data: f.Data})
+		}
 	}
 	defs, errs := agentdefs.Load(o)
 	for _, err := range errs {

@@ -235,6 +235,13 @@ var orgRules = map[string]orgRule{
 	"record":                       {orgRefuse, "names files on this machine, or erases the record"},
 	"org_policy":                   {orgRefuse, "only the machine's managed file says where the org policy comes from"},
 	"hooks.managed_only":           {orgExtra, ""},
+	"plugins.disabled":             {orgExtra, ""},
+	"plugins.require_signature":    {orgExtra, ""},
+	"plugins.allowed_publishers":   {orgExtra, ""},
+	"plugins.allowed_bundles":      {orgExtra, ""},
+	"plugins.org_source":           {orgExtra, ""},
+	"plugins.sources":              {orgRefuse, "names servers plugins are installed from; plugins.org_source names the org server itself"},
+	"plugins.trusted_root":         {orgRefuse, "names a file on this machine"},
 	"hooks.disabled":               {orgPinned, "switching hooks off removes their vetoes"},
 	"hooks.run":                    {orgRefuse, "names commands to run on this machine and endpoints sent its events"},
 	"studio.disable_host_terminal": {orgExtra, ""},
@@ -433,7 +440,10 @@ func (j orgStrip) extra(p string, v any) string {
 	switch p {
 	case "record.ship.enabled", "record.ship.max_backlog_mb":
 		return "" // sent only to the server this machine enrolled with
-	case "hooks.managed_only", "studio.disable_host_terminal":
+	case "plugins.allowed_publishers", "plugins.allowed_bundles":
+		// Each only limits which bundles a person may install and approve.
+		return ""
+	case "hooks.managed_only", "studio.disable_host_terminal", "plugins.disabled", "plugins.require_signature", "plugins.org_source":
 		if b, ok := v.(bool); ok && b {
 			return ""
 		}

@@ -418,7 +418,14 @@ func readCustomCommands(cfg config.Config, ws string) *customState {
 			}
 		}
 	}
-	cmds, errs := customcmd.Load(customcmd.Options{ManagedDir: managed.CommandsDir, UserDirs: userDirs, Workspace: trusted, Models: models})
+	var fromPlugins []customcmd.File
+	for _, l := range cfg.LoadedPlugins {
+		for _, f := range l.Commands {
+			fromPlugins = append(fromPlugins, customcmd.File{Rel: f.Rel, Path: f.Path, Data: f.Data})
+		}
+	}
+	cmds, errs := customcmd.Load(customcmd.Options{ManagedDir: managed.CommandsDir, UserDirs: userDirs, Workspace: trusted,
+		Plugins: fromPlugins, Models: models})
 	for _, e := range errs {
 		cs.problems = append(cs.problems, e.Error())
 	}
