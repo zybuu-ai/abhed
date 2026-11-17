@@ -24,7 +24,12 @@ in that time is handled as above, however long the input then takes. A
 pipe left open with nothing written to it, as some CI steps and drivers
 leave stdin, is ignored after the wait, with one note on stderr: "stdin
 left open with no input; ignored. Pass - to wait for it, or -no-stdin to
-silence this". A lone `-` reads stdin to its end however late its input
+silence this". Input is never left out silently: if it starts after the
+wait, while the run is going or by its end, the run stops with no answer
+and exit code `9`: "input arrived on stdin after 1.5s; rerun with - to wait
+for it, or -stdin-wait <dur>". A producer slow to start, such as `go test
+./... 2>&1 | abhed -p "why does it fail"` on a cold build, wants `-` or a
+longer `-stdin-wait`. A lone `-` reads stdin to its end however late its input
 starts (`slow-producer | abhed -p "summarise" -`); after `--`, `-` is a word
 of the task. `-stdin-wait 0` never waits.
 
@@ -217,6 +222,7 @@ which includes `-p` in a script; `-mode bypass` is the explicit spelling.
 | `3` | token budget |
 | `5` | model retries exhausted |
 | `8` | unverified: with `-verify strict` or a completion contract, the answer or the contract could not be verified after one revision turn ([Verified answers](29-verified-answers.md)) |
+| `9` | stdin input came after the wait (`-stdin-wait`, with a task given): the run stopped, with no answer; rerun with `-` to wait for it |
 | `130` | interrupted (SIGINT) |
 | `143` | terminated (SIGTERM); a hang-up is `129` |
 

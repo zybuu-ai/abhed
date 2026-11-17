@@ -398,6 +398,30 @@ var onboardManaged = func() (config.Config, error) {
 	return config.LoadManagedWith(config.LoadOptions{Warn: func(string) {}})
 }
 
+// errNotAdmitted marks a provider type the managed layer admits no model of.
+var errNotAdmitted = errors.New("no model of this type is allowed")
+
+// typeAdmitted reports whether every model.allowed list could admit some
+// model of provider type typ: each has an entry whose text before its first
+// * agrees with "typ/". It is decided before any endpoint is contacted.
+func typeAdmitted(m config.Config, typ string) bool {
+	id := typ + "/"
+	for _, l := range m.ModelsAllowed() {
+		ok := false
+		for _, e := range l.Entries {
+			pre, _, _ := strings.Cut(e, "*")
+			if strings.HasPrefix(id, pre) || strings.HasPrefix(pre, id) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // managedChoosesModel reports whether the managed layer itself says which
 // model to use, leaving first-run setup nothing to choose.
 func managedChoosesModel(m config.Config) bool {
@@ -534,6 +558,9 @@ type onboarding struct {
 	in  io.Reader
 	out io.Writer
 	ctx context.Context
+	// managed is the managed layer setup works within; nothing it refuses
+	// is contacted.
+	managed config.Config
 }
 
 func (o onboarding) ask(q, def string) (string, error) {
@@ -558,11 +585,11 @@ func (o onboarding) ask(q, def string) (string, error) {
 // name of the variable that holds its key. A key itself is never written.
 // It writes only ~/.abhed/config.json, and only when asked to.
 func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
-	o := onboarding{in: in, out: out, ctx: ctx}
 	m, err := onboardManaged()
 	if err != nil {
 		return fmt.Errorf("the managed configuration does not load: %w", err)
 	}
+	o := onboarding{in: in, out: out, ctx: ctx, managed: m}
 	fmt.Fprintln(out, "\nWelcome to Abhed. There is no configuration yet, so first choose the model it talks to.")
 	fmt.Fprintln(out, "Nothing is written unless you confirm; `abhed init` writes a workspace configuration instead.")
 	if m.Managed {
@@ -570,9 +597,17 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 	}
 
 	base := ollamaBase()
-	fmt.Fprintf(out, "\nLooking for Ollama at %s … ", strings.TrimSuffix(base, "/v1"))
-	models, err := listModels(ctx, base, "")
+	var models []string
+	// No endpoint is contacted for models the managed layer cannot admit.
+	if !typeAdmitted(m, "ollama") {
+		err = errNotAdmitted
+		fmt.Fprintf(out, "\nNot looking for Ollama: the managed configuration allows no Ollama model.\n")
+	} else {
+		fmt.Fprintf(out, "\nLooking for Ollama at %s … ", strings.TrimSuffix(base, "/v1"))
+		models, err = listModels(ctx, base, "")
+	}
 	switch {
+	case errors.Is(err, errNotAdmitted):
 	case err != nil:
 		fmt.Fprintln(out, "not running.")
 	case len(models) == 0:
@@ -620,9 +655,8 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 			if name, p, err = o.endpoint(); err != nil {
 				return err
 			}
-			if rerr := m.EndpointRefused(p); rerr != nil {
-				fmt.Fprintf(out, "  %s is not allowed: %v\n", config.Printable(p.Model), rerr)
-				p = config.ProviderConfig{}
+			if p.Model == "" {
+				p = config.ProviderConfig{} // not admitted: choose again
 			}
 		default:
 			n, convErr := strconv.Atoi(pick)
@@ -678,6 +712,10 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 func (o onboarding) endpoint() (string, config.ProviderConfig, error) {
 	var p config.ProviderConfig
 	p.Type = "openai-compatible"
+	if !typeAdmitted(o.managed, p.Type) {
+		fmt.Fprintln(o.out, "  The managed configuration allows no model at an OpenAI-compatible endpoint.")
+		return "", p, nil
+	}
 	for {
 		u, err := o.ask("Base URL, such as http://localhost:8000/v1", "")
 		if err != nil {
@@ -705,7 +743,15 @@ func (o onboarding) endpoint() (string, config.ProviderConfig, error) {
 		}
 		fmt.Fprintln(o.out, "  Enter an https:// URL, or one on this machine.")
 	}
-	models, err := listModels(o.ctx, p.BaseURL, os.Getenv(p.APIKeyEnv))
+	// Under an allowed-models list the endpoint is not asked for its models:
+	// the model is named, and checked, before anything is sent there.
+	var models []string
+	var err error
+	if len(o.managed.ModelsAllowed()) > 0 {
+		fmt.Fprintln(o.out, "  The managed configuration lists the models allowed, so name the model; it is checked before the endpoint is contacted.")
+	} else {
+		models, err = listModels(o.ctx, p.BaseURL, os.Getenv(p.APIKeyEnv))
+	}
 	if err != nil {
 		fmt.Fprintf(o.out, "  Could not list its models: %s\n", friendlyModelError(err, "endpoint", p))
 	} else if len(models) > 0 {
@@ -725,6 +771,10 @@ func (o onboarding) endpoint() (string, config.ProviderConfig, error) {
 			return "", p, err
 		}
 		p.Model = m
+		if rerr := o.managed.EndpointRefused(p); rerr != nil {
+			fmt.Fprintf(o.out, "  %s is not allowed: %v\n", config.Printable(m), rerr)
+			p.Model = ""
+		}
 	}
 	return "endpoint", p, nil
 }

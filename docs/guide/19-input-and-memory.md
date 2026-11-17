@@ -318,24 +318,32 @@ workspace's commands are listed but do not run until you trust them:
 else of the workspace. A plain `abhed trust grant` keeps its meaning (the
 workspace's configuration, agents, skills and accounts) and trusts no
 command; it prints the `-commands-sha256` line for them instead. Given with
-`-sha256` for the configuration, the commands are hashed once that
-configuration is trusted, as a session then reads them; folders named only
-by a run's `-settings` file are not part of that hash. `abhed trust revoke`
-forgets both decisions.
-The decision is kept in `~/.abhed/command-trust.json` for exactly that
-content; a change to any file needs trust again, and leaving the question
-unanswered decides nothing.
+`-sha256` for the configuration, the commands are hashed as a session reads
+them once that configuration is trusted, and checked before anything is
+granted: when the configuration names a command folder (`commands.dirs`)
+the hash `abhed trust` showed beforehand cannot match, nothing is trusted,
+and you trust the configuration first and then the commands. Folders that
+only a run's `-settings` file names are not known to `abhed trust`, so are
+not in the hash it shows; a run with such a `-settings` file reads more
+files, sees the commands as changed, and does not run them until they are
+trusted again from inside that run (`/commands trust`). `abhed trust
+revoke` forgets both decisions. The decision is kept in
+`~/.abhed/command-trust.json` for exactly that content; a change to any
+file needs trust again, and leaving the question unanswered decides
+nothing. Only one command's turn waits at a time: a second command typed
+while one waits is refused, and runs when typed again. Starting with
+`--trust`, or with the workspace trust variable set, trusts them for that
+run; a workspace started untrusted never runs them.
 
 `abhed -p "/name args"` runs a trusted command as the terminal does,
-recorded as `command.invoked`. A workspace command that is not trusted is
-refused with exit code 2 before anything is recorded, and the message gives
-the exact `abhed trust grant -commands-sha256 …` line, which trusts those
-commands and nothing else. Since
-`-p` cannot ask, a command with `` !`…` `` shell lines, or with its own
-`model`, is refused there too; run it in the terminal. Only one command's turn waits at a time: a second command typed
-while one waits is refused, and runs when typed again. Starting with `--trust`, or with the workspace
-trust variable set, trusts them for that run; a workspace started untrusted
-never runs them.
+recorded as `command.invoked`: its arguments substituted, its tools
+narrowed to `allowed-tools`, and its own `@` files attached through the
+session's policy (a file policy refuses stops the command, with why). A
+workspace command that is not trusted is refused with exit code 2 before
+anything is recorded, and the message gives the exact `abhed trust grant
+-commands-sha256 …` line, which trusts those commands and nothing else.
+Since `-p` cannot ask, a command with `` !`…` `` shell lines, or with its own
+`model`, is refused there; run it in the terminal.
 
 Built-in commands always win: a custom command cannot use a built-in's name,
 or one that looks like it, and the session says which command was left out

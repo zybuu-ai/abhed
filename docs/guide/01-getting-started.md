@@ -158,8 +158,11 @@ your own or the workspace's, it offers to set one up. A managed file
 (`/etc/abhed/config.json`) or an org policy that chooses the model
 (`model.default` or `model.providers`) leaves nothing to set up; one that
 does not is worked within: only the models its `model.allowed` admits are
-offered, an endpoint model it does not admit is refused and asked again,
-and a setting it makes, such as `memory.auto`, is not asked.
+offered, an endpoint model it does not admit is refused and asked again
+before the endpoint is contacted (under an allowed-models list the
+endpoint is not asked for its models, and a provider type no entry can
+admit is not offered), and a setting it makes, such as `memory.auto`, is
+not asked.
 
 - It looks for Ollama (at `OLLAMA_HOST`, or `localhost:11434`) and lists
   its models. A model chosen from that list is written as `"type":

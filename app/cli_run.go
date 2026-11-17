@@ -376,9 +376,10 @@ func run(a *App, workspace string, f *cliFlags) int {
 		prompt := f.task()
 		// The person's own words: the task given after -p, or stdin when that is the whole task.
 		o.typed = prompt
+		o.stdinWait = f.stdinWait
 		if f.inputFormat == "stream-json" {
 			o.inputs = streamInputs(os.Stdin, os.Stderr)
-		} else if prompt, err = headlessTask(ctx, prompt, os.Stdin, stdinWindow(f, prompt, stdinIsPipe()), os.Stderr); err != nil {
+		} else if prompt, o.lateStdin, err = headlessTask(ctx, prompt, os.Stdin, stdinWindow(f, prompt, stdinIsPipe()), os.Stderr); err != nil {
 			if code, stopped := stopCode(ctx); stopped {
 				return code
 			}

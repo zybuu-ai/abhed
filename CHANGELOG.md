@@ -129,6 +129,13 @@ All notable changes to Abhed are recorded here. The format follows
   checked by its `text` as well as its claims, so a run that 1.2.9 ended
   verified with nothing verified (the text saying "the tests now pass", no
   test run showing it) now ends `unverified`, exit 8.
+- `abhed -p "task"` with piped stdin now waits `-stdin-wait` (1.5 s) for
+  the input to start; 1.2.9 waited for it however long it took. Input that
+  starts in time is attached as before. A pipe still idle is ignored with a
+  note. Input that starts later stops the run with the new exit code 9 and
+  no answer: "input arrived on stdin after 1.5s; rerun with - to wait for
+  it, or -stdin-wait <dur>". A script piping a slow producer (a cold `go
+  test ./... 2>&1 | abhed -p …`) should pass `-` or a longer `-stdin-wait`.
 
 ### Added
 
@@ -488,12 +495,13 @@ All notable changes to Abhed are recorded here. The format follows
   or by an org with pinned keys. Any other price from such an org is set
   aside, as before. Under a managed or org dollar cap, an unpriced model's
   refusal says an administrator sets the price.
-- MCP `readOnlyHint` is honoured for servers the operator configured in the
-  managed file, exactly as it is in force: a tool such a server marks
-  read-only runs without asking in the default and plan modes, deny and ask
-  rules still applying. A server a person, a `-mcp-config` file or a
-  workspace added is not believed, since the hint is the server's own
-  claim; its tools ask as before.
+- MCP `readOnlyHint` can be honoured for a server the operator opts in:
+  the managed file's entry for it sets `"trust_read_only_hint": true`, and
+  the entry in force is exactly that one. A tool such a server marks
+  read-only then runs without asking in the default and plan modes, deny
+  and ask rules still applying. It is off by default, so upgrading changes
+  nothing; a server a person, a `-mcp-config` file or a workspace added is
+  never believed, since the hint is the server's own claim.
 - `abhed -p` notes, in its verdict, an answer that seems not to address the
   question typed: `verdict.relevance` is `addresses` or `off_topic`, and an
   off-topic answer adds why to `verdict.note`. The check makes no model
@@ -549,7 +557,8 @@ All notable changes to Abhed are recorded here. The format follows
   same on both paths; gitignored files no longer show up unless asked for
   by `path`.
 - `abhed -p "/name args"` runs a custom command as the terminal does,
-  recorded as `command.invoked`; it used to send the text to the model as
+  recorded as `command.invoked`, with its own `@` files attached through
+  policy; it used to send the text to the model as
   it was. A workspace command nobody trusted is refused with exit code 2,
   before anything is recorded, and the message gives the exact `abhed trust
   grant -commands-sha256 …` line, which trusts those commands and nothing
@@ -830,15 +839,17 @@ All notable changes to Abhed are recorded here. The format follows
   not choose the model; it used to be skipped whenever a managed file
   existed, so a new laptop under one started with no model set. It offers
   only the models `model.allowed` admits, refuses an endpoint model it does
-  not, and does not ask what the managed layer sets.
+  not before contacting the endpoint, and does not ask what the managed
+  layer sets.
 - `abhed -p "task"` run with a stdin pipe nobody writes or closes, as some
   CI steps and drivers leave it, waited on it for good. With a task, it now
   waits for piped input to start for `-stdin-wait` (1.5 s by default):
   input that starts in that time is attached as before, so `git diff |
   abhed -p "review"` is unchanged; a pipe still idle is ignored with one
   note on stderr ("stdin left open with no input; ignored. Pass - to wait
-  for it, or -no-stdin to silence this"). A lone `-` waits for stdin to end
-  however late its input starts.
+  for it, or -no-stdin to silence this"). Input that starts after the wait
+  stops the run with exit code 9 and no answer (see Upgrading). A lone `-`
+  waits for stdin to end however late its input starts.
 
 ### Go API
 

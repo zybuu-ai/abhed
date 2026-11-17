@@ -453,19 +453,28 @@ is, and its result is recorded and tagged untrusted.
 ### readOnlyHint
 
 A server may mark a tool `readOnlyHint: true` in its tool list. Abhed
-believes that only for a server the operator configured: one the managed
-file (`/etc/abhed/config.json`) defines, exactly as it is in force. Such a
-tool is then a read, as `read` and `grep` are: it runs without asking in
-the default mode and in plan mode, and deny rules, ask rules, hooks and the
-record apply as before.
+ignores that unless the operator opts the server in: the managed file
+(`/etc/abhed/config.json`) defines the server, with
+`"trust_read_only_hint": true` on its entry, and the entry in force is
+exactly that one.
 
-For a server you, a `-mcp-config` file or a workspace added, or one whose
-managed entry a lower layer changed, the hint is ignored and every tool
-asks as above. The hint is the server's own word about itself: a server
-that wants to run unasked would say it, and nothing checks it. An operator
-who puts a server in the managed file has vouched for it; a server that
-came with a repository, or that a person added for themselves, has no one
-who has.
+```json
+{"mcp": {"servers": [{"name": "docs", "url": "https://docs.corp.example/mcp",
+  "enabled": true, "trust_read_only_hint": true}]}}
+```
+
+A tool such an opted-in server marks read-only is then a read, as `read`
+and `grep` are: it runs without asking in the default mode and in plan
+mode, and deny rules, ask rules, hooks and the record apply as before. It
+is off by default, so a managed server that does not opt in, and every
+server you, a `-mcp-config` file or a workspace added (with the key or
+without it), asks as above.
+
+Why only the operator: the hint is the server's own word about itself. A
+server that wants to run unasked would say it, and nothing checks it. An
+operator who opts a server in has vouched both that it may run and that its
+reads need no question; a server that came with a repository, or that a
+person added for themselves, has no one who has.
 
 ## Failure
 

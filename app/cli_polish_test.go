@@ -115,19 +115,33 @@ func TestStdinWindow(t *testing.T) {
 		return pr
 	}
 	var warn bytes.Buffer
-	if got, _ := headlessTask(ctx, "review", late(800*time.Millisecond, "LATE"), 200*time.Millisecond, &warn); got != "review" || !strings.Contains(warn.String(), stdinIdleNote) {
+	got, lateIn, _ := headlessTask(ctx, "review", late(800*time.Millisecond, "LATE"), 200*time.Millisecond, &warn)
+	if got != "review" || !strings.Contains(warn.String(), stdinIdleNote) || lateIn == nil {
 		t.Fatalf("input after the window was waited for: %q %q", got, warn.String())
 	}
+	// It is not lost: its arrival is signalled, which stops the run.
+	select {
+	case <-lateIn:
+	case <-time.After(10 * time.Second):
+		t.Fatal("input after the window was not signalled")
+	}
+	// A pipe that ends empty after the window signals nothing.
+	_, lateIn, _ = headlessTask(ctx, "review", late(400*time.Millisecond), 100*time.Millisecond, &warn)
+	select {
+	case <-lateIn:
+		t.Fatal("an empty pipe's late end was taken as input")
+	case <-time.After(800 * time.Millisecond):
+	}
 	warn.Reset()
-	if got, _ := headlessTask(ctx, "review", late(800*time.Millisecond, "LATE"), stdinToEOF, &warn); !strings.Contains(got, "LATE") {
+	if got, _, _ := headlessTask(ctx, "review", late(800*time.Millisecond, "LATE"), stdinToEOF, &warn); !strings.Contains(got, "LATE") {
 		t.Fatalf("- did not wait for late input: %q", got)
 	}
 	// Started inside the window, it is read to its end however long that takes.
-	if got, _ := headlessTask(ctx, "review", late(20*time.Millisecond, "ONE ", "TWO", " THREE"), 200*time.Millisecond, &warn); !strings.Contains(got, "ONE TWO THREE") || warn.Len() != 0 {
+	if got, _, _ := headlessTask(ctx, "review", late(20*time.Millisecond, "ONE ", "TWO", " THREE"), 200*time.Millisecond, &warn); !strings.Contains(got, "ONE TWO THREE") || warn.Len() != 0 {
 		t.Fatalf("input that started in the window was cut: %q %q", got, warn.String())
 	}
 	// Ended empty inside the window: no input, and nothing to say.
-	if got, _ := headlessTask(ctx, "review", late(20*time.Millisecond), 200*time.Millisecond, &warn); got != "review" || warn.Len() != 0 {
+	if got, _, _ := headlessTask(ctx, "review", late(20*time.Millisecond), 200*time.Millisecond, &warn); got != "review" || warn.Len() != 0 {
 		t.Fatalf("an empty pipe: %q %q", got, warn.String())
 	}
 }
@@ -291,6 +305,29 @@ func TestCommandsGrantScope(t *testing.T) {
 		}
 		if !configTrusted(ws) || !inspectCommands(ws).trusted {
 			t.Fatal("both pins did not trust both")
+		}
+	})
+	// A configuration that names a command folder changes the commands a
+	// session reads once it is trusted: the hash shown before cannot match,
+	// and nothing is trusted, the configuration included.
+	t.Run("both pins, configuration names a folder", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv(config.TrustEnv, "")
+		ws := t.TempDir()
+		write(t, filepath.Join(ws, ".abhed", "config.json"), `{"commands":{"dirs":["more"]}}`)
+		write(t, filepath.Join(ws, ".abhed", "commands", "explain.md"), "EXPLAIN")
+		write(t, filepath.Join(ws, "more", "extra.md"), "EXTRA")
+		st, _ := config.InspectWorkspace(ws)
+		before, after := inspectCommands(ws).sum, inspectCommandsAs(ws, config.TrustGranted).sum
+		if before == after {
+			t.Fatalf("the configuration's folder did not change the commands: %s", before)
+		}
+		var out bytes.Buffer
+		if code := trustCmd(ws, []string{"grant", "-sha256", st.SHA256, "-commands-sha256", before}, &out); code != 1 || configTrusted(ws) || inspectCommands(ws).trusted {
+			t.Fatalf("a commands pin that cannot match granted something: %d %s", code, out.String())
+		}
+		if code := trustCmd(ws, []string{"grant", "-sha256", st.SHA256, "-commands-sha256", after}, &out); code != 0 || !configTrusted(ws) || !inspectCommands(ws).trusted {
+			t.Fatalf("the hash after the grant was not taken: %d %s", code, out.String())
 		}
 	})
 	t.Run("only commands, plain grant", func(t *testing.T) {
@@ -591,12 +628,77 @@ func TestFirstRunOffersOnlyWhatTheManagedFileAllows(t *testing.T) {
 	if strings.Contains(got, "memory notes") {
 		t.Fatalf("asked what the managed file sets:\n%s", got)
 	}
-	// An endpoint model the list does not admit is refused and asked again.
+	// An endpoint type no entry can admit is refused before it is asked for.
 	out.Reset()
-	if err := firstRun(context.Background(), strings.NewReader("e\nhttp://127.0.0.1:9/v1\n\nother-model\ns\n"), &out); err != nil {
+	if err := firstRun(context.Background(), strings.NewReader("e\ns\n"), &out); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "allows no model at an OpenAI-compatible endpoint") || strings.Contains(out.String(), "Base URL") {
+		t.Fatalf("an endpoint type outside the list was asked for:\n%s", out.String())
+	}
+
+	// An endpoint model the list does not admit is refused before the
+	// endpoint is contacted, and asked again; the endpoint is not listed.
+	var seen []string
+	var mu sync.Mutex
+	ep := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		seen = append(seen, r.Method+" "+r.URL.Path+" "+string(body))
+		mu.Unlock()
+		http.Error(w, "no", http.StatusNotFound)
+	}))
+	defer ep.Close()
+	managedFile(t, `{"model":{"allowed":["ollama/qwen*","openai-compatible/corp-*"]},"memory":{"auto":false}}`)
+	out.Reset()
+	if err := firstRun(context.Background(), strings.NewReader("e\n"+ep.URL+"/v1\n\nother-model\ncorp-1\n1\n"), &out); err != nil {
 		t.Fatalf("%v\n%s", err, out.String())
 	}
 	if !strings.Contains(out.String(), "other-model is not allowed") {
 		t.Fatalf("an endpoint model outside the list was taken:\n%s", out.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, r := range seen {
+		if strings.Contains(r, "/models") || strings.Contains(r, "other-model") {
+			t.Fatalf("the endpoint was contacted before the model was allowed: %q", seen)
+		}
+	}
+}
+
+// #12 review: in -p, a command's own @ files are attached through policy, as
+// the terminal attaches them; one policy refuses stops the command.
+func TestPrintCommandAttachesItsMentions(t *testing.T) {
+	m := &bgModelServer{}
+	ws := bgWorkspace(t, m.start(t), `,"permissions":{"deny":["read(**/secret.txt)"]}`)
+	home := os.Getenv("HOME")
+	write(t, filepath.Join(home, ".abhed", "commands", "plan.md"), "Follow @notes.md for $ARGUMENTS")
+	write(t, filepath.Join(home, ".abhed", "commands", "leak.md"), "Summarise @secret.txt")
+	write(t, filepath.Join(ws, "notes.md"), "NOTES-MARKER")
+	write(t, filepath.Join(ws, "secret.txt"), "SECRET-MARKER")
+
+	evs, stderr, _ := headlessRun(t, ws, nil, 20*time.Second, "-p", "/plan pkg/auth")
+	if u := evs["user.message"]; len(u) != 1 || !strings.Contains(stringOf(u[0]["text"]), "NOTES-MARKER") || len(evs["input.mention"]) != 1 {
+		t.Fatalf("the command's mention was not attached: %v %v\n%s", u, evs["input.mention"], stderr)
+	}
+	evs, stderr, _ = headlessRun(t, ws, nil, 20*time.Second, "-p", "/leak")
+	if len(evs["user.message"]) != 0 || !strings.Contains(stderr+fmt.Sprint(evs["result"]), "/leak was not sent") {
+		t.Fatalf("a mention policy refuses was sent: %v\n%s", evs["user.message"], stderr)
+	}
+	for _, u := range evs["user.message"] {
+		if strings.Contains(stringOf(u["text"]), "SECRET-MARKER") {
+			t.Fatal("the denied file reached the model")
+		}
+	}
+}
+
+// #14 review: a name the server gives is clipped before it is kept or shown.
+func TestDisplayIsClipped(t *testing.T) {
+	long := strings.Repeat("é", 500)
+	if got := clipDisplay(long); len([]rune(got)) != maxDisplay || !strings.HasSuffix(got, "…") {
+		t.Fatalf("%d runes", len([]rune(got)))
+	}
+	if got := clipDisplay("bob@corp.example"); got != "bob@corp.example" {
+		t.Fatal(got)
 	}
 }

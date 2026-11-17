@@ -109,6 +109,17 @@ func signInOpener(noBrowser bool, errOut io.Writer) func(string) error {
 	}
 }
 
+// maxDisplay bounds the name a server gives for the account, as kept and shown.
+const maxDisplay = 80
+
+// clipDisplay is a server-given name cut to maxDisplay characters.
+func clipDisplay(s string) string {
+	if r := []rune(s); len(r) > maxDisplay {
+		return string(r[:maxDisplay-1]) + "…"
+	}
+	return s
+}
+
 // signedInAs is who a profile is signed in as, as a person reads it: the
 // account's email, else its name, else the subject the server knows it by.
 func signedInAs(p *profiles.Profile) string {
@@ -299,7 +310,7 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 	p.Display = ""
 	for _, k := range []string{"email", "name"} {
 		if v, _ := me[k].(string); strings.TrimSpace(v) != "" && v != p.Username {
-			p.Display = config.PrintableText(v)
+			p.Display = clipDisplay(config.PrintableText(v))
 			break
 		}
 	}

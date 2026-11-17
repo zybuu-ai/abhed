@@ -1625,6 +1625,10 @@ type MCPServerConfig struct {
 	// OAuth configures `abhed mcp login` for a URL server; a server needs it
 	// only for a client registered ahead of time or particular scopes.
 	OAuth *MCPOAuthConfig `json:"oauth,omitempty"`
+	// TrustReadOnlyHint believes the server's readOnlyHint, so a tool it
+	// marks read-only runs unasked as a read. Off by default, and honoured
+	// only in the managed file's own entry for the server.
+	TrustReadOnlyHint bool `json:"trust_read_only_hint,omitempty"`
 }
 
 // MCPOAuthConfig is how `abhed mcp login` signs in to a URL server.

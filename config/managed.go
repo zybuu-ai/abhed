@@ -917,11 +917,11 @@ func managedMCPServers(data []byte) map[string]MCPServerConfig {
 	return out
 }
 
-// OperatorMCPServer reports whether s is a server the operator configured:
-// the managed file defines it, exactly as it is in force. Only such a
-// server's own claims about its tools (readOnlyHint) are believed; a server
-// a person or a workspace added, or changed, describes itself.
-func (c Config) OperatorMCPServer(s MCPServerConfig) bool {
+// ReadOnlyHintTrusted reports whether s's readOnlyHint is believed: the
+// managed file defines the server, exactly as it is in force, and opts it in
+// with trust_read_only_hint. A server a person or a workspace added, or
+// changed, describes itself, and the hint is the server's own claim.
+func (c Config) ReadOnlyHintTrusted(s MCPServerConfig) bool {
 	m, ok := c.managedMCP[s.Name]
-	return ok && reflect.DeepEqual(m, s)
+	return ok && m.TrustReadOnlyHint && reflect.DeepEqual(m, s)
 }

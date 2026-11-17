@@ -443,6 +443,20 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 				"Nothing was trusted; review them again with `abhed trust`\n", st.SkillsSHA256, config.Printable(wantSkills))
 			return 1
 		}
+		// The commands are hashed as a session will read them once this
+		// grant is made, and checked before anything is granted.
+		var cmds commandsTrust
+		if wantCommands != "" {
+			as := config.TrustAsStored
+			if st.File != "" {
+				as = config.TrustGranted
+			}
+			if cmds = inspectCommandsAs(dir, as); len(cmds.files) == 0 || wantCommands != cmds.sum {
+				fmt.Fprintf(os.Stderr, "abhed: trust: the workspace's commands, as a session reads them once this configuration is trusted, have the sha256 %s, not the %s you reviewed. "+
+					"Nothing was trusted; review them again with `abhed trust`, or trust the configuration first and then the commands\n", orNone(cmds.sum), config.Printable(wantCommands))
+				return 1
+			}
+		}
 		// The hashes are of the content just classified, not of a second read.
 		if st.File != "" || len(st.Agents) > 0 || skills {
 			if err := config.GrantReviewed(dir, st.Reviewed()); err != nil {
@@ -473,10 +487,9 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 		if st.File != "" || len(st.Agents) > 0 || skills {
 			fmt.Fprintln(out, "A later change to the file, a definition or a skill makes it untrusted again.")
 		}
-		// Commands are trusted only by their hash, read now that the
-		// configuration that may name command folders is decided.
+		// Commands are trusted only by their hash, checked above.
 		if wantCommands != "" {
-			return grantCommands(dir, wantCommands, out)
+			return recordCommands(dir, cmds, false, out)
 		}
 		if cmds := inspectCommands(dir); len(cmds.files) > 0 && !cmds.trusted {
 			fmt.Fprintf(out, "The workspace's %d command(s) were not trusted: review them with `abhed trust`, then run %s\n",
@@ -762,9 +775,14 @@ func grantCommands(dir, want string, out io.Writer) int {
 	}
 	if want != cmds.sum {
 		fmt.Fprintf(os.Stderr, "abhed: trust: the workspace's commands have changed: their sha256 is %s, not the %s you reviewed. "+
-			"The commands were not trusted; review them again with `abhed trust`\n", cmds.sum, config.Printable(want))
+			"Nothing was trusted; review them again with `abhed trust`\n", cmds.sum, config.Printable(want))
 		return 1
 	}
+	return recordCommands(dir, cmds, true, out)
+}
+
+// recordCommands keeps the person's trust in exactly these commands.
+func recordCommands(dir string, cmds commandsTrust, alone bool, out io.Writer) int {
 	store, err := commandTrustStore()
 	if err == nil {
 		err = store.Record(dir, cmds.sum, true)
@@ -773,8 +791,12 @@ func grantCommands(dir, want string, out io.Writer) int {
 		fmt.Fprintf(os.Stderr, "abhed: trust: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(out, "Trusted %d workspace command(s) (sha256 %s), and nothing else of the workspace. A change to any of them makes them untrusted again.\n",
-		len(cmds.files), cmds.sum[:12])
+	also := ""
+	if alone {
+		also = ", and nothing else of the workspace"
+	}
+	fmt.Fprintf(out, "Trusted %d workspace command(s) (sha256 %s)%s. A change to any of them makes them untrusted again.\n",
+		len(cmds.files), cmds.sum[:12], also)
 	return 0
 }
 
@@ -797,8 +819,12 @@ type commandsTrust struct {
 // reads them, with the workspace configuration's trust as it stands now,
 // and the person's stored decision about exactly that content. Folders a
 // run's -settings file names are not known here, so are not in the hash.
-func inspectCommands(dir string) commandsTrust {
-	cfg, err := config.LoadWith(dir, config.LoadOptions{Quiet: true, Warn: func(string) {}})
+func inspectCommands(dir string) commandsTrust { return inspectCommandsAs(dir, config.TrustAsStored) }
+
+// inspectCommandsAs is inspectCommands with the workspace configuration
+// trusted as given, such as granted for a grant about to be made.
+func inspectCommandsAs(dir string, as config.TrustChoice) commandsTrust {
+	cfg, err := config.LoadWith(dir, config.LoadOptions{Quiet: true, Warn: func(string) {}, Trust: as})
 	if err != nil {
 		// Without the configuration only .abhed/commands is read; a session
 		// that reads more sees new content and asks again.
@@ -836,4 +862,11 @@ func printCommandsTrust(out io.Writer, ct commandsTrust) {
 	if !ct.trusted {
 		fmt.Fprintf(out, "A command is instructions to the agent. A plain `abhed trust grant` does not trust them; trust exactly these, and nothing else of the workspace, with %s.\n", commandsGrantLine(ct.dir, ct.sum))
 	}
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "(no commands)"
+	}
+	return s
 }

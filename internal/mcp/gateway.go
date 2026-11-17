@@ -55,9 +55,10 @@ type ServerConfig struct {
 	HostFiles bool `json:"host_files,omitempty"`
 	// ReadOnlyHints believes the server's readOnlyHint: a tool it marks
 	// read-only is not a mutating call, so it runs unasked in default mode and
-	// in plan mode, deny rules still applying. Only a server the operator
-	// configured (the managed file) sets it; a hint from a server a person or
-	// a workspace added is the server's own word about itself and is ignored.
+	// in plan mode, deny rules still applying. Only a server the managed
+	// file defines and opts in (trust_read_only_hint) sets it; a hint from a
+	// server a person or a workspace added is the server's own word about
+	// itself and is ignored.
 	ReadOnlyHints bool `json:"-"`
 }
 

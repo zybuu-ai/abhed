@@ -85,8 +85,9 @@ func wrapAbout(s string, width, indent int) string {
 // exitCodesHelp is the exit-code table, as docs/guide/10-automation.md has it.
 const exitCodesHelp = `
 Exit codes: 0 done, 1 error, 2 bad invocation or turn limit, 3 token budget,
-5 model retries exhausted, 130 interrupted (SIGINT), 143 terminated
-(SIGTERM). A call refused by policy does not end the run.
+5 model retries exhausted, 9 stdin input arrived after -stdin-wait,
+130 interrupted (SIGINT), 143 terminated (SIGTERM). A call refused by
+policy does not end the run.
 `
 
 // printFlag is -p: a switch that makes the run headless, which may also
