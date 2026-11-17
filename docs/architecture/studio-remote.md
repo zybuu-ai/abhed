@@ -162,7 +162,8 @@ an ACP request to the engine on the host, in the window's session there
   every 30 s), and notifies `_abhed/fs/changed`; at most 64 watches and
   20,000 entries each;
 - `git`: the SCM view's read-only status and HEAD contents, run in the
-  session's sandbox as the agent's git is (refused with no sandbox), with
+  session's sandbox as the agent's git is (with no sandbox, only in a
+  repository that configures no filter, diff or merge driver), with
   every `GIT_*` variable unset, submodules ignored, no transport, and hooks,
   fsmonitor, pager and external diff turned off, so a filter a repository
   defines runs, if at all, inside the sandbox. `.git/modules`,

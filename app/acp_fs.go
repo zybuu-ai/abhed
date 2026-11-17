@@ -905,12 +905,21 @@ func (c *acpConn) fsGit(msg rpcMessage) {
 			sandboxed = b.Sandbox
 		}
 	}
-	if sandboxed == nil {
-		c.reply(msg.ID, nil, refusal(errRefused, "the SCM view runs git in the session's sandbox, and this session has none"))
-		return
-	}
 	ctx, cancel := context.WithTimeout(c.root(), 20*time.Second)
 	defer cancel()
+	if sandboxed == nil {
+		// No sandbox to hold a filter in (the none tier): git runs here only when the repository
+		// configures no filter, diff or merge driver, which are what git would start.
+		if drivers := gitDrivers(ctx, root); drivers != "" {
+			c.reply(msg.ID, nil, refusal(errRefused, "this session has no sandbox, and the repository configures %s, which git would run; the SCM view does not run git here", drivers))
+			return
+		}
+		sandboxed = func(ctx context.Context, cwd, line string) *exec.Cmd {
+			cmd := exec.CommandContext(ctx, "sh", "-c", line) // #nosec G204 -- gitLine quotes every word
+			cmd.Dir = cwd
+			return cmd
+		}
+	}
 	cmd := sandboxed(ctx, root, gitLine(args...))
 	if cmd.Err != nil {
 		c.reply(msg.ID, nil, refusal(errRefused, "git %s: %v", p.Op, cmd.Err))
@@ -938,6 +947,26 @@ func (c *acpConn) fsGit(msg rpcMessage) {
 		changes = append(changes, map[string]any{"x": entry[:1], "y": entry[1:2], "path": abs})
 	}
 	c.reply(msg.ID, map[string]any{"root": root, "changes": changes}, nil)
+}
+
+// gitDrivers names the filter, diff and merge drivers the repository's git
+// configuration defines (any scope git reads), or "". Reading configuration
+// runs nothing.
+func gitDrivers(ctx context.Context, root string) string {
+	line := gitLine("config", "--get-regexp", `^(filter|diff|merge)\..*\.(clean|smudge|process|command|textconv|driver)$`)
+	cmd := exec.CommandContext(ctx, "sh", "-c", line) // #nosec G204 -- gitLine quotes every word
+	cmd.Dir = root
+	out, _ := cmd.Output()
+	var names []string
+	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if k, _, _ := strings.Cut(l, " "); k != "" {
+			names = append(names, k)
+		}
+	}
+	if len(names) > 5 {
+		names = append(names[:5], "…")
+	}
+	return strings.Join(names, ", ")
 }
 
 type fsCapped struct {

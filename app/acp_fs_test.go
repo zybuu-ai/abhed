@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/base64"
 	"os"
 	"os/exec"
@@ -208,5 +209,27 @@ func TestStudioFS(t *testing.T) {
 		if line := gitLine("status"); !strings.Contains(line, "unset") || !strings.Contains(line, "'protocol.allow=never'") || !strings.Contains(line, "'--no-optional-locks'") {
 			t.Fatalf("git line %s", line)
 		}
+	}
+}
+
+// With no sandbox, the SCM view's git runs only in a repository that
+// configures no filter, diff or merge driver.
+func TestGitDrivers(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	if d := gitDrivers(context.Background(), dir); d != "" {
+		t.Fatalf("a plain repository has drivers %q", d)
+	}
+	if out, err := exec.Command("git", "-C", dir, "config", "filter.x.clean", "touch /tmp/never").CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	if d := gitDrivers(context.Background(), dir); d != "filter.x.clean" {
+		t.Fatalf("drivers %q", d)
 	}
 }
