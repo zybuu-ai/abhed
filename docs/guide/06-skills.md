@@ -33,10 +33,19 @@ it will load here unchanged.
 
 ## Why only the description is in the prompt
 
-Abhed puts each skill's **name and description** in the system prompt, about
-fifteen tokens each, and loads the body only when the agent calls the `skill`
-tool. Twenty skills of a thousand tokens each would otherwise cost 20,000 tokens
-on every request of every session, whether or not any of them was relevant.
+Abhed puts each skill's **name and description** in the system prompt, and
+loads the body only when the agent calls the `skill` tool. A listing line
+costs its name and its description; a description is at most 300
+characters, and a longer one is cut there with a warning naming the file.
+Twenty skills of a thousand tokens each would otherwise cost 20,000 tokens on
+every request of every session, whether or not any of them was relevant.
+
+The listing is kept within 8 KB, about 2,300 tokens, and so is the list of
+names in the `skill` tool's description. Past that the rest are counted, not
+listed ("and 40 more"), and the model reaches them through the tool: it
+loads any skill by its exact name, listed or not, and a name it does not
+know returns the skills whose names or descriptions hold its words. With a
+few dozen skills everything is listed as before.
 
 The consequence is that **the description is the whole interface**. It decides
 whether a skill is ever used. Say when to use it, not what it is.
@@ -45,7 +54,9 @@ whether a skill is ever used. Say when to use it, not what it is.
 
 From the directories the operator configured (`skills.dirs`, by default
 `~/.abhed/skills`), and from the workspace's own `.abhed/skills/<name>/`
-once you trust them. A skill body *is* instructions by construction, so a
+once you trust them. When two configured directories hold a skill of one
+name, the later directory's wins, and a warning names both. A workspace
+reads at most 64 skills, and says so when there are more. A skill body *is* instructions by construction, so a
 repository's skills load under the same hash-pinned trust as its agent
 definitions:
 
