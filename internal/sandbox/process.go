@@ -349,10 +349,10 @@ func (s *Process) noProc() bool {
 }
 
 // Caveat names what makes this process tier weaker than it reads: "no
-// /proc" where bubblewrap cannot mount a fresh one (as under a seccomp profile
-// that allows user namespaces but not that mount), and "image-supplied
-// bubblewrap" where the bubblewrap is a container image's own, which the
-// image's author chose and Abhed cannot check.
+// /proc" where bubblewrap cannot mount a fresh one, as under
+// a seccomp profile that allows user namespaces but not that mount; and
+// "image-supplied bubblewrap" where the bubblewrap is a container image's
+// own, which the image's author chose and Abhed cannot check.
 func (s *Process) Caveat() string {
 	var c []string
 	if s.imageBwrap() {
