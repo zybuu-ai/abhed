@@ -495,7 +495,8 @@ All notable changes to Abhed are recorded here. The format follows
   arguments hide characters), answered by an `approve` request with
   `decision` `allow` or `deny`, an optional `approver`, and `remember` to
   keep the offered scope for the session. An ask still open when stdin ends
-  or its run stops is refused. Without `approvals`, a call needing approval
+  is refused; one open when its run is stopped ends as interrupted, and an
+  answer arriving with the stop is not applied. Without `approvals`, a call needing approval
   is refused as before.
 - A GitHub Action, `integrations/github-action`. It installs a pinned
   Abhed release, checked against the SHA-256 the action pins and, by

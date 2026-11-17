@@ -356,9 +356,13 @@ when no ask with that id is waiting. `approve` is read as it arrives, like
   line and recorded as `by: session-scope`. It is ignored when there is no
   `offer`, as for a deny or ask rule or a destructive command.
 - `approver` is recorded on the `action.approved` or `action.denied` as
-  your program asserts it; Abhed does not verify it.
-- An ask still open when stdin ends, or when its run is stopped, is refused
-  and recorded as settled by the system.
+  your program asserts it; Abhed does not verify it. It is at most 256
+  characters, every one printing as itself, or the `approve` is refused and
+  the ask keeps waiting.
+- An ask still open when stdin ends is refused and recorded as settled by
+  the system. One open when its run is stopped (a signal, or `cancel_task`
+  for a background task's ask) ends as `interrupted`, and an answer that
+  arrives with the stop is never applied.
 
 An approval answers an ask; it cannot lift a deny rule, widen the sandbox, or
 change the mode.

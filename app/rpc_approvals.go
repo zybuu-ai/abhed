@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -28,6 +30,9 @@ type rpcApproval struct {
 	TaskID      string          `json:"task_id,omitempty"`
 	Via         string          `json:"via,omitempty"`
 }
+
+// rpcMaxApprover bounds the approver name an answer may record.
+const rpcMaxApprover = 256
 
 // rpcAnswer is the caller's answer to one approval.
 type rpcAnswer struct {
@@ -111,6 +116,12 @@ func (p *rpcApprovals) approve(req rpcRequest) rpcResponse {
 	default:
 		return rpcResponse{ID: req.ID, Type: "error", Error: `approve needs "decision": "allow" or "deny"`}
 	}
+	if len([]rune(req.Approver)) > rpcMaxApprover {
+		return rpcResponse{ID: req.ID, Type: "error", Error: fmt.Sprintf(`"approver" is longer than %d characters`, rpcMaxApprover)}
+	}
+	if strings.ContainsFunc(req.Approver, func(r rune) bool { return !unicode.IsPrint(r) }) || ui.HasHidden(req.Approver) {
+		return rpcResponse{ID: req.ID, Type: "error", Error: `"approver" holds a character that does not print as itself`}
+	}
 	a.remember, a.approver = req.Remember, req.Approver
 	if !p.answer(req.RequestID, a) {
 		return rpcResponse{ID: req.ID, Type: "error", Error: "no approval is waiting with request_id " + req.RequestID}
@@ -160,6 +171,12 @@ func rpcApprover(p *rpcApprovals, emit func(any)) func(context.Context, string, 
 		emit(rpcResponse{Type: "approval", Approval: &ask})
 		select {
 		case a := <-ch:
+			// An answer that arrives as the run is stopped loses to the stop:
+			// it is never applied, and the record says the request was interrupted.
+			if ctx.Err() != nil {
+				agent.NoteAnswer(ctx, agent.Answer{Held: true})
+				return false, ctx.Err()
+			}
 			if !a.allow {
 				if a.approver != "" {
 					abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.ByReviewer, Approver: a.approver})
@@ -180,8 +197,8 @@ func rpcApprover(p *rpcApprovals, emit func(any)) func(context.Context, string, 
 			abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySystem, Reason: "rpc input ended before the approval was answered"})
 			return false, nil
 		case <-ctx.Done():
-			abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySystem, Reason: "the run ended before the approval was answered"})
-			return false, nil
+			// Recorded as interrupted, as any stop while an approval is awaited.
+			return false, ctx.Err()
 		}
 	}
 }
