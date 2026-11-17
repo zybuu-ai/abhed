@@ -531,3 +531,156 @@ func TestReadCommandsLoadErrorNamesForms(t *testing.T) {
 		t.Errorf("sort -o: %v", err)
 	}
 }
+
+// A content read refused for want of ssh.read_contents says so, and how the
+// operator turns it on, instead of that it can make changes. What is allowed
+// does not move: it still asks, and a write still names the change.
+func TestRemoteContentAskNamesTheRule(t *testing.T) {
+	for _, mode := range []Mode{ModeDefault, ModeAcceptEdits} {
+		res := declared(mode).Evaluate("ssh", true, remoteCall("app1", "tail -n 100 /var/log/app/app.log"))
+		if res.Decision != Ask {
+			t.Fatalf("%s: a content read is no longer asked: %+v", mode, res)
+		}
+		for _, want := range []string{"tail prints the contents of files", "ssh.read_contents: true", "ssh.read_commands", string(mode) + " mode"} {
+			if !strings.Contains(res.Reason, want) {
+				t.Errorf("%s: reason %q lacks %q", mode, res.Reason, want)
+			}
+		}
+		if strings.Contains(res.Reason, "can make changes") {
+			t.Errorf("%s: a read is said to make changes: %q", mode, res.Reason)
+		}
+	}
+	res := declared(ModeDefault).Evaluate("ssh", true, remoteCall("app1", "systemctl restart app"))
+	if res.Decision != Ask || !strings.Contains(res.Reason, "can make changes") || !strings.Contains(res.Reason, "its read verbs are") {
+		t.Errorf("a change is not explained as one: %+v", res)
+	}
+	// An undeclared host is not judged by the classifier, so its reason is unchanged.
+	res = declared(ModeDefault).Evaluate("ssh", true, remoteCall("other", "tail -n 1 /x"))
+	if res.Decision != Ask || strings.Contains(res.Reason, "read_contents") {
+		t.Errorf("undeclared host: %+v", res)
+	}
+}
+
+// A wildcard in ssh.read_commands stands for one argument: it never names a
+// further file, and never a .. segment the entry does not write.
+func TestReadCommandWildcardIsOneArgument(t *testing.T) {
+	e := New(ModeDefault)
+	if err := e.AllowRemoteReads("tail -n * /var/log/app/app.log", "cat /var/log/*", "grep -i * /var/log/app/app.log"); err != nil {
+		t.Fatal(err)
+	}
+	for cmd, want := range map[string]Decision{
+		"tail -n 100 /var/log/app/app.log":              Allow,
+		"cat /var/log/app/x.log":                        Allow,
+		"grep -i 'pool exhausted' /var/log/app/app.log": Allow,
+		"tail -n 100 /etc/shadow /var/log/app/app.log":  Ask,
+		"tail -n 100 -c 5 /var/log/app/app.log":         Ask,
+		"cat /var/log/a /etc/shadow":                    Ask,
+		"cat /var/log/../../etc/shadow":                 Ask,
+		"grep -i x /etc/passwd /var/log/app/app.log":    Ask,
+		"tail -n /var/log/app/app.log":                  Ask,
+		// A word the remote shell expands is not the word the entry matched.
+		"cat /var/log/.[.]/.[.]/etc/shadow":    Ask,
+		"cat /var/log/.?/.?/etc/shadow":        Ask,
+		"cat /var/log/{app,..}/x":              Ask,
+		"cat /var/log/~root":                   Ask,
+		"cat /var/log/$HOME":                   Ask,
+		"grep -i /etc/s* /var/log/app/app.log": Ask,
+		"grep -i 'a*' /var/log/app/app.log":    Allow,
+		// An operand slot never takes an option; a value slot is as before.
+		"grep -i --file=/etc/shadow /var/log/app/app.log": Ask,
+		"grep -i -f/etc/shadow /var/log/app/app.log":      Ask,
+		"grep -i -r /var/log/app/app.log":                 Ask,
+		"grep -i -- -r /var/log/app/app.log":              Ask,
+		"tail -n +5 /var/log/app/app.log":                 Allow,
+		// The entry's own glob, as written, is the operator's.
+		"cat /var/log/*": Allow,
+	} {
+		if got := e.Evaluate("ssh", true, remoteCall("app1", cmd)); got.Decision != want {
+			t.Errorf("%q: %s (%s), want %s", cmd, got.Decision, got.Reason, want)
+		}
+	}
+}
+
+// A word that is ** alone stands for one or more whole arguments, each still
+// judged as a read form; it loads only where * would.
+func TestReadCommandDoubleStarIsWholeArguments(t *testing.T) {
+	e := New(ModeDefault)
+	e.ReadCommandsContents = true
+	if err := e.AllowRemoteReads("systemctl status **", "cat **", "tail **"); err != nil {
+		t.Fatal(err)
+	}
+	for cmd, want := range map[string]Decision{
+		"systemctl status nginx --no-pager -l": Allow,
+		"systemctl status":                     Ask,
+		"systemctl stop nginx":                 Ask,
+		"cat /etc/os-release /etc/hostname":    Allow,
+		"cat /var/log/../../etc/shadow":        Ask,
+		"tail .[.]":                            Ask,
+		"cat .?/.?":                            Ask,
+		"cat /etc/os-release /etc/s*":          Ask,
+	} {
+		if got := e.Evaluate("ssh", true, remoteCall("app1", cmd)); got.Decision != want {
+			t.Errorf("%q: %s (%s), want %s", cmd, got.Decision, got.Reason, want)
+		}
+	}
+	for _, p := range []string{"systemctl **", "sudo **", "socat **"} {
+		if _, err := ParseRemoteRead(p); err == nil {
+			t.Errorf("%q was accepted", p)
+		}
+	}
+}
+
+// getent's shadow databases hold password hashes: a wildcard entry reaches
+// them only under ssh.read_contents.
+func TestReadCommandGetentShadowNeedsReadContents(t *testing.T) {
+	for _, contents := range []bool{false, true} {
+		e := New(ModeDefault)
+		e.ReadCommandsContents = contents
+		if err := e.AllowRemoteReads("getent *", "getent **"); err != nil {
+			t.Fatal(err)
+		}
+		for cmd, off := range map[string]Decision{
+			"getent shadow":       Ask,
+			"getent gshadow root": Ask,
+			"getent passwd":       Allow,
+			"getent group adm":    Allow,
+		} {
+			want := off
+			if contents {
+				want = Allow
+			}
+			if got := e.Evaluate("ssh", true, remoteCall("app1", cmd)); got.Decision != want {
+				t.Errorf("read_contents %v, %q: %s (%s), want %s", contents, cmd, got.Decision, got.Reason, want)
+			}
+		}
+	}
+}
+
+// A glob in a path part that starts with . can match .. in some shells, so
+// such an entry is refused at load.
+func TestReadCommandDotGlobRefused(t *testing.T) {
+	for _, p := range []string{"ls -l /var/log/.*", "cat /var/log/.?*/x", "tail -n 50 /var/log/.[.]/x", "cat .*"} {
+		if _, err := ParseRemoteRead(p); err == nil || !strings.Contains(err.Error(), "starts with .") {
+			t.Errorf("%q: %v", p, err)
+		}
+	}
+	for _, p := range []string{"cat /var/log/app/*", "ls ./*.log", "tail -n 50 /var/log/*.log"} {
+		if _, err := ParseRemoteRead(p); err != nil {
+			t.Errorf("%q: %v", p, err)
+		}
+	}
+}
+
+// The warning covers a wildcard that can name any one file for a program
+// that prints files, not one after a folder, a grep pattern or a value.
+func TestWildcardReadsContents(t *testing.T) {
+	for entry, want := range map[string]bool{
+		"cat **": true, "cat -- *": true, "head -n 5 *": true, "getent *": true, "cat *": true,
+		"cat /var/log/app/*": false, "tail -n * /var/log/app/app.log": false,
+		"grep -i * /var/log/app/app.log": false, "grep -i x *": true, "ls *": false, "df **": false,
+	} {
+		if got := WildcardReadsContents(entry); got != want {
+			t.Errorf("%q: %v, want %v", entry, got, want)
+		}
+	}
+}

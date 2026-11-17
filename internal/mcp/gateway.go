@@ -53,6 +53,13 @@ type ServerConfig struct {
 	// HostFiles runs a stdio server with the host's files, not confined to
 	// its own home and the workspace on the process tier.
 	HostFiles bool `json:"host_files,omitempty"`
+	// ReadOnlyHints believes the server's readOnlyHint: a tool it marks
+	// read-only is not a mutating call, so it runs unasked in default mode and
+	// in plan mode, deny rules still applying. Only a server the managed
+	// file defines and opts in (trust_read_only_hint) sets it; a hint from a
+	// server a person or a workspace added is the server's own word about
+	// itself and is ignored.
+	ReadOnlyHints bool `json:"-"`
 }
 
 var errGatewayClosed = errors.New("the MCP gateway was closed while the server connected")
@@ -494,6 +501,7 @@ func (g *Gateway) Tools() []tools.Tool {
 				remoteName:  def.Name,
 				description: sanitizeDescription(def.Description),
 				schema:      def.InputSchema,
+				readOnly:    cfg.ReadOnlyHints && def.Annotations.ReadOnlyHint != nil && *def.Annotations.ReadOnlyHint,
 			})
 		}
 		out = append(out, g.resourceTools(server, cfg, client)...)
@@ -651,6 +659,9 @@ type remoteTool struct {
 	remoteName  string
 	description string
 	schema      json.RawMessage
+	// readOnly is the server's readOnlyHint, believed only for a server the
+	// operator configured.
+	readOnly bool
 }
 
 // Name is namespaced: mcp__<server>__<tool>. Without this a server could
@@ -674,8 +685,10 @@ func (t *remoteTool) Schema() json.RawMessage {
 }
 
 // Mutates is conservatively true: Abhed cannot know what a third-party server
-// does, so every MCP call routes through the policy engine for approval.
-func (t *remoteTool) Mutates() bool { return true }
+// does, so every MCP call routes through the policy engine for approval. The
+// exception is a tool the server marks read-only when the operator, not the
+// person or the workspace, configured the server.
+func (t *remoteTool) Mutates() bool { return !t.readOnly }
 
 func (t *remoteTool) Run(ctx context.Context, _ *tools.Session, args json.RawMessage) tools.Result {
 	client := t.gw.client(t.server)

@@ -64,8 +64,12 @@ type PendingAsk struct {
 	Tool      string          `json:"tool"`
 	Args      json.RawMessage `json:"args,omitempty"`
 	Reason    string          `json:"reason,omitempty"`
-	Subagent  string          `json:"subagent,omitempty"`
-	Since     time.Time       `json:"since"`
+	// Scope is the rule an "always allow" answer may remember for the rest of
+	// the session, sent back as the answer's scope; empty when the ask offers
+	// none, or when the rule names something the record withholds.
+	Scope    string    `json:"scope,omitempty"`
+	Subagent string    `json:"subagent,omitempty"`
+	Since    time.Time `json:"since"`
 	// StepTools, for a plan's runbook, are the tools its steps call.
 	StepTools []string `json:"step_tools,omitempty"`
 }
@@ -93,6 +97,7 @@ func (s *Server) PendingAsks(include func(tenant, owner string) bool) []PendingA
 			ask = PendingAsk{SessionID: l.ID, Tenant: l.Tenant, Owner: owners[i], Request: requestKey(p),
 				RequestID: p.RequestID, Tool: p.Tool, Reason: p.Reason, Subagent: p.Subagent, Since: p.Since}
 			ask.Args = redactedArgs(l, p.Args)
+			ask.Scope = offeredScope(l, p.Scope)
 		}
 		l.mu.Unlock()
 		if ask.SessionID != "" {
@@ -134,6 +139,23 @@ func redactedArgs(l *liveSession, args json.RawMessage) json.RawMessage {
 		return json.RawMessage(`{"withheld":true}`)
 	}
 	return out
+}
+
+// offeredScope is scope as an answer may send it back, or "" when the
+// record would withhold any of it: the server takes back only the exact
+// rule it offered, so a redacted one could not be answered anyway.
+func offeredScope(l *liveSession, scope string) string {
+	if scope == "" || l.Loop == nil || l.Loop.Recorder == nil {
+		return ""
+	}
+	red := agent.Redactor(l.Loop.Recorder.Redact)
+	if red == nil || (reflect.ValueOf(red).Kind() == reflect.Pointer && reflect.ValueOf(red).IsNil()) {
+		return ""
+	}
+	if string(red.Redact([]byte(scope))) != scope {
+		return ""
+	}
+	return scope
 }
 
 // approverSession is a live session the caller does not own but whose

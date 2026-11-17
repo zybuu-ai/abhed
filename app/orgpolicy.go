@@ -78,6 +78,9 @@ func orgKeys(ctx context.Context, profilesFile, name string, p *profiles.Profile
 	case http.StatusNotFound, http.StatusNotImplemented:
 		return nil, errNoOrgPolicy
 	default:
+		if e := profiles.RemovedFrom(p.URL, status, body); e != nil {
+			return nil, e
+		}
 		return nil, fmt.Errorf("the server answered %d for its policy keys", status)
 	}
 	var out struct {
@@ -104,6 +107,10 @@ func orgFetch(ctx context.Context, profilesFile, name string, p *profiles.Profil
 	case http.StatusNotFound, http.StatusNotImplemented:
 		return env, errNoOrgPolicy
 	case http.StatusUnauthorized, http.StatusForbidden:
+		// Removed by the organisation, signing in again does not help.
+		if e := profiles.RemovedFrom(p.URL, status, body); e != nil {
+			return env, e
+		}
 		return env, fmt.Errorf("the org server refused the sign-in (%d); run abhed login %s", status, p.URL)
 	default:
 		return env, fmt.Errorf("the org server answered %d", status)

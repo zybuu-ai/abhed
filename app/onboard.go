@@ -22,7 +22,6 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/defaults"
 	"github.com/zybuu-ai/abhed/internal/egress"
-	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
@@ -393,12 +392,57 @@ func friendlyCause(err error, name string, p config.ProviderConfig, where, next 
 
 // ---- first run ----
 
+// onboardManaged is the managed layer first-run setup works within: the
+// machine's managed file and the org policy, if any; a variable for tests.
+var onboardManaged = func() (config.Config, error) {
+	return config.LoadManagedWith(config.LoadOptions{Warn: func(string) {}})
+}
+
+// errNotAdmitted marks a provider type the managed layer admits no model of.
+var errNotAdmitted = errors.New("no model of this type is allowed")
+
+// typeAdmitted reports whether every model.allowed list could admit some
+// model of provider type typ: each has an entry whose text before its first
+// * agrees with "typ/". It is decided before any endpoint is contacted.
+func typeAdmitted(m config.Config, typ string) bool {
+	id := typ + "/"
+	for _, l := range m.ModelsAllowed() {
+		ok := false
+		for _, e := range l.Entries {
+			pre, _, _ := strings.Cut(e, "*")
+			if strings.HasPrefix(id, pre) || strings.HasPrefix(pre, id) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// managedChoosesModel reports whether the managed layer itself says which
+// model to use, leaving first-run setup nothing to choose.
+func managedChoosesModel(m config.Config) bool {
+	return m.ManagedSets("model.providers") || m.ManagedSets("model.default")
+}
+
 // firstRunNeeded reports whether this is a first run: a terminal, and no
-// configuration anywhere to say which model to use.
+// configuration anywhere to say which model to use. A managed file that
+// sets other things, such as rules or the allowed models, leaves the model
+// to the person, so setup is still offered, within what it allows.
 func firstRunNeeded(workspace string) bool {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stderr.Fd())) {
 		return false
 	}
+	return nothingChoosesModel(workspace)
+}
+
+// nothingChoosesModel reports whether no configuration says which model to
+// use: no environment variable, no file of the person's or the workspace's,
+// and no managed setting of the model.
+func nothingChoosesModel(workspace string) bool {
 	if os.Getenv("ABHED_BASE_URL") != "" || os.Getenv("ABHED_MODEL") != "" {
 		return false
 	}
@@ -407,12 +451,13 @@ func firstRunNeeded(workspace string) bool {
 		return false
 	}
 	for _, p := range []string{filepath.Join(home, ".abhed", "config.json"),
-		filepath.Join(workspace, ".abhed", "config.json"), managed.ConfigFile} {
+		filepath.Join(workspace, ".abhed", "config.json")} {
 		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
 			return false
 		}
 	}
-	return true
+	m, err := onboardManaged()
+	return err == nil && !managedChoosesModel(m)
 }
 
 // ollamaBase is where a local Ollama answers: OLLAMA_HOST, as Ollama itself
@@ -477,13 +522,19 @@ func probeToolCalling(ctx context.Context, p config.ProviderConfig) (bool, error
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	ch, err := a.Complete(ctx, model.Request{
+	req := model.Request{
 		System:   "You are testing tool calling. Call the tool you are given; do not answer in text.",
 		Messages: []model.Message{{Role: model.RoleUser, Content: "Call get_time with zone UTC."}},
 		Tools: []model.ToolDef{{Name: "get_time", Description: "Returns the current time in a zone.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"zone":{"type":"string"}},"required":["zone"]}`)}},
-		MaxTokens: 256,
-	})
+		// Room for the call; a reasoning model would spend 256 on thinking.
+		MaxTokens: 1024,
+	}
+	if a.Profile().Sampling.Think {
+		off := false
+		req.Params.Think = &off
+	}
+	ch, err := a.Complete(ctx, req)
 	if err != nil {
 		return false, err
 	}
@@ -507,6 +558,9 @@ type onboarding struct {
 	in  io.Reader
 	out io.Writer
 	ctx context.Context
+	// managed is the managed layer setup works within; nothing it refuses
+	// is contacted.
+	managed config.Config
 }
 
 func (o onboarding) ask(q, def string) (string, error) {
@@ -531,14 +585,29 @@ func (o onboarding) ask(q, def string) (string, error) {
 // name of the variable that holds its key. A key itself is never written.
 // It writes only ~/.abhed/config.json, and only when asked to.
 func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
-	o := onboarding{in: in, out: out, ctx: ctx}
+	m, err := onboardManaged()
+	if err != nil {
+		return fmt.Errorf("the managed configuration does not load: %w", err)
+	}
+	o := onboarding{in: in, out: out, ctx: ctx, managed: m}
 	fmt.Fprintln(out, "\nWelcome to Abhed. There is no configuration yet, so first choose the model it talks to.")
 	fmt.Fprintln(out, "Nothing is written unless you confirm; `abhed init` writes a workspace configuration instead.")
+	if m.Managed {
+		fmt.Fprintln(out, "Your organisation's managed configuration applies: only the models it allows are offered, and what it sets is not asked.")
+	}
 
 	base := ollamaBase()
-	fmt.Fprintf(out, "\nLooking for Ollama at %s … ", strings.TrimSuffix(base, "/v1"))
-	models, err := listModels(ctx, base, "")
+	var models []string
+	// No endpoint is contacted for models the managed layer cannot admit.
+	if !typeAdmitted(m, "ollama") {
+		err = errNotAdmitted
+		fmt.Fprintf(out, "\nNot looking for Ollama: the managed configuration allows no Ollama model.\n")
+	} else {
+		fmt.Fprintf(out, "\nLooking for Ollama at %s … ", strings.TrimSuffix(base, "/v1"))
+		models, err = listModels(ctx, base, "")
+	}
 	switch {
+	case errors.Is(err, errNotAdmitted):
 	case err != nil:
 		fmt.Fprintln(out, "not running.")
 	case len(models) == 0:
@@ -548,12 +617,20 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 	}
 	fmt.Fprintln(out)
 	var choices []string
-	for i, m := range models {
-		if i == 9 {
+	refused := 0
+	for _, name := range models {
+		if len(choices) == 9 {
 			break
 		}
-		choices = append(choices, m)
-		fmt.Fprintf(out, "  %d) Ollama: %s\n", i+1, config.Printable(m))
+		if m.EndpointRefused(config.ProviderConfig{Type: "ollama", BaseURL: base, Model: name}) != nil {
+			refused++
+			continue
+		}
+		choices = append(choices, name)
+		fmt.Fprintf(out, "  %d) Ollama: %s\n", len(choices), config.Printable(name))
+	}
+	if refused > 0 {
+		fmt.Fprintf(out, "  (%d more Ollama model(s) not offered: the managed configuration does not allow them)\n", refused)
 	}
 	fmt.Fprintln(out, "  e) an OpenAI-compatible endpoint: its URL, and the name of the variable holding its key")
 	fmt.Fprintln(out, "  s) skip: start with the defaults and write nothing")
@@ -577,6 +654,9 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 		case "e":
 			if name, p, err = o.endpoint(); err != nil {
 				return err
+			}
+			if p.Model == "" {
+				p = config.ProviderConfig{} // not admitted: choose again
 			}
 		default:
 			n, convErr := strconv.Atoi(pick)
@@ -603,9 +683,12 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 		fmt.Fprintln(out, "it answered without calling the tool. Abhed works through tools, so this model will do little; a larger or tool-trained one is better.")
 	}
 
-	auto, err := o.confirm("Let the agent keep memory notes of its own between sessions? They are recorded, and text a file planted could persist in them.", "Yes, keep notes")
-	if err != nil {
-		return err
+	// What the managed layer decides is not asked.
+	auto := false
+	if !m.ManagedSets("memory.auto") {
+		if auto, err = o.confirm("Let the agent keep memory notes of its own between sessions? They are recorded, and text a file planted could persist in them.", "Yes, keep notes"); err != nil {
+			return err
+		}
 	}
 
 	// Nothing is chosen for Enter; input that ends writes nothing.
@@ -629,6 +712,10 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 func (o onboarding) endpoint() (string, config.ProviderConfig, error) {
 	var p config.ProviderConfig
 	p.Type = "openai-compatible"
+	if !typeAdmitted(o.managed, p.Type) {
+		fmt.Fprintln(o.out, "  The managed configuration allows no model at an OpenAI-compatible endpoint.")
+		return "", p, nil
+	}
 	for {
 		u, err := o.ask("Base URL, such as http://localhost:8000/v1", "")
 		if err != nil {
@@ -656,7 +743,15 @@ func (o onboarding) endpoint() (string, config.ProviderConfig, error) {
 		}
 		fmt.Fprintln(o.out, "  Enter an https:// URL, or one on this machine.")
 	}
-	models, err := listModels(o.ctx, p.BaseURL, os.Getenv(p.APIKeyEnv))
+	// Under an allowed-models list the endpoint is not asked for its models:
+	// the model is named, and checked, before anything is sent there.
+	var models []string
+	var err error
+	if len(o.managed.ModelsAllowed()) > 0 {
+		fmt.Fprintln(o.out, "  The managed configuration lists the models allowed, so name the model; it is checked before the endpoint is contacted.")
+	} else {
+		models, err = listModels(o.ctx, p.BaseURL, os.Getenv(p.APIKeyEnv))
+	}
 	if err != nil {
 		fmt.Fprintf(o.out, "  Could not list its models: %s\n", friendlyModelError(err, "endpoint", p))
 	} else if len(models) > 0 {
@@ -676,6 +771,10 @@ func (o onboarding) endpoint() (string, config.ProviderConfig, error) {
 			return "", p, err
 		}
 		p.Model = m
+		if rerr := o.managed.EndpointRefused(p); rerr != nil {
+			fmt.Fprintf(o.out, "  %s is not allowed: %v\n", config.Printable(m), rerr)
+			p.Model = ""
+		}
 	}
 	return "endpoint", p, nil
 }

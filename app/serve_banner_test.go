@@ -52,7 +52,7 @@ func TestServeBannerNamesTheBoundPortAndGit(t *testing.T) {
 	if err != nil || u.Port() == "" || u.Port() == "0" {
 		t.Fatalf("the banner names port %q:\n%s", u.Port(), all)
 	}
-	if !strings.Contains(all, "git       held read-only from commands") {
+	if !strings.Contains(all, "git       config and hooks protected") {
 		t.Fatalf("no git line:\n%s", all)
 	}
 	// And the port it names is the one it serves on.

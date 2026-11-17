@@ -144,7 +144,7 @@ func (b *Budget) TryReserveSubagent() error {
 		return nil
 	}
 	if b.USDExhausted() {
-		return fmt.Errorf("budget limit reached ($%.4f spent of $%.2f)", b.SpentUSD(), b.MaxUSD)
+		return fmt.Errorf("budget limit reached ($%.4f spent of %s)", b.SpentUSD(), usd(b.MaxUSD))
 	}
 	if b.Exhausted() {
 		return fmt.Errorf("budget limit reached (%d tokens spent of %d)", b.tokens.Load(), b.MaxTokens)
@@ -326,9 +326,11 @@ func (t Task) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) to
 		}
 		return tools.Result{Content: "prompt is required and must be self-contained.", IsError: true}
 	}
-	// A resume keeps the task's own description unless given another.
+	// A resume keeps the task's own description unless given another; a new
+	// task given none is labelled from its prompt, as tasks does, rather
+	// than refused for a label at the cost of a turn.
 	if strings.TrimSpace(a.Description) == "" && a.Resume == "" {
-		return tools.Result{Content: "description is required (3-5 words, shown to the user).", IsError: true}
+		a.Description = labelFrom(a.Prompt)
 	}
 	if a.Resume != "" {
 		// The resumed task's own role and worktree apply; the spawn checks them.
