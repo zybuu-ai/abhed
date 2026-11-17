@@ -226,6 +226,10 @@ func TestPolicyAdmit(t *testing.T) {
 		{"org bundle pin", plugin.Policy{AllowedBundles: []string{d}}, plugin.Evidence{Digest: d}, nil, plugin.BasisOrgPin},
 		{"org source", plugin.Policy{Sources: []plugin.Source{{Name: "acme", URL: "https://x/v1/plugins/index"}}}, plugin.Evidence{Digest: d, Source: "acme"}, nil, plugin.BasisSource},
 		{"source no longer listed", plugin.Policy{}, plugin.Evidence{Digest: d, Source: "acme"}, nil, ""},
+		{"source, but org publishers", plugin.Policy{Sources: []plugin.Source{{Name: "acme", URL: "https://x/i"}},
+			AllowedPublishers: []plugin.Publisher{{Identity: "other@x", Issuer: issuer}}}, plugin.Evidence{Digest: d, Source: "acme"}, nil, ""},
+		{"signed by a stranger, from a source", plugin.Policy{Sources: []plugin.Source{{Name: "acme", URL: "https://x/i"}}},
+			plugin.Evidence{Digest: d, Signer: s, Source: "acme"}, nil, plugin.BasisSource},
 	}
 	for _, c := range cases {
 		basis, err := c.p.Admit(c.e, c.mine)

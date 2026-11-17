@@ -68,6 +68,9 @@ func (p Policy) Admit(e Evidence, mine []Publisher) (string, error) {
 		if e.Pin != "" && e.Pin == e.Digest && !p.RequireSignature {
 			return BasisPin, nil
 		}
+		if p.fromSource(e) {
+			return BasisSource, nil
+		}
 		return "", fmt.Errorf("the signer %s is not a publisher you trust; add it with: abhed plugin publishers add -issuer %s %s",
 			e.Signer, e.Signer.Issuer, e.Signer.Identity)
 	}
@@ -77,16 +80,21 @@ func (p Policy) Admit(e Evidence, mine []Publisher) (string, error) {
 	switch {
 	case listed:
 		return BasisOrgPin, nil
-	case e.Source != "" && slices.ContainsFunc(p.Sources, func(s Source) bool { return s.Name == e.Source }):
-		return BasisSource, nil
 	case orgLists:
 		return "", errors.New("the bundle is not signed by an allowed publisher and its digest is not in plugins.allowed_bundles")
+	case p.fromSource(e):
+		return BasisSource, nil
 	case e.Pin != "" && e.Pin == e.Digest:
 		return BasisPin, nil
 	case e.Pin != "":
 		return "", fmt.Errorf("the bundle's digest is %s, not the pinned %s", e.Digest, e.Pin)
 	}
 	return "", fmt.Errorf("the bundle is not signed; to trust it anyway, check where it came from and pin its digest: -sha256 %s", e.Digest)
+}
+
+// fromSource reports a bundle a source still configured listed.
+func (p Policy) fromSource(e Evidence) bool {
+	return e.Source != "" && slices.ContainsFunc(p.Sources, func(s Source) bool { return s.Name == e.Source })
 }
 
 // SourceFor is the managed source a URL is under, "" when none. Under a
