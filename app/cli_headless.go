@@ -177,11 +177,12 @@ func (f *firstRead) Read(p []byte) (int, error) {
 
 // errLateStdin stops a -p run whose stdin input came after the wait for
 // it: the answer would leave that input out, so none is given.
-var errLateStdin = errors.New("input arrived on stdin after the wait for it")
+// It is a stop cause, so the record ends the run as stdin_late.
+var errLateStdin = agent.StopCause{Reason: agent.TermStdinLate}
 
 // exitLateStdin is a -p run's exit code when input came on stdin after the
 // wait for it.
-const exitLateStdin = 9
+var exitLateStdin = agent.TermStdinLate.ExitCode()
 
 // lateStdinMessage says what to do about input that came too late.
 func lateStdinMessage(window time.Duration) string {
@@ -810,7 +811,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	}
 	if late {
 		code, err = exitLateStdin, errors.New(lateStdinMessage(o.stdinWait))
-		reason = "stdin_late"
+		reason = agent.TermStdinLate
 		// No structured result, in any format; text output may already hold
 		// part of the answer, printed as it streamed.
 		structured = nil

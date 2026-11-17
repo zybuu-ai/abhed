@@ -331,7 +331,15 @@ func TestHeadlessLateStdinStopsTheRun(t *testing.T) {
 	t.Parallel()
 	h := StartRun(t, Opts{Piped: true, KeepStdin: true, Args: []string{"-p", "why does it fail", "-stdin-wait", "300ms", "-output-format", "json"},
 		Script: "delay 20s\ntext \"an answer without the log\""})
-	time.Sleep(1500 * time.Millisecond) // past the wait, as `sleep 1; go test …` would be
+	// Past the wait, as `sleep 3; go test …` would be: the note says the
+	// wait is over, however long the process took to start.
+	for deadline := time.Now().Add(15 * time.Second); !strings.Contains(h.Stderr(), "stdin left open with no input"); {
+		if time.Now().After(deadline) {
+			t.Fatalf("no idle note:\n%s", h.Stderr())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
 	h.Type("--- FAIL: TestX\n")
 	if code := h.Wait(15 * time.Second); code != 9 {
 		t.Fatalf("exit %d\nstdout:\n%s\nstderr:\n%s", code, h.Stdout(), h.Stderr())
@@ -342,5 +350,19 @@ func TestHeadlessLateStdinStopsTheRun(t *testing.T) {
 	}
 	if !strings.Contains(h.Stderr(), "input arrived on stdin after 300ms; rerun with - to wait for it, or -stdin-wait <dur>") {
 		t.Fatalf("stderr:\n%s", h.Stderr())
+	}
+	// The record ends the run as what stopped it, not as a person's interrupt.
+	var ended string
+	for _, e := range h.Record().Events {
+		if e.Type == agent.EvSessionEnded {
+			var p struct {
+				Reason string `json:"reason"`
+			}
+			_ = json.Unmarshal(e.Payload, &p)
+			ended = p.Reason
+		}
+	}
+	if ended != string(agent.TermStdinLate) {
+		t.Fatalf("session.ended reason %q", ended)
 	}
 }

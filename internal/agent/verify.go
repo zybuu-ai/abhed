@@ -465,7 +465,11 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	if v.Relevance {
 		if q := typedFrom(ctx); q != "" {
 			av.Relevance = RelevanceAddresses
-			if why := offTopic(q, text); why != "" {
+			var names []string
+			if l.Tools != nil {
+				names = l.Tools.Names()
+			}
+			if why := offTopic(q, text, names...); why != "" {
 				av.Relevance = RelevanceOffTopic
 				n := "the answer may not address the question: " + why
 				if av.Note != "" {

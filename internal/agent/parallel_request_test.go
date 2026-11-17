@@ -643,15 +643,19 @@ func TestClarifyNoteGoesWithAnUnclearRequest(t *testing.T) {
 	}
 }
 
-// A run nobody can answer gets no note asking a question; the strong note
-// still goes.
+// A run nobody can answer gets no note asking a question: a vague request
+// gets the note that holds it to a plan or the question, with no code
+// edits; the strong note still goes, and a message with no parallel words
+// gets none.
 func TestUnattendedRunGetsNoClarifyNote(t *testing.T) {
 	for _, tc := range []struct {
 		ask  string
 		want string
 	}{
-		{"do these three at the same time", ""},
+		{"do these three at the same time", UnattendedClarifyNote},
+		{"Speed up the project by running things in parallel", UnattendedClarifyNote},
 		{"review the three packages in parallel", ParallelNote},
+		{"fix the failing test in pkg/auth", ""},
 	} {
 		l, adapter, _ := noteLoop(t, true, nil)
 		l.Unattended = true

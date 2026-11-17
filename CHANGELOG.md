@@ -954,6 +954,24 @@ All notable changes to Abhed are recorded here. The format follows
   for it, or -no-stdin to silence this"). Input that starts after the wait
   stops the run with exit code 9 (see Upgrading). A lone `-`
   waits for stdin to end however late its input starts.
+- A vague request for parallel work or speed under `abhed -p` (or any run
+  nobody can answer) went straight to code edits: it got no note, since the
+  note that asks a question cannot be answered there. It now gets a note to
+  make no code edits for it and answer with a plan of both readings, or the
+  question it would ask. Explicit parallel requests still get the note that
+  starts subagents.
+- The `-p` relevance check marked an answer `off_topic` when the question
+  named one of the session's tools ("call the ssh_connect tool, then show
+  the uptime"). A tool name is no longer taken as what the answer must
+  mention.
+- A run stopped for late stdin input is recorded as `stdin_late`, not
+  `user_interrupt`, in `session.ended` and the text footer.
+- First-run setup lists a local Ollama's models in name order, so the
+  default choice no longer changes between runs.
+- A managed price that replaces your own `pricing` entry for the same model
+  is now said once at start-up, as the guide says.
+- `abhed trust` and `/commands trust` show a command's description, or its
+  first body line, instead of its front matter's `---`.
 
 ### Go API
 

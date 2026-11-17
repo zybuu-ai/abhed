@@ -397,6 +397,16 @@ const ClarifyNote = "[Abhed: this message mentions parallel work. If it is uncle
 	"wants independent pieces of work started as subagents, or the program itself changed to run " +
 	"concurrently, ask one short question before acting.]"
 
+// UnattendedClarifyNote is the clarify note for a run nobody can answer
+// (-p, rpc, a server's unattended run): the question cannot be asked, so a
+// real model went straight to making the program concurrent. It holds the
+// model to a plan or a question instead of a code change.
+const UnattendedClarifyNote = "[Abhed: this message mentions parallel work or speed, and nobody can answer a " +
+	"question in this run. Unless it asks in so many words to change the program to run concurrently, make no " +
+	"code edits for it: answer with a short plan that describes both readings (independent pieces of work " +
+	"started as subagents, or the program itself changed to run concurrently), or with the one question you " +
+	"would ask.]"
+
 // parallelNote is the note for the person's own words, typed, or "". Only a
 // top-level loop that can still start a subagent with tasks adds it: a
 // subagent's prompt is the model's writing, and a nested spawn is refused by
@@ -412,10 +422,12 @@ func (l *Loop) parallelNote(typed string) string {
 	case strongNote:
 		return ParallelNote
 	case clarifyNote:
-		// A question nobody can answer would end the run with it.
-		if !l.Unattended {
-			return ClarifyNote
+		// A question nobody can answer would end the run with it: an
+		// unattended run answers with a plan or the question, and edits nothing.
+		if l.Unattended {
+			return UnattendedClarifyNote
 		}
+		return ClarifyNote
 	}
 	return ""
 }

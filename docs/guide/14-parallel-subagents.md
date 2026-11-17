@@ -63,10 +63,14 @@ notes after your message for the model.
 - **Ask.** Any other parallel phrase, or a mention of subagents, gets a note
   telling the model that if it is unclear whether you want independent pieces
   of work started as subagents or the program itself changed to run
-  concurrently, it should ask one short question before acting. A run nobody
-  can answer, such as `abhed -p`, a script through the SDK or rpc, or an
-  unattended server run, never gets this note, since its question would only
-  end the run; the terminal, Studio and the console get it.
+  concurrently, it should ask one short question before acting; the
+  terminal, Studio and the console get it. A run nobody can answer, such as
+  `abhed -p`, a script through the SDK or rpc, or an unattended server run,
+  gets a note in its place: unless the message asks in so many words to
+  change the program to run concurrently, make no code edits for it, and
+  answer with a short plan that describes both readings, or with the one
+  question it would ask. A vague "speed up the project by running things in
+  parallel" under `-p` so gets a plan, not a change to the code.
 
 The parallel phrases are "in parallel", "at the same time", "at once",
 "simultaneously", "side by side", "parallelize" (or "parallelise"), "fan out",

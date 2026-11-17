@@ -676,6 +676,42 @@ func warnScoped(w warnSink, c Config, want func(string) bool) {
 }
 
 // warnSetAside warns of each set-aside setting.
+// warnOverriddenPrices says, once per file and model, that the managed
+// configuration's price replaced the one a lower layer set, which the guide
+// promises; a price already said to be set aside is not said twice.
+func warnOverriddenPrices(w warnSink, c Config) {
+	said := map[string]bool{}
+	for _, k := range c.SetAside {
+		if strings.HasPrefix(k.Key, "pricing.") {
+			said[k.File+"\x00"+priceModel(k.Key)] = true
+		}
+	}
+	for _, k := range c.Overridden {
+		if !strings.HasPrefix(k.Key, "pricing.") {
+			continue
+		}
+		model := priceModel(k.Key)
+		id := k.File + "\x00" + model
+		if said[id] {
+			continue
+		}
+		said[id] = true
+		w.emit("priceover\x00"+id, fmt.Sprintf("%s sets pricing.%s, which is ignored: the managed configuration sets that model's price, and its price is used", Printable(k.File), Printable(model)))
+	}
+}
+
+// priceModel is the model a pricing key names: pricing.<model>, or one of
+// its figures.
+func priceModel(key string) string {
+	m := strings.TrimPrefix(key, "pricing.")
+	for _, f := range []string{".input", ".output", ".cached_input", ".cache_write"} {
+		if strings.HasSuffix(m, f) {
+			return strings.TrimSuffix(m, f)
+		}
+	}
+	return m
+}
+
 func warnSetAside(w warnSink, keys []SetAsideKey) {
 	for _, k := range keys {
 		w.emit("aside\x00"+k.File+"\x00"+k.Key+"\x00"+k.Value, k.String())
@@ -1966,6 +2002,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		warnUnknown(w, cfg.Unknown)
 		warnDuplicates(w, cfg.Duplicates)
 		warnSetAside(w, cfg.SetAside)
+		warnOverriddenPrices(w, cfg)
 		warnNotYetInEffect(w, cfg)
 		warnReadOnlyHint(w, cfg)
 		warnNeverAllows(w, cfg.Permissions.Allow)
