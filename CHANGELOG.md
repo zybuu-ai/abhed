@@ -8,6 +8,32 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A wildcard entry in `ssh.read_commands` approved more than it named.
+  `*` matched any text, spaces included, so `tail -n * /var/log/app/app.log`
+  also ran `tail -n 100 /etc/shadow /var/log/app/app.log` without asking,
+  and `cat /var/log/*` ran `cat /var/log/../../etc/shadow`. A `*` or `?` now
+  stands within one argument: an entry matches only a call with the same
+  number of arguments, each matching the entry's word in its place. A word
+  a wildcard matches may hold nothing the remote shell would expand (an
+  unquoted glob, brace or `~`, or a `$`), so `cat /var/log/.[.]/.[.]/etc/shadow`
+  and `grep -i /etc/s* …` ask; only the entry's own word, written as in the
+  entry, may hold its glob. A `*` standing for an operand never matches an
+  option before a `--`, so `grep -i --file=/etc/shadow …` and `grep -i -r …`
+  ask under `grep -i * …`; one standing for an option's value is
+  unchanged. No wildcard stands for a `..` segment the entry does not write;
+  this is a rule about the text, and a symbolic link under an allowed folder
+  still reaches its target. A word that is `**` alone stands for one or
+  more whole arguments, each judged as a read form, and with a program that
+  prints files it matches only calls that print none unless
+  `ssh.read_contents` is set. Nor does a wildcard entry reach `getent
+  shadow` or `gshadow` without it. An entry with a wildcard in a path part
+  that starts with `.` (`/var/log/.*`), which some shells expand to `..`, is
+  refused at load. `abhed doctor` warns of an entry whose wildcard can name
+  any file for a program that prints files (`cat **`, `head -n 5 *`,
+  `getent *`); name the files, or a folder (`/var/log/app/*`).
+  Affected: every release with wildcard `ssh.read_commands` entries, on any
+  host, `ssh_connect`'s included. Exact entries, permission rules and the
+  read-only classifier are unchanged.
 - Abhed Studio's debug setup could overwrite a file outside the workspace.
   When a person chose to run a workspace's commands in a container, Abhed
   raised `sandbox.min_tier` in `.abhed/config.json` by writing a fixed
@@ -86,6 +112,16 @@ All notable changes to Abhed are recorded here. The format follows
   verdict's `note`. 1.2.9 failed strict on it. A statement that the
   session's own change works is still work, and still fails strict until
   the record shows it.
+- A `*` or `?` in an `ssh.read_commands` entry now stands within one
+  argument. An entry that relied on `*` spanning several words, such as
+  `journalctl *` for `journalctl -u app -n 50`, no longer matches such a
+  call, which asks instead. Rewrite it with one wildcard per argument
+  (`journalctl -u * -n *`), or as exact entries. An entry with a wildcard in
+  a path part that starts with `.` (`ls -l /var/log/.*`) no longer loads. `**` as a word of its own
+  keeps any read form of a program that prints no file (`df **`); for one
+  that does (`cat`, `grep`, `journalctl`, …) it needs `ssh.read_contents`. A
+  call whose word holds a glob, brace, `~` or `$` the remote shell would
+  expand, other than the entry's own word as written, now asks.
 - Secret names beginning `MCP_OAUTH_` are now kept for Abhed's own MCP
   logins: `abhed secret set` and `abhed secret rm` refuse them (the server's
   secrets API answers 400), and a command or tool is never given one by
@@ -136,6 +172,14 @@ All notable changes to Abhed are recorded here. The format follows
   checked by its `text` as well as its claims, so a run that 1.2.9 ended
   verified with nothing verified (the text saying "the tests now pass", no
   test run showing it) now ends `unverified`, exit 8.
+- `abhed -p "task"` with piped stdin now waits `-stdin-wait` (1.5 s) for
+  the input to start; 1.2.9 waited for it however long it took. Input that
+  starts in time is attached as before. A pipe still idle is ignored with a
+  note. Input that starts later stops the run with the new exit code 9,
+  and its result line carries no answer (text output keeps what had already
+  streamed): "input arrived on stdin after 1.5s; rerun with - to wait for
+  it, or -stdin-wait <dur>". A script piping a slow producer (a cold `go
+  test ./... 2>&1 | abhed -p …`) should pass `-` or a longer `-stdin-wait`.
 
 ### Added
 
@@ -495,6 +539,19 @@ All notable changes to Abhed are recorded here. The format follows
   or by an org with pinned keys. Any other price from such an org is set
   aside, as before. Under a managed or org dollar cap, an unpriced model's
   refusal says an administrator sets the price.
+- MCP `readOnlyHint` can be honoured for a server the operator opts in:
+  the managed file's entry for it sets `"trust_read_only_hint": true`, and
+  the entry in force is exactly that one. A tool such a server marks
+  read-only then runs without asking in the default and plan modes, deny
+  and ask rules still applying. It is off by default, so upgrading changes
+  nothing; a server a person, a `-mcp-config` file or a workspace added is
+  never believed, since the hint is the server's own claim.
+- `abhed -p` notes, in its verdict, an answer that seems not to address the
+  question typed: `verdict.relevance` is `addresses` or `off_topic`, and an
+  off-topic answer adds why to `verdict.note`. The check makes no model
+  call and flags only the plain case (the question names a phrase, file or
+  identifier the answer never mentions, or they share no topic word). It is
+  a note only: the outcome and the exit code are unchanged.
 
 ### Changed
 
@@ -543,6 +600,26 @@ All notable changes to Abhed are recorded here. The format follows
   gitignored build output no longer read. Path rules and redaction are the
   same on both paths; gitignored files no longer show up unless asked for
   by `path`.
+- `abhed -p "/name args"` runs a custom command as the terminal does,
+  recorded as `command.invoked`, with its own `@` files attached through
+  policy; it used to send the text to the model as
+  it was. A workspace command nobody trusted is refused with exit code 2,
+  before anything is recorded, and the message gives the exact `abhed trust
+  grant -commands-sha256 …` line, which trusts those commands and nothing
+  else. A command with shell lines or its own
+  `model` is refused in `-p`, which cannot ask.
+- `abhed trust` shows the workspace's commands and their hash, and `abhed
+  trust grant -commands-sha256 H` trusts exactly those commands and nothing
+  else of the workspace, so they no longer need `/commands trust` in the
+  terminal. A plain `abhed trust grant` is unchanged and trusts no command;
+  it prints the line that would. `abhed trust revoke` forgets the commands
+  too.
+- `abhed login` and `abhed profile list` say who you are signed in as by
+  the account's email, or its name, instead of the identity provider's
+  subject (such as `u-bob`); the profile keeps the subject as the
+  account's key.
+- `abhed login` and `abhed mcp login` honour `BROWSER`, and take
+  `-no-browser` to only print the sign-in address.
 
 ### Fixed
 
@@ -583,6 +660,73 @@ All notable changes to Abhed are recorded here. The format follows
   neutral known false negatives, and 3 true statements that were neutral
   now verify; none of the 1075 planted claims verifies, all 291 controls
   do, and none of the 419 true or neutral claims is contradicted.
+- In `abhed -p -runbook`, a change the runbook does not list was refused
+  with the hint "rerun with -allow '…'", which could not help: under a bound
+  runbook such a change asks whatever an allow rule says. The hint now says
+  no flag allows it, and to add the call to the runbook or run it
+  interactively. Found with the new `scripts/dev/k8s-kind-runbook/run.sh`,
+  which runs a runbook flow against a throwaway kind cluster.
+- `ssh_connect` called with the name of a host in `ssh.hosts` was asked
+  about, refused in `-p` as one that "can make changes", and offered
+  `-allow 'ssh_connect(app1)'`, which could never help: a declared name is
+  not for `ssh_connect`. It is now answered before any approval, in plan
+  mode too, that the host is ready for the `ssh` tool, and nothing is
+  connected; `-p` names no flag for it. The `ssh` tool's description lists the declared hosts as
+  ready with no connect needed, and `ssh_connect`'s says it is not for them;
+  a declared host that did not load is named as such, never as ready.
+- A log read on a declared host (`tail`, `grep`, `cat`, …) without
+  `ssh.read_contents` was refused as "ssh can make changes". The reason now
+  says the program prints the contents of files, which runs unasked only
+  where the operator sets `ssh.read_contents: true` or lists the command in
+  `ssh.read_commands`; any other command a declared host asks for gives the
+  classifier's reason too. What runs unasked is unchanged. The SSH guide
+  shows `read_commands` entries for log reads, with what a `*` matches.
+- The SSH client refused a host that OpenSSH accepts when `known_hosts` held
+  one key type for it, as `ssh` itself writes it. The client offered the
+  library's own order of host key types (ecdsa before ed25519), so a server
+  with several keys showed one not on file. It now offers the types on file
+  for that host first, as OpenSSH does, and offers ssh-rsa's SHA-1 form or
+  ssh-dss only for a key of that type on file, never in FIPS mode.
+  Verification is unchanged: only a key on file is accepted. A key of a known type that does not match is now
+  reported as a mismatch, with no advice to accept it, and the advice to
+  record a key is a command ssh accepts (`ssh -p 12222 root@127.0.0.1`, not
+  `ssh root@127.0.0.1:12222`). A host in `ssh.hosts` is no longer told to
+  retry with `ssh_connect`'s `accept_host_key`.
+- After the organisation removed a person's access (SCIM deprovisioning or
+  a revocation), `abhed policy refresh` said only "the org server refused
+  the sign-in (401); run abhed login". It, the refresh as a session starts,
+  the policy key fetch, `abhed login` and the identity check after a
+  sign-in now say the organisation removed the access, with the server's
+  reason, that signing in again will not restore it, and to ask the
+  organisation's Abhed administrator for that server, as the record
+  shipping banner already did. A local-account sign-in an edition refuses
+  this way is answered `access_revoked`, not `access_denied`. A sign-in
+  that only lapsed still says to run `abhed login`. New exported API:
+  `profiles.AccessRemovedError`, `profiles.RemovedFrom` and
+  `profiles.GrantRemoved`.
+- `abhed bg` rough edges. `bg start -name N` and `-mode M` were refused with
+  "-name does not apply to bg" although `bg -h` lists them; both are now
+  the job's. `bg logs` and `bg attach` show the agent's reply whole, below
+  its line, instead of a line per streamed fragment of the reply and its
+  reasoning (`-o json` still has every event). When an ask offers a rule to
+  remember, attach shows it and asks `Allow it? [y/N/a]`: `a` allows the
+  call and, on that job's session only, every later call the rule covers,
+  recorded as the answer's granted scope. `GET /v1/bg/jobs/{id}` carries it
+  as `waiting.scope` (`PendingAsk.Scope` for an edition's job list), and a
+  rule the record would redact is not offered. Why a job stopped is now in
+  the table too: `list` shows `failed (max_budget)`, a budget stop's line
+  shows its message rather than its kind, a run's end its detail, and
+  attach's last line the budget's words. Where a workspace's four-eyes rule
+  lets the owner only refuse, an approval is refused and attach offers to
+  refuse or to leave the ask to the approvers, following on; any other 403
+  still ends attach with its reason. A reply streamed but never finished is
+  shown from its fragments. `abhed bg start -C DIR` snapshots DIR when
+  written before the prompt; `start`'s flags now end at the prompt's first
+  word, so `-C`, `-y` or any flag-like word after it is the prompt's text
+  (the other bg commands still refuse `-C`).
+  New exported API: `bgjob.Approval.Scope`, `bgjob.Client.AnswerAlways`,
+  `bgjob.AnswerRefused` and `bgjob.IsAnswerRefused`, and
+  `server.PendingAsk.Scope`.
 - A model reply that only reasons, with no text or tool call, is cut past
   `limits.reasoning_stall_tokens` reasoning tokens (8000 by default, or the
   request's thinking budget if larger), with `limits.reasoning_stall_seconds`
@@ -815,6 +959,45 @@ All notable changes to Abhed are recorded here. The format follows
   corpus gains 112 planted cases and 13 controls; none of the 980 planted
   claims verifies, all 253 controls do, and none of the 368 true or
   neutral claims is contradicted.
+- A spent budget says so. An org server marks one with `budget_spent` and a
+  least dollar cap beside it; the run then stopped with "a budget of $0.00
+  is set and … has no price". It now stops with the spent budget's own
+  message, and a dollar cap under a cent is written in full ($0.000001),
+  never as $0.00.
+- Under a managed or org dollar cap, a person's own `pricing` entry for a
+  model kept an unpinned org's price of 0 for it from applying, though the
+  cap already set the person's entry aside: the model stayed unpriced and
+  was refused, and two contradictory warnings printed. The person's entry
+  is now set aside once and the org's 0 applies, still only for a model
+  served by a local model server on this machine.
+- `abhed doctor` reported a healthy reasoning model, such as gemma4:26b, as
+  "tool calling FAILED": both probes shared one 60-second timeout and the
+  tool probe had 256 tokens, which thinking used up. Each probe now has the
+  whole timeout to itself, both ask with thinking off where the provider
+  takes it, and the tool probe has 1,024 tokens; `/doctor` and first-run
+  setup probe the same way.
+- `abhed doctor` and the `abhed serve` banner no longer say git is "held
+  read-only from commands", which read as if commands could not commit.
+  The line now says commands cannot change git's config or hooks but can
+  still commit.
+- The `task` tool no longer refuses a call without a `description`, which
+  cost the model a turn: it labels the subagent from its prompt, as `tasks`
+  does.
+- First-run setup is offered under a managed file or org policy that does
+  not choose the model; it used to be skipped whenever a managed file
+  existed, so a new laptop under one started with no model set. It offers
+  only the models `model.allowed` admits, refuses an endpoint model it does
+  not before contacting the endpoint, and does not ask what the managed
+  layer sets.
+- `abhed -p "task"` run with a stdin pipe nobody writes or closes, as some
+  CI steps and drivers leave it, waited on it for good. With a task, it now
+  waits for piped input to start for `-stdin-wait` (1.5 s by default):
+  input that starts in that time is attached as before, so `git diff |
+  abhed -p "review"` is unchanged; a pipe still idle is ignored with one
+  note on stderr ("stdin left open with no input; ignored. Pass - to wait
+  for it, or -no-stdin to silence this"). Input that starts after the wait
+  stops the run with exit code 9 (see Upgrading). A lone `-`
+  waits for stdin to end however late its input starts.
 
 ### Go API
 

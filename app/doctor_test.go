@@ -361,7 +361,7 @@ func TestDoctorHonoursSettingsFlag(t *testing.T) {
 	}
 	out, _ := stdoutOf(t, func() int { return Main([]string{"-C", ws, "-settings", set, "doctor"}) })
 	if !strings.Contains(out, "mode        plan") || !strings.Contains(out, "settings    "+set) ||
-		!strings.Contains(out, "git         held read-only from commands on every tier but none") {
+		!strings.Contains(out, "git         config and hooks protected: commands cannot change git's config or hooks, but can still commit") {
 		t.Fatalf("-settings was not applied:\n%s", out)
 	}
 	if out, _ := stdoutOf(t, func() int { return Main([]string{"-C", ws, "doctor"}) }); !strings.Contains(out, "mode        default") || strings.Contains(out, "settings    ") {

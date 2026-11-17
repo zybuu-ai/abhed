@@ -53,6 +53,14 @@ type Prechecker interface {
 	Precheck(sess *Session, args json.RawMessage) error
 }
 
+// PlanPrechecker is a Prechecker whose answer is more use than plan mode's
+// refusal, so the loop runs it first there too. Its check connects nothing
+// and reaches nothing; it only says why the call is the wrong one.
+type PlanPrechecker interface {
+	Prechecker
+	PrecheckInPlanMode()
+}
+
 // ContextPrechecker is a Prechecker whose check reaches elsewhere, such as a
 // cluster's dry run, and so stops with ctx, which ends with the turn.
 type ContextPrechecker interface {

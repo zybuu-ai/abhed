@@ -15,5 +15,6 @@ func RemoteReads(pol *policy.Engine, cfg config.Config) error {
 	}
 	pol.RemoteHosts = cfg.SSHReadOnlyHosts()
 	pol.RemoteContents = pol.RemoteHosts != nil && cfg.SSHReadContents()
+	pol.ReadCommandsContents = cfg.SSHReadContents()
 	return nil
 }

@@ -33,8 +33,11 @@ type Profile struct {
 	// AuthMode is the server's auth.mode when last signed in.
 	AuthMode string `json:"auth_mode,omitempty"`
 	// Method is the sign-in method used: "local", or an identity provider's.
-	Method    string    `json:"method,omitempty"`
-	Username  string    `json:"username,omitempty"`
+	Method   string `json:"method,omitempty"`
+	Username string `json:"username,omitempty"`
+	// Display is who the account is to a person: its email or name, when the
+	// server gives one. Username, the subject, stays the account's key.
+	Display   string    `json:"display,omitempty"`
 	Token     string    `json:"token,omitempty"`
 	TokenType string    `json:"token_type,omitempty"`
 	ExpiresAt time.Time `json:"expires_at,omitzero"`

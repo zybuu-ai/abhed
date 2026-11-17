@@ -333,7 +333,12 @@ func (l *CLILogin) token(w http.ResponseWriter, r *http.Request) {
 	}
 	tok, exp, err := l.Tokens.Issue(r.Context(), username)
 	if err != nil {
-		oauthError(w, http.StatusForbidden, errDenied, err.Error())
+		// Removed by the organisation: the client says so instead of "try again".
+		kind := errDenied
+		if IsAccessRemoved(err) {
+			kind = "access_revoked"
+		}
+		oauthError(w, http.StatusForbidden, kind, err.Error())
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
