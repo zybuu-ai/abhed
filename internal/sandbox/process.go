@@ -331,6 +331,11 @@ func (s *Process) Describe() string {
 	if s.Caveat() != "" {
 		d += " · no /proc: bubblewrap cannot mount one here, so commands that read it fail"
 	}
+	if s.backend == "sandbox-exec" {
+		if n := homeLookupNote(); n != "" {
+			d += " · " + n
+		}
+	}
 	return d
 }
 
@@ -1649,7 +1654,8 @@ func ancestorsWithin(paths, roots []string) []string {
 // fresh HOME does. Moving HOME never opens the real one. The account's home
 // comes from the user database; failing closed, an account-style folder
 // that holds $HOME (/Users/NAME, /home/NAME) is denied too, whatever the
-// database says, and a lookup that fails while HOME is moved is said once.
+// database says. A lookup that fails is said by homeLookupNote, which
+// Describe carries to doctor and the record.
 func homes() []string {
 	var out []string
 	add := func(h string) {
@@ -1671,21 +1677,30 @@ func homes() []string {
 	if err == nil {
 		add(accountHomeOf(home))
 	}
-	if uerr != nil && err == nil && accountHomeOf(home) == filepath.Clean(home) {
-		homeLookupWarn.Do(func() {
-			fmt.Fprintf(os.Stderr, "abhed: the account's home could not be looked up (%v); commands are kept out of %s only\n", uerr, home)
-		})
-	}
 	return out
 }
 
-var homeLookupWarn sync.Once
+// homeLookupNote says, when the account's home could not be looked up and
+// $HOME does not show which it is, that only $HOME is kept from commands;
+// "" otherwise.
+func homeLookupNote() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	if _, uerr := user.Current(); uerr != nil && accountHomeOf(home) == filepath.Clean(home) {
+		return "the account's home could not be looked up (" + uerr.Error() + "); commands are kept out of " + home + " only"
+	}
+	return ""
+}
 
 // accountHomeOf is the account-style home that holds p (/Users/NAME or
-// /home/NAME and anything below them), or p itself.
+// /home/NAME and anything below them), or p itself. /Users/Shared is
+// macOS's folder for every account, not one's home, so it is not one.
 func accountHomeOf(p string) string {
 	parts := strings.Split(filepath.Clean(p), string(filepath.Separator))
-	if len(parts) >= 3 && parts[0] == "" && (parts[1] == "Users" || parts[1] == "home") && parts[2] != "" {
+	if len(parts) >= 3 && parts[0] == "" && (parts[1] == "Users" || parts[1] == "home") && parts[2] != "" &&
+		!(parts[1] == "Users" && strings.EqualFold(parts[2], "Shared")) {
 		return filepath.Join("/", parts[1], parts[2])
 	}
 	return filepath.Clean(p)

@@ -495,6 +495,23 @@ def code_span(text: str) -> str:
     return f"{tick}{pad}{text}{pad}{tick}"
 
 
+def path_span(path: str) -> str:
+    """A finding's path as one code span; (no file) when it names none, since
+    an empty span would be a bare pair of backticks that pairs with others."""
+    path = _bound(path, 300)
+    if not path.strip():
+        return "(no file)"
+    return code_span(path)
+
+
+def list_item(lead: str, blocks: str) -> str:
+    """A list item: lead on its first line, then blocks as their own blocks
+    inside it (a blank line, each line indented two columns), so a fence in
+    them starts a line and stays in the item."""
+    body = "\n".join(("  " + l) if l.strip() else "" for l in blocks.split("\n"))
+    return f"- {lead}\n\n{body}" if blocks.strip() else f"- {lead}"
+
+
 def code_block(body: str, info: str = "") -> str:
     """body as a fenced code block whose fence is longer than any run of
     backticks in it, so nothing inside can close it; each @ defused."""
@@ -598,31 +615,55 @@ def build_review(structured: Any, verdict: Optional[Dict[str, Any]], diff: str, 
         if path in lines and ln in lines[path] and len(comments) < 50:
             comments.append({"path": path, "line": ln, "side": "RIGHT", "body": text})
         else:
-            where = code_span(_bound(path, 300)) + (f" line {ln}" if ln > 0 else "")
-            loose.append(f"- {where}: **{sev}: {title}**. {body}")
+            where = path_span(path) + (f" line {ln}" if ln > 0 else "")
+            loose.append(list_item(f"{where}: **{sev}: {title}**", body))
     counts = {s: sum(1 for f in findings if f.get("severity") == s) for s in SEVERITIES}
-    parts = [MARKER, "### Abhed review", "", neutral(str(structured.get("summary", "")).strip(), 4000), ""]
+    head = [MARKER, "### Abhed review", "", neutral(str(structured.get("summary", "")).strip(), 4000), ""]
     if findings:
-        parts.append(", ".join(f"{n} {s}" for s, n in counts.items() if n) + ".")
+        head.append(", ".join(f"{n} {s}" for s, n in counts.items() if n) + ".")
     else:
-        parts.append("No findings.")
-    if loose:
-        parts += ["", "Findings outside the diff's lines:", "", *loose]
+        head.append("No findings.")
+    tail: List[str] = []
     if verdict:
-        parts += ["", f"Answer check: `{verdict.get('outcome', '')}` ({verdict.get('verified', 0)} verified, "
-                  f"{verdict.get('unverified', 0)} unverified, {verdict.get('contradicted', 0)} contradicted)."]
-    parts += ["", "This review was written by an agent that could only read the repository. "
-              "It never approves and never pushes."]
+        tail += ["", f"Answer check: `{verdict.get('outcome', '')}` ({verdict.get('verified', 0)} verified, "
+                 f"{verdict.get('unverified', 0)} unverified, {verdict.get('contradicted', 0)} contradicted)."]
+    tail += ["", NOTE]
     if run_url:
-        parts.append(f"[Run and evidence]({run_url})")
+        tail += ["", f"[Run and evidence]({run_url})"]
     event = "COMMENT"
     threshold = {"critical": 0, "major": 1, "minor": 2, "nit": 3}.get(request_changes_on)
     if threshold is not None and any(rank.get(str(f.get("severity")), 9) <= threshold for f in findings):
         event = "REQUEST_CHANGES"
-    body = "\n".join(parts)
-    if len(body) > 60000:
-        body = body[:59980] + "\n\n[cut for length]"
+    body = render_body(head, "Findings outside the diff's lines:", loose, tail)
     return {"commit_id": commit, "event": event, "body": body, "comments": comments}
+
+
+NOTE = "This review was written by an agent that could only read the repository. It never approves and never pushes."
+BODY_LIMIT = 60000
+
+
+def render_body(head: List[str], heading: str, items: List[str], tail: List[str]) -> str:
+    """The review's body: head, the items under heading, then tail. Each part
+    is whole blocks, and items are dropped from the end, not cut, to keep
+    within GitHub's limit, so no block is left open and the tail (the answer
+    check, the note) is always there."""
+    def join(n: int) -> str:
+        mid: List[str] = []
+        if items[:n]:
+            mid = ["", heading, "", *items[:n]]
+        if n < len(items):
+            mid += ["", f"{len(items) - n} more finding(s) cut for length; the evidence holds them all."]
+        return "\n".join(head + mid + tail)
+
+    n = len(items)
+    while n > 0 and len(join(n)) > BODY_LIMIT:
+        n -= 1
+    out = join(n)
+    if len(out) > BODY_LIMIT:
+        # The head alone is too long: the summary goes, never the tail.
+        out = "\n".join([MARKER, "### Abhed review", "", "The summary was cut for length; the evidence holds it."]
+                        + (["", f"{len(items)} finding(s) cut for length."] if items else []) + tail)
+    return out
 
 
 def post_review(api: str, repo: str, pr: int, payload: Dict[str, Any], token: str) -> Tuple[int, str]:
@@ -639,6 +680,19 @@ def post_review(api: str, repo: str, pr: int, payload: Dict[str, Any], token: st
             return resp.status, resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode("utf-8", "replace")
+
+
+def move_comments_to_body(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """The payload with its inline comments listed in the body instead."""
+    moved = [list_item(f"{path_span(c['path'])} line {c['line']}:", c["body"]) for c in payload["comments"]]
+    body = payload["body"]
+    cut = body.rfind("\n\n" + NOTE)
+    at = body.rfind("\n\nAnswer check: ", 0, cut) if cut >= 0 else -1
+    split = at if at >= 0 else cut
+    if split < 0:
+        raise ValueError("the review body has no note to keep")
+    head, tail = body[:split].split("\n"), body[split:].split("\n")
+    return dict(payload, body=render_body(head, "Findings GitHub would not place on a line:", moved, tail), comments=[])
 
 
 def cmd_review_post(a: argparse.Namespace) -> int:
@@ -659,10 +713,9 @@ def cmd_review_post(a: argparse.Namespace) -> int:
         return 1
     status, text = post_review(a.api, a.repo, a.pr, payload, token)
     if status == 422 and payload["comments"]:
-        # A line GitHub will not take: post the findings in the body instead.
-        moved = [f"- {code_span(_bound(c['path'], 300))} line {c['line']}: {c['body']}" for c in payload["comments"]]
-        payload["body"] += "\n\nFindings GitHub would not place on a line:\n\n" + "\n".join(moved)
-        payload["comments"] = []
+        # A line GitHub will not take: post the findings in the body instead,
+        # before the note, as list items whose blocks stay inside them.
+        payload = move_comments_to_body(payload)
         status, text = post_review(a.api, a.repo, a.pr, payload, token)
     if status >= 300:
         hint = ""

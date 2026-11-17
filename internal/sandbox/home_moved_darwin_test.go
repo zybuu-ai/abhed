@@ -5,6 +5,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // At run time, with HOME moved: a workspace under the account's real home
@@ -17,6 +18,15 @@ func TestProcessSandboxKeepsTheRealHomeWhenHomeIsMoved(t *testing.T) {
 	}
 	if fi, err := os.Stat(u.HomeDir); err != nil || !fi.IsDir() {
 		t.Skipf("the account home %s is not a folder here", u.HomeDir)
+	}
+	// A run killed before its cleanup (a -timeout, a SIGKILL) left its folder:
+	// one older than an hour is no running test's.
+	if old, _ := filepath.Glob(filepath.Join(u.HomeDir, ".abhed-sandbox-test-*")); len(old) > 0 {
+		for _, d := range old {
+			if fi, err := os.Lstat(d); err == nil && fi.IsDir() && time.Since(fi.ModTime()) > time.Hour {
+				_ = os.RemoveAll(d)
+			}
+		}
 	}
 	// A folder of the test's own in the real home, removed after.
 	root, err := os.MkdirTemp(u.HomeDir, ".abhed-sandbox-test-")

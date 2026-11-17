@@ -374,6 +374,19 @@ class ReviewTest(Tmp):
         self.assertIn("``a`@\u200dadmin<b>.go``", r["body"])
         self.assertIn("t &#96;x&#96; &lt;b&gt;", r["body"])
 
+    def test_a_path_that_names_no_file(self):
+        for p in ("", " ", "\r", "\t\n"):
+            self.assertEqual(aa.path_span(p), "(no file)", repr(p))
+        self.assertEqual(aa.path_span("a.go"), "`a.go`")
+        r = self.review([{"path": "", "line": 0, "severity": "nit", "title": "t", "body": "`x<b>` y"}])
+        self.assertIn("- (no file): **nit: t**\n\n  `x<b>` y", r["body"])
+
+    def test_a_loose_body_is_its_own_blocks(self):
+        r = self.review([{"path": "z.go", "line": 0, "severity": "major", "title": "t", "body": "~~~\n<b>x\n~~~\nafter"}])
+        self.assertIn("- `z.go`: **major: t**\n\n  ```\n  <b>x\n  ```\n  after", r["body"])
+        self.assertTrue(r["body"].rstrip().endswith("[Run and evidence](https://run)"))
+        self.assertIn("\n\n" + aa.NOTE + "\n\n", r["body"])
+
     def test_the_422_fallback_path_is_neutral(self):
         res = dict(RESULT, structured_output={"summary": "s", "findings": [
             {"path": "app.go", "line": 2, "severity": "major", "title": "t", "body": "b"}]})
@@ -711,6 +724,79 @@ class RunTest(Tmp):
 
 
 # ---------------------------------------------------------------------------
+
+MARKDOWN = os.path.join(HERE, "markdown")
+PIECES = ["```", "~~~", "````", "`", "``", " `", "<b>", "</b>", "<!--", "-->", "<details>", "<x", "@admin", "@", "\\",
+          "\n", "\n\n", "\n```\n", "\n~~~\n", "  ", "    ", "- ", "* ", "> ", "# ", "|", "[x](y)", "word", "<-ch",
+          "&&", "&lt;", "\r", "\t", "1. ", "<!-<!---->-", "<<b>!--", "***", "_", "\\`"]
+PATHS = ["app.go", "", " ", "\r", "\t\n", "a`b", "x @admin y", "<b>.go", "other.go", "``", "a\\`b"]
+
+
+def fuzz_reviews(n, seed=1):
+    import random
+    rnd = random.Random(seed)
+    text = lambda k: "".join(rnd.choice(PIECES) for _ in range(rnd.randint(0, k)))
+    out = []
+    for i in range(n):
+        findings = [{"path": rnd.choice(PATHS), "line": rnd.choice([0, 1, 2, 3, 40]),
+                     "severity": rnd.choice(["critical", "major", "minor", "nit", "odd"]),
+                     "title": text(6), "body": text(14)} for _ in range(rnd.randint(0, 5))]
+        r = aa.build_review({"summary": text(12), "findings": findings}, {"outcome": "verified"} if i % 2 else None,
+                            DIFF, "a" * 40, "never", "https://run" if i % 3 else "")
+        if r["comments"] and i % 4 == 0:
+            r = aa.move_comments_to_body(r)
+        out.append(r)
+    return out
+
+
+@unittest.skipUnless(shutil.which("node") and os.path.isdir(os.path.join(MARKDOWN, "node_modules", "commonmark")),
+                     "needs node and `npm ci` in tests/markdown")
+class MarkdownFuzzTest(Tmp):
+    """Whole reviews, as CommonMark parses them: no HTML renders, no mention
+    is live, and the closing note survives as its own paragraph."""
+
+    def check(self, reviews):
+        path = self.write("reviews.json", json.dumps(reviews))
+        p = subprocess.run(["node", os.path.join(MARKDOWN, "check.mjs"), path, aa.MARKER, aa.NOTE],
+                           capture_output=True, text=True)
+        return p.returncode, p.stdout + p.stderr
+
+    def test_the_reviewers_cases(self):
+        cases = []
+        for body in ("~~~\n<b>x\n~~~", "```\n<b>x\n```", "````\n<details>x\n````"):
+            for path in ("other.go", "", " ", "\r"):
+                cases.append(aa.build_review({"summary": "s", "findings": [
+                    {"path": path, "line": 40, "severity": "major", "title": "t", "body": body},
+                    {"path": "z.go", "line": 0, "severity": "nit", "title": "t2", "body": "`x<b>` and <b>"}]},
+                    None, DIFF, "a" * 40, "never", ""))
+        cases.append(aa.move_comments_to_body(aa.build_review({"summary": "s", "findings": [
+            {"path": "app.go", "line": 2, "severity": "major", "title": "t", "body": "~~~\n<b>x\n~~~"}]},
+            None, DIFF, "a" * 40, "never", "")))
+        code, out = self.check(cases)
+        self.assertEqual(code, 0, out)
+        self.assertIn("(no file)", cases[1]["body"])
+
+    def test_fuzzed_reviews(self):
+        code, out = self.check(fuzz_reviews(3000))
+        self.assertEqual(code, 0, out)
+
+    def test_the_checker_catches_what_it_should(self):
+        bad = [{"body": aa.MARKER + "\n\n<b>x</b>\n\n" + aa.NOTE, "comments": []},
+               {"body": aa.MARKER + "\n\nhi @admin\n\n" + aa.NOTE, "comments": []},
+               {"body": aa.MARKER + "\n\n```\n" + aa.NOTE, "comments": []}]
+        code, out = self.check(bad)
+        self.assertEqual(code, 1)
+        for want in ("review 0: html_inline", "review 1: a live mention", "review 2: the closing note"):
+            self.assertIn(want, out)
+
+    def test_a_long_review_keeps_its_note(self):
+        many = [{"path": "z.go", "line": 0, "severity": "minor", "title": "t", "body": "<" * 3990} for _ in range(50)]
+        r = aa.build_review({"summary": "s", "findings": many}, {"outcome": "verified"}, DIFF, "a" * 40, "never", "")
+        self.assertLessEqual(len(r["body"]), aa.BODY_LIMIT)
+        self.assertIn("cut for length", r["body"])
+        code, out = self.check([r])
+        self.assertEqual(code, 0, out)
+
 
 try:
     import composite

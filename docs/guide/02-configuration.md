@@ -368,7 +368,9 @@ workspace and a few shared folders, not only the workspace:
   [security posture](../trust/security-posture.md)). Home here is both
   `$HOME` and the account's own home when `HOME` names another folder (from
   the user database, and, whatever that says, the `/Users/NAME` or
-  `/home/NAME` folder that holds `$HOME`);
+  `/home/NAME` folder that holds `$HOME`, `/Users/Shared` excepted, which
+  is every account's; a lookup that fails is said in `abhed doctor`'s
+  sandbox line);
   `"readable_home": true` lets them read the rest of home but the credential
   paths again, and `read_only_paths` names a folder they need. `"shared_caches": true` lets commands write the real
   folders again, shared with the rest of your machine, where a command can

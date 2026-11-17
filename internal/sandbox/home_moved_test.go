@@ -50,6 +50,8 @@ func TestAccountHomeOf(t *testing.T) {
 		"/home/ci/work/h":               "/home/ci",
 		"/var/folders/x/T/h":            "/var/folders/x/T/h",
 		"/Users":                        "/Users",
+		"/Users/Shared/ci/home":         "/Users/Shared/ci/home",
+		"/Users/shared/x":               "/Users/shared/x",
 	} {
 		if got := accountHomeOf(in); got != want {
 			t.Errorf("accountHomeOf(%q) = %q, want %q", in, got, want)

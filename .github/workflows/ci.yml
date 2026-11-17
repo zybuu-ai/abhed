@@ -273,6 +273,8 @@ jobs:
           python -m pip install --quiet --only-binary :all: --require-hashes -r scripts/ci/workflow-rules.requirements.txt
           python scripts/ci/workflow-rules.py integrations/github-action/action.yml
           cd integrations/github-action
+          # commonmark.js parses whole generated reviews: no HTML, no live mention, the note kept.
+          npm ci --prefix tests/markdown --ignore-scripts --no-audit --no-fund
           ABHED_BIN="$RUNNER_TEMP/abhed" python -m unittest discover -s tests -v 2>&1 | tee "$RUNNER_TEMP/action.log"
           ! grep -E "skipped '" "$RUNNER_TEMP/action.log"
       - name: Python SDK

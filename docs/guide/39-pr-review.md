@@ -82,7 +82,12 @@ and head commits, and both must be in the checkout.
      delimiter. Code is kept readable: each fenced block and inline code
      span is rebuilt with delimiters of the action's own, longer than any
      run of backticks inside, so its content is shown as written and cannot
-     close it early; a fence left open is closed. A path is one code span.
+     close it early; a fence left open is closed. A path is one code span, or
+     `(no file)` when it names none. A finding listed in the body has its
+     text as blocks of its own inside the list item, so a fence in it starts
+     a line, and findings that would pass GitHub's size limit are left out
+     whole, never cut, so the closing note is always there. CI parses
+     thousands of generated reviews with commonmark.js to hold this.
      Each `@`, in code or not, is followed by a zero-width joiner, so no
      mention notifies anyone; and every field is bounded. Markdown
      itself is kept, so a finding can still be laid out to mislead (a

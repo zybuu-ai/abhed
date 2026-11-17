@@ -607,8 +607,9 @@ All notable changes to Abhed are recorded here. The format follows
   folder and credential paths too, and, whatever the user database says,
   the `/Users/NAME` folder that holds `$HOME`. Moving `HOME` (as a CI run
   given a fresh one does) no longer opens the real home's `~/.ssh` and the
-  rest to the agent's commands. A failed lookup of the account is said
-  once on stderr.
+  rest to the agent's commands. `/Users/Shared` is not taken for a home. A
+  failed lookup of the account is said in the sandbox's description, which
+  `abhed doctor` shows and the record keeps.
 
 - Providers of type `ollama` now send one request at a time unless
   `max_concurrent_requests` says more, matching Ollama's documented
