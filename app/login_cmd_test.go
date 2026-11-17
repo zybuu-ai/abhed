@@ -37,10 +37,16 @@ type loginServer struct {
 
 func newLoginServer(t *testing.T) *loginServer {
 	t.Helper()
+	return newLoginServerFor(t, auth.User{Username: "ada"})
+}
+
+// newLoginServerFor is newLoginServer with its one account as given.
+func newLoginServerFor(t *testing.T, user auth.User) *loginServer {
+	t.Helper()
 	cfg := config.Default()
 	cfg.Auth.Mode = "local"
 	local := auth.NewLocalAuth(auth.NewMemoryUserStore(), time.Hour, true)
-	if err := local.CreateUser(context.Background(), auth.User{Username: "ada"}, "correct-horse-1"); err != nil {
+	if err := local.CreateUser(context.Background(), user, "correct-horse-1"); err != nil {
 		t.Fatal(err)
 	}
 	tokens, err := auth.OpenCLITokens(local, filepath.Join(t.TempDir(), "k"), time.Hour)
@@ -57,7 +63,7 @@ func newLoginServer(t *testing.T) *loginServer {
 	t.Cleanup(ts.Close)
 	ca := filepath.Join(t.TempDir(), "ca.pem")
 	_ = os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ts.Certificate().Raw}), 0o644)
-	req, _ := http.NewRequest("POST", ts.URL+"/v1/signin", strings.NewReader(`{"username":"ada","password":"correct-horse-1"}`))
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/signin", strings.NewReader(`{"username":"`+user.Username+`","password":"correct-horse-1"}`))
 	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)

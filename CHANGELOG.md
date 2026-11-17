@@ -165,6 +165,14 @@ All notable changes to Abhed are recorded here. The format follows
   checked by its `text` as well as its claims, so a run that 1.2.9 ended
   verified with nothing verified (the text saying "the tests now pass", no
   test run showing it) now ends `unverified`, exit 8.
+- `abhed -p "task"` with piped stdin now waits `-stdin-wait` (1.5 s) for
+  the input to start; 1.2.9 waited for it however long it took. Input that
+  starts in time is attached as before. A pipe still idle is ignored with a
+  note. Input that starts later stops the run with the new exit code 9,
+  and its result line carries no answer (text output keeps what had already
+  streamed): "input arrived on stdin after 1.5s; rerun with - to wait for
+  it, or -stdin-wait <dur>". A script piping a slow producer (a cold `go
+  test ./... 2>&1 | abhed -p …`) should pass `-` or a longer `-stdin-wait`.
 
 ### Added
 
@@ -524,6 +532,19 @@ All notable changes to Abhed are recorded here. The format follows
   or by an org with pinned keys. Any other price from such an org is set
   aside, as before. Under a managed or org dollar cap, an unpriced model's
   refusal says an administrator sets the price.
+- MCP `readOnlyHint` can be honoured for a server the operator opts in:
+  the managed file's entry for it sets `"trust_read_only_hint": true`, and
+  the entry in force is exactly that one. A tool such a server marks
+  read-only then runs without asking in the default and plan modes, deny
+  and ask rules still applying. It is off by default, so upgrading changes
+  nothing; a server a person, a `-mcp-config` file or a workspace added is
+  never believed, since the hint is the server's own claim.
+- `abhed -p` notes, in its verdict, an answer that seems not to address the
+  question typed: `verdict.relevance` is `addresses` or `off_topic`, and an
+  off-topic answer adds why to `verdict.note`. The check makes no model
+  call and flags only the plain case (the question names a phrase, file or
+  identifier the answer never mentions, or they share no topic word). It is
+  a note only: the outcome and the exit code are unchanged.
 
 ### Changed
 
@@ -572,6 +593,26 @@ All notable changes to Abhed are recorded here. The format follows
   gitignored build output no longer read. Path rules and redaction are the
   same on both paths; gitignored files no longer show up unless asked for
   by `path`.
+- `abhed -p "/name args"` runs a custom command as the terminal does,
+  recorded as `command.invoked`, with its own `@` files attached through
+  policy; it used to send the text to the model as
+  it was. A workspace command nobody trusted is refused with exit code 2,
+  before anything is recorded, and the message gives the exact `abhed trust
+  grant -commands-sha256 …` line, which trusts those commands and nothing
+  else. A command with shell lines or its own
+  `model` is refused in `-p`, which cannot ask.
+- `abhed trust` shows the workspace's commands and their hash, and `abhed
+  trust grant -commands-sha256 H` trusts exactly those commands and nothing
+  else of the workspace, so they no longer need `/commands trust` in the
+  terminal. A plain `abhed trust grant` is unchanged and trusts no command;
+  it prints the line that would. `abhed trust revoke` forgets the commands
+  too.
+- `abhed login` and `abhed profile list` say who you are signed in as by
+  the account's email, or its name, instead of the identity provider's
+  subject (such as `u-bob`); the profile keeps the subject as the
+  account's key.
+- `abhed login` and `abhed mcp login` honour `BROWSER`, and take
+  `-no-browser` to only print the sign-in address.
 
 ### Fixed
 
@@ -874,6 +915,45 @@ All notable changes to Abhed are recorded here. The format follows
   corpus gains 112 planted cases and 13 controls; none of the 980 planted
   claims verifies, all 253 controls do, and none of the 368 true or
   neutral claims is contradicted.
+- A spent budget says so. An org server marks one with `budget_spent` and a
+  least dollar cap beside it; the run then stopped with "a budget of $0.00
+  is set and … has no price". It now stops with the spent budget's own
+  message, and a dollar cap under a cent is written in full ($0.000001),
+  never as $0.00.
+- Under a managed or org dollar cap, a person's own `pricing` entry for a
+  model kept an unpinned org's price of 0 for it from applying, though the
+  cap already set the person's entry aside: the model stayed unpriced and
+  was refused, and two contradictory warnings printed. The person's entry
+  is now set aside once and the org's 0 applies, still only for a model
+  served by a local model server on this machine.
+- `abhed doctor` reported a healthy reasoning model, such as gemma4:26b, as
+  "tool calling FAILED": both probes shared one 60-second timeout and the
+  tool probe had 256 tokens, which thinking used up. Each probe now has the
+  whole timeout to itself, both ask with thinking off where the provider
+  takes it, and the tool probe has 1,024 tokens; `/doctor` and first-run
+  setup probe the same way.
+- `abhed doctor` and the `abhed serve` banner no longer say git is "held
+  read-only from commands", which read as if commands could not commit.
+  The line now says commands cannot change git's config or hooks but can
+  still commit.
+- The `task` tool no longer refuses a call without a `description`, which
+  cost the model a turn: it labels the subagent from its prompt, as `tasks`
+  does.
+- First-run setup is offered under a managed file or org policy that does
+  not choose the model; it used to be skipped whenever a managed file
+  existed, so a new laptop under one started with no model set. It offers
+  only the models `model.allowed` admits, refuses an endpoint model it does
+  not before contacting the endpoint, and does not ask what the managed
+  layer sets.
+- `abhed -p "task"` run with a stdin pipe nobody writes or closes, as some
+  CI steps and drivers leave it, waited on it for good. With a task, it now
+  waits for piped input to start for `-stdin-wait` (1.5 s by default):
+  input that starts in that time is attached as before, so `git diff |
+  abhed -p "review"` is unchanged; a pipe still idle is ignored with one
+  note on stderr ("stdin left open with no input; ignored. Pass - to wait
+  for it, or -no-stdin to silence this"). Input that starts after the wait
+  stops the run with exit code 9 (see Upgrading). A lone `-`
+  waits for stdin to end however late its input starts.
 
 ### Go API
 

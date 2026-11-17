@@ -36,7 +36,7 @@ more often a mistyped command than a task.
 | `-tools NAMES` | the only tools this run, and the subagents it starts, may use; repeatable; see below |
 | `-bare` | run without your own or the workspace's memory files, extensions and skills; see below |
 | `-verify MODE` | `off`, `label` or `strict`: how each answer is checked against the session's record; a managed mode may only be made stricter — [Verified answers](29-verified-answers.md) |
-| `-p`, `-output-format`, `-input-format`, `-no-stdin`, `-json-schema`, `-include-partial-messages`, `-verbose` | headless runs: see [Automation](10-automation.md#headless) |
+| `-p`, `-` (wait for stdin to end), `-stdin-wait`, `-output-format`, `-input-format`, `-no-stdin`, `-json-schema`, `-include-partial-messages`, `-verbose` | headless runs: see [Automation](10-automation.md#headless) |
 | `-runbook FILE`, `-runbook-sha256 HASH` | with `-p`, approve a plan's runbook for the run, pinned to the hash you reviewed: see [Runbooks](28-runbooks.md#headless-runs) |
 
 These flags come before a subcommand or after it: `abhed -C ~/src/app

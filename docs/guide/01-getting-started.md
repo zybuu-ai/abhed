@@ -153,8 +153,16 @@ started when it exits. `abhed ollama check` does the same from a shell, and
 `abhed ollama models` lists the models it suggests — [A local Ollama
 model](03-providers.md#a-local-ollama-model).
 
-The first time you run `abhed` on a terminal with no configuration
-anywhere, it offers to set one up:
+The first time you run `abhed` on a terminal with no configuration of
+your own or the workspace's, it offers to set one up. A managed file
+(`/etc/abhed/config.json`) or an org policy that chooses the model
+(`model.default` or `model.providers`) leaves nothing to set up; one that
+does not is worked within: only the models its `model.allowed` admits are
+offered, an endpoint model it does not admit is refused and asked again
+before the endpoint is contacted (under an allowed-models list the
+endpoint is not asked for its models, and a provider type no entry can
+admit is not offered), and a setting it makes, such as `memory.auto`, is
+not asked.
 
 - It looks for Ollama (at `OLLAMA_HOST`, or `localhost:11434`) and lists
   its models. A model chosen from that list is written as `"type":
@@ -190,8 +198,11 @@ tool call in prose instead of emitting one cannot drive an agent at all, however
 well it writes, and finding that out during a real task wastes the run.
 It first names the edition, the workspace and the configuration files it
 read (yours, the workspace's, `-settings` and the managed file), so a run
-from a subfolder says which files it judged. The endpoint checks stop after
-60 seconds; `abhed doctor -timeout 3m` gives a slow local model longer.
+from a subfolder says which files it judged. Each of the two endpoint
+checks stops after 60 seconds of its own; `abhed doctor -timeout 3m` gives a
+slow local model longer. Both ask with thinking off where the provider
+takes that setting, so a reasoning model's thinking does not use up the
+answer's room.
 
 ```
 checking endpoint... ok

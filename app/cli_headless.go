@@ -14,10 +14,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/customcmd"
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -58,57 +60,149 @@ type headlessOpts struct {
 	fallback *fallbackAdapter
 	// runbook is the runbook -runbook approved for this run, nil without one.
 	runbook *runbookSpec
+	// commands are the custom commands a task may name: read once, when a
+	// task starts with "/" or messages come on stdin.
+	commands *customState
+	// lateStdin is closed when input comes on stdin after stdinWait, the
+	// wait the run started after; the run then stops (errLateStdin).
+	lateStdin <-chan struct{}
+	stdinWait time.Duration
 }
 
 // maxStdin bounds the stdin a -p run takes as context.
 const maxStdin = 10 << 20
 
+// How a -p run reads stdin: not at all, to its end, or, with a task given,
+// to its end only once input or its end comes within a short window.
+const (
+	stdinSkip  time.Duration = -1
+	stdinToEOF time.Duration = 0
+)
+
+// defaultStdinWait is how long a -p run with a task waits for piped input
+// to start before going on without it (-stdin-wait changes it).
+const defaultStdinWait = 1500 * time.Millisecond
+
+// stdinIdleNote is said when a task's stdin was left open with nothing in it.
+const stdinIdleNote = "abhed: stdin left open with no input; ignored. Pass - to wait for it, or -no-stdin to silence this"
+
 // headlessTask is the task a -p run is given: the command line's, with
 // piped stdin added as its input. With stdin alone, stdin is the task. A
-// stop signal ends the wait for stdin.
-func headlessTask(ctx context.Context, prompt string, stdin io.Reader, isPipe bool, wait io.Writer) (string, error) {
-	if !isPipe {
-		return prompt, nil
+// stop signal ends the wait for stdin. window is how stdin is read: skipped,
+// read to its end, or, when positive, read to its end only if input or its
+// end comes within window; an open pipe nobody writes is then left alone,
+// with a note, so a caller that leaves stdin open does not hang the run.
+//
+// late, when not nil, is closed if input arrives after the window, which
+// the run must not answer without: see errLateStdin.
+func headlessTask(ctx context.Context, prompt string, stdin io.Reader, window time.Duration, wait io.Writer) (task string, late <-chan struct{}, err error) {
+	if window < 0 {
+		return prompt, nil, nil
 	}
 	type read struct {
 		data []byte
 		err  error
 	}
+	fr := &firstRead{r: stdin, started: make(chan struct{}), data: make(chan struct{})}
 	got := make(chan read, 1)
 	go func() {
-		data, err := io.ReadAll(io.LimitReader(stdin, maxStdin+1))
+		data, err := io.ReadAll(io.LimitReader(fr, maxStdin+1))
 		got <- read{data, err}
 	}()
 	var r read
-	// A pipe whose writer is slow, or never closes, would otherwise look
-	// like a hang.
-	select {
-	case r = <-got:
-	case <-time.After(3 * time.Second):
-		fmt.Fprintln(wait, "abhed: reading the task's input from stdin until it ends (redirect from /dev/null to skip it)")
+	if window > 0 {
+		// The reader is left behind on a pipe nobody writes; the run does
+		// not wait for it, but stops if input comes after all.
+		select {
+		case <-fr.started:
+		case r = <-got:
+		case <-time.After(window):
+			fmt.Fprintln(wait, stdinIdleNote)
+			return prompt, fr.data, nil
+		case <-ctx.Done():
+			return "", nil, context.Cause(ctx)
+		}
+	}
+	if r.data == nil && r.err == nil {
+		// A pipe whose writer is slow, or never closes, would otherwise look
+		// like a hang.
 		select {
 		case r = <-got:
+		case <-time.After(3 * time.Second):
+			fmt.Fprintln(wait, "abhed: reading the task's input from stdin until it ends (redirect from /dev/null to skip it)")
+			select {
+			case r = <-got:
+			case <-ctx.Done():
+				return "", nil, context.Cause(ctx)
+			}
 		case <-ctx.Done():
-			return "", context.Cause(ctx)
+			return "", nil, context.Cause(ctx)
 		}
-	case <-ctx.Done():
-		return "", context.Cause(ctx)
 	}
 	if r.err != nil {
-		return "", fmt.Errorf("reading stdin: %w", r.err)
+		return "", nil, fmt.Errorf("reading stdin: %w", r.err)
 	}
 	if len(r.data) > maxStdin {
-		return "", fmt.Errorf("stdin is larger than %d MiB; pass a path in the task instead", maxStdin>>20)
+		return "", nil, fmt.Errorf("stdin is larger than %d MiB; pass a path in the task instead", maxStdin>>20)
 	}
 	in := strings.TrimRight(string(r.data), "\n")
 	switch {
 	case strings.TrimSpace(in) == "":
-		return prompt, nil
+		return prompt, nil, nil
 	case prompt == "":
-		return in, nil
+		return in, nil, nil
 	}
 	// Piped data is the person's attachment, not their words.
-	return prompt + stdinHeader + untrustedNote + "\n" + fenced("stdin", "", in), nil
+	return prompt + stdinHeader + untrustedNote + "\n" + fenced("stdin", "", in), nil, nil
+}
+
+// firstRead closes started at its first read that returns, input or the
+// input's end, and data at its first input.
+type firstRead struct {
+	r                   io.Reader
+	started, data       chan struct{}
+	startOnce, dataOnce sync.Once
+}
+
+func (f *firstRead) Read(p []byte) (int, error) {
+	n, err := f.r.Read(p)
+	if n > 0 {
+		f.dataOnce.Do(func() { close(f.data) })
+	}
+	if n > 0 || err != nil {
+		f.startOnce.Do(func() { close(f.started) })
+	}
+	return n, err
+}
+
+// errLateStdin stops a -p run whose stdin input came after the wait for
+// it: the answer would leave that input out, so none is given.
+var errLateStdin = errors.New("input arrived on stdin after the wait for it")
+
+// exitLateStdin is a -p run's exit code when input came on stdin after the
+// wait for it.
+const exitLateStdin = 9
+
+// lateStdinMessage says what to do about input that came too late.
+func lateStdinMessage(window time.Duration) string {
+	return fmt.Sprintf("input arrived on stdin after %s; rerun with - to wait for it, or -stdin-wait <dur>", window)
+}
+
+// stdinWindow is how a -p run reads stdin. With no task, stdin is the task,
+// read to its end; "-" asks for that with a task too. With a task, piped
+// input is attached when it starts within -stdin-wait, as in
+// `git diff | abhed -p "review"`; a pipe left open with nothing in it is
+// ignored, so a CI step or driver that never closes stdin does not hang.
+func stdinWindow(f *cliFlags, task string, isPipe bool) time.Duration {
+	switch {
+	case f.noStdin || !isPipe:
+		return stdinSkip
+	case task == "" || f.stdinDash:
+		return stdinToEOF
+	case f.stdinWait <= 0:
+		return stdinSkip
+	}
+	return f.stdinWait
 }
 
 // stdinHeader opens piped stdin in a -p task.
@@ -444,6 +538,20 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	appCfg config.Config, prompt string, budget *agent.Budget, extHost *extension.Host) int {
 
 	began := time.Now()
+	// Input that comes on stdin after the wait stops the run: an answer
+	// without it would read as one with it.
+	var stopLate context.CancelCauseFunc
+	ctx, stopLate = context.WithCancelCause(ctx)
+	defer stopLate(nil)
+	if o.lateStdin != nil {
+		go func() {
+			select {
+			case <-o.lateStdin:
+				stopLate(errLateStdin)
+			case <-ctx.Done():
+			}
+		}()
+	}
 	// A new session, or with -c or -r the recorded one it goes on with.
 	sessionID, seed, err := headlessSession(ctx, &cliState{store: store, appCfg: appCfg, workspace: sess.Root, adapter: adapter}, o.continueLimit)
 	if errors.Is(err, agent.ErrNothingToContinue) || errors.Is(err, agent.ErrContinueRefused) {
@@ -506,6 +614,12 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	// contract gates an answer, which a structured run does not give. Unset,
 	// -p labels its answer as the terminal does; -verify off still turns it off.
 	if v, err := toolset.Verifier(appCfg, true); err == nil && o.schema == nil {
+		// A -p answer is read by a script or a person who was not watching:
+		// one that seems to answer another question is noted in its verdict.
+		// With -verify off there is no verifier, and no verdict to note it in.
+		if v != nil {
+			v.Relevance = true
+		}
 		v.Install(loop)
 	} else if o.schema != nil && appCfg.Verify.Contract.On() {
 		fmt.Fprintln(os.Stderr, "abhed: note: verify.contract is not checked for a -json-schema run: its result is checked by the schema, and its required commands do not run")
@@ -594,6 +708,41 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 			}
 			task, typed = agent.ParallelPrompt(work)+rest, ""
 		}
+		c, args, cerr := headlessCustom(o.commands, sess.Root, typed)
+		if cerr != nil {
+			ran, err = true, cerr
+			return
+		}
+		if c != nil {
+			if _, err = loop.Recorder.Record(agent.EvCommandInvoked, agent.ActorUser, agent.Trusted,
+				agent.CommandInvoked{Name: c.Name, Source: c.Source, SHA256: c.SHA256, Args: args}); err != nil {
+				ran = true
+				return
+			}
+			if len(c.AllowedTools) > 0 {
+				sub, missing := loop.Tools.SubsetStrict(c.AllowedTools)
+				if len(missing) > 0 {
+					ran, err = true, fmt.Errorf("%s names tools this run does not have: %s", c.Name, strings.Join(missing, ", "))
+					return
+				}
+				prev := loop.Tools
+				loop.Tools = sub
+				defer func() { loop.Tools = prev }()
+			}
+			rest := ""
+			if strings.HasPrefix(task, typed) {
+				rest = task[len(typed):] // piped stdin, kept as the input it was
+			}
+			// The command's own @ files are attached through policy, as the
+			// terminal attaches them; a refused one stops the command.
+			msg, _, merr := (mentionExpander{}).Expand(ctx, loop, customcmd.Expand(c.Body, args))
+			if merr != nil {
+				ran, err = true, fmt.Errorf("%s was not sent: %w", c.Name, merr)
+				return
+			}
+			// The command's body is not the person's own words.
+			task, typed = msg.Text+rest, ""
+		}
 		if o.runbook != nil && !ran {
 			task = withRunbook(task, o.runbook.prompt)
 		}
@@ -644,6 +793,28 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	if c, stopped := stopCode(ctx); stopped {
 		code = c
 	}
+	// Input that came after the wait, during the run or by its end, voids
+	// the answer.
+	late := errors.Is(context.Cause(ctx), errLateStdin)
+	if o.lateStdin != nil && !late {
+		select {
+		case <-o.lateStdin:
+			late = true
+		default:
+		}
+	}
+	// A stop signal stands: the person stopped the run before, or whatever,
+	// the input came.
+	if _, stopped := stopCode(ctx); stopped {
+		late = false
+	}
+	if late {
+		code, err = exitLateStdin, errors.New(lateStdinMessage(o.stdinWait))
+		reason = "stdin_late"
+		// No structured result, in any format; text output may already hold
+		// part of the answer, printed as it streamed.
+		structured = nil
+	}
 
 	u := loop.Usage()
 	// The conversation holds the model's own words; what stdout carries of
@@ -651,8 +822,12 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	structured = withheldJSON(rec.Redact, structured)
 	switch {
 	case streaming:
+		answer := ""
+		if !late {
+			answer = agent.WithheldText(rec.Redact, runAnswer(loop.Messages(), store, sessionID, resumedAfter))
+		}
 		res := resultLine{Type: "result", Subtype: string(reason), IsError: code != 0,
-			Result: agent.WithheldText(rec.Redact, runAnswer(loop.Messages(), store, sessionID, resumedAfter)), Structured: structured,
+			Result: answer, Structured: structured,
 			SessionID: sessionID, NumTurns: u.Turns, DurationMS: time.Since(began).Milliseconds(), ExitCode: code,
 			Usage: resultUsage{u.InputTokens, u.OutputTokens, u.CachedTokens, u.CostUSD, u.Unpriced}, Verdict: loop.LastVerdict(),
 			PermissionDenials: hints.denials}

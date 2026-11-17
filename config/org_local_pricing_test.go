@@ -57,9 +57,11 @@ func TestBudgetSpentOnlyTightens(t *testing.T) {
 	}
 }
 
-// An unpinned org's 0 never replaces a price a lower layer set: without a
-// managed dollar cap the person's price stands; under one, which sets the
-// person's prices aside, the model stays unpriced rather than free.
+// An unpinned org's 0 never replaces a price a lower layer set without a
+// managed dollar cap: the person's price stands. Under one, which sets the
+// person's prices aside, the person's price does not count for the decision
+// either: it is set aside, said once, and the org's 0 stays, held to this
+// machine's local servers as for a model nobody priced.
 func TestUnpinnedOrgZeroNeverReplacesAPrice(t *testing.T) {
 	noManaged(t)
 	f := newOrg(t)
@@ -83,18 +85,21 @@ func TestUnpinnedOrgZeroNeverReplacesAPrice(t *testing.T) {
 	if cfg, err = Load(ws); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := cfg.Pricing["house-model"]; ok {
-		t.Fatalf("under the cap the org's 0 replaced the person's price: %v", cfg.Pricing)
+	if p, ok := cfg.Pricing["house-model"]; !ok || p.Input != 0 || !cfg.PricingLoopbackOnly["house-model"] {
+		t.Fatalf("under the cap the person's set-aside price dropped the org's 0, or freed it from this machine: %v %v", cfg.Pricing, cfg.PricingLoopbackOnly)
 	}
-	var org, mine bool
+	var org, mine int
 	for _, a := range cfg.SetAside {
 		if a.Key == "pricing.house-model" {
-			org = org || a.Layer == LayerOrg
-			mine = mine || a.Layer != LayerOrg
+			if a.Layer == LayerOrg {
+				org++
+			} else {
+				mine++
+			}
 		}
 	}
-	if !org || !mine {
-		t.Fatalf("both prices are not recorded set aside: %+v", cfg.SetAside)
+	if org != 0 || mine != 1 {
+		t.Fatalf("want only the person's price set aside, once: %+v", cfg.SetAside)
 	}
 }
 
