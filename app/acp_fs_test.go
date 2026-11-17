@@ -19,6 +19,8 @@ import (
 // person, search, quick open, a watch and the SCM view's read-only git.
 func TestStudioFS(t *testing.T) {
 	r := newStudioRig(t, `,"permissions":{"deny":["read(**/secret.txt)","write(**/locked/**)","delete(**/keep.txt)"]}`)
+	// Paths the rig's process sees: a filter's marker goes outside the workspace.
+	outside := t.TempDir()
 	if !slices.Contains(r.cl.conn.acpFeatures(), "fs") {
 		t.Fatalf("features %v", r.cl.conn.acpFeatures())
 	}
@@ -116,6 +118,37 @@ func TestStudioFS(t *testing.T) {
 		t.Fatalf("files %v", files.Files)
 	}
 
+	// A link is deleted and renamed as itself, never its target.
+	r.write("target.txt", "kept\n")
+	if err := os.Symlink(filepath.Join(ws, "target.txt"), filepath.Join(ws, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+	r.cl.ok("_abhed/fs/rename", p("path", filepath.Join(ws, "link.txt"), "to", filepath.Join(ws, "link2.txt")), nil)
+	if fi, err := os.Lstat(filepath.Join(ws, "link2.txt")); err != nil || fi.Mode()&os.ModeSymlink == 0 || r.read("target.txt") != "kept\n" {
+		t.Fatalf("renaming a link moved its target: %v %v", fi, err)
+	}
+	r.cl.ok("_abhed/fs/delete", p("path", filepath.Join(ws, "link2.txt")), nil)
+	if _, err := os.Lstat(filepath.Join(ws, "link2.txt")); err == nil || r.read("target.txt") != "kept\n" {
+		t.Fatal("deleting a link deleted its target, or not the link")
+	}
+	// A folder holding a file the delete rules keep is not renamed away.
+	r.write("box/keep.txt", "keep\n")
+	r.write("box/other.txt", "x\n")
+	r.cl.refused(errPolicy, "_abhed/fs/rename", p("path", filepath.Join(ws, "box"), "to", filepath.Join(ws, "moved")))
+	if r.read("box/keep.txt") != "keep\n" {
+		t.Fatal("renaming the folder moved a kept file")
+	}
+	// A delete is recorded as the person's edit, not a restore.
+	var deleted bool
+	for _, e := range r.events(id) {
+		if e.Type == agent.EvManualEdit && strings.Contains(string(e.Payload), "link2.txt") {
+			deleted = true
+		}
+	}
+	if !deleted {
+		t.Fatal("the delete was not recorded as manual.edit")
+	}
+
 	// A watch says what changed.
 	from := r.cl.mark()
 	r.cl.ok("_abhed/fs/watch", p("path", ws, "recursive", true, "id", "w1"), nil)
@@ -152,5 +185,28 @@ func TestStudioFS(t *testing.T) {
 			t.Fatalf("original %q", b)
 		}
 		r.cl.refused(errPolicy, "_abhed/fs/git", p("op", "original", "path", filepath.Join(ws, "secret.txt")))
+
+		// The reviewer's repro: a clean filter in the repository's configuration runs, if at all,
+		// in the sandbox, never on the host; and GIT_DIR in the engine's environment changes nothing.
+		marker := filepath.Join(outside, "filter-ran")
+		cfg := exec.Command("git", "-C", ws, "config", "filter.x.clean", "touch "+marker+"; cat")
+		if out, err := cfg.CombinedOutput(); err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+		r.write(".gitattributes", "a.txt filter=x\n")
+		r.write("a.txt", "changed again\n")
+		other := t.TempDir()
+		if out, err := exec.Command("git", "-C", other, "init", "-q").CombinedOutput(); err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+		t.Setenv("GIT_DIR", filepath.Join(other, ".git"))
+		t.Setenv("GIT_WORK_TREE", other)
+		r.cl.call("_abhed/fs/git", p("op", "status"))
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatal("a repository's clean filter ran on the host")
+		}
+		if line := gitLine("status"); !strings.Contains(line, "unset") || !strings.Contains(line, "'protocol.allow=never'") || !strings.Contains(line, "'--no-optional-locks'") {
+			t.Fatalf("git line %s", line)
+		}
 	}
 }

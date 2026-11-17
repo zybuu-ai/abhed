@@ -120,6 +120,64 @@ func fsReadable(s *acpSession, p string) (string, *rpcError) {
 	return abs, nil
 }
 
+// fsName is a path to act on by its own name, not what it resolves to: the
+// folder it is in must lie inside the session's roots, and the name itself is
+// kept, so a delete or rename of a symbolic link acts on the link, never on
+// its target.
+func fsName(s *acpSession, p string) (string, *rpcError) {
+	if p == "" || strings.ContainsRune(p, 0) || !filepath.IsAbs(p) {
+		return "", refusal(errParams, "path is an absolute path in the workspace")
+	}
+	clean := filepath.Clean(p)
+	name := filepath.Base(clean)
+	parent, ok := s.within(filepath.Dir(clean))
+	if !ok || name == "." || name == ".." || name == string(filepath.Separator) {
+		return "", fsErr(errPolicy, "notFound", "%s is not in this session's workspace", p)
+	}
+	full := filepath.Join(parent, name)
+	if _, ok := s.within(parent); !ok {
+		return "", fsErr(errPolicy, "notFound", "%s is not in this session's workspace", p)
+	}
+	return full, nil
+}
+
+// personRemove deletes one entry by its own name (a link, not its target) as
+// the person: through the delete rules, refused for Abhed's state, and
+// recorded as their edit with what it held.
+func (s *acpSession) personRemove(path string) error {
+	loop, id := s.parts.Loop, "u"+acpID()
+	args, _ := json.Marshal(map[string]string{"path": path})
+	if tools.IsState(path, s.parts.Session.PolicyRoots()...) {
+		d := policy.Result{Decision: policy.Deny, Reason: "the path is Abhed's own state", Step: "state"}
+		_ = loop.ManualRefused("delete", id, args, d)
+		return errors.New("Denied: " + d.Reason)
+	}
+	refused, err := loop.ManualCheck("delete", id, args)
+	if err != nil {
+		return err
+	}
+	if refused != nil {
+		_ = loop.ManualObserve(id, "delete", *refused, 0)
+		return errors.New(refused.Content)
+	}
+	sum := ""
+	if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() {
+		if b, err := os.ReadFile(path); err == nil { // #nosec G304 -- inside the session's roots, a regular file
+			sum = hashHex(b)
+		}
+	}
+	start := time.Now()
+	if err := os.Remove(path); err != nil {
+		_ = loop.ManualObserve(id, "delete", tools.Result{Content: err.Error(), IsError: true}, time.Since(start))
+		return err
+	}
+	if err := loop.ManualObserve(id, "delete", tools.Result{Content: "removed " + path}, time.Since(start)); err != nil {
+		return err
+	}
+	s.record(agent.EvManualEdit, agent.ManualEdit{Path: path, BeforeSHA256: sum, By: agent.ByUser})
+	return nil
+}
+
 type fsParams struct {
 	Path      string `json:"path"`
 	To        string `json:"to,omitempty"`
@@ -280,7 +338,7 @@ func (c *acpConn) fsDelete(msg rpcMessage) {
 	s, e := c.fsSession(msg)
 	var abs string
 	if e == nil {
-		abs, e = fsPath(s, p.Path)
+		abs, e = fsName(s, p.Path)
 	}
 	if e != nil {
 		c.reply(msg.ID, nil, e)
@@ -292,7 +350,7 @@ func (c *acpConn) fsDelete(msg rpcMessage) {
 		return
 	}
 	if !info.IsDir() {
-		if err := s.manualRemove(c.root(), abs); err != nil {
+		if err := s.personRemove(abs); err != nil {
 			c.reply(msg.ID, nil, fsErr(errPolicy, "noPermissions", "%v", err))
 			return
 		}
@@ -327,7 +385,7 @@ func (c *acpConn) fsDelete(msg rpcMessage) {
 		return
 	}
 	for _, f := range files {
-		if err := s.manualRemove(c.root(), f); err != nil {
+		if err := s.personRemove(f); err != nil {
 			c.reply(msg.ID, nil, fsErr(errPolicy, "noPermissions", "%s: %v", f, err))
 			return
 		}
@@ -338,22 +396,26 @@ func (c *acpConn) fsDelete(msg rpcMessage) {
 	c.reply(msg.ID, map[string]any{}, nil)
 }
 
-// fsRename is judged as a delete of the old name and a write of the new.
+// fsRename is judged as a delete of the old name and a write of the new, for
+// the entry and, for a folder, every entry inside it (with the read rules, so
+// a withheld file is not moved out from under them). It acts on the names,
+// so renaming a link renames the link.
 func (c *acpConn) fsRename(msg rpcMessage) {
 	p := fsParamsOf(msg)
 	s, e := c.fsSession(msg)
 	var from, to string
 	if e == nil {
-		from, e = fsPath(s, p.Path)
+		from, e = fsName(s, p.Path)
 	}
 	if e == nil {
-		to, e = fsPath(s, p.To)
+		to, e = fsName(s, p.To)
 	}
 	if e != nil {
 		c.reply(msg.ID, nil, e)
 		return
 	}
-	if _, err := os.Lstat(from); err != nil {
+	info, err := os.Lstat(from)
+	if err != nil {
 		c.reply(msg.ID, nil, fsErr(errRefused, "notFound", "%s does not exist", p.Path))
 		return
 	}
@@ -361,27 +423,53 @@ func (c *acpConn) fsRename(msg rpcMessage) {
 		c.reply(msg.ID, nil, fsErr(errRefused, "exists", "%s exists", p.To))
 		return
 	}
-	loop, id := s.parts.Loop, "u"+acpID()
-	for _, j := range []struct{ action, path string }{{"delete", from}, {"write", to}} {
-		args := argsJSON(map[string]string{"path": j.path})
-		d := loop.Policy.Evaluate(j.action, true, args)
-		if d.Decision != policy.Deny && tools.IsState(j.path, s.parts.Session.PolicyRoots()...) {
-			d = policy.Result{Decision: policy.Deny, Reason: "the path is Abhed's own state", Step: "state"}
-		}
-		if d.Decision == policy.Deny {
-			_ = loop.ManualRefused(j.action, id, args, d)
-			c.reply(msg.ID, nil, fsErr(errPolicy, "noPermissions", "Denied: %s", d.Reason))
+	type move struct{ from, to string }
+	moves := []move{{from, to}}
+	if info.IsDir() {
+		walkErr := filepath.WalkDir(from, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if path == from {
+				return nil
+			}
+			if len(moves) > fsMaxEntries {
+				return errors.New("the folder is too large to rename from the editor")
+			}
+			rel, _ := filepath.Rel(from, path)
+			moves = append(moves, move{path, filepath.Join(to, rel)})
+			return nil
+		})
+		if walkErr != nil {
+			c.reply(msg.ID, nil, refusal(errRefused, "%v", walkErr))
 			return
 		}
 	}
-	before, _ := os.ReadFile(from) // #nosec G304 -- inside the session's roots, checked above
+	loop, id := s.parts.Loop, "u"+acpID()
+	roots := s.parts.Session.PolicyRoots()
+	for _, m := range moves {
+		for _, j := range []struct{ action, path string }{{"delete", m.from}, {"write", m.to}, {"read", m.from}} {
+			args := argsJSON(map[string]string{"path": j.path})
+			d := loop.Policy.Evaluate(j.action, j.action != "read", args)
+			if d.Decision != policy.Deny && tools.IsState(j.path, roots...) {
+				d = policy.Result{Decision: policy.Deny, Reason: "the path is Abhed's own state", Step: "state"}
+			}
+			if d.Decision == policy.Deny {
+				_ = loop.ManualRefused(j.action, id, args, d)
+				c.reply(msg.ID, nil, fsErr(errPolicy, "noPermissions", "Denied (%s): %s", j.path, d.Reason))
+				return
+			}
+		}
+	}
+	sum := ""
+	if info.Mode().IsRegular() {
+		if before, err := os.ReadFile(from); err == nil { // #nosec G304 -- inside the session's roots, a regular file
+			sum = hashHex(before)
+		}
+	}
 	if err := os.Rename(from, to); err != nil {
 		c.reply(msg.ID, nil, refusal(errRefused, "%v", err))
 		return
-	}
-	sum := ""
-	if before != nil {
-		sum = hashHex(before)
 	}
 	s.record(agent.EvManualEdit, agent.ManualEdit{Path: from, BeforeSHA256: sum, By: agent.ByUser})
 	s.record(agent.EvManualEdit, agent.ManualEdit{Path: to, AfterSHA256: sum, By: agent.ByUser})
@@ -705,13 +793,16 @@ func (c *acpConn) fsWatch(msg rpcMessage) {
 	w.mu.Unlock()
 	go func() {
 		prev := fsSnapshot(s, abs, p.Recursive)
-		t := time.NewTicker(fsWatchEvery)
-		defer t.Stop()
 		for {
+			// A large tree is looked at less often: every 1.5 s up to 2,000 entries, then in proportion, at most every 30 s.
+			wait := fsWatchEvery
+			if n := len(prev); n > 2000 {
+				wait = min(fsWatchEvery*time.Duration(n/2000+1), 30*time.Second)
+			}
 			select {
 			case <-ctx.Done():
 				return
-			case <-t.C:
+			case <-time.After(wait):
 			}
 			next := fsSnapshot(s, abs, p.Recursive)
 			changes := []any{}
@@ -751,15 +842,31 @@ func (c *acpConn) fsUnwatch(msg rpcMessage) {
 	c.reply(msg.ID, map[string]any{}, nil)
 }
 
-// gitArgs are the flags every git run here takes: no hooks, no fsmonitor, no
-// optional locks, no pager, no external diff, so a repository's own
-// configuration starts nothing.
-var gitArgs = []string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.pager=cat",
-	"-c", "diff.external=", "-c", "core.untrackedCache=false", "--no-pager"}
+// gitFlags are the flags every git run for the SCM view takes: no hooks, no
+// fsmonitor, no pager, no external diff, no submodules, no transport, no
+// optional locks, so a repository's own configuration starts as little as
+// git allows. The run is in the session's sandbox, as the agent's git is,
+// so a filter or driver it still starts is held there.
+var gitFlags = []string{"-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null", "-c", "core.pager=cat",
+	"-c", "diff.external=", "-c", "core.untrackedCache=false", "-c", "submodule.recurse=false", "-c", "protocol.allow=never",
+	"--no-pager", "--no-optional-locks"}
+
+// gitLine is a git command line for the sandbox: every GIT_* variable unset
+// first (so none can point git at another repository or add configuration),
+// then git with gitFlags and args, each quoted.
+func gitLine(args ...string) string {
+	words := []string{"git"}
+	for _, a := range append(append([]string{}, gitFlags...), args...) {
+		words = append(words, shellQuote(a))
+	}
+	return `for v in $(env | sed -n 's/^\(GIT_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done; ` +
+		`GIT_CONFIG_NOSYSTEM=1 GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 GIT_ALLOW_PROTOCOL=abhed-none exec ` + strings.Join(words, " ")
+}
 
 // fsGit is the SCM view's read-only git: op status (porcelain v1, NUL
-// separated) or op original (the file as HEAD has it). Nothing is staged,
-// committed or changed.
+// separated, submodules ignored) or op original (the file as HEAD has it),
+// run in the session's sandbox. Nothing is staged, committed or changed.
+// With no sandbox there is nothing to hold a filter in, so it is refused.
 func (c *acpConn) fsGit(msg rpcMessage) {
 	var p struct {
 		Op   string `json:"op"`
@@ -775,7 +882,7 @@ func (c *acpConn) fsGit(msg rpcMessage) {
 	var args []string
 	switch p.Op {
 	case "status":
-		args = []string{"status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"}
+		args = []string{"status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=all"}
 	case "original":
 		abs, e := fsReadable(s, p.Path)
 		if e != nil {
@@ -787,15 +894,28 @@ func (c *acpConn) fsGit(msg rpcMessage) {
 			c.reply(msg.ID, nil, fsErr(errRefused, "notFound", "%s is not in the repository", p.Path))
 			return
 		}
-		args = []string{"show", "HEAD:" + filepath.ToSlash(rel)}
+		args = []string{"show", "--no-textconv", "HEAD:" + filepath.ToSlash(rel)}
 	default:
 		c.reply(msg.ID, nil, refusal(errParams, "op is status or original"))
 		return
 	}
+	var sandboxed func(ctx context.Context, cwd, command string) *exec.Cmd
+	if t, ok := s.parts.Loop.Tools.Get("bash"); ok {
+		if b, ok := t.(tools.Bash); ok {
+			sandboxed = b.Sandbox
+		}
+	}
+	if sandboxed == nil {
+		c.reply(msg.ID, nil, refusal(errRefused, "the SCM view runs git in the session's sandbox, and this session has none"))
+		return
+	}
 	ctx, cancel := context.WithTimeout(c.root(), 20*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", append(append(append([]string{}, gitArgs...), "-C", root), args...)...) // #nosec G204 -- fixed git subcommands, the path checked above
-	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1")
+	cmd := sandboxed(ctx, root, gitLine(args...))
+	if cmd.Err != nil {
+		c.reply(msg.ID, nil, refusal(errRefused, "git %s: %v", p.Op, cmd.Err))
+		return
+	}
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &fsCapped{b: &out, n: fsMaxRead}, &fsCapped{b: &errb, n: 4096}
 	if err := cmd.Run(); err != nil {
