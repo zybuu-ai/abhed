@@ -16,6 +16,7 @@ import (
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -837,6 +838,9 @@ func storageLabel(cfg config.Config) string {
 	dir := cfg.Record.Dir
 	if dir == "" {
 		dir = "~/.abhed/records"
+		if p, err := home.PersonPath("records"); err == nil {
+			dir = shownPath(p)
+		}
 	}
 	return "local record, chained (" + dir + "; abhed record verify)"
 }

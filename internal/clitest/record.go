@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/home"
 )
 
 var errNoRecord = errors.New("the run kept no local record (store/local writes it under ~/.abhed/records)")
@@ -28,8 +29,11 @@ var errNoRecord = errors.New("the run kept no local record (store/local writes i
 // at a sync point, so a read while the binary appends finds it there.
 // Recomputing each hash is the record's own verify, which a test runs as a
 // command.
-func readRecord(home string) (Record, error) {
-	dir := filepath.Join(home, ".abhed", "records")
+func readRecord(osHome string) (Record, error) {
+	dir := filepath.Join(osHome, home.DirName, "records")
+	if p := os.Getenv(home.EnvPerson); p != "" {
+		dir = filepath.Join(p, "records")
+	}
 	var files []string
 	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if err == nil && !d.IsDir() && strings.HasSuffix(p, ".jsonl") && filepath.Base(p) != "index.jsonl" {

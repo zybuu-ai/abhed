@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/loopport"
 )
 
@@ -503,12 +504,17 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 	}
 	// Seatbelt matches the path the kernel resolved, so a home reached
 	// through a link is named both ways.
-	if home, err := os.UserHomeDir(); err == nil {
-		for _, st := range PathForms(filepath.Join(home, stateDir)) {
+	if osHome, err := os.UserHomeDir(); err == nil {
+		for _, st := range PathForms(filepath.Join(osHome, stateDir)) {
 			fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", st)
 			fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", st)
-			// Skills are the one part of it a command may need: a skill can ship a script.
-			fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", filepath.Join(st, "skills"))
+		}
+		// Skills are the one part of it a command may need: a skill can ship a
+		// script. Only the person's own skills, never another account's.
+		if skills, err := home.PersonPath("skills"); err == nil {
+			for _, d := range PathForms(skills) {
+				fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", d)
+			}
 		}
 	}
 

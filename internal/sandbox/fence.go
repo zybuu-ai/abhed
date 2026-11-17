@@ -20,6 +20,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/fence/mountns"
 	"github.com/zybuu-ai/abhed/internal/fence/probe"
 	"github.com/zybuu-ai/abhed/internal/fence/seccomp"
+	"github.com/zybuu-ai/abhed/internal/home"
 )
 
 // Fence is the fence tier, a preview on Linux: Abhed re-executes itself as a
@@ -444,15 +445,15 @@ func (f *Fence) ServerCommand(ctx context.Context, name string, argv, env []stri
 	return cmd, nil
 }
 
-// skillDirs are ~/.abhed/skills, as written and resolved, where it is a folder.
+// skillDirs are the person's skills folder (~/.abhed/skills before sign-in),
+// as written and resolved, where it is a folder.
 func (f *Fence) skillDirs() []string {
-	home, err := os.UserHomeDir()
+	skills, err := home.PersonPath("skills")
 	if err != nil {
 		return nil
 	}
 	var out []string
-	for _, st := range PathForms(filepath.Join(home, stateDir)) {
-		d := filepath.Join(st, "skills")
+	for _, d := range PathForms(skills) {
 		if info, err := os.Lstat(d); err == nil && info.IsDir() && !slices.Contains(out, d) {
 			out = append(out, d)
 		}

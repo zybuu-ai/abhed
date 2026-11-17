@@ -32,6 +32,7 @@ import (
 	"unicode"
 
 	"github.com/zybuu-ai/abhed/internal/frontmatter"
+	"github.com/zybuu-ai/abhed/internal/home"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -285,12 +286,7 @@ func FoldName(name string) string {
 }
 
 func expandHome(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, path[2:])
-		}
-	}
-	return path
+	return home.ExpandState(path)
 }
 
 // FromContent makes a skill from content already read, such as a

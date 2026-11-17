@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/nlink"
 	"github.com/zybuu-ai/abhed/internal/policy"
 )
@@ -29,11 +30,7 @@ type startupFiles struct {
 // StartupFilesPath is ~/.abhed/startup-files.json, the person's own state the
 // agent cannot reach.
 func StartupFilesPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".abhed", "startup-files.json"), nil
+	return home.PersonPath("startup-files.json")
 }
 
 // TrustedStartupFiles is the baseline as recorded; none when there is no file.

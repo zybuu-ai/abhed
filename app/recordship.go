@@ -8,13 +8,13 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/orgpolicy"
 	"github.com/zybuu-ai/abhed/profiles"
@@ -23,14 +23,9 @@ import (
 )
 
 // shipStatePath is where the shipper keeps how far each session reached the
-// org server: under ~/.abhed, which the agent cannot reach.
-var shipStatePath = func() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".abhed", "state", "record-ship.json"), nil
-}
+// org server: under the person's folder in ~/.abhed, which the agent cannot
+// reach.
+var shipStatePath = func() (string, error) { return home.PersonPath("state", "record-ship.json") }
 
 // shipTarget is the org server the record goes to: the enrolled one.
 type shipTarget struct {
