@@ -104,6 +104,11 @@ func (s TrustStore) Record(workspace, sum string, trusted bool) error {
 		d = DecisionTrusted
 	}
 	f.Workspaces[canonical(workspace)] = TrustRecord{SHA256: sum, Decision: d, At: time.Now().UTC()}
+	return s.write(f)
+}
+
+// write replaces the store's file whole.
+func (s TrustStore) write(f trustFile) error {
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err
@@ -124,6 +129,21 @@ func (s TrustStore) Record(workspace, sum string, trusted bool) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), s.Path)
+}
+
+// Forget removes the decision about a workspace's commands, so they are
+// untrusted again; had is whether there was one.
+func (s TrustStore) Forget(workspace string) (had bool, err error) {
+	f, err := s.read()
+	if err != nil {
+		return false, err
+	}
+	key := canonical(workspace)
+	if _, had = f.Workspaces[key]; !had {
+		return false, nil
+	}
+	delete(f.Workspaces, key)
+	return true, s.write(f)
 }
 
 func canonical(dir string) string {

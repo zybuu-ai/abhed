@@ -4,6 +4,7 @@ package clitest
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -301,6 +302,45 @@ func TestSchemaRunNamesTheUncheckedContract(t *testing.T) {
 	h := piped(t, Opts{UserConfig: cfg, Args: []string{"-p", "count", "-json-schema", `{"type":"object","properties":{"n":{"type":"integer"}}}`},
 		Script: `tool result {"n":1}`})
 	if !strings.Contains(h.Stderr(), "verify.contract is not checked for a -json-schema run") {
+		t.Fatalf("stderr:\n%s", h.Stderr())
+	}
+}
+
+// #22: a -p answer that seems to answer another question is noted in its
+// verdict, and only noted: the run still ends 0.
+func TestHeadlessRelevanceNote(t *testing.T) {
+	t.Parallel()
+	h := piped(t, Opts{Args: []string{"-p", "why does TestFooBar fail in pkg/auth?", "-output-format", "json"}, Script: `text "The weather is fine today."`})
+	res := resultOf(t, h.Stdout())
+	v, _ := res["verdict"].(map[string]any)
+	if res["exit_code"] != float64(0) || v == nil || v["relevance"] != "off_topic" ||
+		!strings.Contains(fmt.Sprint(v["note"]), "may not address the question") {
+		t.Fatalf("result %v", res)
+	}
+	h = piped(t, Opts{Args: []string{"-p", "why does TestFooBar fail in pkg/auth?", "-output-format", "json"}, Script: `text "TestFooBar fails because pkg/auth rejects the token."`})
+	res = resultOf(t, h.Stdout())
+	if v, _ := res["verdict"].(map[string]any); v == nil || v["relevance"] != "addresses" {
+		t.Fatalf("result %v", res)
+	}
+}
+
+// A producer whose first byte comes after the wait (a cold build piped in)
+// stops the run: exit 9, no answer, and what to do. The input is never
+// silently left out of an answer that reads as complete.
+func TestHeadlessLateStdinStopsTheRun(t *testing.T) {
+	t.Parallel()
+	h := StartRun(t, Opts{Piped: true, KeepStdin: true, Args: []string{"-p", "why does it fail", "-stdin-wait", "300ms", "-output-format", "json"},
+		Script: "delay 20s\ntext \"an answer without the log\""})
+	time.Sleep(1500 * time.Millisecond) // past the wait, as `sleep 1; go test …` would be
+	h.Type("--- FAIL: TestX\n")
+	if code := h.Wait(15 * time.Second); code != 9 {
+		t.Fatalf("exit %d\nstdout:\n%s\nstderr:\n%s", code, h.Stdout(), h.Stderr())
+	}
+	res := resultOf(t, h.Stdout())
+	if res["is_error"] != true || res["result"] != "" || !strings.Contains(fmt.Sprint(res["error"]), "rerun with - to wait for it") {
+		t.Fatalf("result %v", res)
+	}
+	if !strings.Contains(h.Stderr(), "input arrived on stdin after 300ms; rerun with - to wait for it, or -stdin-wait <dur>") {
 		t.Fatalf("stderr:\n%s", h.Stderr())
 	}
 }

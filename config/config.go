@@ -101,6 +101,8 @@ type Config struct {
 	// its keys set, which are 0: each holds only for a model every
 	// configured provider of which is a server on this machine.
 	PricingLoopbackOnly map[string]bool `json:"-"`
+	// managedMCP are the MCP servers the managed file defines, by name.
+	managedMCP map[string]MCPServerConfig
 	// WorkspaceProviders names the providers a workspace's file defined or
 	// changed, which a managed dollar cap does not trust as local servers.
 	WorkspaceProviders map[string]bool `json:"-"`
@@ -1633,6 +1635,10 @@ type MCPServerConfig struct {
 	// OAuth configures `abhed mcp login` for a URL server; a server needs it
 	// only for a client registered ahead of time or particular scopes.
 	OAuth *MCPOAuthConfig `json:"oauth,omitempty"`
+	// TrustReadOnlyHint believes the server's readOnlyHint, so a tool it
+	// marks read-only runs unasked as a read. Off by default, and honoured
+	// only in the managed file's own entry for the server.
+	TrustReadOnlyHint bool `json:"trust_read_only_hint,omitempty"`
 }
 
 // MCPOAuthConfig is how `abhed mcp login` signs in to a URL server.
@@ -1974,6 +1980,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		warnDuplicates(w, cfg.Duplicates)
 		warnSetAside(w, cfg.SetAside)
 		warnNotYetInEffect(w, cfg)
+		warnReadOnlyHint(w, cfg)
 		warnNeverAllows(w, cfg.Permissions.Allow)
 		warnRuleFindings(w, cfg.RuleFindings())
 	} else {

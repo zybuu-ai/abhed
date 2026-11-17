@@ -542,6 +542,10 @@ func Whoami(ctx context.Context, c *http.Client, p *Profile) (map[string]any, er
 	var out map[string]any
 	_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out)
 	if resp.StatusCode != http.StatusOK {
+		if removed, _ := out["access_removed"].(bool); removed {
+			reason, _ := out["reason"].(string)
+			return nil, &AccessRemovedError{URL: p.URL, Reason: shown(reason)}
+		}
 		reason, _ := out["reason"].(string)
 		if reason == "" {
 			reason, _ = out["error"].(string)

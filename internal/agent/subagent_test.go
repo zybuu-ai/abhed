@@ -1023,3 +1023,20 @@ func TestParentRecordRefusingASubagentEventEndsTheRun(t *testing.T) {
 		t.Fatalf("the parent ran on to %s after its record refused a subagent event", reason)
 	}
 }
+
+// #18: task given no description runs, labelled from its prompt as tasks
+// labels one, rather than refused at the cost of a turn.
+func TestTaskDerivesAMissingDescription(t *testing.T) {
+	var got SubagentRequest
+	tool := Task{
+		Spawn: func(_ context.Context, r SubagentRequest) (string, error) { got = r; return "done", nil },
+	}
+	args, _ := json.Marshal(taskArgs{Prompt: "Review the retrieval package for bugs and report them"})
+	res := tool.Run(context.Background(), nil, args)
+	if res.IsError {
+		t.Fatalf("a missing description was refused: %s", res.Content)
+	}
+	if got.Description == "" || got.Description != labelFrom("Review the retrieval package for bugs and report them") {
+		t.Fatalf("description %q", got.Description)
+	}
+}

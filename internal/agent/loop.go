@@ -2086,6 +2086,10 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 	var doomed error
 	if decision.Decision != policy.Deny {
 		doomed = tools.Precheck(ctx, tool, l.Session, call.Args)
+	} else if pp, ok := tool.(tools.PlanPrechecker); ok && decision.Step == "mode" {
+		// Plan mode refuses the call anyway; the tool's own answer says what
+		// to do instead, such as ssh_connect's "this host is ready".
+		doomed = pp.Precheck(l.Session, call.Args)
 	}
 	if doomed == nil && decision.Decision == policy.Ask {
 		if why := l.readFirst(ctx, tool, call); why != "" {

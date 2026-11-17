@@ -31,7 +31,10 @@ type orgServer struct {
 	policy  string
 	subject string
 	down    bool
-	tokens  []string
+	// removed answers as a server does once the organisation removed the
+	// person's access; refused as a lapsed sign-in is answered.
+	removed, refused bool
+	tokens           []string
 	// records, when set, answers the record intake's paths.
 	records http.Handler
 }
@@ -51,6 +54,16 @@ func newOrgServer(t *testing.T) *orgServer {
 		o.tokens = append(o.tokens, r.Header.Get("Authorization"))
 		if o.down {
 			http.Error(w, "down", http.StatusBadGateway)
+			return
+		}
+		if o.removed || o.refused {
+			body := map[string]any{"error": "unauthorized", "reason": "the token was signed out; run abhed login again"}
+			if o.removed {
+				body = map[string]any{"error": "unauthorized", "access_removed": true,
+					"reason": "your access to this deployment was revoked on 16 Nov 2026; contact its administrator if you think this is wrong"}
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(body)
 			return
 		}
 		switch r.URL.Path {
@@ -159,6 +172,47 @@ func TestLoginEnrolsRefreshesAndFailsClosed(t *testing.T) {
 	}
 	if cfg := loadOrg(t); cfg.OrgPolicy.Status != orgpolicy.StatusFallback {
 		t.Errorf("status %+v", cfg.OrgPolicy)
+	}
+}
+
+// After the organisation removed the person's access (SCIM deprovisioning,
+// a revocation), policy refresh says so and whom to ask, not "run abhed
+// login"; the cached policy still applies. A lapsed sign-in still says to
+// sign in again.
+func TestPolicyRefreshAfterAccessWasRemoved(t *testing.T) {
+	srv := newOrgServer(t)
+	pf, p := orgClient(t, srv)
+	var out, errOut bytes.Buffer
+	if err := enrollOrgPolicy(context.Background(), pf, "org", p, enrolOptions{accept: true}, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	srv.mu.Lock()
+	srv.removed = true
+	srv.mu.Unlock()
+	out.Reset()
+	errOut.Reset()
+	if code := policyCmd([]string{"refresh"}, &out, &errOut); code == 0 {
+		t.Fatalf("refresh succeeded: %s", out.String())
+	}
+	msg := errOut.String()
+	for _, want := range []string{"your organisation has removed your access to " + srv.URL, "revoked on 16 Nov 2026",
+		"signing in again will not restore it", "Ask your organisation's Abhed administrator"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("refresh lacks %q:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "run abhed login") || strings.Contains(msg, "401") {
+		t.Errorf("refresh still says to sign in again:\n%s", msg)
+	}
+	if cfg := loadOrg(t); cfg.OrgPolicy.Status != orgpolicy.StatusApplied || cfg.Limits.MaxTurns != 9 {
+		t.Errorf("the cached policy no longer applies: %+v", cfg.OrgPolicy)
+	}
+	srv.mu.Lock()
+	srv.removed, srv.refused = false, true
+	srv.mu.Unlock()
+	errOut.Reset()
+	if code := policyCmd([]string{"refresh"}, &out, &errOut); code == 0 || !strings.Contains(errOut.String(), "run abhed login "+srv.URL) {
+		t.Errorf("a lapsed sign-in: %d %s", code, errOut.String())
 	}
 }
 

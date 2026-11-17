@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/managed"
@@ -83,8 +84,10 @@ func wrapAbout(s string, width, indent int) string {
 
 // exitCodesHelp is the exit-code table, as docs/guide/10-automation.md has it.
 const exitCodesHelp = `
-Exit codes: 0 done, 1 error, 2 bad invocation or turn limit, 3 token budget,
-5 model retries exhausted, 130 interrupted (SIGINT), 143 terminated
+Exit codes: 0 done, 1 error, 2 bad invocation or turn limit, 3 budget,
+4 a hook ended the run, 5 model retries exhausted, 6 shut down, 7 the run's
+time limit passed, 8 unverified (-verify strict or a contract), 9 stdin
+input arrived after -stdin-wait, 130 interrupted (SIGINT), 143 terminated
 (SIGTERM). A call refused by policy does not end the run.
 `
 
@@ -135,6 +138,7 @@ type cliFlags struct {
 	runbook         string
 	runbookHash     string
 	noStdin         bool
+	stdinWait       time.Duration
 	skipPerms       bool
 	showVer         bool
 	listenAddr      string
@@ -151,6 +155,9 @@ type cliFlags struct {
 	// is set when they came after "--".
 	words  []string
 	dashed bool
+	// stdinDash is a lone "-" among them: with -p, read stdin as the task's
+	// input even though the task is given.
+	stdinDash bool
 	// sub is the subcommand and its arguments, when there is one.
 	sub []string
 }
@@ -159,6 +166,7 @@ type cliFlags struct {
 func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs := flag.NewFlagSet("abhed", flag.ContinueOnError)
 	fs.Var(&f.print, "p", "run headless and exit; the task is the argument after it, stdin, or both")
+	fs.DurationVar(&f.stdinWait, "stdin-wait", defaultStdinWait, "with -p and a task, how long to wait for piped input to start before going on without it; - waits for it to end")
 	fs.Var(&f.print, "print", "same as -p")
 	fs.StringVar(&f.mode, "mode", "", "permission mode: default|accept-edits|plan|auto|bypass")
 	fs.StringVar(&f.permissionMode, "permission-mode", "", "same as -mode; also takes acceptEdits and bypassPermissions")
@@ -229,7 +237,11 @@ func parseArgs(fs *flag.FlagSet, f *cliFlags, args []string, edition map[string]
 			f.words = fs.Args()
 			return nil
 		}
-		f.words = append(f.words, first)
+		if first == "-" {
+			f.stdinDash = true
+		} else {
+			f.words = append(f.words, first)
+		}
 		rest = fs.Args()[1:]
 	}
 }

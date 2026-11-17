@@ -35,6 +35,8 @@ type mcpIO struct {
 	inSandbox bool
 	// byEditor is a yes read from -confirm-fd, which the change log says apart.
 	byEditor bool
+	// noBrowser prints a login's address instead of opening a browser.
+	noBrowser bool
 }
 
 func stdMCPIO() mcpIO {
@@ -53,7 +55,7 @@ func mcpCmd(workspace string, args []string, trust config.TrustChoice, cio mcpIO
 			"       abhed mcp add [-header-env HEADER=VAR]... [-allow-tools a,b] NAME https://URL\n"+
 			"         either add also takes -sha256 HEX (only that entry) and -confirm-fd N (the yes from an inherited descriptor, for an editor)\n"+
 			"       abhed mcp remove NAME\n"+
-			"       abhed mcp login NAME | logout NAME\n"+
+			"       abhed mcp login [-no-browser] NAME | logout NAME\n"+
 			"  Servers are added to ~/.abhed/config.json, enabled, after a confirmation at a terminal.")
 		return 2
 	}
@@ -73,13 +75,24 @@ func mcpCmd(workspace string, args []string, trust config.TrustChoice, cio mcpIO
 		}
 		return fail0(mcpRemove(args[1], cio.out), fail)
 	case "login", "logout":
-		if len(args) != 2 {
+		rest, noBrowser := args[1:], false
+		if args[0] == "login" {
+			rest = slices.DeleteFunc(slices.Clone(rest), func(a string) bool {
+				if a == "-no-browser" || a == "--no-browser" {
+					noBrowser = true
+					return true
+				}
+				return false
+			})
+		}
+		if len(rest) != 1 {
 			return usage()
 		}
 		if args[0] == "login" {
-			return fail0(mcpLogin(workspace, trust, args[1], cio), fail)
+			cio.noBrowser = noBrowser
+			return fail0(mcpLogin(workspace, trust, rest[0], cio), fail)
 		}
-		return fail0(mcpLogout(workspace, trust, args[1], cio), fail)
+		return fail0(mcpLogout(workspace, trust, rest[0], cio), fail)
 	case "add":
 		s, o, err := parseMCPAddOpts(args[1:], cio.err)
 		if errors.Is(err, errUsage) {
