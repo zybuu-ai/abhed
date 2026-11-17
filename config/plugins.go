@@ -89,19 +89,32 @@ func (c Config) PluginPolicy() plugin.Policy {
 	return pol
 }
 
-// PluginTrustedRoot is the Sigstore trusted root signatures are checked
-// against: the managed file's, else the person's own copy (s's), else none.
-func (c Config) PluginTrustedRoot(s *plugin.Store) (*plugin.TrustedRoot, error) {
+// PluginRoots are the Sigstore trusted roots signatures are checked
+// against. The org root, which alone counts toward an allow list or
+// require_signature, is the managed file's plugins.trusted_root, else the
+// public-good root this build carries; never one the person chose. The
+// person's root, for their own publishers, is their own copy (s's), else
+// the org root.
+func (c Config) PluginRoots(s *plugin.Store) (plugin.Roots, error) {
+	r := plugin.Roots{Org: plugin.PublicGoodRoot()}
 	if p := c.Plugins.TrustedRoot; p != "" {
-		return plugin.ReadTrustedRoot(p)
+		root, err := plugin.ReadTrustedRoot(p)
+		if err != nil {
+			return plugin.Roots{}, fmt.Errorf("plugins.trusted_root: %w", err)
+		}
+		r.Org = root
 	}
-	if s == nil {
-		return nil, nil
+	r.Person = r.Org
+	if s != nil {
+		if _, err := os.Stat(s.TrustedRootFile()); err == nil {
+			root, err := plugin.ReadTrustedRoot(s.TrustedRootFile())
+			if err != nil {
+				return r, err
+			}
+			r.Person = root
+		}
 	}
-	if _, err := os.Stat(s.TrustedRootFile()); err != nil {
-		return nil, nil
-	}
-	return plugin.ReadTrustedRoot(s.TrustedRootFile())
+	return r, nil
 }
 
 // LoadedPlugins are the approved plugins this load added, in name order.
@@ -158,12 +171,12 @@ func applyPlugins(cfg *Config, w warnSink) {
 	if err != nil {
 		return
 	}
-	root, err := cfg.PluginTrustedRoot(s)
+	roots, err := cfg.PluginRoots(s)
 	if err != nil {
-		m := "plugins: the Sigstore trusted root does not read, so no signature is taken: " + err.Error()
+		m := "plugins: a Sigstore trusted root does not read: " + err.Error()
 		w.emit("plugin\x00"+m, m)
 	}
-	loaded, warns := plugin.LoadAll(s, cfg.PluginPolicy(), runningVersion(), root)
+	loaded, warns := plugin.LoadAll(s, cfg.PluginPolicy(), runningVersion(), roots)
 	for _, m := range warns {
 		w.emit("plugin\x00"+m, m)
 	}

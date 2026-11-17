@@ -86,10 +86,22 @@ Two ways to trust a bundle, and nothing else:
    digest is recorded, or a granting layer (below) lists the digest in
    `plugins.allowed_bundles`.
 
-At every load the staged signature is verified again, offline, against the
-trusted root in force. The signer used for policy and named in the record is
-the one verified then. What `plugins.json` says about the signer is never
-trusted. A pin counts only for the digest the files hash to now.
+At every load the staged signature is verified again, offline, against two
+roots. The **org root** is the managed `plugins.trusted_root`, else the
+public-good root built into Abhed. A signer counts toward an allow list or
+`require_signature` only when it verifies against the org root. The
+**person's root** is their own `plugin-trusted-root.json`, else the org root,
+and it counts only for their own publishers. A CA the person made therefore
+cannot meet an organisation's list. The signer used for policy and named in
+the record is the one verified then. What `plugins.json` says about the
+signer is never trusted. A pin counts only for the digest the files hash to
+now. A trusted source's word at install is recorded as that pin. A load
+never takes a source from the state file.
+
+The certificate must name exactly one identity, and its v1 and v2 issuer
+extensions must agree. An ECDSA log whose `keyId` is not its key's SHA-256
+makes the trusted root invalid; a log of another kind is left out. Identities
+with dot segments, or with escaped `.`, `/` or `\`, match no publisher.
 
 ## Install, approve, upgrade, remove
 
@@ -147,9 +159,11 @@ are each a layer. A bundle must pass every layer that sets `allowed_publishers`
 or `allowed_bundles` (signed by a listed publisher, or a listed digest), so
 neither layer widens the other. Passing a layer is enough to trust a bundle
 only when the layer *grants*: the machine's file does, and an org policy does
-only when the machine pins its keys. Otherwise the layer only narrows, and the
-trust must come from the person's own publishers or pin, which count only
-within every layer. `require_signature`
+only when the machine pins its keys and the policy is fresh and verified. A
+stale, refused or fallback policy keeps its lists, which still narrow, but
+they never grant. Otherwise the layer only narrows, and the trust must come
+from the person's own publishers or pin, which count only within every
+layer. `require_signature`
 refuses pins. When any source is set, installs come only from a source: a
 name is looked up in each index, the archive must sit under the source, and
 its digest must be the one the index lists. That is the trust basis

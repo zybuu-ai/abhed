@@ -64,8 +64,13 @@ var ErrDisabled = errors.New("plugins are turned off by the managed configuratio
 // Evidence is what is known about one bundle when it is judged.
 type Evidence struct {
 	Digest string
-	// Signer is the verified signer, nil when unsigned or not verified now.
+	// Signer is the signer verified against Roots.Org: the only one that
+	// counts toward an allow list or require_signature. Nil when unsigned or
+	// not verified now.
 	Signer *Signer
+	// PersonSigner is the signer verified against Roots.Person, which counts
+	// only toward the person's own publishers. Nil as Signer is.
+	PersonSigner *Signer
 	// Pin is the digest the person approved by, "" for none.
 	Pin string
 	// Source names the source whose index listed Digest, "" for none.
@@ -73,17 +78,26 @@ type Evidence struct {
 }
 
 // Admit decides whether a bundle may be installed or loaded, and on what
-// basis. mine are the person's own trusted publishers.
-//
-// Every allow list must pass. Then the trust itself comes from, in order:
-// a granting list, the person's publishers, a trusted source, or the
-// person's pin (never under require_signature).
+// basis. mine are the person's own trusted publishers. See Decide.
 func (p Policy) Admit(e Evidence, mine []Publisher) (string, error) {
+	basis, _, err := p.Decide(e, mine)
+	return basis, err
+}
+
+// Decide is Admit, also returning the signer the basis rests on (nil for
+// any basis but a signature).
+//
+// Every allow list must pass, judged on Signer alone. Then the trust itself
+// comes from, in order: a granting list, the person's publishers (judged on
+// PersonSigner), a trusted source, or the person's pin (never under
+// require_signature).
+func (p Policy) Decide(e Evidence, mine []Publisher) (string, *Signer, error) {
 	if p.Disabled {
-		return "", ErrDisabled
+		return "", nil, ErrDisabled
 	}
 	if e.Signer == nil && p.RequireSignature {
-		return "", errors.New("the bundle has no signature that verifies, and the managed configuration requires one (plugins.require_signature)")
+		return "", nil, errors.New("the bundle has no signature that verifies against the managed trusted root (or Abhed's built-in public-good root), " +
+			"and the managed configuration requires one (plugins.require_signature)")
 	}
 	granted := false
 	for _, l := range p.Lists {
@@ -91,29 +105,35 @@ func (p Policy) Admit(e Evidence, mine []Publisher) (string, error) {
 			who := "unsigned"
 			if e.Signer != nil {
 				who = "signed by " + e.Signer.String()
+			} else if e.PersonSigner != nil {
+				who = "signed by " + e.PersonSigner.String() + " only as your own trusted root vouches, which an allow list does not take"
 			}
-			return "", fmt.Errorf("the %s allow list (plugins.allowed_publishers, plugins.allowed_bundles) does not admit this bundle (%s, digest %s)", l.Layer, who, e.Digest)
+			return "", nil, fmt.Errorf("the %s allow list (plugins.allowed_publishers, plugins.allowed_bundles) does not admit this bundle (%s, digest %s)", l.Layer, who, e.Digest)
 		}
 		granted = granted || l.Grants
 	}
+	person := e.PersonSigner
+	if person == nil {
+		person = e.Signer
+	}
 	switch {
 	case granted && e.Signer != nil:
-		return BasisSignature, nil
+		return BasisSignature, e.Signer, nil
 	case granted:
-		return BasisOrgPin, nil
-	case e.Signer != nil && slices.ContainsFunc(mine, func(a Publisher) bool { return a.Matches(*e.Signer) }):
-		return BasisSignature, nil
+		return BasisOrgPin, nil, nil
+	case person != nil && slices.ContainsFunc(mine, func(a Publisher) bool { return a.Matches(*person) }):
+		return BasisSignature, person, nil
 	case p.fromSource(e):
-		return BasisSource, nil
+		return BasisSource, nil, nil
 	case e.Pin != "" && e.Pin == e.Digest && !p.RequireSignature:
-		return BasisPin, nil
+		return BasisPin, nil, nil
 	case e.Pin != "" && e.Pin != e.Digest:
-		return "", fmt.Errorf("the bundle's digest is %s, not the pinned %s", e.Digest, e.Pin)
-	case e.Signer != nil:
-		return "", fmt.Errorf("the signer %s is not a publisher you trust; add it with: abhed plugin publishers add -issuer %s %s",
-			e.Signer, e.Signer.Issuer, e.Signer.Identity)
+		return "", nil, fmt.Errorf("the bundle's digest is %s, not the pinned %s", e.Digest, e.Pin)
+	case person != nil:
+		return "", nil, fmt.Errorf("the signer %s is not a publisher you trust; add it with: abhed plugin publishers add -issuer %s %s",
+			person, person.Issuer, person.Identity)
 	}
-	return "", fmt.Errorf("the bundle is not signed; to trust it anyway, check where it came from and pin its digest: -sha256 %s", e.Digest)
+	return "", nil, fmt.Errorf("the bundle is not signed; to trust it anyway, check where it came from and pin its digest: -sha256 %s", e.Digest)
 }
 
 // fromSource reports a bundle a trusted source still configured listed.

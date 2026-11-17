@@ -98,19 +98,48 @@ func (s *Sigstore) TrustedRoot() []byte {
 // Sign makes a Sigstore bundle over artifact for a signer with this
 // identity (an email, or a URI when it has "://") and OIDC issuer.
 func (s *Sigstore) Sign(artifact []byte, identity, issuer string) []byte {
+	return s.SignWith(artifact, CertOptions{Identities: []string{identity}, Issuer: issuer})
+}
+
+// CertOptions shape the signing certificate, for tests of what a verifier
+// refuses in one.
+type CertOptions struct {
+	// Identities are SANs: an email, or a URI when it has "://".
+	Identities []string
+	// Issuer goes in the v2 issuer extension (.1.8), unless NoV2.
+	Issuer string
+	NoV2   bool
+	// RawV2 replaces the v2 extension's DER value when set.
+	RawV2 []byte
+	// IssuerV1 adds the legacy issuer extension (.1.1) when set.
+	IssuerV1 string
+}
+
+// SignWith is Sign with the certificate shaped by o.
+func (s *Sigstore) SignWith(artifact []byte, o CertOptions) []byte {
 	at := s.now()
 	key := must(ecdsa.GenerateKey(elliptic.P256(), rand.Reader))
-	issuerExt := must(asn1.MarshalWithParams(issuer, "utf8"))
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(at.UnixNano()),
 		NotBefore:    at.Add(-time.Minute), NotAfter: at.Add(10 * time.Minute),
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning},
-		ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 8}, Value: issuerExt}},
 	}
-	if strings.Contains(identity, "://") {
-		tmpl.URIs = []*url.URL{must(url.Parse(identity))}
-	} else {
-		tmpl.EmailAddresses = []string{identity}
+	if !o.NoV2 {
+		v := o.RawV2
+		if v == nil {
+			v = must(asn1.MarshalWithParams(o.Issuer, "utf8"))
+		}
+		tmpl.ExtraExtensions = append(tmpl.ExtraExtensions, pkix.Extension{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 8}, Value: v})
+	}
+	if o.IssuerV1 != "" {
+		tmpl.ExtraExtensions = append(tmpl.ExtraExtensions, pkix.Extension{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 1}, Value: []byte(o.IssuerV1)})
+	}
+	for _, identity := range o.Identities {
+		if strings.Contains(identity, "://") {
+			tmpl.URIs = append(tmpl.URIs, must(url.Parse(identity)))
+		} else {
+			tmpl.EmailAddresses = append(tmpl.EmailAddresses, identity)
+		}
 	}
 	leafDER := must(x509.CreateCertificate(rand.Reader, tmpl, s.caCert, &key.PublicKey, s.caKey))
 	digest := sha256.Sum256(artifact)

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -192,8 +193,9 @@ func TestPluginInstallRefusals(t *testing.T) {
 	}
 	// Signed, but by nobody the person trusts.
 	dir, _ := e.signedBundle(pluginSpec())
-	// Signed, but checked against no root.
-	if code, out := e.run("install", dir); code == 0 || !strings.Contains(out, "no Sigstore trusted root") || staged() {
+	// Signed by a CA only the test's root names, which the person has not kept:
+	// the built-in public-good root does not vouch for it.
+	if code, out := e.run("install", dir); code == 0 || !strings.Contains(out, "does not verify") || staged() {
 		t.Fatalf("a signature went unchecked: %s", out)
 	}
 	e.keepRoot()
@@ -265,8 +267,14 @@ func TestPluginManagedPolicy(t *testing.T) {
 	if cfg := e.load(); len(cfg.LoadedPlugins()) != 0 {
 		t.Fatal("a publisher the org does not allow loaded")
 	}
-	// The publisher the managed file names.
+	// The publisher the managed file names, verified against a root the
+	// person chose: the list does not take it.
 	e.setManaged(`{"plugins":{"allowed_publishers":[{"identity":"release@acme.example","issuer":"` + plIssuer + `"}]}}`)
+	if cfg := e.load(); len(cfg.LoadedPlugins()) != 0 {
+		t.Fatal("a managed publisher list took a signature only the person's own root vouches for")
+	}
+	// The same with the managed file's own trusted root.
+	e.setManaged(`{"plugins":{"trusted_root":` + strconv.Quote(e.root) + `,"allowed_publishers":[{"identity":"release@acme.example","issuer":"` + plIssuer + `"}]}}`)
 	if cfg := e.load(); len(cfg.LoadedPlugins()) != 1 {
 		t.Fatal("an allowed publisher did not load")
 	}
@@ -475,13 +483,17 @@ func TestPluginInstallFromSource(t *testing.T) {
 		t.Fatalf("install from the source: %s", out)
 	}
 	e.run("approve", "-sha256", digest, acmeName)
-	if cfg := e.load(); len(cfg.LoadedPlugins()) != 1 || cfg.LoadedPlugins()[0].Basis != plugin.BasisSource {
-		t.Fatal("a source's plugin did not load")
+	// What the index vouched for at install is kept as the approval of that
+	// digest: a load trusts it as a pin and never asks the source again.
+	if cfg := e.load(); len(cfg.LoadedPlugins()) != 1 || cfg.LoadedPlugins()[0].Basis != plugin.BasisPin {
+		t.Fatal("a source's plugin did not load as approved by its digest")
 	}
-	// Once the source is gone, its plugin no longer loads.
-	e.setManaged(`{}`)
+	// Editing the decisions file to claim a source changes nothing.
+	state := filepath.Join(e.home, ".abhed", "plugins.json")
+	b, _ := os.ReadFile(state)
+	_ = os.WriteFile(state, []byte(strings.ReplaceAll(string(b), `"pin": "`+digest+`"`, `"pin": ""`)), 0o600)
 	if cfg := e.load(); len(cfg.LoadedPlugins()) != 0 {
-		t.Fatal("a plugin loaded after its source was removed")
+		t.Fatal("a source recorded in the decisions file was taken as trust")
 	}
 	// A source serving another bundle than it lists is refused.
 	e.setManaged(`{"plugins":{"sources":[{"name":"acme","url":"https://abhed.acme.example/v1/plugins/index"}]}}`)
@@ -601,6 +613,33 @@ func TestPluginStateFolderChecked(t *testing.T) {
 	}
 	if _, err := os.Stat(victim); err != nil {
 		t.Fatal("a folder outside the store was removed")
+	}
+}
+
+// A managed publisher list counts a signature only from a root the managed
+// file (or the built-in public-good root) supplies: a CA the person made
+// that issues the listed identity does not satisfy it.
+func TestPluginPersonRootCannotMeetManagedList(t *testing.T) {
+	e := newPluginEnv(t)
+	e.keepRoot() // the person's own root names the test's CA
+	e.setManaged(`{"plugins":{"allowed_publishers":[{"identity":"` + plSigner + `","issuer":"` + plIssuer + `"}]}}`)
+	dir, digest := e.signedBundle(pluginSpec())
+	if code, out := e.run("install", dir); code == 0 || !strings.Contains(out, "does not admit") {
+		t.Fatalf("installed on the person's own root: %s", out)
+	}
+	// Even approved behind policy's back, it does not load.
+	e.setManaged(`{}`)
+	e.run("publishers", "add", "-issuer", plIssuer, plSigner)
+	if code, out := e.run("install", dir); code != 0 {
+		t.Fatal(out)
+	}
+	e.run("approve", "-sha256", digest, acmeName)
+	if len(e.load().LoadedPlugins()) != 1 {
+		t.Fatal("the person's own publisher, on their own root, did not load")
+	}
+	e.setManaged(`{"plugins":{"allowed_publishers":[{"identity":"` + plSigner + `","issuer":"` + plIssuer + `"}]}}`)
+	if len(e.load().LoadedPlugins()) != 0 {
+		t.Fatal("a managed list took a signature only the person's own root vouches for")
 	}
 }
 

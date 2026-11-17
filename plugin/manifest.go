@@ -180,18 +180,27 @@ func (m *Manifest) texts() []struct {
 	return out
 }
 
-// sensitivePrefixes and sensitiveParts mark environment variables a plugin
-// never reads: Abhed's own, cloud and forge credentials, model providers'
-// keys, and anything named like a secret.
+// sensitivePrefixes, sensitiveParts and sensitiveWords mark environment
+// variables a plugin never reads: Abhed's own, cloud and forge credentials,
+// model providers' keys, and anything named like a secret. It is a
+// best-effort list; what a plugin may read is the env capability, which the
+// person sees and approves.
 var (
-	sensitivePrefixes = []string{"ABHED_", "AWS_", "GITHUB_", "GH_", "GOOGLE_", "GCP_", "GCLOUD_", "AZURE_", "ANTHROPIC_",
-		"OPENAI_", "CLAUDE_", "GEMINI_", "MISTRAL_", "COHERE_", "GROQ_", "HF_", "HUGGING", "OLLAMA_", "VAULT_", "SSH_", "GPG_", "NPM_", "DOCKER_", "KUBE"}
-	sensitiveParts = []string{"KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "PRIVATE", "COOKIE", "SESSION"}
+	sensitivePrefixes = []string{"ABHED_", "AWS_", "GITHUB_", "GH_", "GITLAB_", "GL_", "GOOGLE_", "GCP_", "GCLOUD_", "AZURE_", "AZ_",
+		"ANTHROPIC_", "OPENAI_", "CLAUDE_", "GEMINI_", "MISTRAL_", "COHERE_", "GROQ_", "HF_", "HUGGING", "OLLAMA_",
+		"VAULT_", "SSH_", "GPG_", "NPM_", "DOCKER_", "KUBE", "CI_", "SLACK_", "SENTRY_"}
+	sensitiveParts = []string{"KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "PASSPHRASE", "CREDENTIAL", "PRIVATE", "COOKIE",
+		"SESSION", "WEBHOOK", "DATABASE_URL", "CONN_STR", "CONNSTR", "CONNECTION_STRING", "BEARER", "NETRC", "AUTH"}
+	// Words, between underscores, too short to match inside other words.
+	sensitiveWords = []string{"PASS", "PWD", "PAT", "JWT", "DSN", "OTP", "PIN", "SIG", "CERT"}
+	// A URL named for one of these carries its credentials in it.
+	credentialURL = []string{"DB", "DATABASE", "REDIS", "MONGO", "MONGODB", "POSTGRES", "POSTGRESQL", "PG", "MYSQL", "MARIADB",
+		"AMQP", "RABBIT", "RABBITMQ", "KAFKA", "NATS", "BROKER", "HOOK", "CONN", "DSN", "SMTP", "MQ", "ELASTIC", "SEARCH", "CACHE"}
 )
 
 // SensitiveEnv reports an environment variable a plugin may never send:
 // one named like a credential, or one of a family Abhed, a model provider,
-// a cloud or a forge keeps credentials in.
+// a cloud or a forge keeps credentials in. It is best-effort.
 func SensitiveEnv(name string) bool {
 	u := strings.ToUpper(name)
 	for _, p := range sensitivePrefixes {
@@ -202,6 +211,19 @@ func SensitiveEnv(name string) bool {
 	for _, p := range sensitiveParts {
 		if strings.Contains(u, p) {
 			return true
+		}
+	}
+	words := strings.FieldsFunc(u, func(r rune) bool { return r == '_' })
+	for _, w := range words {
+		if slices.Contains(sensitiveWords, w) {
+			return true
+		}
+	}
+	if len(words) > 1 && (words[len(words)-1] == "URL" || words[len(words)-1] == "URI") {
+		for _, w := range words[:len(words)-1] {
+			if slices.Contains(credentialURL, w) {
+				return true
+			}
 		}
 	}
 	return false

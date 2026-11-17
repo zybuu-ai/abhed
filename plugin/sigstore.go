@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/sha256"
 	"crypto/x509"
+	_ "embed"
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/hex"
@@ -14,8 +15,10 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -57,6 +60,9 @@ func (p Publisher) Valid() error {
 			return err
 		}
 	}
+	if !normalIdentity(strings.TrimSuffix(p.Identity, "*")) {
+		return fmt.Errorf("identity %q holds '..', '.', or an escaped '.' or '/'", p.Identity)
+	}
 	prefix, wild := strings.CutSuffix(p.Identity, "*")
 	if strings.Contains(prefix, "*") {
 		return fmt.Errorf("identity %q: '*' may only end it", p.Identity)
@@ -75,10 +81,31 @@ func (p Publisher) Valid() error {
 	return nil
 }
 
+// normalIdentity reports an identity with no dot segment and no escaped
+// '.' or '/', so a prefix cannot be walked out of: https://x/acme/../evil
+// and https://x/acme/%2e%2e/evil never match https://x/acme/*.
+func normalIdentity(id string) bool {
+	l := strings.ToLower(id)
+	if strings.Contains(l, "%2e") || strings.Contains(l, "%2f") || strings.Contains(l, "%5c") || strings.Contains(l, "\\") {
+		return false
+	}
+	if !strings.Contains(id, "://") {
+		return true
+	}
+	_, rest, _ := strings.Cut(id, "://")
+	for _, seg := range strings.Split(rest, "/") {
+		if seg == "." || seg == ".." {
+			return false
+		}
+	}
+	u, err := url.Parse(id)
+	return err == nil && (u.Path == "" || path.Clean(u.Path) == u.Path || path.Clean(u.Path)+"/" == u.Path)
+}
+
 // Matches reports whether s is this publisher. A publisher that is not
 // Valid matches nobody.
 func (p Publisher) Matches(s Signer) bool {
-	if p.Valid() != nil || p.Issuer != s.Issuer {
+	if p.Valid() != nil || p.Issuer != s.Issuer || !normalIdentity(s.Identity) {
 		return false
 	}
 	if prefix, ok := strings.CutSuffix(p.Identity, "*"); ok {
@@ -147,6 +174,23 @@ func within(t, start, end time.Time) bool {
 	return (start.IsZero() || !t.Before(start)) && (end.IsZero() || !t.After(end))
 }
 
+//go:embed publicgood_trusted_root.json
+var publicGoodRoot []byte
+
+var publicGood = sync.OnceValue(func() *TrustedRoot {
+	r, err := ParseTrustedRoot(publicGoodRoot)
+	if err != nil {
+		panic("plugin: the built-in public-good trusted root does not parse: " + err.Error())
+	}
+	return r
+})
+
+// PublicGoodRoot is the public-good Sigstore instance's trusted root as this
+// build carries it (a snapshot of sigstore/root-signing's
+// targets/trusted_root.json). A bundle signed after a key rotation it does
+// not know needs a newer Abhed or a trusted root given in the configuration.
+func PublicGoodRoot() *TrustedRoot { return publicGood() }
+
 // ParseTrustedRoot reads a Sigstore trusted_root.json.
 func ParseTrustedRoot(data []byte) (*TrustedRoot, error) {
 	var r rootJSON
@@ -192,6 +236,16 @@ func ParseTrustedRoot(data []byte) (*TrustedRoot, error) {
 		start, end, err := l.PublicKey.ValidFor.times()
 		if err != nil {
 			return nil, fmt.Errorf("trusted root: log %d: %w", i, err)
+		}
+		// A Rekor v1 log's id is the SHA-256 of its key, which is what binds
+		// an entry to the key its SET is checked with. Only such logs are
+		// verified here; another kind (a Rekor v2 log's checkpoint key) is
+		// left out, and an ECDSA log whose id is not its key's is refused.
+		if sum := sha256.Sum256(der); !bytes.Equal(sum[:], id) {
+			if _, ecdsaKey := key.(*ecdsa.PublicKey); ecdsaKey {
+				return nil, fmt.Errorf("trusted root: log %d: its keyId is not the SHA-256 of its key", i)
+			}
+			continue
 		}
 		out.tlogs = append(out.tlogs, trustedLog{keyID: id, key: key, start: start, end: end})
 	}
@@ -492,23 +546,42 @@ func verifyWith(key crypto.PublicKey, digest, sig []byte) error {
 func signerOf(c *x509.Certificate) (Signer, error) {
 	var s Signer
 	switch {
-	case len(c.EmailAddresses) > 0:
+	case len(c.EmailAddresses)+len(c.URIs) > 1:
+		return s, errors.New("the signing certificate names more than one identity")
+	case len(c.EmailAddresses) == 1:
 		s.Identity = c.EmailAddresses[0]
-	case len(c.URIs) > 0:
+	case len(c.URIs) == 1:
 		s.Identity = c.URIs[0].String()
 	default:
 		return s, errors.New("the signing certificate names no identity")
 	}
+	var v1, v2 string
+	var hasV1, hasV2 bool
 	for _, ext := range c.Extensions {
 		switch {
 		case ext.Id.Equal(oidIssuerV2):
-			var v string
-			if _, err := asn1.UnmarshalWithParams(ext.Value, &v, "utf8"); err == nil {
-				s.Issuer = v
+			if hasV2 {
+				return s, errors.New("the signing certificate names its issuer twice")
 			}
-		case ext.Id.Equal(oidIssuerV1) && s.Issuer == "":
-			s.Issuer = string(ext.Value)
+			hasV2 = true
+			rest, err := asn1.UnmarshalWithParams(ext.Value, &v2, "utf8")
+			if err != nil || len(rest) > 0 || v2 == "" {
+				return s, errors.New("the signing certificate's issuer extension (1.3.6.1.4.1.57264.1.8) does not read")
+			}
+		case ext.Id.Equal(oidIssuerV1):
+			if hasV1 {
+				return s, errors.New("the signing certificate names its issuer twice")
+			}
+			hasV1, v1 = true, string(ext.Value)
 		}
+	}
+	switch {
+	case hasV1 && hasV2 && v1 != v2:
+		return s, fmt.Errorf("the signing certificate names two issuers, %q and %q", v2, v1)
+	case hasV2:
+		s.Issuer = v2
+	case hasV1:
+		s.Issuer = v1
 	}
 	if s.Issuer == "" {
 		return s, errors.New("the signing certificate names no OIDC issuer")

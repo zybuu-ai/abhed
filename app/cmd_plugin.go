@@ -138,10 +138,10 @@ type pluginCtx struct {
 // trustedRootFile is the person's own copy of a trusted root.
 func (pc *pluginCtx) trustedRootFile() string { return pc.store.TrustedRootFile() }
 
-// trustedRoot is the root a signature is checked against, here and at
-// every load: the managed one, or else the person's own.
-func (pc *pluginCtx) trustedRoot() (*plugin.TrustedRoot, error) {
-	return pc.cfg.PluginTrustedRoot(pc.store)
+// roots are the trusted roots a signature is checked against, here and
+// at every load; see config.PluginRoots.
+func (pc *pluginCtx) roots() (plugin.Roots, error) {
+	return pc.cfg.PluginRoots(pc.store)
 }
 
 // logChange puts a plugin change in ~/.abhed/config-changes.jsonl, which the
@@ -360,23 +360,21 @@ func (pc *pluginCtx) install(arg, pin string) error {
 	}
 	b := f.bundle
 	name := b.Manifest.Name
-	ev := plugin.Evidence{Digest: b.Digest, Pin: pin, Source: f.source}
-	if b.Signature != nil {
-		root, err := pc.trustedRoot()
-		if err != nil {
-			return err
-		}
-		if root == nil {
-			return errors.New("the bundle is signed, but no Sigstore trusted root is set to check it; keep one with abhed plugin trusted-root FILE " +
-				"(it is checked again at every load, so it is kept, not given per install)")
-		}
-		s, err := plugin.VerifySignature(root, b.ManifestBytes, b.Signature, time.Now())
-		if err != nil {
-			pc.logChange("plugin install", name, "", b.Digest, "signature: "+err.Error())
-			return fmt.Errorf("the signature does not verify, so nothing was installed: %w", err)
-		}
-		ev.Signer = &s
+	if pin != "" && pin != b.Digest {
+		pc.logChange("plugin install", name, "", b.Digest, "pin "+pin+" is not the bundle's digest")
+		return fmt.Errorf("the bundle's digest is %s, not the pinned %s", b.Digest, pin)
 	}
+	roots, err := pc.roots()
+	if err != nil {
+		return err
+	}
+	ev, note := plugin.Judge(b, &plugin.Install{Digest: b.Digest, Pin: pin}, roots, time.Now())
+	if b.Signature != nil && ev.Signer == nil && ev.PersonSigner == nil {
+		pc.logChange("plugin install", name, "", b.Digest, "signature: "+note)
+		return fmt.Errorf("the signature does not verify against the managed trusted root, Abhed's built-in public-good root or yours, so nothing was installed (%s)", note)
+	}
+	// Live from the index just fetched, never from saved state.
+	ev.Source = f.source
 	unlock, err := pc.store.Lock()
 	if err != nil {
 		return err
@@ -386,10 +384,15 @@ func (pc *pluginCtx) install(arg, pin string) error {
 	if err != nil {
 		return err
 	}
-	basis, err := pc.cfg.PluginPolicy().Admit(ev, st.Publishers)
+	basis, signer, err := pc.cfg.PluginPolicy().Decide(ev, st.Publishers)
 	if err != nil {
 		pc.logChange("plugin install", name, "", b.Digest, err.Error())
 		return fmt.Errorf("%s was not installed: %w", name, err)
+	}
+	if basis == plugin.BasisSource {
+		// What the index vouched for is kept as the approval of exactly
+		// this digest; a load never asks the source, or the state, again.
+		pin = b.Digest
 	}
 	if !plugin.AtLeast(runningVersion(), b.Manifest.Abhed) {
 		return fmt.Errorf("%s %s needs Abhed %s or later", name, b.Manifest.Version, b.Manifest.Abhed)
@@ -398,7 +401,7 @@ func (pc *pluginCtx) install(arg, pin string) error {
 	for _, l := range plugin.Describe(b) {
 		fmt.Fprintln(out, l)
 	}
-	fmt.Fprintf(out, "Trusted by: %s\n", basisText(basis, ev.Signer))
+	fmt.Fprintf(out, "Trusted by: %s\n", basisText(basis, signer))
 	by := "plugin install"
 	if e := st.Plugins[name]; e != nil && e.Approved != nil {
 		old, err := pc.store.Open(name, e.Approved)
@@ -410,7 +413,7 @@ func (pc *pluginCtx) install(arg, pin string) error {
 		}
 		by = "plugin upgrade"
 	}
-	inst, err := pc.store.Stage(st, b, plugin.Install{Basis: basis, Signer: ev.Signer, Pin: pin, Source: f.source, From: f.from})
+	inst, err := pc.store.Stage(st, b, plugin.Install{Basis: basis, Signer: signer, Pin: pin, Source: f.source, From: f.from})
 	if err != nil {
 		return err
 	}
@@ -469,11 +472,11 @@ func (pc *pluginCtx) approve(name, digest string) error {
 	if err != nil {
 		return err
 	}
-	root, err := pc.trustedRoot()
+	roots, err := pc.roots()
 	if err != nil {
 		return err
 	}
-	ev, note := plugin.Judge(b, e.Pending, root, time.Now())
+	ev, note := plugin.Judge(b, e.Pending, roots, time.Now())
 	if _, err := pc.cfg.PluginPolicy().Admit(ev, st.Publishers); err != nil {
 		if note != "" {
 			err = fmt.Errorf("%w (%s)", err, note)
@@ -590,8 +593,8 @@ func (pc *pluginCtx) list(asJSON bool) error {
 			if b, err := pc.store.Open(n, e.Approved); err != nil {
 				r.Why = err.Error()
 			} else {
-				root, _ := pc.trustedRoot()
-				ev, note := plugin.Judge(b, e.Approved, root, time.Now())
+				roots, _ := pc.roots()
+				ev, note := plugin.Judge(b, e.Approved, roots, time.Now())
 				if _, err := pc.cfg.PluginPolicy().Admit(ev, st.Publishers); err != nil {
 					r.Why = err.Error()
 					if note != "" {
@@ -786,9 +789,8 @@ func (pc *pluginCtx) setTrustedRoot(p string) error {
 	}
 	pc.logChange("plugin trusted-root", "", "", plugin.Digest(data), "")
 	fmt.Fprintf(pc.io.out, "Signatures are now checked against %s.\n", pc.trustedRootFile())
-	if pc.cfg.Plugins.TrustedRoot != "" {
-		fmt.Fprintln(pc.io.out, "The managed configuration names its own trusted root, which is used instead while it does.")
-	}
+	fmt.Fprintln(pc.io.out, "It is used for your own publishers only. An allow list in the managed configuration or the org policy takes only "+
+		"a signature that verifies against the managed trusted root, or Abhed's built-in public-good root.")
 	return nil
 }
 

@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -355,7 +357,7 @@ func TestPublisherWildcard(t *testing.T) {
 // credential's name is never one.
 func TestHeadersEnv(t *testing.T) {
 	spec := sample()
-	spec.MCPServers[0].HeadersEnv = map[string]string{"Authorization": "ACME_TICKETS_BEARER"}
+	spec.MCPServers[0].HeadersEnv = map[string]string{"Authorization": "ACME_TICKETS_HEADER"}
 	dir := filepath.Join(t.TempDir(), "b")
 	plugintest.Write(dir, spec)
 	b, err := plugin.Open(dir)
@@ -363,13 +365,13 @@ func TestHeadersEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := strings.Join(plugin.Describe(b), "\n")
-	if !strings.Contains(out, "header Authorization <- $ACME_TICKETS_BEARER") || !strings.Contains(out, "env      ACME_TICKETS_BEARER") {
+	if !strings.Contains(out, "header Authorization <- $ACME_TICKETS_HEADER") || !strings.Contains(out, "env      ACME_TICKETS_HEADER") {
 		t.Fatalf("the approval does not show the header:\n%s", out)
 	}
 	// Under-declared: the manifest must request the variable.
 	spec.Capabilities = &plugin.Capabilities{Tools: []string{"grep", "read"}, Egress: []string{"tickets.acme.example"}, Hooks: []string{"tool_call"}, MCPServers: []string{"tickets"}}
 	plugintest.Write(dir, spec)
-	if _, err := plugin.Open(dir); err == nil || !strings.Contains(err.Error(), "env ACME_TICKETS_BEARER") {
+	if _, err := plugin.Open(dir); err == nil || !strings.Contains(err.Error(), "env ACME_TICKETS_HEADER") {
 		t.Fatalf("an undeclared env opened: %v", err)
 	}
 	for _, name := range []string{"ANTHROPIC_API_KEY", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "ABHED_SESSION", "OPENAI_API_KEY", "MY_PASSWORD",
@@ -386,7 +388,7 @@ func TestHeadersEnv(t *testing.T) {
 	// An upgrade that adds one says so.
 	old, _ := plugin.Open(writeSample(t, sample()))
 	diff := strings.Join(plugin.Diff(old, b), "\n")
-	if !strings.Contains(diff, "+ requests env ACME_TICKETS_BEARER") || !strings.Contains(diff, "header Authorization <- $ACME_TICKETS_BEARER") {
+	if !strings.Contains(diff, "+ requests env ACME_TICKETS_HEADER") || !strings.Contains(diff, "header Authorization <- $ACME_TICKETS_HEADER") {
 		t.Fatalf("the diff hides the header:\n%s", diff)
 	}
 }
@@ -480,7 +482,7 @@ func TestStoreLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Pending content never loads.
-	if got, _ := plugin.LoadAll(s, plugin.Policy{}, "1.3.0", nil); len(got) != 0 {
+	if got, _ := plugin.LoadAll(s, plugin.Policy{}, "1.3.0", plugin.Roots{}); len(got) != 0 {
 		t.Fatalf("pending content loaded: %+v", got)
 	}
 	st, _ = s.Read()
@@ -491,7 +493,7 @@ func TestStoreLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = s.Write(st)
-	got, warns := plugin.LoadAll(s, plugin.Policy{}, "1.3.0", nil)
+	got, warns := plugin.LoadAll(s, plugin.Policy{}, "1.3.0", plugin.Roots{})
 	if len(got) != 1 || len(warns) != 0 {
 		t.Fatalf("approved plugin: %+v %v", got, warns)
 	}
@@ -501,17 +503,17 @@ func TestStoreLifecycle(t *testing.T) {
 		t.Fatalf("loaded = %+v", l)
 	}
 	// Policy applies at load: disabled loads nothing.
-	if got, _ := plugin.LoadAll(s, plugin.Policy{Disabled: true}, "1.3.0", nil); len(got) != 0 {
+	if got, _ := plugin.LoadAll(s, plugin.Policy{Disabled: true}, "1.3.0", plugin.Roots{}); len(got) != 0 {
 		t.Fatal("loaded under plugins.disabled")
 	}
-	if got, w := plugin.LoadAll(s, plugin.Policy{RequireSignature: true}, "1.3.0", nil); len(got) != 0 || len(w) != 1 {
+	if got, w := plugin.LoadAll(s, plugin.Policy{RequireSignature: true}, "1.3.0", plugin.Roots{}); len(got) != 0 || len(w) != 1 {
 		t.Fatal("an unsigned plugin loaded under require_signature")
 	}
 	// A file changed on disk after approval stops the plugin loading.
 	hook := filepath.Join(l.Root, "hooks", "no-rm.sh")
 	orig, _ := os.ReadFile(hook)
 	_ = os.WriteFile(hook, []byte("#!/bin/sh\nexit 0\n#x\n"), 0o600)
-	if got, w := plugin.LoadAll(s, plugin.Policy{}, "1.3.0", nil); len(got) != 0 || len(w) != 1 || !strings.Contains(w[0], "sha256") {
+	if got, w := plugin.LoadAll(s, plugin.Policy{}, "1.3.0", plugin.Roots{}); len(got) != 0 || len(w) != 1 || !strings.Contains(w[0], "sha256") {
 		t.Fatalf("a tampered plugin loaded: %v", w)
 	}
 	_ = os.WriteFile(hook, orig, 0o600)
@@ -528,7 +530,7 @@ func TestStoreLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = s.Write(st)
-	if got, _ := plugin.LoadAll(s, plugin.Policy{}, "1.3.0", nil); len(got) != 1 || got[0].Version != "1.0.0" {
+	if got, _ := plugin.LoadAll(s, plugin.Policy{}, "1.3.0", plugin.Roots{}); len(got) != 1 || got[0].Version != "1.0.0" {
 		t.Fatalf("during an upgrade the approved version must keep loading: %+v", got)
 	}
 	diff := strings.Join(plugin.Diff(b, b2), "\n")
@@ -560,5 +562,82 @@ func TestStoreLifecycle(t *testing.T) {
 func TestVersionGate(t *testing.T) {
 	if !plugin.AtLeast("1.3.0", "1.3.0") || plugin.AtLeast("1.2.9", "1.3.0") || !plugin.AtLeast("dev", "9.9.9") || !plugin.AtLeast("v1.10.0", "1.9.9") {
 		t.Fatal("AtLeast")
+	}
+}
+
+// The best-effort list of names a plugin never sends.
+func TestSensitiveEnvNames(t *testing.T) {
+	for _, n := range []string{"DB_PASS", "AZ_PWD", "GITLAB_PAT", "CI_JOB_JWT", "SENTRY_DSN", "SLACK_WEBHOOK_URL", "DATABASE_URL",
+		"CONN_STR", "MY_CONNECTION_STRING", "AUTH_HEADER", "BEARER", "NETRC", "REDIS_URL", "APP_DB_URL", "X_PASSPHRASE"} {
+		if !plugin.SensitiveEnv(n) {
+			t.Errorf("%s passes", n)
+		}
+	}
+	for _, n := range []string{"ACME_TICKETS_HEADER", "PATH_PREFIX", "TICKETS_URL", "PASSAGE_ID", "ACME_REGION"} {
+		if plugin.SensitiveEnv(n) {
+			t.Errorf("%s is refused", n)
+		}
+	}
+}
+
+// A signer identity that walks out of a prefix never matches it.
+func TestIdentityNormalised(t *testing.T) {
+	iss := "https://token.actions.githubusercontent.com"
+	p := plugin.Publisher{Identity: "https://github.com/acme/*", Issuer: iss}
+	for _, id := range []string{"https://github.com/acme/../evil/r", "https://github.com/acme/%2e%2e/evil", "https://github.com/acme/%2Fevil",
+		"https://github.com/acme/./x", "https://github.com/acme//evil"} {
+		if p.Matches(plugin.Signer{Identity: id, Issuer: iss}) {
+			t.Errorf("%s matched", id)
+		}
+	}
+	if !p.Matches(plugin.Signer{Identity: "https://github.com/acme/plugins/.github/workflows/r.yml@refs/tags/v1", Issuer: iss}) {
+		t.Error("a plain identity did not match")
+	}
+	for _, id := range []string{"https://github.com/acme/../*", "https://github.com/acme/%2e/*"} {
+		if (plugin.Publisher{Identity: id, Issuer: iss}).Valid() == nil {
+			t.Errorf("%s is valid", id)
+		}
+	}
+}
+
+// A certificate naming two identities, two different issuers, or an issuer
+// extension that does not read is refused.
+func TestCertificateIdentityStrict(t *testing.T) {
+	ss := plugintest.NewSigstore()
+	root, _ := plugin.ParseTrustedRoot(ss.TrustedRoot())
+	m := []byte("manifest")
+	for name, o := range map[string]plugintest.CertOptions{
+		"email and URI":    {Identities: []string{signer, "https://github.com/acme/x"}, Issuer: issuer},
+		"two emails":       {Identities: []string{signer, "other@acme.example"}, Issuer: issuer},
+		"v1 and v2 differ": {Identities: []string{signer}, Issuer: issuer, IssuerV1: "https://evil.example"},
+		"malformed v2":     {Identities: []string{signer}, RawV2: []byte{0x0c, 0x05, 'a'}, IssuerV1: issuer},
+		"no issuer at all": {Identities: []string{signer}, NoV2: true},
+	} {
+		if _, err := plugin.VerifySignature(root, m, ss.SignWith(m, o), time.Now()); err == nil {
+			t.Errorf("%s: verified", name)
+		}
+	}
+	for name, o := range map[string]plugintest.CertOptions{
+		"v1 only":         {Identities: []string{signer}, NoV2: true, IssuerV1: issuer},
+		"v1 and v2 agree": {Identities: []string{signer}, Issuer: issuer, IssuerV1: issuer},
+	} {
+		if s, err := plugin.VerifySignature(root, m, ss.SignWith(m, o), time.Now()); err != nil || s.Issuer != issuer {
+			t.Errorf("%s: %v %+v", name, err, s)
+		}
+	}
+}
+
+// A trusted root whose ECDSA log keyId is not its key's hash is refused.
+func TestTrustedRootKeyIDBound(t *testing.T) {
+	var r map[string]any
+	_ = json.Unmarshal(plugintest.NewSigstore().TrustedRoot(), &r)
+	r["tlogs"].([]any)[0].(map[string]any)["logId"] = map[string]any{"keyId": base64.StdEncoding.EncodeToString(make([]byte, 32))}
+	b, _ := json.Marshal(r)
+	if _, err := plugin.ParseTrustedRoot(b); err == nil || !strings.Contains(err.Error(), "keyId") {
+		t.Fatalf("a mismatched keyId was taken: %v", err)
+	}
+	// The public-good root, with its Rekor v2 log left out, parses.
+	if plugin.PublicGoodRoot() == nil {
+		t.Fatal("no built-in root")
 	}
 }

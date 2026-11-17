@@ -52,15 +52,25 @@ func HookName(plugin, hook string) string { return plugin + "/" + hook }
 // mcp__<plugin>-<server>__* and no rule written for another server matches.
 func ServerName(plugin, server string) string { return plugin + "-" + server }
 
+// Roots are the trusted roots signatures are checked against.
+type Roots struct {
+	// Org is the root a signer must verify against to count toward an allow
+	// list or require_signature: the managed trusted_root, or else Abhed's
+	// built-in public-good root. Never one the person chose.
+	Org *TrustedRoot
+	// Person is the root for the person's own publishers: their own, or Org.
+	Person *TrustedRoot
+}
+
 // LoadAll reads every approved plugin that today's policy still admits.
 // Each one refused is a warning, never an error: one bad plugin must not
 // stop a session, and it never loads in part.
 //
 // What is judged is read from the plugin's folder, not taken from the
 // decisions file: the digest is the manifest's, hashed now, and the signer
-// is the staged signature verified now against root. A signature that does
-// not verify, or root nil, leaves the bundle judged as unsigned.
-func LoadAll(s *Store, p Policy, abhedVersion string, root *TrustedRoot) ([]Loaded, []string) {
+// is the staged signature verified now against roots. A signature that does
+// not verify leaves the bundle judged as unsigned.
+func LoadAll(s *Store, p Policy, abhedVersion string, roots Roots) ([]Loaded, []string) {
 	st, err := s.Read()
 	if err != nil {
 		return nil, []string{fmt.Sprintf("plugins: %v; none loaded", err)}
@@ -83,8 +93,8 @@ func LoadAll(s *Store, p Policy, abhedVersion string, root *TrustedRoot) ([]Load
 			warns = append(warns, fmt.Sprintf("plugin %s is not loaded: %v", name, err))
 			continue
 		}
-		ev, note := Judge(b, e.Approved, root, time.Now())
-		basis, err := p.Admit(ev, st.Publishers)
+		ev, note := Judge(b, e.Approved, roots, time.Now())
+		basis, signer, err := p.Decide(ev, st.Publishers)
 		if err != nil {
 			if note != "" {
 				err = fmt.Errorf("%w (%s)", err, note)
@@ -96,27 +106,44 @@ func LoadAll(s *Store, p Policy, abhedVersion string, root *TrustedRoot) ([]Load
 			warns = append(warns, fmt.Sprintf("plugin %s is not loaded: it needs Abhed %s or later", name, b.Manifest.Abhed))
 			continue
 		}
-		out = append(out, toLoaded(b, s.Path(name, e.Approved), basis, ev.Signer))
+		out = append(out, toLoaded(b, s.Path(name, e.Approved), basis, signer))
 	}
 	return out, warns
 }
 
-// Judge is the evidence a policy judges an installed bundle on: its digest
-// as hashed, its staged signature verified now (nil signer when it is
-// absent or does not verify, with note saying why), and the pin and source
-// the person's approval of exactly that digest recorded.
-func Judge(b *Bundle, inst *Install, root *TrustedRoot, now time.Time) (Evidence, string) {
+// Judge is the evidence a policy judges an installed bundle on, all of it
+// checked now: its digest as hashed, its staged signature verified against
+// each root (nil signers when it is absent or does not verify, with note
+// saying why), and the pin the person's approval of exactly that digest
+// recorded. A source is never taken from the decisions file: what an index
+// vouched for at install was recorded as that approval.
+func Judge(b *Bundle, inst *Install, roots Roots, now time.Time) (Evidence, string) {
 	ev := Evidence{Digest: b.Digest}
-	if inst != nil && inst.Digest == b.Digest {
-		ev.Pin, ev.Source = inst.Pin, inst.Source
+	if inst != nil && inst.Digest == b.Digest && inst.Pin == b.Digest {
+		ev.Pin = inst.Pin
+	}
+	if b.Signature == nil {
+		return ev, ""
+	}
+	var notes []string
+	verify := func(root *TrustedRoot) *Signer {
+		if root == nil {
+			return nil
+		}
+		s, err := VerifySignature(root, b.ManifestBytes, b.Signature, now)
+		if err != nil {
+			notes = append(notes, err.Error())
+			return nil
+		}
+		return &s
+	}
+	ev.Signer = verify(roots.Org)
+	if roots.Person != nil && roots.Person != roots.Org {
+		ev.PersonSigner = verify(roots.Person)
 	}
 	note := ""
-	if b.Signature != nil {
-		if s, err := VerifySignature(root, b.ManifestBytes, b.Signature, now); err == nil {
-			ev.Signer = &s
-		} else {
-			note = "its signature was not taken: " + err.Error()
-		}
+	if ev.Signer == nil && ev.PersonSigner == nil && len(notes) > 0 {
+		note = "its signature was not taken: " + strings.Join(notes, "; ")
 	}
 	return ev, note
 }

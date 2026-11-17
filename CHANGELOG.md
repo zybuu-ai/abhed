@@ -142,8 +142,10 @@ All notable changes to Abhed are recorded here. The format follows
     with control or invisible characters are refused. The bundle stays off until
     you approve that exact content (`-sha256` approves without a prompt).
   - **Trust** comes from a Sigstore keyless signature (bundle 0.2 or 0.3, Rekor
-    v1), checked offline against a trusted root and checked again at every load,
-    from a publisher you trust. A SHA-256 pin serves air-gapped sites. A server's
+    v1), checked offline and checked again at every load, from a publisher you
+    trust. An allow list counts only a signature that verifies against the
+    managed `plugins.trusted_root`, or the public-good root built into Abhed.
+    Your own root counts for your own publishers. A SHA-256 pin serves air-gapped sites. A server's
     `headers_env` may not name a variable that looks like a credential.
   - **A plugin adds content, never policy.** Its hooks only block and run in the
     sandbox. Its servers face `mcp.allowed`/`mcp.denied` and never get the
@@ -165,12 +167,14 @@ All notable changes to Abhed are recorded here. The format follows
   - Package `config` gains the `plugins` section: `PluginsConfig`, with
     `disabled`, `require_signature`, `allowed_publishers`, `allowed_bundles`,
     `sources`, `org_source` and `trusted_root`. It is managed-only.
-  - New methods and functions: `Config.PluginPolicy`, `Config.PluginTrustedRoot`,
+  - New methods and functions: `Config.PluginPolicy`, `Config.PluginRoots`,
     `Config.LoadedPlugins`, `Config.DropPlugins`, `Config.PluginServer`,
     `PluginLayer`, `IsPluginLayer` and `SetVersion`.
   - New constants: `OrgSourceName` and `OrgPluginIndex`.
-  - `LoadedPlugins` and `PluginPolicy` return types from package `plugin`, so
-    they are experimental with it.
+  - `LoadedPlugins`, `PluginPolicy` and `PluginRoots` return types from
+    package `plugin`, so they are experimental with it.
+  - The `plugin` package embeds a snapshot of the public-good Sigstore trusted
+    root (`PublicGoodRoot`).
 - `abhed bg start` sends a snapshot of the repository it runs in, so a
   background job works on your code: the tracked files as they are in the
   working tree, without anything your read rules withhold, anything named

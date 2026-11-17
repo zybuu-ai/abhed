@@ -45,13 +45,13 @@ It adds:
   skill    lint
   command  /acme-check
   hook     acme-review/no-rm on tool_call: sh ${ABHED_PLUGIN_ROOT}/hooks/no-rm.sh
-  mcp      acme-review-tickets: https://tickets.acme.example/mcp (header Authorization <- $ACME_TICKETS_BEARER)
+  mcp      acme-review-tickets: https://tickets.acme.example/mcp (header Authorization <- $ACME_TICKETS_HEADER)
 It requests:
   tools    grep, read
   egress   tickets.acme.example
   hooks    tool_call
   mcp      tickets
-  env      ACME_TICKETS_BEARER (sent as headers to its servers)
+  env      ACME_TICKETS_HEADER (sent as headers to its servers)
 Trusted by: a Sigstore signature from release@acme.example (https://token.actions.githubusercontent.com)
 Installed acme-review 1.0.0, waiting for approval: it does not load until approved.
 ```
@@ -97,9 +97,24 @@ log and carry its signed entry timestamp, which is what makes an offline check
 possible. An entry from a Rekor v2 log has none, and is refused with a message
 saying so.
 
-Abhed checks the signature offline against a Sigstore trusted root, which is a
-`trusted_root.json` file you or your organisation provide. It is kept, not
-given per install, because each load checks the signature again:
+Abhed checks the signature offline against Sigstore trusted roots
+(`trusted_root.json`). There are two, and which one a signature verifies
+against decides what it counts for:
+
+- **The org root** is the managed file's `plugins.trusted_root`. If the managed
+  file names none, it is the public-good root this build carries: a snapshot
+  of `sigstore/root-signing`'s `targets/trusted_root.json`. Only a signature
+  that verifies against the org root counts toward `allowed_publishers` and
+  `require_signature`. A root you choose never does, so a CA you made cannot
+  issue the identity an organisation's list names.
+- **Your root** is the one you keep with `abhed plugin trusted-root`, or the
+  org root when you keep none. A signature that verifies only against it
+  counts for your own publishers alone.
+
+Roots are kept, not given per install, because each load checks the
+signature again. A bundle signed after a public-good key rotation that this
+build does not know about needs a newer Abhed, or a root given in the
+configuration.
 
 ```sh
 abhed plugin trusted-root ./trusted_root.json      # kept as ~/.abhed/plugin-trusted-root.json
@@ -115,16 +130,19 @@ this signature. The signature must verify too. Not checked: the certificate's
 CT SCTs, and the log's inclusion proof and checkpoint.
 
 The signer is the certificate's identity (an email or a URI) and its OIDC
-issuer. A URI identity may end in `*` right after a `/` or `@`, to match any
+issuer. A certificate that names more than one identity, or two different
+issuers in its v1 (`1.3.6.1.4.1.57264.1.1`) and v2 (`.1.8`) extensions, or a
+v2 issuer that does not read, is refused. An identity with a `.` or `..` path
+segment, or an escaped `.`, `/` or `\`, matches no publisher. A URI identity may end in `*` right after a `/` or `@`, to match any
 identity it starts with, such as a workflow at any tag. An email identity is
 always named whole. A signature that does not verify is refused at install;
 it is never treated as unsigned.
 
-At every load the staged signature is verified again against the trusted root
-in force. The signer that counts, and that the record names, is the one that
+At every load the staged signature is verified again against the roots in
+force. The signer that counts, and that the record names, is the one that
 verifies then. What `~/.abhed/plugins.json` says about the signer is for you
-to read, and nothing trusts it. With no trusted root, or a signature that no
-longer verifies, the bundle counts as unsigned and loads only on a pin.
+to read, and nothing trusts it. A signature that no longer verifies counts as
+none, and the bundle then loads only on a pin.
 
 **A SHA-256 pin**, for air-gapped sites. Check where the bundle came from,
 then pin its manifest's digest:
@@ -210,7 +228,7 @@ declared in the manifest, so the signature covers them:
   ],
   "mcp_servers": [
     {"name": "tickets", "url": "https://tickets.acme.example/mcp",
-     "headers_env": {"Authorization": "ACME_TICKETS_BEARER"}}
+     "headers_env": {"Authorization": "ACME_TICKETS_HEADER"}}
   ],
   "files": [],
   "capabilities": {}
@@ -225,17 +243,24 @@ servers send as headers (`env`). A bundle whose content needs a capability the
 manifest does not request is refused. Then sign the manifest with cosign.
 
 A server's `headers_env` maps a header to an environment variable you set for
-that plugin. Some names are refused:
+that plugin. These names are refused:
 
 - names that contain `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`,
-  `CREDENTIAL`, `PRIVATE`, `COOKIE` or `SESSION`;
-- names that start with `ABHED_`, `AWS_`, `GITHUB_`, `GH_`, `GOOGLE_`, `GCP_`,
-  `GCLOUD_`, `AZURE_`, `ANTHROPIC_`, `OPENAI_`, `CLAUDE_`, `GEMINI_`,
-  `MISTRAL_`, `COHERE_`, `GROQ_`, `HF_`, `HUGGING`, `OLLAMA_`, `VAULT_`,
-  `SSH_`, `GPG_`, `NPM_`, `DOCKER_` or `KUBE`.
+  `PASSPHRASE`, `CREDENTIAL`, `PRIVATE`, `COOKIE`, `SESSION`, `WEBHOOK`,
+  `DATABASE_URL`, `CONN_STR`, `CONNSTR`, `CONNECTION_STRING`, `BEARER`,
+  `NETRC` or `AUTH`;
+- names with one of these words between underscores: `PASS`, `PWD`, `PAT`,
+  `JWT`, `DSN`, `OTP`, `PIN`, `SIG`, `CERT`;
+- a `…_URL` or `…_URI` named for a database, cache, broker or hook, such as
+  `REDIS_URL` or `APP_DB_URL`;
+- names that start with `ABHED_`, `AWS_`, `GITHUB_`, `GH_`, `GITLAB_`, `GL_`,
+  `GOOGLE_`, `GCP_`, `GCLOUD_`, `AZURE_`, `AZ_`, `ANTHROPIC_`, `OPENAI_`,
+  `CLAUDE_`, `GEMINI_`, `MISTRAL_`, `COHERE_`, `GROQ_`, `HF_`, `HUGGING`,
+  `OLLAMA_`, `VAULT_`, `SSH_`, `GPG_`, `NPM_`, `DOCKER_`, `KUBE`, `CI_`,
+  `SLACK_` or `SENTRY_`.
 
-A plugin can therefore never send a credential you already keep for something
-else. An upgrade that adds a header or a variable lists it among the changes,
+This list is best-effort: a credential can be named anything. What a plugin
+may send is the `env` it requests, which the approval shows by name. An upgrade that adds a header or a variable lists it among the changes,
 and it waits for your approval like the rest.
 
 `${ABHED_PLUGIN_ROOT}` in a hook command or a server's command and arguments
@@ -270,7 +295,7 @@ file never set it: what they write there is set aside.
 | `allowed_publishers`, `allowed_bundles` | when either is set, a bundle must be signed by a listed publisher or have a listed digest |
 | `sources` | plugin indexes; when set, installs come only from them: by name, or a URL under one |
 | `org_source` | adds the org server this machine takes its signed policy from as the source `org` |
-| `trusted_root` | the Sigstore trusted root signatures are checked against, at install and at every load; yours is then not taken |
+| `trusted_root` | the org root: the only Sigstore root a signature may verify against to count toward `allowed_publishers` and `require_signature` (otherwise the built-in public-good root); yours still serves your own publishers |
 
 The policy is applied again on every load, so a change by the organisation
 unloads a plugin that no longer passes. An org policy may set `disabled` and
@@ -287,9 +312,16 @@ Passing a list is enough to trust a bundle when it is the machine's list, or
 the list of an org policy whose keys the machine pins (`org_policy.keys`).
 An org whose keys are not pinned only narrows. The trust must then come from
 you, through a publisher you added or a pin. Your own publishers count only
-for bundles every list allows. The `org` source is trusted on the same terms:
-when the machine's file turns it on, or the org's keys are pinned. Otherwise
-a bundle from it needs a signature or a pin like any other.
+for bundles every list allows. An org policy grants only while it is fresh
+and verified. A stale, refused, wrong-tenant or fallback policy keeps its
+lists, which still narrow, but they never grant.
+
+The `org` source is trusted on the same terms: when the machine's file turns
+it on, or the org's keys are pinned. Otherwise a bundle from it needs a
+signature or a pin like any other. When a trusted source's index vouches for
+a digest at install, that is recorded as your approval of exactly that digest.
+A load treats it as a pin, and never asks the source again or takes a source
+from `plugins.json`.
 
 A source is a JSON index:
 

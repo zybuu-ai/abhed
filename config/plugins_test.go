@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/orgpolicy"
 	"github.com/zybuu-ai/abhed/plugin"
 )
 
@@ -178,5 +179,43 @@ func TestOrgPluginListsAreALayer(t *testing.T) {
 	}
 	if !slices.Contains(cfg.OrgPolicy.Keys, "plugins.allowed_bundles") {
 		t.Errorf("org keys %v", cfg.OrgPolicy.Keys)
+	}
+}
+
+// A pinned org's lists grant only from a fresh, verified policy: stale, it
+// still narrows (its lists are kept) but never grants.
+func TestStalePinnedOrgPluginListsOnlyNarrow(t *testing.T) {
+	f := newOrg(t)
+	withManaged(t, `{"org_policy":{"url":"https://org.example","keys":["`+orgpolicy.EncodeKey(f.pub)+`"]}}`)
+	x := strings.Repeat("1", 64)
+	doc := `{"plugins":{"allowed_bundles":["` + x + `"]}}`
+	f.write(t, doc, time.Now())
+	cfg, err := LoadWith(t.TempDir(), LoadOptions{Warn: func(string) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OrgPolicy.Status != orgpolicy.StatusApplied {
+		t.Fatalf("status %+v", cfg.OrgPolicy)
+	}
+	if basis, err := cfg.PluginPolicy().Admit(plugin.Evidence{Digest: x}, nil); err != nil || basis != plugin.BasisOrgPin {
+		t.Fatalf("a fresh pinned org's digest did not grant: %q %v", basis, err)
+	}
+	f.write(t, doc, time.Now().Add(-48*time.Hour))
+	cfg, err = LoadWith(t.TempDir(), LoadOptions{Warn: func(string) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OrgPolicy.Status != orgpolicy.StatusFallback {
+		t.Fatalf("status %+v", cfg.OrgPolicy)
+	}
+	pol := cfg.PluginPolicy()
+	if _, err := pol.Admit(plugin.Evidence{Digest: x}, nil); err == nil {
+		t.Fatal("a stale pinned org policy still granted")
+	}
+	if _, err := pol.Admit(plugin.Evidence{Digest: strings.Repeat("2", 64), Pin: strings.Repeat("2", 64)}, nil); err == nil {
+		t.Fatal("a stale org list stopped narrowing")
+	}
+	if _, err := pol.Admit(plugin.Evidence{Digest: x, Pin: x}, nil); err != nil {
+		t.Fatalf("a pinned bundle the stale list allows: %v", err)
 	}
 }
