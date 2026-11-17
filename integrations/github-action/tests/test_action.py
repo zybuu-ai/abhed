@@ -18,6 +18,7 @@ import sys
 import tarfile
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -677,6 +678,15 @@ class RunTest(Tmp):
         for leaked in ("GITHUB_TOKEN", "ACTIONS_RUNTIME_TOKEN", "GITHUB_OUTPUT", "ABHED_TASK"):
             self.assertNotIn(leaked, env)
 
+    def test_what_stays_in_the_runs_group_is_ended(self):
+        # The fake leaves a child in its own process group, which run.sh made
+        # for it, then exits; nothing else is in that group.
+        self.write("bin/abhed", FAKE_ABHED.replace('env > "$out.env"', 'env > "$out.env"; (sleep 2; touch "$(dirname "$0")/late") &'), 0o755)
+        r = self.run_sh()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        time.sleep(3)
+        self.assertFalse(os.path.exists(self.path("bin", "late")), "a process left in the run's group outlived the step")
+
     def test_the_runs_folders_are_never_in_runner_temp(self):
         r = self.run_sh(HOME=os.path.join(self.runner_temp(), "home"))
         self.assertEqual(r.returncode, 2)
@@ -1105,7 +1115,7 @@ class EndToEnd(Tmp):
     def test_run_mode_records_and_verifies(self):
         # The command uses TMPDIR too, as go build and go test do: it must
         # exist inside the sandbox (bubblewrap's private /tmp on Linux).
-        cmd = 'touch made-in-ci && t="$(mktemp -t abhed-e2e)" && echo tmp-ok > "$t" && cat "$t" && echo "made $t"'
+        cmd = 'touch made-in-ci && t="$(mktemp -t abhed-e2e.XXXXXX)" && echo tmp-ok > "$t" && cat "$t" && echo "made $t"'
         m = ScriptedModel([{"tool": "bash", "args": {"command": cmd, "description": "probe"}}, {"text": "done"}])
         self.addCleanup(m.close)
         o, r = self.run_real(m, ABHED_TASK="make a file", ABHED_PERMISSION_MODE="default",
@@ -1123,6 +1133,18 @@ class EndToEnd(Tmp):
         v = subprocess.run([BIN, "record", "verify", self.path("ev", "record.jsonl")], capture_output=True, text=True,
                            env={"PATH": os.environ["PATH"], "HOME": self.path("home2")})
         self.assertEqual(v.returncode, 0, v.stdout + v.stderr)
+
+    @unittest.skipUnless(os.environ.get("ABHED_TEST_PROCESS_KILL") == "1",
+                         "starts and ends real processes: set ABHED_TEST_PROCESS_KILL=1 on a throwaway runner")
+    def test_a_detached_process_does_not_outlive_the_step(self):
+        # nohup and & leave a process that would write after the run ended.
+        cmd = "(nohup sh -c 'sleep 3; touch late' >/dev/null 2>&1 &) ; echo started"
+        m = ScriptedModel([{"tool": "bash", "args": {"command": cmd, "description": "probe"}}, {"text": "done"}])
+        self.addCleanup(m.close)
+        o, r = self.run_real(m, ABHED_TASK="start it", ABHED_PERMISSION_MODE="default", ABHED_ALLOW="bash", ABHED_VERIFY="label")
+        self.assertEqual(o["exit-code"], "0", r.stderr)
+        time.sleep(5)
+        self.assertFalse(os.path.exists(self.path("ws", "late")), "a process the run started wrote after the step")
 
     def test_run_mode_refuses_what_is_not_allowed(self):
         m = ScriptedModel([{"tool": "bash", "args": {"command": "touch not-allowed", "description": "probe"}}, {"text": "done"}])

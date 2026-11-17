@@ -159,6 +159,12 @@ open it from a fork. Everything the agent reads is theirs.
 
 **Not defended.**
 
+- On a macOS runner, a process the run started that escapes the engine's
+  process cleanup (see [The GitHub Action](38-github-action.md)) could
+  write after the review. The review runs no command (`read`, `glob` and
+  `grep` only), so it starts none; a run mode task on macOS is where it
+  matters.
+
 - A wrong review. The model can miss a bug, invent one, or be steered by
   the pull request's text. Findings name files and lines you can check, and
   the evidence holds the full record of what the agent read.

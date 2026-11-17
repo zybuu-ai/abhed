@@ -55,7 +55,16 @@ else
 fi
 home="$HOME"
 made_home=""
-cleanup() { [ -n "$made_home" ] && rm -rf "$made_home" 2>/dev/null; return 0; }
+# run_group is the process group the agent's run leads, ended with the step.
+run_group=""
+end_group() {
+  # Only the group the run led, and only once: its leader was this script's
+  # own child, just waited for.
+  if [ -n "$run_group" ]; then kill -KILL -- "-$run_group" 2>/dev/null || true; fi
+  run_group=""
+  return 0
+}
+cleanup() { end_group; [ -n "$made_home" ] && rm -rf "$made_home" 2>/dev/null; return 0; }
 trap cleanup EXIT
 if [ "${ABHED_ISOLATE_HOME:-true}" = "true" ]; then
   mkdir -p "$HOME"
@@ -73,7 +82,8 @@ fi
 envs=("PATH=$PATH" "HOME=$home" "LANG=${LANG:-C.UTF-8}" "TMPDIR=$tmpdir" "CI=true")
 [ -n "${USER:-}" ] && envs+=("USER=$USER")
 [ -n "${ABHED_KEY_ENV:-}" ] && envs+=("$ABHED_KEY_ENV=${ABHED_ACTION_MODEL_KEY:-}")
-for name in ${ABHED_ENV_PASSTHROUGH//,/ }; do
+passthrough="${ABHED_ENV_PASSTHROUGH:-}"
+for name in ${passthrough//,/ }; do
   [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "env-passthrough: $name is not a variable name"
   case "$name" in
     GITHUB_TOKEN|GH_TOKEN|ACTIONS_*|*_REQUEST_TOKEN|*RUNTIME_TOKEN|RUNNER_TEMP|GITHUB_ENV|GITHUB_PATH|GITHUB_OUTPUT|GITHUB_STEP_SUMMARY|GITHUB_STATE)
@@ -125,11 +135,17 @@ args+=(-- "$ABHED_TASK")
 
 version > "$ev/abhed-version.txt" || true
 code=0
-if [ -n "${ABHED_STDIN_FILE:-}" ]; then
-  abhed "${args[@]}" < "$ABHED_STDIN_FILE" > "$ev/run.jsonl" 2> "$ev/stderr.log" || code=$?
-else
-  abhed "${args[@]}" < /dev/null > "$ev/run.jsonl" 2> "$ev/stderr.log" || code=$?
-fi
+# The run leads a process group of its own; whatever stayed in it is ended
+# when it exits. Abhed itself ends what each command started; this is the
+# second net for anything left in the run's own group.
+# A simple command, not a function, so $! is the process that leads the group.
+stdin="${ABHED_STDIN_FILE:-/dev/null}"
+check_bin
+python3 -c 'import os, sys; os.setpgid(0, 0); os.execvp(sys.argv[1], sys.argv[1:])' \
+  env -i "${envs[@]}" "$bin" "${args[@]}" < "$stdin" > "$ev/run.jsonl" 2> "$ev/stderr.log" &
+run_group=$!
+wait "$run_group" || code=$?
+end_group
 # stderr holds Abhed's notes (each refusal and what would allow it), never the key.
 cat "$ev/stderr.log" >&2 || true
 

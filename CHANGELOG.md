@@ -603,6 +603,20 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- On macOS's process tier, a process a command started no longer outlives
+  it. It used to keep running, and writing the workspace and the shared
+  temp folders, after the command, the session and its record had ended
+  (bubblewrap on Linux always ended it). When a foreground command ends, Abhed now
+  ends the processes in the session it leads, those carrying its random
+  marker, and every descendant it followed while the command ran, and
+  waits for them to go before the command is reported finished; closing a
+  sandbox ends what its commands still run. Only processes shown to be the
+  command's own are signalled. A process that empties its environment,
+  takes a session of its own and loses its parent within one 20 ms read of
+  the process table can still escape; see the Sandbox section of the
+  configuration guide. Commands on that tier also get an `xcrun_db` of the
+  sandbox's own.
+
 - On macOS, the process sandbox keeps the account's own home unreadable to
   commands when `HOME` names another folder, as well as `$HOME`: its state
   folder and credential paths too, and, whatever the user database says,

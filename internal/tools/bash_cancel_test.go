@@ -106,7 +106,8 @@ func TestBashCancelEndsWhatTheCommandStarted(t *testing.T) {
 }
 
 // A command that exits and leaves a background job holding its output
-// returns, rather than waiting for the job.
+// returns, rather than waiting for the job, and the job is ended with it:
+// nothing a command starts outlives it.
 func TestBashReturnsWhenABackgroundJobHoldsTheOutput(t *testing.T) {
 	s, dir := setup(t)
 	pidFile := filepath.Join(dir, "bg.pid")
@@ -118,14 +119,25 @@ func TestBashReturnsWhenABackgroundJobHoldsTheOutput(t *testing.T) {
 	if time.Since(start) > 10*time.Second {
 		t.Fatalf("waited %s for a background job", time.Since(start))
 	}
-	if b, err := os.ReadFile(pidFile); err == nil {
-		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-		}
-	}
-	if res.IsError || res.ExitCode == nil || *res.ExitCode != 0 || !strings.Contains(res.Content, "started") ||
-		!strings.Contains(res.Content, "still running") {
+	requireEnded(t, pidFile)
+	if res.IsError || res.ExitCode == nil || *res.ExitCode != 0 || !strings.Contains(res.Content, "started") {
 		t.Fatalf("result: %+v", res)
+	}
+}
+
+// requireEnded fails unless the job whose pid the command wrote is gone.
+func requireEnded(t *testing.T, pidFile string) {
+	t.Helper()
+	b, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 1 {
+		t.Fatalf("no pid in %s", pidFile)
+	}
+	if alive(pid) {
+		t.Errorf("the background job %d outlived its command", pid)
 	}
 }
 
@@ -174,17 +186,13 @@ func alive(pid int) bool {
 	return !errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
 }
 
-// The note that a job still holds the output is given whatever the exit status.
+// A failing command's background job is ended too, and its exit status kept.
 func TestBashBackgroundNoteOnAFailingCommand(t *testing.T) {
 	s, dir := setup(t)
 	pidFile := filepath.Join(dir, "bg.pid")
 	res := run(t, Bash{}, s, bashArgs{Command: `sleep 30 & echo $! > ` + pidFile + `; exit 3`, Description: "background job"})
-	if b, err := os.ReadFile(pidFile); err == nil {
-		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-		}
-	}
-	if res.ExitCode == nil || *res.ExitCode != 3 || !strings.Contains(res.Content, "still running") {
+	requireEnded(t, pidFile)
+	if res.ExitCode == nil || *res.ExitCode != 3 {
 		t.Fatalf("result: %+v", res)
 	}
 }

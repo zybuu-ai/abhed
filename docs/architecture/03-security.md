@@ -301,6 +301,14 @@ asserted. Current state:
 - [x] **Runaway commands** — a command is stopped at its timeout with everything it
       started, a `setsid` child included (`TestRunawayCommandEndsAtItsDeadline`,
       `TestBashTimeoutEndsADetachedChild`)
+- [ ] **Processes that outlive a command, macOS process tier** — a command's own
+      processes are ended when it ends and when its sandbox closes: its session's, its
+      marker's, and every descendant followed while it ran; nothing is ended that is not
+      shown to be the command's (`TestWatchSignalsOnlyTheCommandsOwnTree`,
+      `TestNothingACommandStartsOutlivesIt`, `TestClosingTheSandboxEndsItsCommands`, run
+      on throwaway runners with `ABHED_TEST_PROCESS_KILL=1`). Open: a process that clears
+      its environment, takes a session of its own and loses its parent within one 20 ms
+      read escapes. Linux's bubblewrap ends every process with the command
 - [x] **Process exhaustion, process tier** — a command can start at most `max_procs`
       more processes than the user ran (`TestProcessLimitHoldsForTheCommand`); the
       kernel counts all the user's processes, so a fork bomb can still crowd out the

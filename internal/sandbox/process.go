@@ -26,6 +26,8 @@ import (
 type Process struct {
 	policy  Policy
 	backend string // "sandbox-exec" | "bwrap"
+	// cmds are the commands and shells made, ended when the sandbox closes.
+	cmds commandSet
 	// listen is SetListen's: commands may listen on loopback from now on.
 	listen atomic.Bool
 	// listenStill, onPortContested and onListenWatchLost are SetListenWatch's.
@@ -898,7 +900,9 @@ func (s *Process) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 	if err != nil {
 		return &exec.Cmd{Err: err}
 	}
-	return s.wrapEgress(ctx, cwd, env, eg, "/bin/bash", "-c", command)
+	cmd := s.wrapEgress(ctx, cwd, env, eg, "/bin/bash", "-c", command)
+	s.cmds.add(cmd)
+	return cmd
 }
 
 // commandEnv is env with the proxy variables under the allowlist; a proxy that
@@ -946,7 +950,9 @@ func (s *Process) Shell(ctx context.Context, cwd string) *exec.Cmd {
 			env = append(env, "ZDOTDIR="+*z)
 		}
 	}
-	return hangUp(s.wrapEgress(ctx, cwd, env, eg, choice.argv...))
+	cmd := hangUp(s.wrapEgress(ctx, cwd, env, eg, choice.argv...))
+	s.cmds.add(cmd)
+	return cmd
 }
 
 // shell is the terminal's shell: the person's preferred one on macOS, where
@@ -1359,6 +1365,11 @@ func (s *Process) ownCaches() map[string]string {
 		"npm_config_cache": "npm", "PIP_CACHE_DIR": "pip", "CARGO_HOME": "cargo"} {
 		out[k] = filepath.Join(s.caches, sub)
 	}
+	// xcrun, behind /usr/bin/git and python3, keeps its cache in the account's
+	// temp folder, which later programs share: the sandbox's commands keep theirs here.
+	if s.backend == "sandbox-exec" {
+		out["xcrun_db"] = filepath.Join(s.caches, "xcrun_db")
+	}
 	proxy := os.Getenv("GOPROXY")
 	if proxy == "" {
 		proxy = "https://proxy.golang.org,direct"
@@ -1539,7 +1550,18 @@ const vimInit = `if 1 | if has('nvim') | let g:abhed_rc = stdpath('config') . (f
 
 // None runs commands directly on the host. It keeps the tier explicit, and
 // refuses selection when isolation is required.
-type None struct{ policy Policy }
+type None struct {
+	policy Policy
+	// cmds are the commands and shells made, ended when the sandbox closes.
+	cmds commandSet
+}
+
+// Close ends every command and shell made here that still runs, with what
+// each started: nothing of a session outlives it.
+func (n *None) Close() error {
+	n.cmds.end()
+	return nil
+}
 
 func NewNone(p Policy) *None { return &None{policy: p} }
 
@@ -1575,6 +1597,7 @@ func (n *None) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	cmd.Dir = cwd
 	cmd.Env = append(HostCommandEnv(), "ABHED_SANDBOX=none")
+	n.cmds.add(cmd)
 	return cmd
 }
 
@@ -1605,6 +1628,7 @@ func (n *None) Shell(ctx context.Context, cwd string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, shellArgv[0], shellArgv[1:]...) // #nosec G204 -- a fixed argv
 	cmd.Dir = cwd
 	cmd.Env = append(append(hostEnv(), "ABHED_SANDBOX=none"), shellEnv(TierNone)...)
+	n.cmds.add(cmd)
 	return hangUp(cmd)
 }
 

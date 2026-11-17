@@ -101,6 +101,8 @@ jobs:
           ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:55432/abhed_test?sslmode=disable
           # The page tests need node and python3; here a missing one fails, not skips.
           ABHED_REQUIRE_PAGE_TESTS: "1"
+          # A throwaway runner: the tests that start and end real processes run.
+          ABHED_TEST_PROCESS_KILL: "1"
         run: go test ./... -count=1 -timeout 30m -coverprofile=coverage.out
 
       # abhed_app owns the tables; abhed_runtime is what a server should run
@@ -275,7 +277,7 @@ jobs:
           cd integrations/github-action
           # commonmark.js parses whole generated reviews: no HTML, no live mention, the note kept.
           npm ci --prefix tests/markdown --ignore-scripts --no-audit --no-fund
-          ABHED_BIN="$RUNNER_TEMP/abhed" python -m unittest discover -s tests -v 2>&1 | tee "$RUNNER_TEMP/action.log"
+          ABHED_TEST_PROCESS_KILL=1 ABHED_BIN="$RUNNER_TEMP/abhed" python -m unittest discover -s tests -v 2>&1 | tee "$RUNNER_TEMP/action.log"
           ! grep -E "skipped '" "$RUNNER_TEMP/action.log"
       - name: Python SDK
         working-directory: sdk/python
@@ -306,8 +308,18 @@ jobs:
           go-version: "1.26.10"
       - name: Build abhed
         run: go build -o "$RUNNER_TEMP/abhed" ./cmd/abhed
+      # A throwaway runner: the tests that start and end real processes run.
+      - name: Nothing a command starts outlives it (Seatbelt)
+        env:
+          ABHED_TEST_PROCESS_KILL: "1"
+        run: |
+          set -euo pipefail
+          go test ./internal/sandbox -count=1 -v -run 'TestWatchSignalsOnlyTheCommandsOwnTree|TestNothingACommandStartsOutlivesIt|TestClosingTheSandboxEndsItsCommands' 2>&1 | tee "$RUNNER_TEMP/watch.log"
+          ! grep -E -- "--- SKIP" "$RUNNER_TEMP/watch.log"
       - name: The action's run script and real runs
         working-directory: integrations/github-action
+        env:
+          ABHED_TEST_PROCESS_KILL: "1"
         run: |
           set -euo pipefail
           ABHED_BIN="$RUNNER_TEMP/abhed" python3 -m unittest tests.test_action.RunTest tests.test_action.EndToEnd -v 2>&1 | tee "$RUNNER_TEMP/action.log"

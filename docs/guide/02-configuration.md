@@ -344,6 +344,29 @@ sessions started after it. See [Agent definitions](17-agent-definitions.md).
 "sandbox": { "allow_network": false }
 ```
 
+**Nothing a command starts outlives it.** When a foreground command ends,
+every process it started is ended with it, before the command is reported
+as finished; a background shell's are ended by `shell_kill` or the session
+ending ([Background commands](05-tools.md#background-commands)); and a
+session's sandbox closing ends whatever its commands still run. On Linux, bubblewrap does this itself: each command has a process
+namespace of its own that dies with it. On macOS, which has no such
+namespace, Abhed ends only processes it can show are the command's own,
+and never one found otherwise:
+
+- those in the session the command leads;
+- those carrying the command's own random marker in their environment;
+- those seen as its descendants while it ran: the process table is read
+  every 20 ms, and a process is followed when its parent is followed, even
+  after it leaves the session or its parent exits.
+
+A process can still escape on macOS, and keep writing what the sandbox lets
+commands write (the workspace, `/private/tmp`, the account's temp folder)
+after the command and the session have ended: one that empties its
+environment, starts a session of its own, and is born and loses its parent
+within one 20 ms read, as a fast double fork does. The command line, the
+server and the GitHub Action all run on this; on a Mac that is a person's
+own, use the container or vm tier for code you do not trust.
+
 Shell commands run in the sandbox. On the process tier a command may write the
 workspace and a few shared folders, not only the workspace:
 
@@ -357,7 +380,8 @@ workspace and a few shared folders, not only the workspace:
   `TMPDIR`. The toolchain caches commands write are folders of the
   sandbox's own, in `TMPDIR` and removed when the session ends:
   `XDG_CACHE_HOME`, `GOCACHE`, `GOMODCACHE`, `npm_config_cache`,
-  `PIP_CACHE_DIR` and `CARGO_HOME` point there, so nothing a command writes
+  `PIP_CACHE_DIR`, `CARGO_HOME` and `xcrun_db` (the cache of Apple's
+  `/usr/bin` shims) point there, so nothing a command writes
   reaches the real `~/.cache`, `~/Library/Caches`, `~/.npm`,
   `~/.cargo/registry` or `~/go/pkg/mod`, which stay readable. Go modules
   already in your module cache are read from it through `GOPROXY`

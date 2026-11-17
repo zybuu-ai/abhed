@@ -186,6 +186,22 @@ away from anything private.
   caches under the home start empty; set their own variables (`GOMODCACHE`,
   say) and pass them with `env-passthrough` to reuse them. The file-command
   variables and `RUNNER_TEMP` are never passed.
+- **What later steps share, on macOS.** A command may write the account's
+  temp folder and `/private/tmp`, which the job's later steps use too (a
+  build's work folder, say); its toolchain caches and `xcrun_db` are the
+  sandbox's own, but a command can still leave a file in those shared
+  folders. Do not let a later step trust what is there; on Linux,
+  bubblewrap gives each command a private `/tmp`.
+- **Nothing the run starts outlives the step.** Abhed ends every process a
+  command started when the command ends, and what is left when the session
+  ends; the action also starts the run in a process group of its own and
+  ends that group after it. On Linux, bubblewrap ends every process with
+  its command. On macOS one case remains: a process that empties its
+  environment, takes a session of its own and loses its parent within one
+  20 ms read of the process table (a fast double fork) can keep running
+  and writing the workspace and the shared temp folders after the evidence
+  was taken ([Sandbox](02-configuration.md#sandbox)). Run untrusted tasks
+  on a Linux runner.
 - **Self-hosted runners.** The action assumes a runner that runs one job
   and is then thrown away, as GitHub's are. On a runner you keep, the run's
   commands are bounded by the sandbox, but the runner's own state (its
