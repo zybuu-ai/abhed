@@ -11,6 +11,7 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -25,6 +26,8 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandboxcli"
@@ -404,6 +407,12 @@ func Main(args []string, opts ...Option) int {
 	}
 	interactive := !f.print.on && terminalBoth()
 	if code := enterPrincipal(f.signIn, interactive, os.Stdin, os.Stderr); code != 0 {
+		if code == identity.ExitSignInRequired && f.print.on && f.format != "text" {
+			// A caller reading the result line learns why nothing ran.
+			b, _ := json.Marshal(resultLine{Type: "result", Subtype: string(agent.TermError), IsError: true,
+				Error: "signin_required", ExitCode: code})
+			fmt.Println(string(b))
+		}
 		return code
 	}
 	if err := guestRefusal("resuming a session"); err != nil && (sf.Continue || sf.Resume != "" || sf.Pick) {

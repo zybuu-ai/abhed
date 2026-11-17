@@ -24,6 +24,30 @@ Items marked **[unsure]** need a check while building.
    5), bcrypt cost 12 for the machine store, credentials in files under the
    guarded `~/.abhed`, and migration with a journal and `unmigrate`.
 
+## As built (1.3.0)
+
+Where the build differs from the sections below, the build is right:
+
+- The setting is `auth.client.sign_in` (`""`, `"required"`, `"server"`),
+  not `require`: the org-policy classification refuses any leaf named
+  `require`. The org policy may set `sign_in`, `guest` (only `false`) and
+  `remember_days`; never `server`.
+- The remembered sign-in is a random token in
+  `~/.abhed/accounts/remembered.json` whose SHA-256 the account keeps, with
+  the revocation count it was issued under; it is not a `CLITokens` token,
+  so the machine store needs no `LocalAuth` or signing key.
+- Code: `internal/home` (machine and person folders), `internal/identity`
+  (the gate, the accounts store, guest, migration), `app/signin*.go`,
+  `app/cmd_account.go`, `app/rpc_auth.go`, `app/acp_auth.go`,
+  `app/serve_signin.go`. Guide: `docs/guide/38-signing-in.md`.
+- ACP credentials go in `_meta["zybuu.ai/abhed"]`, as every other `_meta`
+  of the contract (studio-acp-contract §1.5).
+- Server guest web sessions (2.5) are not in 1.3.0's Community build; a
+  server's front door is unchanged apart from serve's first-start question.
+- A guest's agent commands already run with `HISTFILE` empty; package and
+  toolchain caches are the machine's, shared, and a guest's downloads stay
+  in them.
+
 ---
 
 ## 0. The decision in one paragraph

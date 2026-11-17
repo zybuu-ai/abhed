@@ -83,8 +83,34 @@ interface AbhedAgentMeta {
   features: string[];              // see below
   record: { store: "local" | "postgres" | "memory"; dir?: string };
   managed: boolean;                // a managed configuration is in force
+  identity: {                      // who is working (docs/architecture/sign-in.md)
+    kind: "account" | "server" | "guest" | "legacy" | "";
+    display: string;
+    chosen: boolean;               // false: no one chose; show the sign-in choice
+    pending?: string;              // a sign-in is required and none is held
+  };
 }
 ```
+
+### 1.5 Sign-in
+
+`initialize` lists the ways in as ACP `authMethods`, filtered by the
+managed configuration and the org policy: `abhed.account` (sign in),
+`abhed.register` (create an account on this machine), `abhed.server`
+(sign in to an Abhed server) and `abhed.guest`. When `identity.chosen` is
+false, Studio shows the choice before it opens a session, and calls
+`authenticate` with `methodId` and, in `_meta["zybuu.ai/abhed"]`,
+`username`, `password` and `email` (register), or `url` (server). The
+password crosses the pipe once and is never recorded or echoed. For
+`abhed.server` the engine runs the browser sign-in and sends the
+notification `_abhed/auth/openUrl {url}` for Studio to open. The reply's
+`_meta` carries the new `identity`, and `recoveryCode` for a new account,
+shown once. `authenticate` is refused (-32000) once a session has opened:
+switching ends the engine. While `identity.pending` is set, every method
+but `initialize` and `authenticate` is refused with -32000 and
+`data.authRequired: true`.
+
+Studio keeps nothing of a guest in its own storage.
 
 `features` names every `abhed/*` area the engine serves: `sessions`, `fork`,
 `events`, `record.verify`, `hawkeye`, `export`, `tasks`, `tasks.review`,

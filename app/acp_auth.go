@@ -66,15 +66,16 @@ func acpIdentity() map[string]any {
 }
 
 type acpAuthParams struct {
-	MethodID string `json:"methodId"`
-	Meta     struct {
-		Abhed struct {
-			Username string `json:"username"`
-			Password string `json:"password"`
-			Email    string `json:"email"`
-			URL      string `json:"url"`
-		} `json:"abhed"`
-	} `json:"_meta"`
+	MethodID string                        `json:"methodId"`
+	Meta     map[string]acpAuthCredentials `json:"_meta"`
+}
+
+// acpAuthCredentials are authenticate's, under _meta's acpMetaKey.
+type acpAuthCredentials struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Email    string `json:"email"`
+	URL      string `json:"url"`
 }
 
 // authenticate signs the person in, registers them, or turns guest, before
@@ -92,7 +93,7 @@ func (c *acpConn) authenticate(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errRefused, "who is working is fixed once a session has opened; restart the engine to change it"))
 		return
 	}
-	a := p.Meta.Abhed
+	a := p.Meta[acpMetaKey]
 	var code string
 	var err error
 	switch p.MethodID {

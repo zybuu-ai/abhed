@@ -103,6 +103,11 @@ statusline, the `dirs` settings, `context`, `additional_dirs`, record paths
 and retention, storage, server, auth, schedules, the control plane and
 `org_policy` itself.
 
+**Who may work on the machine**: `auth.client.sign_in` (only `required`
+or `server`), `auth.client.guest` (only `false`) and
+`auth.client.remember_days` (any bound), never `auth.client.server`; see
+[Signing in](38-signing-in.md).
+
 **Only where it tightens** what the layers below already say, by the same rule
 an untrusted workspace's file follows: deny and ask rules, honeytokens and `verify.contract.protect` (added to the
 person's own, never replacing them),

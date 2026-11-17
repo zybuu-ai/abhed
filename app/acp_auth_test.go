@@ -51,13 +51,13 @@ func TestACPAuthenticateBeforeASession(t *testing.T) {
 		t.Fatalf("identity %v", who)
 	}
 	msg := cl.refusedMsg("authenticate", map[string]any{"methodId": "abhed.account",
-		"_meta": map[string]any{"abhed": map[string]any{"username": "a1", "password": "nope nope nope"}}})
+		"_meta": map[string]any{acpMetaKey: map[string]any{"username": "a1", "password": "nope nope nope"}}})
 	if !strings.Contains(msg, "incorrect username or password") {
 		t.Fatalf("wrong password: %s", msg)
 	}
 	var res map[string]any
 	cl.ok("authenticate", map[string]any{"methodId": "abhed.account",
-		"_meta": map[string]any{"abhed": map[string]any{"username": "a1", "password": "correct horse"}}}, &res)
+		"_meta": map[string]any{acpMetaKey: map[string]any{"username": "a1", "password": "correct horse"}}}, &res)
 	raw, _ := json.Marshal(res)
 	if !strings.Contains(string(raw), `"kind":"account"`) || !strings.Contains(string(raw), `"chosen":true`) {
 		t.Fatalf("after authenticate: %s", raw)
@@ -92,7 +92,7 @@ func TestACPRequiredSignInRefusesUntilAuthenticated(t *testing.T) {
 		t.Fatalf("guest: %s", msg)
 	}
 	cl.ok("authenticate", map[string]any{"methodId": "abhed.register",
-		"_meta": map[string]any{"abhed": map[string]any{"username": "b2", "password": "another horse"}}}, nil)
+		"_meta": map[string]any{acpMetaKey: map[string]any{"username": "b2", "password": "another horse"}}}, nil)
 	var res struct {
 		SessionID string `json:"sessionId"`
 	}

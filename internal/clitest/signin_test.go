@@ -119,6 +119,11 @@ func TestHeadlessSignInRequiredExits10(t *testing.T) {
 	if !strings.Contains(h.Stderr(), "sign-in required") || len(h.Requests()) != 0 {
 		t.Fatalf("stderr %q, %d model requests", h.Stderr(), len(h.Requests()))
 	}
+	h = piped(t, Opts{NoAccount: true, Managed: `{"auth":{"client":{"sign_in":"required"}}}`,
+		Args: []string{"-p", "-output-format", "json", "hi"}, Script: `text "done"`})
+	if code := h.Wait(time.Second); code != 10 || !strings.Contains(h.Stdout(), `"error":"signin_required"`) {
+		t.Fatalf("json result line: exit %d stdout %q", code, h.Stdout())
+	}
 	h = piped(t, Opts{NoAccount: true, Managed: `{"auth":{"client":{"guest":false}}}`,
 		Args: []string{"-guest", "-p", "hi"}, Script: `text "done"`})
 	if code := h.Wait(time.Second); code != 10 {

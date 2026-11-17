@@ -105,6 +105,23 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.9
 
+- The first interactive start asks who is working. With sessions,
+  history or memory from 1.2.9 in `~/.abhed`, choose **Create my account
+  and bring my data**: they move into the account, every session's chain
+  verified before and after. Until then, a run that cannot ask (`-p`,
+  rpc, scripts) works as 1.2.9 did, with one line on stderr; after it, such
+  a run uses your remembered sign-in. On a machine with no earlier data and
+  no sign-in, such as a fresh CI runner, a run is guest and keeps nothing
+  (`-guest` silences the note); a script that read the record afterwards
+  (`abhed logs`, `-c`) should sign in once, or pass `-account NAME` to fail
+  with code 10 instead. Before going back to 1.2.x, run `abhed account
+  unmigrate`.
+- Your sessions are now recorded as `device:<username>` (or `guest`)
+  rather than `$USER`; those recorded before sign-in stay the adopting
+  account's.
+- `abhed login` on a machine no one is signed in to makes that server's
+  account the one working here.
+
 - A `*` or `?` in an `ssh.read_commands` entry now stands within one
   argument. An entry that relied on `*` spanning several words, such as
   `journalctl *` for `journalctl -u app -n 50`, no longer matches such a
@@ -176,6 +193,31 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Sign-in first. Every start answers who is working before anything else
+  runs: an account on this machine, an account on an Abhed server, or
+  guest. In a terminal with no one signed in, the start asks; a sign-in is
+  remembered until sign-out, a password change or removal, and each start
+  says who is signed in (`/account` signs out or switches). An account on
+  this machine (`abhed account create`, `signin`, `signout`, `whoami`,
+  `list`, `passwd`, `reset`, `rm`) keeps its record, history, memory,
+  secrets, server sign-ins and trust decisions in a folder of its own under
+  `~/.abhed/accounts/`; the password is bcrypt-hashed, a recovery code
+  resets it, and so can the OS user, which the next sign-in reports. An
+  account is a separate space, not encryption. A guest keeps nothing: its
+  folder is removed as the run ends, and by the next start after a crash.
+  Policy, the sandbox, egress and approvals are the same for all three. A
+  run that cannot ask uses the remembered sign-in, or runs as guest with a
+  note, and exits 10 where the organisation requires sign-in; `-guest`,
+  `ABHED_GUEST=1`, `-account` and `ABHED_ACCOUNT` choose outright. `abhed
+  rpc` answers `auth.status`, `auth.signin`, `auth.register` and
+  `auth.guest`, and ACP clients such as Studio sign in through ACP's
+  `authMethods` and `authenticate`. The managed configuration and the org
+  policy can require sign-in, require a server's, turn guest off, and bound
+  how long a sign-in is remembered (`auth.client`). See [Signing
+  in](docs/guide/38-signing-in.md).
+- `abhed serve` in a terminal, with no sign-in on an address other machines
+  can reach, asks first: set up local accounts, serve on this machine only,
+  or serve as configured.
 - `abhed bg start` sends a snapshot of the repository it runs in, so a
   background job works on your code: the tracked files as they are in the
   working tree, without anything your read rules withhold, anything named
