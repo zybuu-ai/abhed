@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -410,19 +411,26 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 	b.WriteString("(version 1)\n(allow default)\n\n")
 	// Home holds credentials no list names, so little is readable there; first,
 	// so the state and credential denies below still win.
-	if home, err := os.UserHomeDir(); err == nil && !s.policy.ReadableHome {
+	if hs := homes(); len(hs) > 0 && !s.policy.ReadableHome {
 		b.WriteString(";; Home is unreadable but for the toolchains and the workspace.\n")
-		for _, h := range PathForms(home) {
-			fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", h)
-			fmt.Fprintf(&b, "(allow file-read-metadata (literal %q))\n", h)
+		var roots []string
+		for _, home := range hs {
+			for _, h := range PathForms(home) {
+				fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", h)
+				fmt.Fprintf(&b, "(allow file-read-metadata (literal %q))\n", h)
+				roots = append(roots, h)
+			}
 		}
-		allow := append(append(append(s.workspaces(), formsOf(s.policy.ReadOnlyPaths)...), homeToolchains(home)...), nonEmpty(readable)...)
+		allow := append(append(s.workspaces(), formsOf(s.policy.ReadOnlyPaths)...), nonEmpty(readable)...)
+		for _, home := range hs {
+			allow = append(allow, homeToolchains(home)...)
+		}
 		for _, p := range allow {
 			fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", p)
 		}
 		// The folders on the way to them can be stat'ed, not listed or read:
 		// Node's realpath, Python's and Java's path checks lstat each one.
-		for _, d := range ancestorsWithin(allow, PathForms(home)) {
+		for _, d := range ancestorsWithin(allow, roots) {
 			fmt.Fprintf(&b, "(allow file-read-metadata (literal %q))\n", d)
 		}
 		b.WriteString("\n")
@@ -503,7 +511,7 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 	}
 	// Seatbelt matches the path the kernel resolved, so a home reached
 	// through a link is named both ways.
-	if home, err := os.UserHomeDir(); err == nil {
+	for _, home := range homes() {
 		for _, st := range PathForms(filepath.Join(home, stateDir)) {
 			fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", st)
 			fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", st)
@@ -643,7 +651,7 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 	// Credentials are readable by many tools legitimately, but an agent has no
 	// reason to read keys and tokens. Bubblewrap leaves home out altogether.
 	b.WriteString("\n;; Credential paths are unreadable.\n")
-	if home, err := os.UserHomeDir(); err == nil {
+	for _, home := range homes() {
 		for _, c := range HomeSecrets {
 			for _, p := range PathForms(filepath.Join(home, c)) {
 				fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", p)
@@ -1631,6 +1639,22 @@ func ancestorsWithin(paths, roots []string) []string {
 					out = append(out, d)
 				}
 			}
+		}
+	}
+	return out
+}
+
+// homes are the folders whose contents commands may not read: $HOME, and
+// the account's own home when HOME names another folder, as a CI run given a
+// fresh HOME does. Moving HOME never opens the real one.
+func homes() []string {
+	var out []string
+	if h, err := os.UserHomeDir(); err == nil && h != "" {
+		out = append(out, filepath.Clean(h))
+	}
+	if u, err := user.Current(); err == nil && u.HomeDir != "" && filepath.IsAbs(u.HomeDir) {
+		if h := filepath.Clean(u.HomeDir); !slices.Contains(out, h) && h != "/" {
+			out = append(out, h)
 		}
 	}
 	return out

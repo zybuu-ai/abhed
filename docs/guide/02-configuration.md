@@ -365,7 +365,8 @@ workspace and a few shared folders, not only the workspace:
   does; npm, pip and cargo start from an empty cache and need the network
   for what they fetch. Commands read in home only the workspace, `read_only_paths`, the
   toolchains, the caches and the files git, editors and shells read (see
-  [security posture](../trust/security-posture.md));
+  [security posture](../trust/security-posture.md)). Home here is both
+  `$HOME` and the account's own home when `HOME` names another folder;
   `"readable_home": true` lets them read the rest of home but the credential
   paths again, and `read_only_paths` names a folder they need. `"shared_caches": true` lets commands write the real
   folders again, shared with the rest of your machine, where a command can
