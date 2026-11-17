@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/identity"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/profiles"
 )
 
@@ -239,7 +241,37 @@ func usePrincipal(p identity.Principal) error {
 	principalMu.Lock()
 	principal = p
 	principalMu.Unlock()
+	handDown(p)
 	return nil
+}
+
+// handDown tells the Abhed a hook, an MCP server or a command starts who is
+// working here, in the selectors that can only narrow: ABHED_GUEST for a
+// guest, ABHED_ACCOUNT for an account or server sign-in, which still needs
+// that sign-in remembered. A guest's process also drops the variables that
+// would point it at an account's server sign-ins or secrets.
+func handDown(p identity.Principal) {
+	_ = os.Unsetenv(EnvGuest)
+	_ = os.Unsetenv(EnvAccount)
+	switch p.Kind {
+	case identity.Guest:
+		_ = os.Setenv(EnvGuest, "1")
+		_ = os.Unsetenv(config.ProfilesEnv)
+		_ = os.Unsetenv(secrets.EnvFile)
+	case identity.Account:
+		_ = os.Setenv(EnvAccount, p.Entry.Username)
+	case identity.Server:
+		_ = os.Setenv(EnvAccount, p.Entry.Username+"@"+hostOfURL(p.Entry.URL))
+	}
+}
+
+// hostOfURL is a URL's host[:port], as -account names a server sign-in.
+func hostOfURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	return u.Host
 }
 
 // endGuest removes the guest's folder; nothing of a guest is kept. The
@@ -251,6 +283,8 @@ func endGuest() {
 	if principal.Kind != identity.Legacy {
 		principal = identity.Principal{Kind: identity.Legacy}
 		_ = home.SetPerson("")
+		_ = os.Unsetenv(EnvGuest)
+		_ = os.Unsetenv(EnvAccount)
 	}
 	byDefault = false
 	principalMu.Unlock()

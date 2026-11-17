@@ -12,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/profiles"
 )
 
@@ -362,5 +364,36 @@ func TestUnavailableServerWithAnExpiredToken(t *testing.T) {
 	}
 	if _, still, _ := s.Remembered(nil); !still {
 		t.Error("an unreachable server ended the sign-in")
+	}
+}
+
+// A child Abhed (a hook, an MCP server, a command) is told who is working in
+// selectors that only narrow: a guest's child is a guest, and an account's
+// child is that account only while it is remembered; a guest drops the
+// variables that would reach an account's sign-ins or secrets.
+func TestPrincipalIsHandedDownNarrowing(t *testing.T) {
+	signInTest(t)
+	t.Setenv(config.ProfilesEnv, "/elsewhere/profiles.json")
+	t.Setenv(secrets.EnvFile, "/elsewhere/secrets.json")
+	if err := usePrincipal(identity.GuestPrincipal()); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv(EnvGuest) != "1" || os.Getenv(config.ProfilesEnv) != "" || os.Getenv(secrets.EnvFile) != "" {
+		t.Fatalf("guest env: %q %q %q", os.Getenv(EnvGuest), os.Getenv(config.ProfilesEnv), os.Getenv(secrets.EnvFile))
+	}
+	endGuest()
+	s, _ := identity.Open()
+	e, _, _ := s.Create("a1", "correct horse", "", "")
+	if err := usePrincipal(s.Principal(e)); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv(EnvAccount) != "a1" || os.Getenv(EnvGuest) != "" {
+		t.Fatalf("account env: %q %q", os.Getenv(EnvAccount), os.Getenv(EnvGuest))
+	}
+	endGuest()
+	// The child: ABHED_ACCOUNT=a1 with a1 not remembered cannot run as a1.
+	t.Setenv(EnvAccount, "a1")
+	if code := enterPrincipal(signInFlags{}, false, os.Stdin, io.Discard); code != identity.ExitSignInRequired {
+		t.Fatalf("a child named an account no one is signed in as: exit %d", code)
 	}
 }

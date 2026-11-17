@@ -121,6 +121,14 @@ Where the managed configuration writes the record's OCSF copy
 (`record.ocsf`), a guest's sessions are written there too, as the
 organisation's, though nothing of them is kept in the guest's folder.
 
+An Abhed that a hook, an MCP server or a command starts works for the same
+person: it inherits `ABHED_GUEST=1` from a guest, or `ABHED_ACCOUNT` from an
+account, which still needs that sign-in remembered, so a child can only
+narrow who it works as. A guest's process also ignores `ABHED_PROFILES_FILE`
+and `ABHED_SECRETS_FILE`, so a guest never reaches an account's server
+sign-ins or secrets through them. `HOME` still moves everything, as it
+always did.
+
 ## Runs that cannot ask
 
 `abhed -p`, `abhed rpc`, `abhed acp`, CI and scripts never wait for an
