@@ -835,13 +835,18 @@ func (c *acpConn) request(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errNoMethod, "method not found: %s", msg.Method))
 		return
 	}
+	if err := pendingSignIn(); err != nil && !acpBeforeSignIn[msg.Method] {
+		c.reply(msg.ID, nil, &rpcError{Code: errRefused, Message: "Authentication required: " + err.Error(),
+			Data: map[string]any{"authRequired": true}})
+		return
+	}
 	h(c, msg)
 }
 
 // acpMethods are the requests the engine answers; anything else is -32601.
 var acpMethods = map[string]func(*acpConn, rpcMessage){
 	"initialize":                (*acpConn).initialize,
-	"authenticate":              func(c *acpConn, m rpcMessage) { c.reply(m.ID, map[string]any{}, nil) },
+	"authenticate":              (*acpConn).authenticate,
 	"session/new":               (*acpConn).newSession,
 	"session/prompt":            (*acpConn).prompt,
 	"session/set_config_option": (*acpConn).setConfigOption,

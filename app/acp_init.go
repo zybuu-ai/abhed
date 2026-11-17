@@ -65,7 +65,7 @@ func (c *acpConn) agentMeta() map[string]any {
 	return map[string]any{
 		"apiLevel": acpAPILevel, "edition": c.build.Edition, "version": c.build.Version,
 		"commit": c.build.Commit, "features": c.acpFeatures(), "record": store,
-		"managed": c.managed(),
+		"managed": c.managed(), "identity": acpIdentity(),
 	}
 }
 
@@ -91,7 +91,7 @@ func (c *acpConn) initialize(msg rpcMessage) {
 		"protocolVersion":   acpProtocolVersion,
 		"agentCapabilities": caps,
 		"agentInfo":         map[string]any{"name": "abhed", "title": "Abhed", "version": c.version},
-		"authMethods":       []any{},
+		"authMethods":       acpAuthMethods(),
 	}, nil)
 }
 
