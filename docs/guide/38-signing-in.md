@@ -107,8 +107,11 @@ Removal is ordinary deletion; on an SSD it is not a secure erase.
 
 A guest cannot resume a session, keep a secret, add an MCP server or sign
 one in, sign in to a server, or change this machine's configuration. A
-guest uses the machine's configuration and defaults, never an account's
-own allow rules, trust decisions, grants or secrets. Files the agent
+guest uses the machine's configuration and defaults, and never an
+account's own trust decisions, grants or secrets. The machine's
+configuration (`~/.abhed/config.json`) is shared: what any account sets
+with `/config set` or `abhed mcp add` applies to every account and guest
+on this OS login. Files the agent
 changes in your workspace are the work itself, and stay.
 
 Every session's `session.started` says who was working: `principal`, with

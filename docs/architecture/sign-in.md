@@ -1,9 +1,9 @@
-# Sign-in first, with a guest mode (Abhed 1.3.0, track T10)
+# Sign-in first, with a guest mode
 
 Status: accepted 17 Nov 2026, being built for 1.3.0.
 Written against the 1.3.0 development line.
 
-Items marked **[unsure]** need a check while building.
+The design below was written before the build; "As built" says where the build differs.
 
 ## Decisions (17 Nov 2026)
 
@@ -44,6 +44,24 @@ Where the build differs from the sections below, the build is right:
   of the contract (studio-acp-contract §1.5).
 - Server guest web sessions (2.5) are not in 1.3.0's Community build; a
   server's front door is unchanged apart from serve's first-start question.
+- No variable hands a person's folder to a child process: every process
+  answers who is working through the gate itself.
+- A remembered server sign-in is checked at start; one with no credential,
+  or that its server refuses, fails closed; only an unreachable server lets
+  it through, and session.started then records `verified: false`.
+- ACP: one lock orders authenticate against everything else, and who is
+  working is fixed once anything has worked as someone.
+- Migration: the first account is remembered only after its data has moved;
+  a start settles any move first and never runs on half the data.
+- A server's sign-in page is passed to a client only if it is https, or
+  http on loopback or at that server.
+- Each guest records as `guest:<id>`.
+- A password reset is kept in `accounts.json` and told at the next sign-in
+  on every surface (terminal, rpc `notice`, ACP `_meta.notice`); it is not
+  appended to the record chain.
+- `/config set`, `abhed mcp add` and the first-run model choice write the
+  machine's `~/.abhed/config.json`, which every account and guest loads; the
+  per-account `config.json` layer in 3.3 is not built.
 - A guest's agent commands already run with `HISTFILE` empty; package and
   toolchain caches are the machine's, shared, and a guest's downloads stay
   in them.
@@ -164,9 +182,8 @@ prompts. It uses ACP's own authentication handshake:
   `_meta.abhed.identity` carries the remembered principal when there is one
   (`{kind, display, remembered:true}`), so Studio can skip the screen.
 - Until a principal is set, `session/new`, `session/load` and every
-  `_abhed/*` method that touches state answer ACP's auth-required error
-  **[unsure: confirm the exact code and shape in the ACP version Studio pins;
-  expected -32000 "Authentication required"]**.
+  `_abhed/*` method that touches state answer -32000 "Authentication
+  required" with `data.authRequired: true`.
 - Studio shows its own sign-in view and calls `authenticate {methodId,
   _meta:{username,password}}` for a machine account. The password crosses the
   parent-child pipe once; it is never logged, recorded or echoed in a reply,
@@ -243,8 +260,7 @@ registration offers to bring it in (section 3.4).
 - Hashing: bcrypt via the existing `LocalAuth.CreateUser`/`Authenticate`.
   For the machine store, raise the cost to 12 (about 250 ms on an M-class
   CPU) because the file is offline-attackable by design; server cost is
-  unchanged. **[unsure: measure on the s390x and low-end Linux targets before
-  fixing 12.]**
+  unchanged.
 - The accounts directory sits inside `~/.abhed`, which the sandbox and the
   agent's tools already treat as state they cannot read or write. The guard
   list in `internal/sandboxconfig` gains the managed `record.dir`-equivalent
@@ -281,7 +297,7 @@ call sites moves to one of them:
 | `history/` (prompt history), `drafts/` | `org-policy.json` (the org's tighten-only policy binds everyone on the machine, guest included) |
 | `projects/<id>/memory/MEMORY.md` (auto memory), `ABHED.md` (user memory) | `pki/`, `cli-token.key`, `workload-token.key`, server state (`controlplane/`, `fence/`, `run/`) |
 | `secrets.json`, `secrets.d/` (incl. MCP OAuth tokens) | `logs/`, `config-changes.jsonl`, `admin.jsonl` (machine audit) |
-| `profiles.json` (each account's server sign-ins) | `startup-files.json` **[unsure: per person?]** |
+| `profiles.json` (each account's server sign-ins), `startup-files.json` | |
 | `trust.json`, `command-trust.json`, `state/workspace-grants.json` | the guest sweep lock and `accounts/` itself |
 | `state/record-ship.json`, `exports/`, `push/`, `quarantine/` | |
 | `index/` (vector caches), `ui.json`, `skills/`, `skills-active/`, `agents/`, `commands/`, `styles/` | |
@@ -298,9 +314,8 @@ The local record's `User` becomes the account owner (`device:<username>`, a
 new reserved namespace so it can never equal a server owner) and `Tenant`
 stays `default` unless `storage.tenant` says otherwise. When managed
 `record.dir` is set (organisation-owned record location), the record stays
-there, in a per-account subdirectory, and the org's collectors keep their
-cursors **[unsure: check OCSF cursor and witness file paths survive a
-subdirectory; may need the account in the tenant segment instead]**.
+there, unchanged in layout: sessions are told apart by their recorded
+owner, and the org's collectors keep their cursors.
 
 ### 3.4 Migrating a 1.2.9 user's data into their first account
 
@@ -406,13 +421,12 @@ How 1.2.9 scripts keep working:
   `abhed record` working on the same sessions, now under the account.
   A remembered sign-in has no idle expiry (decision 2); it ends only on
   sign-out or removal, after which `-p` falls to step 5 (or exits 10 with
-  `-account NAME`).
-  script can notice; it goes in the Upgrading notes.**
+  `-account NAME`). This is the one behaviour change a script can notice;
+  it is in the Upgrading notes.
 - CI and containers (fresh home, no data): step 5, guest. CI runs are
   ephemeral already; `-continue` there had nothing to continue. Record
   shipping in CI (EE) needs a server profile, as today.
-- GitHub Action: there is no `action.yml` in CE **[unsure: if one lives
-  elsewhere, it should pass `-guest` explicitly to silence the note]**.
+- A CI wrapper should pass `-guest` explicitly to silence the note.
 - `abhed rpc` 1.2.9 clients: the same rule at the first state-touching call.
 
 Guest refuses what needs persistence, with a clear message rather than
@@ -481,8 +495,7 @@ login). New in 1.3.0:
   **kept, not deleted**: it is evidence and may be under legal hold. It is
   readable again only by signing in to that server. An EE managed option
   `auth.client.on_removed: "wipe"` can delete the local root after the
-  record is shipped **[unsure: legal-hold interaction; propose but leave off
-  by default]**.
+  record is shipped; not built in 1.3.0.
 - A run in progress continues until it next needs the server (approval,
   shipping), as guide 28 already describes.
 
@@ -494,14 +507,11 @@ switch off the organisation's audit, which is the organisation's data:
 - A guest run writes its record into the guest root (needed during the run
   for rewind, verify and approvals) and the record is wiped at exit.
 - Where managed config turns on OCSF export (`record.ocsf`) or record
-  shipping, they still apply to guest runs, with owner `guest`, the OS user
+  shipping, they still apply to guest runs, with owner `guest:<id>`, the OS user
   and host, and `principal.kind: guest` on every event, so an administrator
   can see guest use and who on the machine did it.
 - Shipping needs a credential. A guest has none, so under required shipping
-  guest is refused unless the machine has a shipping credential **[unsure:
-  there is no machine-level shipping credential today; the options are to
-  refuse guest when shipping is required, or add a machine enrolment token
-  in EE; decided: guest is refused in that case]**.
+  guest is refused where shipping is required.
 - Admin views (EE dashboard, audit queries) gain a "guest runs" filter.
 
 ---
