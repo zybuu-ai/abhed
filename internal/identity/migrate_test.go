@@ -396,3 +396,59 @@ func TestMigrateRefusesATamperedJournal(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// A resumed move takes the earlier data's user from the data, not the
+// journal: a journal naming someone else, or an owner-shaped name, is
+// refused, and the file is named.
+func TestMigrateRefusesAJournalNamingAnotherUser(t *testing.T) {
+	for _, user := range []string{"bob", "device:bob", "agent"} {
+		t.Run(user, func(t *testing.T) {
+			s := testStore(t)
+			machine, _ := legacyHome(t)
+			before, _ := recordHeads(filepath.Join(machine, "records"))
+			e, _, _ := s.Create("yuvraj", pw, "", "")
+			_, _ = s.Root(e)
+			j := journal{Account: e.ID, LegacyUser: user, State: stateMoving, Items: []string{"history"}, Heads: before}
+			if err := writeJSON(s.journalPath(e), j); err != nil {
+				t.Fatal(err)
+			}
+			_, err := ResumeMigration(s)
+			if err == nil || !strings.Contains(err.Error(), journalName) {
+				t.Fatalf("err = %v", err)
+			}
+			if _, taken, _ := s.LegacyOwner(); taken {
+				t.Error("the account took over the data")
+			}
+		})
+	}
+}
+
+// A link planted where a moved item's parent goes is never followed.
+func TestMigrateRefusesALinkedParent(t *testing.T) {
+	s := testStore(t)
+	machine, _ := legacyHome(t)
+	if err := os.MkdirAll(filepath.Join(machine, "state"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(machine, "state", "workspace-grants.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e, _, _ := s.Create("yuvraj", pw, "", "")
+	root, _ := s.Root(e)
+	elsewhere := t.TempDir()
+	if err := os.Symlink(elsewhere, filepath.Join(root, "state")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Migrate(s, e, "yuvraj"); err == nil || !strings.Contains(err.Error(), "link") {
+		t.Fatalf("err = %v", err)
+	}
+	if entries, _ := os.ReadDir(elsewhere); len(entries) != 0 {
+		t.Fatalf("the move went through the link: %v", entries)
+	}
+	if _, err := os.Stat(filepath.Join(machine, "records")); err != nil {
+		t.Errorf("the record is not back in ~/.abhed: %v", err)
+	}
+	if resumed, _ := ResumeMigration(s); resumed {
+		t.Error("the refused move is resumed")
+	}
+}

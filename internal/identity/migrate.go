@@ -82,11 +82,73 @@ func validJournal(j journal, e Entry) error {
 	if j.Account != e.ID {
 		return fmt.Errorf("the move's journal names another account")
 	}
+	if !plainLegacyUser(j.LegacyUser) {
+		return fmt.Errorf("the move's journal names %q as the earlier data's user, which no earlier version recorded as", j.LegacyUser)
+	}
 	for _, list := range [][]string{j.Items, j.Done} {
 		for _, it := range list {
 			if !slices.Contains(LegacyItems, it) {
 				return fmt.Errorf("the move's journal names %q, which is not data from before sign-in", it)
 			}
+		}
+	}
+	return nil
+}
+
+// plainLegacyUser reports whether u is a user an earlier version recorded
+// sessions as: $USER as it took it, never one shaped like an owner the store
+// gives a meaning (a namespace, agent, anonymous, guest).
+func plainLegacyUser(u string) bool {
+	l := strings.ToLower(strings.TrimSpace(u))
+	return l != "" && !strings.Contains(l, ":") && l != "agent" && l != "anonymous" && l != "guest"
+}
+
+// recordUsers are the users the sessions in a records folder were recorded
+// as, subagents' aside.
+func recordUsers(records string) map[string]bool {
+	out := map[string]bool{}
+	tenants, _ := os.ReadDir(records)
+	for _, t := range tenants {
+		if !t.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(records, t.Name(), "index.jsonl")); err != nil {
+			continue
+		}
+		st, err := local.Open(local.Options{Dir: records, Tenant: t.Name(), User: "migration"})
+		if err != nil {
+			continue
+		}
+		entries, _ := st.Index().List(local.Filter{All: true})
+		for _, e := range entries {
+			if e.User != "" && e.User != "agent" {
+				out[e.User] = true
+			}
+		}
+		_ = st.Close()
+	}
+	return out
+}
+
+// safeParent makes the folders above rel under root, refusing any that is a
+// link, so a planted link never takes the move elsewhere.
+func safeParent(root, rel string) error {
+	dir := root
+	for _, part := range strings.Split(filepath.Dir(rel), string(filepath.Separator)) {
+		if part == "." || part == "" {
+			continue
+		}
+		dir = filepath.Join(dir, part)
+		fi, err := os.Lstat(dir)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				return err
+			}
+		case err != nil:
+			return err
+		case fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir():
+			return fmt.Errorf("%s is a link or not a folder; nothing is moved into it", dir)
 		}
 	}
 	return nil
@@ -121,7 +183,15 @@ func migrateLocked(s *Store, e Entry, legacyUser string) (MigrateResult, error) 
 		return MigrateResult{}, err
 	} else if ok && j.State == stateMoving {
 		if err := validJournal(j, e); err != nil {
-			return MigrateResult{}, err
+			return MigrateResult{}, fmt.Errorf("%w; it is %s", err, s.journalPath(e))
+		}
+		// The user the earlier data was recorded as is the data's, not the journal's say.
+		users := recordUsers(filepath.Join(m, "records"))
+		for u := range recordUsers(filepath.Join(root, "records")) {
+			users[u] = true
+		}
+		if len(users) > 0 && !users[j.LegacyUser] && !users["local:"+strings.ToLower(j.LegacyUser)] {
+			return MigrateResult{}, fmt.Errorf("the move's journal names %q, who recorded none of the earlier sessions; it is %s", j.LegacyUser, s.journalPath(e))
 		}
 	} else {
 		j = journal{Account: e.ID, LegacyUser: legacyUser, State: stateMoving, At: time.Now().UTC()}
@@ -172,8 +242,12 @@ func migrateLocked(s *Store, e Entry, legacyUser string) (MigrateResult, error) 
 				return MigrateResult{}, fmt.Errorf("%s is already in the account, so nothing was moved: everything is back in ~/.abhed; move or remove it, then run abhed account adopt", to)
 			}
 		}
-		if err := os.MkdirAll(filepath.Dir(to), 0o700); err != nil {
-			return MigrateResult{}, err
+		if err := safeParent(root, it); err != nil {
+			if _, rerr := moveBack(s, e, j); rerr != nil {
+				return MigrateResult{}, fmt.Errorf("%w, and moving back failed: %v", err, rerr)
+			}
+			_ = os.Remove(s.journalPath(e))
+			return MigrateResult{}, fmt.Errorf("%w: everything is back in ~/.abhed", err)
 		}
 		if err := os.Rename(from, to); err != nil {
 			return MigrateResult{}, fmt.Errorf("move %s: %w", it, err)
@@ -329,7 +403,7 @@ func moveBack(s *Store, e Entry, j journal) (int, error) {
 		if _, err := os.Lstat(to); err == nil {
 			return n, fmt.Errorf("%s is in the way; nothing more was moved back", to)
 		}
-		if err := os.MkdirAll(filepath.Dir(to), 0o700); err != nil {
+		if err := safeParent(m, it); err != nil {
 			return n, err
 		}
 		if err := os.Rename(from, to); err != nil {
