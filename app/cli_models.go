@@ -224,6 +224,7 @@ func buildAdapter(p config.ProviderConfig) model.Adapter {
 	a, err := newAdapter(p)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "model: %v\n", err)
+		endAtExit()
 		os.Exit(1)
 	}
 	return a

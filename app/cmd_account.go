@@ -136,6 +136,8 @@ func accountCmd(args []string, stdin *os.File, out, errOut io.Writer) int {
   reset USERNAME [-as-os-user]              set a new password with the recovery code, or as the OS user
   signout-everywhere [USERNAME]             end every remembered sign-in of the account
   rm USERNAME [-delete-data]                remove the account; its data is kept unless -delete-data
+  adopt [USERNAME]                          move the data from before sign-in into the account
+  unmigrate                                 move it back to ~/.abhed, before going back to 1.2.x
 
 Accounts are a separate space for each person using this OS login. They are not
 encryption: anyone who can act as this OS user can read the files. Passwords
@@ -285,6 +287,33 @@ and answers are read from the terminal, or one per line from stdin.`)
 			return fail(err)
 		}
 		fmt.Fprintln(out, "Every remembered sign-in of the account has ended.")
+		return 0
+	case "adopt":
+		u, err := accountName(s, p, arg)
+		if err != nil {
+			return fail(err)
+		}
+		e, err := s.Get(u)
+		if err != nil {
+			return fail(err)
+		}
+		if !identity.LegacyData() {
+			fmt.Fprintln(out, "There is no data from before sign-in in ~/.abhed to move.")
+			return 0
+		}
+		res, err := identity.Migrate(s, e, legacyCLIUser())
+		if err != nil {
+			return fail(err)
+		}
+		fmt.Fprintf(out, "Moved %d item(s) into %s; %d session record(s) verified before and after.\n", res.Moved, e.Display(), res.Sessions)
+		return 0
+	case "unmigrate":
+		n, err := identity.Unmigrate(s)
+		if err != nil {
+			return fail(err)
+		}
+		_ = s.Forget()
+		fmt.Fprintf(out, "Moved %d item(s) back to ~/.abhed. Earlier versions see them again; sessions recorded since sign-in stay this account's.\n", n)
 		return 0
 	case "rm", "remove":
 		if arg == "" {

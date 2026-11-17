@@ -1,0 +1,258 @@
+package app
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"sync"
+
+	"golang.org/x/term"
+
+	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/home"
+	"github.com/zybuu-ai/abhed/internal/identity"
+)
+
+// Who is working, for this process: set once by the gate before anything
+// else runs (docs/architecture/sign-in.md).
+var (
+	principalMu sync.Mutex
+	principal   = identity.Principal{Kind: identity.Legacy}
+	guestNow    *identity.GuestSession
+	// byDefault is set when nobody chose the principal: a run no one could
+	// ask, with no sign-in held.
+	byDefault bool
+)
+
+// currentPrincipal is who is working.
+func currentPrincipal() identity.Principal {
+	principalMu.Lock()
+	defer principalMu.Unlock()
+	return principal
+}
+
+// unresolvedIsLegacy makes a run nobody chose a principal for run as before
+// sign-in, rather than asking or running as guest: the package's tests,
+// which predate sign-in, keep their records. Never set outside tests.
+var unresolvedIsLegacy = false
+
+// EnvGuest and EnvAccount choose guest, or an account, as the flags do.
+const (
+	EnvGuest   = "ABHED_GUEST"
+	EnvAccount = "ABHED_ACCOUNT"
+)
+
+// personCommands are the subcommands that read or write a person's state, and
+// so run as whoever is working. The rest (serve, account, pki, admin…) are the
+// machine's.
+var personCommands = map[string]bool{
+	"record": true, "logs": true, "sessions": true, "hawkeye": true, "mcp": true, "secret": true,
+	"trust": true, "resolve": true, "index": true, "login": true, "logout": true, "profile": true,
+	"bg": true, "policy": true, "acp": true, "rpc": true,
+}
+
+// signInFlags are what the command line says about who is working.
+type signInFlags struct {
+	guest   bool
+	account string
+}
+
+func (s signInFlags) request(interactive bool, rules identity.Rules) identity.Request {
+	req := identity.Request{Guest: s.guest, Account: s.account, Interactive: interactive, Rules: rules}
+	if !req.Guest && os.Getenv(EnvGuest) == "1" {
+		req.Guest = true
+	}
+	if req.Account == "" {
+		req.Account = strings.TrimSpace(os.Getenv(EnvAccount))
+	}
+	return req
+}
+
+// terminalBoth reports whether stdin and stderr are a terminal, so a person
+// can be asked.
+func terminalBoth() bool {
+	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stderr.Fd()))
+}
+
+// clientRules are the sign-in rules of the managed configuration and the
+// cached org policy, which bind every principal on the machine.
+func clientRules() (identity.Rules, error) {
+	m, err := config.LoadManagedWith(config.LoadOptions{Warn: func(string) {}})
+	if err != nil {
+		return identity.Rules{}, fmt.Errorf("the managed configuration does not load: %w", err)
+	}
+	return identity.RulesOf(m), nil
+}
+
+// enterPrincipal answers who is working and makes their folder the
+// person's, or returns the exit code to stop with: 10 when a sign-in is
+// required and none is held. A process an Abhed started inherits its
+// parent's answer.
+func enterPrincipal(sf signInFlags, interactive bool, in *os.File, errOut io.Writer) int {
+	if root := os.Getenv(home.EnvPerson); root != "" && !sf.guest && sf.account == "" {
+		// A child of a resolved Abhed works for the same person.
+		if err := home.Check(root); err != nil {
+			fmt.Fprintf(errOut, "abhed: %v\n", err)
+			return identity.ExitSignInRequired
+		}
+		return 0
+	}
+	if removed, err := identity.SweepGuests(); err != nil {
+		fmt.Fprintf(errOut, "abhed: removing what earlier guests left: %v\n", err)
+	} else if len(removed) > 0 && interactive {
+		fmt.Fprintf(errOut, "abhed: removed %d guest folder(s) an earlier run left behind\n", len(removed))
+	}
+	rules, err := clientRules()
+	if err != nil {
+		fmt.Fprintf(errOut, "abhed: %v\n", err)
+		return 1
+	}
+	s, err := identity.Open()
+	if err != nil {
+		fmt.Fprintf(errOut, "abhed: %v\n", err)
+		return 1
+	}
+	if resumed, err := identity.ResumeMigration(s); err != nil {
+		fmt.Fprintf(errOut, "abhed: finishing the move of your earlier data: %v\n", err)
+	} else if resumed {
+		fmt.Fprintln(errOut, "abhed: finished moving your earlier data into your account")
+	}
+	out, err := identity.Resolve(s, sf.request(interactive, rules))
+	if err != nil {
+		return refusedSignIn(err, errOut)
+	}
+	p := out.Principal
+	if unresolvedIsLegacy && (out.Ask || p.Kind == identity.Guest && out.Note != "") {
+		p, out.Ask, out.Note = identity.Principal{Kind: identity.Legacy}, false, ""
+	}
+	if out.Ask {
+		if p, err = chooseWho(s, rules, newPrompter(in, errOut)); err != nil {
+			return refusedSignIn(err, errOut)
+		}
+	}
+	if err := usePrincipal(p); err != nil {
+		fmt.Fprintf(errOut, "abhed: %v\n", err)
+		return 1
+	}
+	if out.Note != "" {
+		principalMu.Lock()
+		byDefault = true
+		principalMu.Unlock()
+		fmt.Fprintln(errOut, out.Note)
+	}
+	return 0
+}
+
+// guestByDefault reports whether this process is guest only because no one
+// is signed in, not because anyone chose it.
+func guestByDefault() bool {
+	principalMu.Lock()
+	defer principalMu.Unlock()
+	return byDefault && principal.Kind == identity.Guest
+}
+
+func refusedSignIn(err error, errOut io.Writer) int {
+	fmt.Fprintf(errOut, "abhed: %v\n", err)
+	if errors.Is(err, identity.ErrSignInRequired) {
+		return identity.ExitSignInRequired
+	}
+	return 1
+}
+
+// usePrincipal makes p the person working in this process.
+func usePrincipal(p identity.Principal) error {
+	switch p.Kind {
+	case identity.Guest:
+		g, err := identity.EnterGuest()
+		if err != nil {
+			return fmt.Errorf("make the guest folder: %w", err)
+		}
+		p.Root = g.Root
+		principalMu.Lock()
+		guestNow = g
+		principalMu.Unlock()
+	case identity.Account, identity.Server:
+		if err := home.SetPerson(p.Root); err != nil {
+			return err
+		}
+	}
+	principalMu.Lock()
+	principal = p
+	principalMu.Unlock()
+	return nil
+}
+
+// endGuest removes the guest's folder; nothing of a guest is kept. The
+// process is no one's after it.
+func endGuest() {
+	principalMu.Lock()
+	g := guestNow
+	guestNow = nil
+	if principal.Kind != identity.Legacy {
+		principal = identity.Principal{Kind: identity.Legacy}
+		_ = home.SetPerson("")
+	}
+	byDefault = false
+	principalMu.Unlock()
+	if g != nil {
+		if err := g.End(); err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: the guest folder could not all be removed (%v); the next start removes the rest\n", err)
+		}
+	}
+}
+
+// guestRefusal is the refusal of something a guest cannot do because it
+// keeps state past the process, or "".
+func guestRefusal(what string) error {
+	if currentPrincipal().Kind != identity.Guest {
+		return nil
+	}
+	return fmt.Errorf("%s keeps state after this run, and a guest keeps nothing; sign in to do it (abhed account signin)", what)
+}
+
+// guestSubcommand refuses, to a guest, a subcommand that would keep state
+// past the run or change the machine's configuration: a stored secret, an
+// MCP server or its sign-in, a server sign-in. It returns the refusal or nil.
+func guestSubcommand(rest []string) error {
+	verb := ""
+	if len(rest) > 1 {
+		verb = rest[1]
+	}
+	what := ""
+	switch rest[0] {
+	case "secret":
+		if verb == "set" || verb == "rm" || verb == "remove" {
+			what = "a stored secret"
+		}
+	case "mcp":
+		switch verb {
+		case "add", "remove", "rm":
+			what = "an MCP server in this machine's configuration"
+		case "login":
+			what = "an MCP server's sign-in"
+		}
+	case "login", "logout":
+		what = "a server sign-in"
+	case "profile":
+		if verb == "use" || verb == "rm" || verb == "remove" {
+			what = "a server sign-in"
+		}
+	}
+	if what == "" {
+		return nil
+	}
+	return guestRefusal(what)
+}
+
+// whoLine is the start's line about who is working, and how to switch.
+func whoLine(p identity.Principal) string {
+	switch p.Kind {
+	case identity.Guest:
+		return "Guest: nothing is kept when you quit. /account to sign in."
+	case identity.Legacy:
+		return "Sign-in is not set up yet; Abhed works as before. /account to create your account."
+	}
+	return "Signed in as " + p.Display() + ". /account to switch."
+}

@@ -150,6 +150,7 @@ type cliFlags struct {
 	agentName       string
 	toolsOnly       multiFlag
 	bare            bool
+	signIn          signInFlags
 
 	// words are the positional arguments that are not a subcommand; dashed
 	// is set when they came after "--".
@@ -205,6 +206,8 @@ func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs.StringVar(&f.agentsJSON, "agents", "", "subagent definitions for this run, as JSON {name: {description, prompt, tools, ...}} or a file; checked as files are")
 	fs.StringVar(&f.agentName, "agent", "", "run the session as this agent type: its instructions, and its tools, mode, model and effort where they narrow")
 	fs.Var(&f.toolsOnly, "tools", "comma-separated tools this run may use, and no others; repeatable; only narrows")
+	fs.BoolVar(&f.signIn.guest, "guest", false, "work as guest: nothing is kept when the run ends (also "+EnvGuest+"=1)")
+	fs.StringVar(&f.signIn.account, "account", "", "work as this account on this machine, which must be signed in (also "+EnvAccount+")")
 	fs.BoolVar(&f.bare, "bare", false, "run without memory files, extensions or skills of your own or the workspace's; the organisation's stay")
 	fs.BoolVar(&f.trustWS, "trust-workspace", false, "trust the workspace's .abhed/config.json for this run (also "+config.TrustEnv+"=1)")
 	return fs
@@ -363,6 +366,21 @@ func Main(args []string, opts ...Option) int {
 			}
 			return 1
 		}
+		if personCommands[rest[0]] && !(len(rest) > 1 && isHelpArg(rest[1])) {
+			if code := enterPrincipal(f.signIn, false, os.Stdin, os.Stderr); code != 0 {
+				return code
+			}
+			if rest[0] == "login" && guestByDefault() {
+				// No one is signed in: abhed login is signing in, as the start's
+				// "sign in to a server" is.
+				endGuest()
+				return loginAsPrincipal(rest[1:], os.Stdout, os.Stderr)
+			}
+			if err := guestSubcommand(rest); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+				return 1
+			}
+		}
 		return a.subcommand(workspace, rest, &f)
 	}
 	if len(f.words) > 0 && !f.print.on && !f.dashed {
@@ -379,6 +397,14 @@ func Main(args []string, opts ...Option) int {
 				"A task opens a session when quoted (abhed %q) or after --; see abhed -h\n", f.words[0], text, text)
 			return 2
 		}
+	}
+	interactive := !f.print.on && terminalBoth()
+	if code := enterPrincipal(f.signIn, interactive, os.Stdin, os.Stderr); code != 0 {
+		return code
+	}
+	if err := guestRefusal("resuming a session"); err != nil && (sf.Continue || sf.Resume != "" || sf.Pick) {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 2
 	}
 	return run(a, workspace, &f)
 }

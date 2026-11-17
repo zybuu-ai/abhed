@@ -546,6 +546,9 @@ func fail(err error) {
 func endAtExit() {
 	tools.EndBackgroundShells(shellEndWait)
 	sandbox.EndServers()
+	// Last: a guest's shells and servers have ended, so nothing writes into
+	// the folder as it goes.
+	endGuest()
 }
 
 // shellEndWait bounds how long an exit waits for background shells to end.

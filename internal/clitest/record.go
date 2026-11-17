@@ -31,8 +31,9 @@ var errNoRecord = errors.New("the run kept no local record (store/local writes i
 // command.
 func readRecord(osHome string) (Record, error) {
 	dir := filepath.Join(osHome, home.DirName, "records")
-	if p := os.Getenv(home.EnvPerson); p != "" {
-		dir = filepath.Join(p, "records")
+	// The signed-in account's record, when there is one.
+	if found, _ := filepath.Glob(filepath.Join(osHome, home.DirName, home.AccountsDir, "*", "records")); len(found) == 1 {
+		dir = found[0]
 	}
 	var files []string
 	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {

@@ -659,6 +659,9 @@ func AskAutoMemory(ctx context.Context, sf ui.Surface, cfg config.Config) (bool,
 // setUserAutoMemory sets memory.auto in ~/.abhed/config.json, keeping every
 // other setting as it is.
 func setUserAutoMemory(on bool) error {
+	if err := guestRefusal("changing this machine's configuration"); err != nil {
+		return err
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err

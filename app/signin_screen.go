@@ -1,0 +1,245 @@
+package app
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/identity"
+	"github.com/zybuu-ai/abhed/profiles"
+)
+
+// A choice on the screen.
+type whoChoice struct {
+	key, label string
+	do         func() (identity.Principal, error)
+}
+
+// chooseWho is the start's question, before anything else: sign in, create
+// an account, sign in to a server, or guest, as the rules allow.
+func chooseWho(s *identity.Store, rules identity.Rules, p *prompter) (identity.Principal, error) {
+	list, err := s.List()
+	if err != nil {
+		return identity.Principal{}, err
+	}
+	var accounts, servers []identity.Entry
+	for _, e := range list {
+		switch {
+		case e.Kind == identity.KindAccount && rules.SignIn != config.SignInServer:
+			accounts = append(accounts, e)
+		case e.Kind == identity.KindServer && rules.Admits(e) == nil:
+			servers = append(servers, e)
+		}
+	}
+	_, taken, _ := s.LegacyOwner()
+	legacy := !taken && identity.LegacyData()
+
+	var choices []whoChoice
+	add := func(label string, do func() (identity.Principal, error)) {
+		choices = append(choices, whoChoice{key: fmt.Sprint(len(choices) + 1), label: label, do: do})
+	}
+	if rules.SignIn != config.SignInServer {
+		if legacy {
+			add("Create my account and bring my data   (recommended; nothing is deleted)", func() (identity.Principal, error) {
+				return createAndAdopt(s, p)
+			})
+		}
+		if len(accounts) > 0 {
+			add("Sign in            an account on this machine", func() (identity.Principal, error) {
+				e, err := signInAccount(s, p, onlyName(accounts))
+				if err != nil {
+					return identity.Principal{}, err
+				}
+				return s.Principal(e), nil
+			})
+		}
+		if !legacy {
+			add("Create an account  on this machine; nothing leaves it", func() (identity.Principal, error) {
+				e, code, err := createAccount(s, p, "", "", "")
+				if err != nil {
+					return identity.Principal{}, err
+				}
+				fmt.Fprintf(p.out, "Created %s. Recovery code (shown once; keep it somewhere safe): %s\n", e.Display(), code)
+				return s.Principal(e), nil
+			})
+		}
+	}
+	for _, e := range servers {
+		add("Sign in to "+e.Display(), func() (identity.Principal, error) { return serverSignIn(s, p, e.URL, rules) })
+	}
+	serverLabel := "Sign in to a server your own or your organisation's Abhed server"
+	if rules.SignIn == config.SignInServer {
+		serverLabel = "Sign in to " + rules.Server
+	}
+	add(serverLabel, func() (identity.Principal, error) {
+		url := rules.Server
+		if rules.SignIn != config.SignInServer {
+			var err error
+			if url, err = p.line("Server address", rules.Server); err != nil {
+				return identity.Principal{}, err
+			}
+		}
+		return serverSignIn(s, p, url, rules)
+	})
+	if rules.GuestAllowed {
+		label := "Guest              nothing is kept when you quit"
+		if legacy {
+			label = "Guest for now      your earlier data stays as it is; asked again next time"
+		}
+		add(label, func() (identity.Principal, error) { return identity.GuestPrincipal(), nil })
+	}
+
+	fmt.Fprintln(p.out)
+	if legacy {
+		fmt.Fprintln(p.out, "Abhed now asks who is working. You have sessions, history or memory from")
+		fmt.Fprintln(p.out, "earlier versions; create your account and they move into it.")
+	} else {
+		fmt.Fprintln(p.out, "Abhed — who is working?")
+	}
+	if rules.SignIn != config.SignInOptional {
+		fmt.Fprintln(p.out, "Your organisation requires a sign-in on this machine.")
+	}
+	fmt.Fprintln(p.out)
+	for _, c := range choices {
+		fmt.Fprintf(p.out, "  %s) %s\n", c.key, c.label)
+	}
+	for range 5 {
+		pick, err := p.line("\nChoose", "1")
+		if err != nil {
+			return identity.Principal{}, err
+		}
+		var chosen *whoChoice
+		for i := range choices {
+			if choices[i].key == pick {
+				chosen = &choices[i]
+			}
+		}
+		if chosen == nil {
+			fmt.Fprintf(p.out, "  %q is not one of the choices.\n", pick)
+			continue
+		}
+		pr, err := chosen.do()
+		if err == nil {
+			return pr, nil
+		}
+		if errors.Is(err, errNoInput) {
+			return identity.Principal{}, err
+		}
+		fmt.Fprintf(p.out, "  %v\n", err)
+	}
+	return identity.Principal{}, errors.New("no choice made")
+}
+
+func onlyName(list []identity.Entry) string {
+	if len(list) == 1 {
+		return list[0].Username
+	}
+	return ""
+}
+
+// createAndAdopt makes the first account and moves the data from before
+// sign-in into it.
+func createAndAdopt(s *identity.Store, p *prompter) (identity.Principal, error) {
+	e, code, err := createAccount(s, p, "", "", "")
+	if err != nil {
+		return identity.Principal{}, err
+	}
+	fmt.Fprintf(p.out, "Created %s. Recovery code (shown once; keep it somewhere safe): %s\n", e.Display(), code)
+	res, err := identity.Migrate(s, e, legacyUser())
+	if err != nil {
+		return identity.Principal{}, fmt.Errorf("your account was made, but the earlier data did not move (%w); nothing was lost, and abhed account adopt tries again", err)
+	}
+	fmt.Fprintf(p.out, "Moved %d item(s) into your account; %d session record(s) verified before and after.\n", res.Moved, res.Sessions)
+	return s.Principal(e), nil
+}
+
+// serverSignIn signs in to url with abhed login, keeping the profile in the
+// server sign-in's own folder, and makes it the principal.
+func serverSignIn(s *identity.Store, p *prompter, url string, rules identity.Rules) (identity.Principal, error) {
+	base, err := profiles.NormalizeURL(strings.TrimSpace(url), false)
+	if err != nil {
+		return identity.Principal{}, err
+	}
+	return signInViaLogin(s, rules, []string{base}, p.out, p.out)
+}
+
+// loginAsPrincipal is abhed login on a machine no one is signed in to: the
+// server sign-in it makes is who works here from now on.
+func loginAsPrincipal(args []string, out, errOut io.Writer) int {
+	s, err := identity.Open()
+	if err != nil {
+		fmt.Fprintf(errOut, "abhed: %v\n", err)
+		return 1
+	}
+	rules, err := clientRules()
+	if err != nil {
+		fmt.Fprintf(errOut, "abhed: %v\n", err)
+		return 1
+	}
+	pr, err := signInViaLogin(s, rules, args, out, errOut)
+	if err != nil {
+		fmt.Fprintf(errOut, "abhed: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(out, "This machine now starts as %s, until abhed account signout.\n", pr.Display())
+	return 0
+}
+
+// signInViaLogin runs abhed login with args into a file of its own, then
+// keeps the profile in the server sign-in's folder and remembers it.
+func signInViaLogin(s *identity.Store, rules identity.Rules, args []string, out, errOut io.Writer) (identity.Principal, error) {
+	pending := filepath.Join(s.Dir(), ".pending-profiles.json")
+	_ = os.Remove(pending)
+	defer os.Remove(pending)
+	old, had := os.LookupEnv(profiles.EnvFile)
+	_ = os.Setenv(profiles.EnvFile, pending)
+	code := loginCmd("", args, out, errOut)
+	if had {
+		_ = os.Setenv(profiles.EnvFile, old)
+	} else {
+		_ = os.Unsetenv(profiles.EnvFile)
+	}
+	if code != 0 {
+		return identity.Principal{}, errors.New("the server sign-in did not complete")
+	}
+	reg, err := profiles.Load(pending)
+	if err != nil {
+		return identity.Principal{}, err
+	}
+	name, prof, err := reg.Get("")
+	if err != nil {
+		return identity.Principal{}, err
+	}
+	e, err := s.AddServer(prof.URL, prof.Username, prof.Display, name)
+	if err != nil {
+		return identity.Principal{}, err
+	}
+	if err := rules.Admits(e); err != nil {
+		return identity.Principal{}, err
+	}
+	root, err := s.Root(e)
+	if err != nil {
+		return identity.Principal{}, err
+	}
+	dest := filepath.Join(root, "profiles.json")
+	have, err := profiles.Load(dest)
+	if err != nil {
+		return identity.Principal{}, err
+	}
+	have.Profiles[name] = prof
+	have.Current = name
+	if err := profiles.Save(dest, have); err != nil {
+		return identity.Principal{}, err
+	}
+	if err := s.Remember(e.ID); err != nil {
+		return identity.Principal{}, err
+	}
+	return s.Principal(e), nil
+}
+
+// legacyUser is who the record wrote sessions as before sign-in.
+func legacyUser() string { return legacyCLIUser() }

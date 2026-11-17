@@ -112,3 +112,31 @@ func TestAccountIsRefusedToTheAgent(t *testing.T) {
 		}
 	}
 }
+
+// adopt moves a 1.2.9 home's data into the account; unmigrate moves it back.
+func TestAccountAdoptAndUnmigrate(t *testing.T) {
+	h := accountHome(t)
+	legacy := filepath.Join(h, ".abhed", "history", "x.jsonl")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, e := runAccount(t, "correct horse\ncorrect horse\n", "create", "a1"); code != 0 {
+		t.Fatal(e)
+	}
+	code, out, errOut := runAccount(t, "", "adopt")
+	if code != 0 || !strings.Contains(out, "Moved") {
+		t.Fatalf("adopt: %d %q %q", code, out, errOut)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatal("the history stayed in ~/.abhed")
+	}
+	if code, out, errOut := runAccount(t, "", "unmigrate"); code != 0 || !strings.Contains(out, "back") {
+		t.Fatalf("unmigrate: %d %q %q", code, out, errOut)
+	}
+	if _, err := os.Stat(legacy); err != nil {
+		t.Fatal("the history did not come back")
+	}
+}
