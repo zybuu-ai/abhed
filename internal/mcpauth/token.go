@@ -64,6 +64,9 @@ func save(ctx context.Context, store *secrets.Store, rec Record) error {
 	return saveLocked(store, rec)
 }
 
+// keepRefusal saves a refused login; a variable so a test can make the store fail.
+var keepRefusal = saveLocked
+
 // saveLocked is save for a caller holding the login's lock.
 func saveLocked(store *secrets.Store, rec Record) error {
 	data, err := json.Marshal(rec) // #nosec G117 -- the login is written to the secret store, which is where it belongs
@@ -429,18 +432,22 @@ func (a *Authorizer) refresh(ctx context.Context) error {
 	}
 	refused := fmt.Errorf("the login for MCP server %s was refused at refresh; run abhed mcp login %s", a.server, a.server)
 	// A refresh token already refused is not sent again.
-	if stored.RefreshRefused > 0 && stored.RefreshToken == a.rec.RefreshToken {
-		a.rec.RefreshRefused = stored.RefreshRefused
+	// This process's own memory of a refusal counts too, when the store could not keep it.
+	if a.rec.RefreshRefused > 0 || stored.RefreshRefused > 0 && stored.RefreshToken == a.rec.RefreshToken {
+		if a.rec.RefreshRefused == 0 {
+			a.rec.RefreshRefused = stored.RefreshRefused
+		}
 		return refused
 	}
 	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {a.rec.RefreshToken}, "resource": {a.rec.URL}}
 	tr, err := tokenRequest(ctx, a.hc, a.rec, form)
 	if errors.Is(err, errInvalidGrant) {
 		// Kept, so abhed mcp list and Studio say the login is dead, not signed in.
-		next := a.rec
-		next.RefreshRefused = a.now().Unix()
-		if serr := saveLocked(a.store, next); serr == nil {
-			a.rec = next
+		// Held in memory whatever the store does, so this process never sends it again.
+		a.rec.RefreshRefused = a.now().Unix()
+		if serr := keepRefusal(a.store, a.rec); serr != nil {
+			// Said, not dropped: another process could still send it, which some servers treat as replay.
+			return fmt.Errorf("%w; the refusal could not be kept in the secret store, so another Abhed process may send that refresh token again: %v", refused, serr)
 		}
 		return refused
 	}

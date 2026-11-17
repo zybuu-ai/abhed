@@ -141,6 +141,29 @@ func TestRefresh(t *testing.T) {
 	}
 }
 
+// A refusal the store could not keep is said, and still never sent again by this process.
+func TestRefusalKeptInMemoryWhenTheStoreFails(t *testing.T) {
+	s := mcpauthtest.New(t)
+	store := testStore(t)
+	if err := login(t, s, store, nil); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := Load(store, "corp", s.MCP.URL+"/mcp", noRedirect())
+	old := keepRefusal
+	keepRefusal = func(*secrets.Store, Record) error { return errors.New("disk full") }
+	t.Cleanup(func() { keepRefusal = old })
+	s.SetDenyRefresh(true)
+	if _, err := a.Refresh(context.Background(), "access-1"); err == nil || !strings.Contains(err.Error(), "could not be kept") || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("a lost refusal was not said: %v", err)
+	}
+	if _, err := a.Refresh(context.Background(), "access-1"); err == nil || !strings.Contains(err.Error(), "refused at refresh") {
+		t.Fatalf("second refresh: %v", err)
+	}
+	if n := s.RefreshesRefused(); n != 1 {
+		t.Fatalf("the refused token was sent %d times", n)
+	}
+}
+
 // State says apart a login for another URL, one ended with no refresh
 // token, and none.
 func TestLoginState(t *testing.T) {

@@ -80,7 +80,7 @@ func mcpCmd(workspace string, args []string, trust config.TrustChoice, cio mcpIO
 		}
 		if fd != 0 {
 			f := os.NewFile(uintptr(fd), "confirm") // #nosec G115 -- checked to be 3 or above
-			if f == nil {
+			if _, err := f.Stat(); err != nil {
 				return fail(fmt.Errorf("-confirm-fd %d is not open", fd))
 			}
 			defer func() { _ = f.Close() }()
@@ -102,7 +102,7 @@ func mcpCmd(workspace string, args []string, trust config.TrustChoice, cio mcpIO
 		}
 		if o.confirmFD != 0 {
 			f := os.NewFile(uintptr(o.confirmFD), "confirm") // #nosec G115 -- checked to be 3 or above
-			if f == nil {
+			if _, err := f.Stat(); err != nil {
 				return fail(fmt.Errorf("-confirm-fd %d is not open", o.confirmFD))
 			}
 			defer func() { _ = f.Close() }()

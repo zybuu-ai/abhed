@@ -263,7 +263,8 @@ func TestMCPLoginConfirmsOnADescriptor(t *testing.T) {
 		_ = w.Close()
 		out := &urlFollower{t: t, follow: follow}
 		var errw bytes.Buffer
-		code := mcpCmd(ws, []string{"login", "-confirm-fd", strconv.Itoa(int(r.Fd())), "corp"}, config.TrustRefused,
+		// The argv exactly as Studio's engine host sends it: login -confirm-fd N -- NAME.
+		code := mcpCmd(ws, []string{"login", "-confirm-fd", strconv.Itoa(int(r.Fd())), "--", "corp"}, config.TrustRefused,
 			mcpIO{in: strings.NewReader(""), out: out, err: &errw})
 		return code, out.String() + errw.String()
 	}
@@ -280,6 +281,11 @@ func TestMCPLoginConfirmsOnADescriptor(t *testing.T) {
 	log, _ := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".abhed", "config-changes.jsonl"))
 	if !strings.Contains(string(log), `"by":"login -confirm-fd"`) {
 		t.Fatalf("change log %s", log)
+	}
+	// A descriptor that is not open is said as such.
+	var errw bytes.Buffer
+	if code := mcpCmd(ws, []string{"login", "-confirm-fd", "250", "--", "corp"}, config.TrustRefused, mcpIO{in: strings.NewReader(""), out: &bytes.Buffer{}, err: &errw}); code == 0 || !strings.Contains(errw.String(), "-confirm-fd 250 is not open") {
+		t.Fatalf("a closed descriptor: %d %q", code, errw.String())
 	}
 	for _, bad := range [][]string{{"login", "-confirm-fd", "2", "corp"}, {"login", "-confirm-fd", "3"}, {"login", "a", "b"}} {
 		if code := mcpCmd(ws, bad, config.TrustRefused, loginIO(&bytes.Buffer{}, &bytes.Buffer{})); code != 2 {
