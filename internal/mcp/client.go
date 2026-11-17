@@ -17,6 +17,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -82,7 +83,8 @@ type ToolAnnotations struct {
 }
 
 type toolsListResult struct {
-	Tools []ToolDef `json:"tools"`
+	Tools      []ToolDef `json:"tools"`
+	NextCursor string    `json:"nextCursor"`
 }
 
 type callResult struct {
@@ -118,7 +120,16 @@ type Client struct {
 	prompts []PromptDef
 	// resources is whether the server offers resources.
 	resources bool
+	// gone is why the connection ended, once it has; under mu.
+	gone error
+
+	// CallTimeout bounds each request to the server; zero is DefaultCallTimeout.
+	CallTimeout time.Duration
 }
+
+// DefaultCallTimeout bounds one request to a server: a tool call, a list
+// page or the handshake.
+const DefaultCallTimeout = 60 * time.Second
 
 func NewClient(name string, t Transport) *Client {
 	return &Client{name: name, transport: t, pending: make(map[int64]chan response)}
@@ -157,38 +168,107 @@ func (c *Client) Initialize(ctx context.Context) error {
 	c.resources = offers(init.Capabilities.Resources)
 	if offers(init.Capabilities.Prompts) {
 		if err := c.refreshPrompts(ctx); err != nil {
-			fmt.Fprintf(WarnOut, "abhed: warning: mcp server %q: %v\n", c.name, err)
+			warnf("abhed: warning: mcp server %q: %v\n", c.name, err)
 		}
 	}
 	return nil
 }
 
+// Limits on a server's tool list: past them the rest is left out, with a
+// warning, rather than read without end.
+const (
+	MaxToolPages   = 100
+	MaxServerTools = 2000
+)
+
 func (c *Client) refreshTools(ctx context.Context) error {
-	raw, err := c.call(ctx, "tools/list", nil)
+	var all []ToolDef
+	cut, err := c.listPages(ctx, "tools/list", MaxToolPages, func(raw json.RawMessage) (string, bool, error) {
+		var res toolsListResult
+		if err := json.Unmarshal(raw, &res); err != nil {
+			return "", false, fmt.Errorf("parse the result: %w", err)
+		}
+		all = append(all, res.Tools...)
+		return res.NextCursor, len(all) >= MaxServerTools, nil
+	})
 	if err != nil {
 		return fmt.Errorf("tools/list on %s: %w", c.name, err)
 	}
-	var res toolsListResult
-	if err := json.Unmarshal(raw, &res); err != nil {
-		return fmt.Errorf("parse tools/list from %s: %w", c.name, err)
+	if len(all) > MaxServerTools || cut {
+		warnf("abhed: warning: mcp server %q lists more tools than are read (%d pages or %d tools); "+
+			"only the first %d are offered\n", c.name, MaxToolPages, MaxServerTools, min(len(all), MaxServerTools))
+		all = all[:min(len(all), MaxServerTools)]
 	}
-	c.tools, c.refused = keepNamed(c.name, res.Tools)
+	c.tools, c.refused = keepNamed(c.name, all)
 	return nil
+}
+
+// listPages reads a paginated list, handing each page's result to add, which
+// returns the next cursor and whether it holds all it will take. It follows
+// the cursor until there is none or add is full, reading at most maxPages
+// pages, and reports whether pages were left unread. A cursor seen before
+// ends the list: a server repeating one would otherwise be read to the cap.
+func (c *Client) listPages(ctx context.Context, method string, maxPages int,
+	add func(raw json.RawMessage) (next string, full bool, err error)) (cut bool, err error) {
+	cursor := ""
+	seen := map[string]bool{}
+	for page := 0; ; page++ {
+		if page == maxPages {
+			return true, nil
+		}
+		var params json.RawMessage
+		if cursor != "" {
+			params, _ = json.Marshal(map[string]string{"cursor": cursor})
+		}
+		raw, err := c.call(ctx, method, params)
+		if err != nil {
+			return false, err
+		}
+		next, full, err := add(raw)
+		if err != nil {
+			return false, err
+		}
+		if next == "" || seen[next] {
+			return false, nil
+		}
+		if full {
+			return true, nil
+		}
+		seen[next], cursor = true, next
+	}
 }
 
 // validToolName is what a remote tool's name must look like to be offered,
 // the same rule tool_search lists names by: the name reaches prompts, the
-// approval card and "always allow" scopes. The MCP specification allows 128
-// characters; 64 is kept because model providers refuse longer tool names.
-var validToolName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+// approval card and "always allow" scopes. Up to 128 characters, as the MCP
+// specification allows: a full name a provider would refuse (over 64, or
+// holding ".") is sent to it under a short wire name (model.WireName).
+var validToolName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 
-// WarnOut receives the warning for each tool refused for its name.
+// MaxToolName is the longest remote tool name offered.
+const MaxToolName = 128
+
+// validPromptName is what a prompt's name and its arguments' names must look
+// like: a prompt becomes a slash command, typed by a person.
+var validPromptName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+
+// WarnOut receives the gateway's warnings: a tool refused for its name, a
+// list cut short. Set it before any server connects.
 var WarnOut io.Writer = os.Stderr
 
 var (
 	warnedMu sync.Mutex
 	warned   = map[string]bool{}
+	// warnOutMu orders warnings from servers that start at once.
+	warnOutMu sync.Mutex
 )
+
+// warnf writes one warning to WarnOut.
+func warnf(format string, a ...any) {
+	warnOutMu.Lock()
+	defer warnOutMu.Unlock()
+	fmt.Fprintf(WarnOut, format, a...)
+}
 
 // keepNamed drops the tools whose names fail validToolName, warning once per
 // server and name, and returns the names it dropped.
@@ -203,8 +283,8 @@ func keepNamed(server string, defs []ToolDef) (kept []ToolDef, refused []string)
 		warnedMu.Lock()
 		if id := server + "\x00" + d.Name; !warned[id] {
 			warned[id] = true
-			fmt.Fprintf(WarnOut, "abhed: warning: mcp server %q offers a tool named %+q, which is not registered: "+
-				"a tool name may hold only letters, digits, _ . and -, up to 64 characters (%d here)\n", server, d.Name, utf8.RuneCountInString(d.Name))
+			warnf("abhed: warning: mcp server %q offers a tool named %+q, which is not registered: "+
+				"a tool name may hold only letters, digits, _ . and -, up to %d characters (%d here)\n", server, d.Name, MaxToolName, utf8.RuneCountInString(d.Name))
 		}
 		warnedMu.Unlock()
 	}
@@ -218,7 +298,7 @@ func (c *Client) Refused() []string { return c.refused }
 func (c *Client) Tools() []ToolDef { return c.tools }
 
 // PromptDef is a prompt as a server advertises it. Its name and its
-// arguments' names have passed validToolName; the descriptions are untrusted.
+// arguments' names have passed validPromptName; the descriptions are untrusted.
 type PromptDef struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description"`
@@ -242,39 +322,34 @@ const (
 )
 
 // refreshPrompts caches the server's prompts, leaving out any whose name or
-// argument names fail validToolName, with a warning.
+// argument names fail validPromptName, with a warning, and saying so when
+// the list is longer than maxPrompts.
 func (c *Client) refreshPrompts(ctx context.Context) error {
 	var all []PromptDef
-	cursor := ""
-	for page := 0; page < maxPromptPages && len(all) < maxPrompts; page++ {
-		var params json.RawMessage
-		if cursor != "" {
-			params, _ = json.Marshal(map[string]string{"cursor": cursor})
-		}
-		raw, err := c.call(ctx, "prompts/list", params)
-		if err != nil {
-			return fmt.Errorf("prompts/list: %w", err)
-		}
+	cut, err := c.listPages(ctx, "prompts/list", maxPromptPages, func(raw json.RawMessage) (string, bool, error) {
 		var res struct {
 			Prompts    []PromptDef `json:"prompts"`
 			NextCursor string      `json:"nextCursor"`
 		}
 		if err := json.Unmarshal(raw, &res); err != nil {
-			return fmt.Errorf("parse prompts/list: %w", err)
+			return "", false, fmt.Errorf("parse the result: %w", err)
 		}
 		all = append(all, res.Prompts...)
-		if cursor = res.NextCursor; cursor == "" {
-			break
-		}
+		return res.NextCursor, len(all) >= maxPrompts, nil
+	})
+	if err != nil {
+		return fmt.Errorf("prompts/list: %w", err)
 	}
-	if len(all) > maxPrompts {
-		all = all[:maxPrompts]
+	if len(all) > maxPrompts || cut {
+		warnf("abhed: warning: mcp server %q lists more prompts than are read (%d pages or %d prompts); "+
+			"only the first %d are offered as commands\n", c.name, maxPromptPages, maxPrompts, min(len(all), maxPrompts))
+		all = all[:min(len(all), maxPrompts)]
 	}
 	kept := all[:0:0]
 	for _, p := range all {
-		ok := validToolName.MatchString(p.Name) && len(p.Arguments) <= maxPromptArgs
+		ok := validPromptName.MatchString(p.Name) && len(p.Arguments) <= maxPromptArgs
 		for _, a := range p.Arguments {
-			ok = ok && validToolName.MatchString(a.Name)
+			ok = ok && validPromptName.MatchString(a.Name)
 		}
 		if ok {
 			kept = append(kept, p)
@@ -283,7 +358,7 @@ func (c *Client) refreshPrompts(ctx context.Context) error {
 		warnedMu.Lock()
 		if id := c.name + "\x00prompt\x00" + p.Name; !warned[id] {
 			warned[id] = true
-			fmt.Fprintf(WarnOut, "abhed: warning: mcp server %q offers a prompt named %+q whose name or arguments are not plain, "+
+			warnf("abhed: warning: mcp server %q offers a prompt named %+q whose name or arguments are not plain, "+
 				"so it is not offered: names may hold only letters, digits, _ . and -, up to 64\n", c.name, p.Name)
 		}
 		warnedMu.Unlock()
@@ -326,7 +401,7 @@ func (c *Client) GetPrompt(ctx context.Context, name string, args map[string]str
 	}
 	text := strings.Join(parts, "\n\n")
 	if len(text) > MaxPromptText {
-		text = strings.ToValidUTF8(text[:MaxPromptText], "") + "\n\n[truncated]"
+		text = CutUTF8(text, MaxPromptText) + "\n\n[truncated]"
 	}
 	return text, nil
 }
@@ -367,7 +442,11 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 
 	c.mu.Lock()
 	if c.closed {
+		gone := c.gone
 		c.mu.Unlock()
+		if gone != nil {
+			return nil, fmt.Errorf("client %s is closed: %w", c.name, gone)
+		}
 		return nil, fmt.Errorf("client %s is closed", c.name)
 	}
 	c.pending[id] = ch
@@ -387,16 +466,32 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 		return nil, err
 	}
 
+	timeout := c.CallTimeout
+	if timeout <= 0 {
+		timeout = DefaultCallTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case resp := <-ch:
+	case resp, open := <-ch:
+		if !open {
+			// The connection ended before the answer came.
+			c.mu.Lock()
+			gone := c.gone
+			c.mu.Unlock()
+			if gone == nil {
+				gone = io.ErrUnexpectedEOF
+			}
+			return nil, fmt.Errorf("%s on %s: the connection ended: %w", method, c.name, gone)
+		}
 		if resp.Error != nil {
 			return nil, resp.Error
 		}
 		return resp.Result, nil
-	case <-time.After(60 * time.Second):
-		return nil, fmt.Errorf("timeout calling %s on %s", method, c.name)
+	case <-timer.C:
+		return nil, fmt.Errorf("timeout calling %s on %s after %s", method, c.name, timeout)
 	}
 }
 
@@ -412,8 +507,14 @@ func (c *Client) readLoop() {
 	for {
 		data, err := c.transport.Receive(context.Background())
 		if err != nil {
+			if errors.Is(err, ErrLineTooLong) {
+				warnf("abhed: warning: mcp server %q: %v\n", c.name, err)
+			}
 			c.mu.Lock()
 			c.closed = true
+			if c.gone == nil {
+				c.gone = err
+			}
 			for _, ch := range c.pending {
 				close(ch)
 			}
@@ -482,6 +583,8 @@ type StdioTransport struct {
 	// env and argv are the server's own environment and command line, as
 	// configured, which its stderr is redacted against.
 	env, argv []string
+	// MaxLine bounds one message on stdout; zero is MaxStdioLine.
+	MaxLine int
 }
 
 // stderrKeep is how much of a server's stderr is kept: its last lines.
@@ -533,7 +636,7 @@ func (t *StdioTransport) StderrTail(wait time.Duration) string {
 		return ' '
 	}, strings.Join(lines, " | "))
 	if len(out) > 1000 {
-		out = "…" + out[len(out)-1000:]
+		out = "…" + tailUTF8(out, 1000)
 	}
 	return strings.TrimSpace(out)
 }
@@ -710,12 +813,44 @@ func (t *StdioTransport) Send(_ context.Context, payload []byte) error {
 	return nil
 }
 
+// MaxStdioLine bounds one JSON-RPC message a stdio server writes: a line
+// longer than this ends the connection with ErrLineTooLong rather than being
+// held in memory without end. A tool's result is cut to 30,000 characters
+// anyway; this bounds what is read to get there.
+const MaxStdioLine = 16 << 20
+
+// ErrLineTooLong is a stdio server that wrote a line past MaxStdioLine.
+var ErrLineTooLong = errors.New("the server wrote a message longer than the limit")
+
 func (t *StdioTransport) Receive(_ context.Context) ([]byte, error) {
-	line, err := t.stdout.ReadBytes('\n')
-	if err != nil {
-		return nil, err
+	return readLine(t.stdout, t.maxLine())
+}
+
+func (t *StdioTransport) maxLine() int {
+	if t.MaxLine > 0 {
+		return t.MaxLine
 	}
-	return line, nil
+	return MaxStdioLine
+}
+
+// readLine reads one newline-ended line of at most max bytes.
+func readLine(r *bufio.Reader, max int) ([]byte, error) {
+	var line []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if len(line)+len(chunk) > max {
+			return nil, fmt.Errorf("%w: more than %d bytes in one line on stdout; the connection is closed", ErrLineTooLong, max)
+		}
+		line = append(line, chunk...)
+		switch {
+		case err == nil:
+			return line, nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		default:
+			return nil, err
+		}
+	}
 }
 
 func (t *StdioTransport) Close() error {
@@ -731,4 +866,27 @@ func (t *StdioTransport) Close() error {
 		t.cancel()
 	}
 	return nil
+}
+
+// CutUTF8 is s cut to at most n bytes, never inside a character.
+func CutUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
+// tailUTF8 is the last n bytes of s at most, never starting inside a character.
+func tailUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	i := len(s) - n
+	for i < len(s) && !utf8.RuneStart(s[i]) {
+		i++
+	}
+	return s[i:]
 }
