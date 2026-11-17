@@ -173,6 +173,8 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 type loginOpts struct {
 	open func(string) error
 	file string
+	// ctx, when set, ends the sign-in early: a client's cancel.
+	ctx context.Context
 }
 
 // loginWith is abhed login with o.
@@ -253,7 +255,10 @@ func loginWith(workspace string, args []string, out, errOut io.Writer, o loginOp
 	if err != nil {
 		return fail(err)
 	}
-	ctx := context.Background()
+	ctx := o.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	d, err := profiles.Discover(ctx, client, base)
 	if err != nil {
 		return fail(err)

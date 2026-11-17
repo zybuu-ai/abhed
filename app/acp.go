@@ -372,6 +372,14 @@ type acpConn struct {
 	// which who is working is fixed. initialize reads the record fields under it.
 	identMu      sync.Mutex
 	identStarted bool
+	// switching is a server sign-in waiting on its network or browser part,
+	// with identMu released; switchCancel ends it (under identMu), and
+	// switchCancelUnlocked is the same for _abhed/auth/cancel (under switchMu).
+	switching            bool
+	switchCancel         context.CancelFunc
+	switchGen            int
+	switchMu             sync.Mutex
+	switchCancelUnlocked context.CancelFunc
 
 	sessMu   sync.Mutex
 	sessions map[string]*acpSession
@@ -845,6 +853,12 @@ func (c *acpConn) request(msg rpcMessage) {
 	if !acpBeforeSignIn[msg.Method] {
 		// Waits for an authenticate in progress, so this works as whoever it settles on.
 		c.identMu.Lock()
+		if c.switching {
+			c.identMu.Unlock()
+			c.reply(msg.ID, nil, &rpcError{Code: errRefused, Message: "a sign-in is in progress; try again when it has finished",
+				Data: map[string]any{"signingIn": true}})
+			return
+		}
 		err := pendingSignIn()
 		if err == nil {
 			c.identStarted = true

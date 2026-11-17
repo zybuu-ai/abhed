@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,7 +28,7 @@ const (
 )
 
 // acpBeforeSignIn are the methods answered while a sign-in is pending.
-var acpBeforeSignIn = map[string]bool{"initialize": true, "authenticate": true}
+var acpBeforeSignIn = map[string]bool{"initialize": true, "authenticate": true, "_abhed/auth/cancel": true}
 
 // acpAuthMethods are the ways in the rules allow, as ACP lists them.
 func acpAuthMethods() []any {
@@ -97,7 +98,7 @@ func (c *acpConn) signOut(msg rpcMessage) {
 }
 
 func init() {
-	handle(map[string]func(*acpConn, rpcMessage){"_abhed/auth/signout": (*acpConn).signOut})
+	handle(map[string]func(*acpConn, rpcMessage){"_abhed/auth/signout": (*acpConn).signOut, "_abhed/auth/cancel": (*acpConn).cancelSignIn})
 	liveFeatures = append(liveFeatures, "auth")
 }
 
@@ -115,16 +116,27 @@ type acpAuthCredentials struct {
 }
 
 // authenticate signs the person in, registers them, or turns guest, before
-// any session has opened.
+// authenticate signs in, registers or turns guest before any session has
+// opened. One runs at a time under identMu. A server sign-in's network and
+// browser part runs with the lock released, the connection marked
+// switching: other requests are refused at once with data.signingIn (they
+// may retry), and a later authenticate, or _abhed/auth/cancel, cancels it.
+// The lock is taken again to commit, and nothing is committed once
+// cancelled.
 func (c *acpConn) authenticate(msg rpcMessage) {
 	var p acpAuthParams
 	if err := json.Unmarshal(msg.Params, &p); err != nil {
 		c.reply(msg.ID, nil, badParams("authenticate", err))
 		return
 	}
-	// One authenticate at a time, and none once anything has worked as someone.
 	c.identMu.Lock()
 	defer c.identMu.Unlock()
+	if c.switchCancel != nil {
+		// A later authenticate replaces a server sign-in still waiting.
+		c.switchCancel()
+		c.switchGen++
+		c.switching, c.switchCancel = false, nil
+	}
 	if c.identStarted {
 		c.reply(msg.ID, nil, refusal(errRefused, "who is working is fixed once a session has opened; restart the engine to change it"))
 		return
@@ -166,8 +178,19 @@ func (c *acpConn) authenticate(msg rpcMessage) {
 	c.reply(msg.ID, res, nil)
 }
 
-// serverSignIn runs abhed login for a server sign-in, asking the client to
-// open the browser: the engine's stdout is the protocol.
+// cancelSignIn is _abhed/auth/cancel: a server sign-in still waiting for
+// its browser ends, and nothing of it is kept.
+func (c *acpConn) cancelSignIn(msg rpcMessage) {
+	c.switchMu.Lock()
+	cancel := c.switchCancelUnlocked
+	c.switchMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	c.reply(msg.ID, map[string]any{"cancelled": cancel != nil}, nil)
+}
+
+// serverSignIn runs with identMu held and releases it for the network part.
 func (c *acpConn) serverSignIn(url string) error {
 	rules, err := clientRules()
 	if err != nil {
@@ -193,7 +216,33 @@ func (c *acpConn) serverSignIn(url string) error {
 		c.notification("_abhed/auth/openUrl", map[string]any{"url": u})
 		return nil
 	}
-	pr, err := signInViaLogin(s, rules, []string{"-browser", base}, os.Stderr, os.Stderr, open)
+	ctx, cancel := context.WithCancel(c.baseContext())
+	defer cancel()
+	c.switchGen++
+	gen := c.switchGen
+	c.switchCancel = cancel
+	c.switching = true
+	c.switchMu.Lock()
+	c.switchCancelUnlocked = cancel
+	c.switchMu.Unlock()
+	c.identMu.Unlock()
+	pend, lerr := serverLogin(ctx, s, []string{"-browser", base}, os.Stderr, os.Stderr, open)
+	c.identMu.Lock()
+	if c.switchGen == gen {
+		// Still this sign-in's: no later authenticate took over.
+		c.switching, c.switchCancel = false, nil
+		c.switchMu.Lock()
+		c.switchCancelUnlocked = nil
+		c.switchMu.Unlock()
+	}
+	if lerr != nil {
+		return lerr
+	}
+	defer pend.discard()
+	if ctx.Err() != nil || c.identStarted {
+		return errors.New("the server sign-in was cancelled")
+	}
+	pr, err := pend.file(s, rules)
 	if err != nil {
 		return fmt.Errorf("the server sign-in did not complete: %w", err)
 	}
@@ -203,6 +252,14 @@ func (c *acpConn) serverSignIn(url string) error {
 	}
 	setPendingSignIn(nil)
 	return nil
+}
+
+// baseContext is the connection's own, or a background one.
+func (c *acpConn) baseContext() context.Context {
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
 }
 
 // signInPageAllowed reports why a server sign-in page may not be handed to a

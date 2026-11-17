@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -197,20 +198,45 @@ func loginAsPrincipal(args []string, out, errOut io.Writer) int {
 // signInViaLogin runs abhed login with args into a file of its own, then
 // keeps the profile in the server sign-in's folder and remembers it.
 func signInViaLogin(s *identity.Store, rules identity.Rules, args []string, out, errOut io.Writer, open func(string) error) (identity.Principal, error) {
-	// A file of this sign-in's own, so two at once never share one.
-	f, err := os.CreateTemp(s.Dir(), ".pending-profiles-*.json")
+	pend, err := serverLogin(context.Background(), s, args, out, errOut, open)
 	if err != nil {
 		return identity.Principal{}, err
 	}
-	pending := f.Name()
-	_ = f.Close()
-	_ = os.Remove(pending) // abhed login makes it, 0600
-	defer os.Remove(pending)
-	code := loginWith("", args, out, errOut, loginOpts{open: open, file: pending})
-	if code != 0 {
-		return identity.Principal{}, errors.New("the server sign-in did not complete")
+	defer pend.discard()
+	return pend.file(s, rules)
+}
+
+// pendingSignIn is a server sign-in made but not yet kept: its token waits
+// in a file of its own until file keeps it, or discard drops it.
+type pendingServerSignIn struct{ path string }
+
+func (p pendingServerSignIn) discard() { _ = os.Remove(p.path) }
+
+// serverLogin is the network part of a server sign-in: abhed login, into a
+// file of this sign-in's own, so two at once never share one.
+func serverLogin(ctx context.Context, s *identity.Store, args []string, out, errOut io.Writer, open func(string) error) (pendingServerSignIn, error) {
+	f, err := os.CreateTemp(s.Dir(), ".pending-profiles-*.json")
+	if err != nil {
+		return pendingServerSignIn{}, err
 	}
-	reg, err := profiles.Load(pending)
+	pending := pendingServerSignIn{path: f.Name()}
+	_ = f.Close()
+	_ = os.Remove(pending.path) // abhed login makes it, 0600
+	if code := loginWith("", args, out, errOut, loginOpts{open: open, file: pending.path, ctx: ctx}); code != 0 {
+		pending.discard()
+		if ctx.Err() != nil {
+			return pendingServerSignIn{}, errors.New("the server sign-in was cancelled")
+		}
+		return pendingServerSignIn{}, errors.New("the server sign-in did not complete")
+	}
+	return pending, nil
+}
+
+// file keeps a pending server sign-in: checked against the rules first, so
+// a refused server leaves no entry, then filed in the sign-in's own folder
+// and remembered.
+func (p pendingServerSignIn) file(s *identity.Store, rules identity.Rules) (identity.Principal, error) {
+	reg, err := profiles.Load(p.path)
 	if err != nil {
 		return identity.Principal{}, err
 	}
@@ -218,7 +244,6 @@ func signInViaLogin(s *identity.Store, rules identity.Rules, args []string, out,
 	if err != nil {
 		return identity.Principal{}, err
 	}
-	// Checked before anything is kept, so a refused server leaves no entry.
 	if err := rules.Admits(identity.Entry{Kind: identity.KindServer, URL: prof.URL}); err != nil {
 		return identity.Principal{}, err
 	}

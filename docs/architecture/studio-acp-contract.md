@@ -107,7 +107,10 @@ password crosses the pipe once and is never recorded or echoed. For
 `abhed.server` the engine runs the browser sign-in and sends the
 notification `_abhed/auth/openUrl {url}` for Studio to open. The reply's
 `_meta` carries the new `identity`, and `recoveryCode` for a new account,
-shown once. `authenticate` is refused (-32000) once a session has opened:
+shown once. While a server sign-in waits for the browser, other requests
+are refused at once with -32000 and `data.signingIn: true` (retry later);
+`_abhed/auth/cancel`, or another `authenticate`, ends it with nothing kept.
+`authenticate` is refused (-32000) once a session has opened:
 switching ends the engine. While `identity.pending` is set, every method
 but `initialize` and `authenticate` is refused with -32000 and
 `data.authRequired: true`.

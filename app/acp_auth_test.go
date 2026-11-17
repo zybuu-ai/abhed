@@ -3,9 +3,12 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/identity"
 )
@@ -223,5 +226,55 @@ func TestSignInPageAllowed(t *testing.T) {
 		if err := signInPageAllowed(bad.page, bad.base); err == nil {
 			t.Errorf("%s was allowed", bad.page)
 		}
+	}
+}
+
+// While a server sign-in waits for its browser, the engine stays responsive:
+// other requests are refused at once with data.signingIn, and
+// _abhed/auth/cancel ends the sign-in with nothing kept.
+func TestACPServerSignInIsCancellable(t *testing.T) {
+	signInTest(t)
+	acpModelsEnv(t, `{}`)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"auth_mode":"local","methods":[{"name":"local","authorization_endpoint":"/cli/login","token_endpoint":"/v1/cli/token"}]}`))
+	}))
+	defer srv.Close()
+	if code := enterPrincipalForClient(signInFlags{}, &strings.Builder{}); code != 0 {
+		t.Fatal(code)
+	}
+	ws := t.TempDir()
+	cl := newStudioClient(t, ws, true)
+	initAuth(t, cl)
+	from := cl.mark()
+	done := make(chan rpcMessage, 1)
+	go func() {
+		done <- cl.call("authenticate", map[string]any{"methodId": "abhed.server",
+			"_meta": map[string]any{acpMetaKey: map[string]any{"url": srv.URL}}})
+	}()
+	cl.waitFor(from, "the sign-in page", func(m rpcMessage) bool { return m.Method == "_abhed/auth/openUrl" })
+	start := time.Now()
+	m := cl.call("session/new", map[string]any{"cwd": ws, "mcpServers": []any{}})
+	if m.Error == nil || !strings.Contains(fmt.Sprint(m.Error.Data), "signingIn") || time.Since(start) > 5*time.Second {
+		t.Fatalf("session/new during the sign-in: %+v after %s", m.Error, time.Since(start))
+	}
+	cl.ok("_abhed/auth/cancel", map[string]any{}, nil)
+	select {
+	case a := <-done:
+		if a.Error == nil || !strings.Contains(a.Error.Message, "cancelled") {
+			t.Fatalf("authenticate after cancel: %+v", a)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the cancelled sign-in did not end")
+	}
+	if p := currentPrincipal(); p.Kind != identity.Guest {
+		t.Fatalf("principal after a cancelled sign-in: %v", p.Kind)
+	}
+	s, _ := identity.Open()
+	if list, _ := s.List(); len(list) != 0 {
+		t.Fatalf("a cancelled sign-in left %d entries", len(list))
+	}
+	if m := cl.call("session/new", map[string]any{"cwd": ws, "mcpServers": []any{}}); m.Error != nil {
+		t.Fatalf("session/new after the cancel: %+v", m.Error)
 	}
 }
