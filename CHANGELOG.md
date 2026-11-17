@@ -558,14 +558,11 @@ All notable changes to Abhed are recorded here. The format follows
   call that ran it, an edit claim by the session's own edit (what it took
   away and put in), a `file:line` cite by the read's numbered lines within
   three lines of the cite, "I fixed X" by the change to X and a test run
-  that passed after it and covers what failed before it, a change made
-  by another tool (`k8s_apply` scaling `web` to 2) by that call's own
-  arguments, and evidence objects are read. Such a call must have exited
-  0 with output holding the tool's own success line for that object and
-  verb (`deployment.apps/web scaled`) and nothing saying it did not
-  happen, with no dry-run or preview argument, and every namespace,
-  context, cluster, environment or kind the claim names, however said,
-  must be its own argument. A `file:line` cite counts within three lines only inside the
+  that passed after it and covers what failed before it, and evidence
+  objects are read. A change made by another tool's call (`k8s_apply`
+  scaling `web` to 2) is still not read from that call, whose text cannot
+  show the change held: such a claim stays unverified, a known false
+  negative. A `file:line` cite counts within three lines only inside the
   same innermost definition (JavaScript and TypeScript arrow functions,
   methods, object functions and class fields included), only at the line itself where
   the line is in no definition, and the code and numbers the claim gives
@@ -580,10 +577,11 @@ All notable changes to Abhed are recorded here. The format follows
   ("This correctly handles multiple whitespace…") where the record shows
   only that the tests pass, and the first also cites two call ids the
   record never held. The false-claim corpus gains the two sessions'
-  statements (14 controls, 2 planted, 8 neutral), 78 more planted cases
-  and 28 controls, and 3 true statements that were neutral now verify;
-  none of the 1060 planted claims verifies, all 298 controls do, and none
-  of the 418 true or neutral claims is contradicted.
+  statements (14 controls, 2 planted, 8 neutral), 87 more planted cases
+  (47 of them changes said of another tool's call), 20 controls and 8
+  neutral known false negatives, and 3 true statements that were neutral
+  now verify; none of the 1069 planted claims verifies, all 290 controls
+  do, and none of the 418 true or neutral claims is contradicted.
 - A model reply that only reasons, with no text or tool call, is cut past
   `limits.reasoning_stall_tokens` reasoning tokens (8000 by default, or the
   request's thinking budget if larger), with `limits.reasoning_stall_seconds`

@@ -655,30 +655,14 @@ counts (`12 tests`, `replicas: 3`). Then:
   failing run before it, a whole run or one of the file's folder. An
   unrelated module passing shows no fix. "After the changes" or "following
   the fix" needs the session to have changed something.
-- **A change made by another tool is read from its call.** "web in demo
-  was scaled to 2" is shown by a call of the agent's own (`k8s_apply`
-  here) that succeeded, whose action or tool name is the claim's verb,
-  whose `name` the claim says, and every number of the claim one of its
-  arguments. The change must be confirmed, not merely not denied: the
-  call exited 0, and its output holds the tool's own success line for
-  that object and verb, kubectl-style (`deployment.apps/web scaled`,
-  `deployment.apps "web" deleted`; also configured, created, patched,
-  restarted), with nothing saying it did not happen ("would", "what if",
-  "unchanged", "timed out", "still terminating", "pending", a warning or
-  an error). Output with no such line, a structured result included,
-  shows no change. A call with any dry-run or preview argument
-  (`dry_run`, `preview`, `what_if`, `plan`, `plan_only`, `validate_only`,
-  `check_mode`, `noop`, `simulate`, of any value) shows nothing. Every
-  scope the claim names must be the call's own argument, however it is
-  said ("in prod", "prod's web", "web (prod)", "for prod", "at prod",
-  "the prod web", "-n prod", "namespace=prod", "on the production
-  cluster"): any word in the claim that is an environment word (prod,
-  production, staging, stage, dev, test, qa, uat, demo, preprod, sandbox)
-  or a namespace, context or cluster any call of the session used must
-  be this call's. So must every kind it names, two-word kinds included
-  ("the web stateful set"). A scope the call does not carry leaves the
-  claim unverified. A refused call, a scale to 5, or a scale of another
-  deployment shows nothing either.
+- **A change made by another tool is not read from its call.** "web in
+  demo was scaled to 2", "I deleted the web deployment" and the like stay
+  unverified even when a call of the agent's own (`k8s_apply`, an MCP
+  tool) did it: a tool's text output cannot show that the change held, in
+  the scope and on the object the claim names, and was not undone later.
+  Only `write`, `edit` and shell commands are read as changes. This is a
+  known false negative; cite the read that shows the new state instead
+  ("`kubectl get deploy web` shows 2/2 ready (#9)").
 - **An explanation of code is not checked, and never fails an answer.** A
   statement that only says how or why code the session read behaves, or
   what code did before the session changed it ("The previous
@@ -1104,6 +1088,9 @@ makes them.
 - Remote state (a cluster, a host over ssh) is only as current as the last
   command that read it; any later call that may change state outside a file
   makes that output out of date.
+- A change made by a tool other than `write`, `edit` or a shell command
+  ("I scaled web to 2", "I deleted the web deployment") is never verified
+  from that tool's call, even when it is true: a known false negative.
 - Labels do not stop a reply from streaming; the banner follows it, and
   strict mode's exit code is the gate for a script.
 - The checks lean to "unverified": most shell work (builds, scripts, test

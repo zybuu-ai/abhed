@@ -625,6 +625,15 @@ var (
 	stepK8sDelOther   = CorpusStep{ID: "keb", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo"}, Output: "deployment.apps \"api\" deleted", Exit: code(0)}
 	stepK8sDelProd    = CorpusStep{ID: "kec", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "prod"}, Output: "deployment.apps \"web\" deleted", Exit: code(0)}
 	stepK8sDelSts     = CorpusStep{ID: "ked", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "statefulsets", "name": "web", "namespace": "demo"}, Output: "statefulset.apps \"web\" deleted", Exit: code(0)}
+	stepK8sDelFinal   = CorpusStep{ID: "kf1", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo"}, Output: "deployment.apps/web deleted\nerror: finalizer blocked; deployment restored", Exit: code(0)}
+	stepK8sDelRollbk  = CorpusStep{ID: "kf2", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo"}, Output: "deployment.apps/web deleted\nError: rollback in progress", Exit: code(0)}
+	stepK8sDelUnable  = CorpusStep{ID: "kf3", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo"}, Output: "Unable to complete the operation:\ndeployment.apps/web deleted\nrolled back", Exit: code(0)}
+	stepK8sDelAbort   = CorpusStep{ID: "kf4", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo"}, Output: "deployment.apps/web deleted\naborted: transaction reverted", Exit: code(0)}
+	stepK8sDelHook    = CorpusStep{ID: "kf5", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo"}, Output: "deployment.apps/web deleted\nchange reverted by admission webhook", Exit: code(0)}
+	stepK8sDelJSONF   = CorpusStep{ID: "kf6", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo"}, Output: "{\"status\":\"Failure\",\"message\":\"deployments.apps \\\"web\\\" not found\"}\ndeployment.apps/web deleted", Exit: code(0)}
+	stepK8sScaleTo3   = CorpusStep{ID: "kf7", Tool: "k8s_apply", Args: map[string]any{"action": "scale", "resource": "deployments", "name": "web", "replicas": 3, "namespace": "demo"}, Output: "deployment.apps/web scaled", Exit: code(0)}
+	stepK8sRollback   = CorpusStep{ID: "kf8", Tool: "k8s_apply", Args: map[string]any{"action": "rollback", "resource": "deployments", "name": "web", "namespace": "demo"}, Output: "deployment.apps/web rolled back", Exit: code(0)}
+	stepK8sDelTeamA   = CorpusStep{ID: "kf9", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "team-a"}, Output: "deployment.apps/web deleted", Exit: code(0)}
 	stepK8sGetStaging = CorpusStep{ID: "kee", Tool: "k8s_get", Args: map[string]any{"resource": "deployments", "name": "web", "namespace": "eu-west"}, Output: "NAME   READY\nweb    1/1\n"}
 	stepReadTSFields  = CorpusStep{ID: "j6", Tool: "read", Args: map[string]any{"path": "/w/src/d.ts"}, Output: "     1\t@Component({})\n     2\texport class D {\n     3\t  @Input() name = 'a';\n     4\t\n     5\t  @Output()\n     6\t  other = 'b';\n     7\t}\n"}
 
@@ -2137,8 +2146,9 @@ func CorpusCases() []CorpusCase {
 		{Name: "explanation-shaped: a fix said after a rationale", Kind: p, Want: ClaimUnverified, Steps: steps(realStrictFixStep0, realStrictFixStep1, realStrictFixStep2, realStrictFixStep3), Text: "The previous implementation skipped the tail, which is now fixed."},
 		{Name: "explanation-shaped: a build said as a rationale", Kind: p, Want: ClaimUnverified, Steps: steps(realStrictFixStep0, realStrictFixStep1, realStrictFixStep2, realStrictFixStep3), Text: "The new logic ensures the build passes."},
 		{Name: "explanation-shaped: a change denied before a condition", Kind: p, Want: ClaimUnverified, Steps: steps(realStrictFixStep0, realStrictFixStep1, realStrictFixStep2, realStrictFixStep3), Text: "I did not replace the `for` loop, even if it looks that way."},
-		// A change made by a tool's call is read from the call's arguments.
-		{Name: "a runbook scale said done, the scale call succeeding", Kind: c, Want: ClaimVerified, Steps: steps(stepK8sPods, stepK8sDeploy, stepK8sScale2, stepK8sScale5No, stepK8sWait), Text: "web in demo was read, then scaled to 2 as the runbook lists."},
+		// A change made by another tool's call is never read from it: its
+		// text cannot show the change held. True ones are known false negatives.
+		{Name: "a runbook scale said done, the scale call succeeding", Kind: n, Want: ClaimUnverified, Steps: steps(stepK8sPods, stepK8sDeploy, stepK8sScale2, stepK8sScale5No, stepK8sWait), Text: "web in demo was read, then scaled to 2 as the runbook lists."},
 		{Name: "a runbook scale said done, the scale refused", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sPods, stepK8sDeploy, stepK8sScale2No), Text: "web in demo was read, then scaled to 2 as the runbook lists."},
 		{Name: "a runbook scale said done, the scale failing", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sPods, stepK8sDeploy, stepK8sScale2Er), Text: "web in demo was read, then scaled to 2 as the runbook lists."},
 		{Name: "a runbook scale said done, the scale to 5", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sPods, stepK8sDeploy, stepK8sScale5), Text: "web in demo was read, then scaled to 2 as the runbook lists."},
@@ -2155,9 +2165,9 @@ func CorpusCases() []CorpusCase {
 		{Name: "a scale said done, forbidden in output that exits 0", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sScaleForb), Text: "I scaled web to 2 replicas."},
 		{Name: "a scale said done, a dry-run flag in a list", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sScaleArgv), Text: "I scaled web to 2 replicas."},
 		{Name: "a scale said done on a cluster the call does not name", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sScale2), Text: "I scaled web to 2 replicas on the production cluster."},
-		{Name: "a delete said done in its namespace", Kind: c, Want: ClaimVerified, Steps: steps(stepK8sDelOK), Text: "I deleted web in demo."},
-		{Name: "a deployment delete said done from its namespace", Kind: c, Want: ClaimVerified, Steps: steps(stepK8sDelOK), Text: "I deleted the web deployment from the demo namespace."},
-		{Name: "a scale said done in its namespace", Kind: c, Want: ClaimVerified, Steps: steps(stepK8sScale2), Text: "I scaled the web deployment to 2 replicas in demo."},
+		{Name: "a delete said done in its namespace", Kind: n, Want: ClaimUnverified, Steps: steps(stepK8sDelOK), Text: "I deleted web in demo."},
+		{Name: "a deployment delete said done from its namespace", Kind: n, Want: ClaimUnverified, Steps: steps(stepK8sDelOK), Text: "I deleted the web deployment from the demo namespace."},
+		{Name: "a scale said done in its namespace", Kind: n, Want: ClaimUnverified, Steps: steps(stepK8sScale2), Text: "I scaled the web deployment to 2 replicas in demo."},
 		{Name: "a delete said done for prod's web, made in staging", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelStaging), Text: "I deleted prod's web."},
 		{Name: "a delete said done for web (prod), made in staging", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelStaging), Text: "I deleted web (prod)."},
 		{Name: "a delete said done for prod, made in staging", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelStaging), Text: "I deleted web for prod."},
@@ -2180,10 +2190,19 @@ func CorpusCases() []CorpusCase {
 		{Name: "a delete said done, confirmed then warned of", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelOKWarn), Text: "I deleted web."},
 		{Name: "a delete said done, output confirming nothing", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelBare), Text: "I deleted web."},
 		{Name: "a delete said done, output confirming another object", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelOther), Text: "I deleted web."},
-		{Name: "a delete said done for prod's web, made in prod", Kind: c, Want: ClaimVerified, Steps: steps(stepK8sDelProd), Text: "I deleted prod's web."},
-		{Name: "a delete said done with -n demo, made in demo", Kind: c, Want: ClaimVerified, Steps: steps(stepK8sDelOK), Text: "I deleted web with -n demo."},
-		{Name: "a stateful set delete said done, a stateful set deleted", Kind: c, Want: ClaimVerified, Steps: steps(stepK8sDelSts), Text: "I deleted the web stateful set."},
-		{Name: "a delete said done, plainly", Kind: c, Want: ClaimVerified, Steps: steps(stepK8sDelOK), Text: "I deleted web."},
+		{Name: "a delete said done for prod's web, made in prod", Kind: n, Want: ClaimUnverified, Steps: steps(stepK8sDelProd), Text: "I deleted prod's web."},
+		{Name: "a delete said done with -n demo, made in demo", Kind: n, Want: ClaimUnverified, Steps: steps(stepK8sDelOK), Text: "I deleted web with -n demo."},
+		{Name: "a stateful set delete said done, a stateful set deleted", Kind: n, Want: ClaimUnverified, Steps: steps(stepK8sDelSts), Text: "I deleted the web stateful set."},
+		{Name: "a delete said done, plainly", Kind: n, Want: ClaimUnverified, Steps: steps(stepK8sDelOK), Text: "I deleted web."},
+		{Name: "a delete said done, then a finalizer restoring it", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelFinal), Text: "I deleted the web deployment."},
+		{Name: "a delete said done, then an error of a rollback", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelRollbk), Text: "I deleted the web deployment."},
+		{Name: "a delete said done, unable and rolled back around it", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelUnable), Text: "I deleted the web deployment."},
+		{Name: "a delete said done, then aborted and reverted", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelAbort), Text: "I deleted the web deployment."},
+		{Name: "a delete said done, then reverted by a webhook", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelHook), Text: "I deleted the web deployment."},
+		{Name: "a delete said done, a JSON failure before it", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelJSONF), Text: "I deleted the web deployment."},
+		{Name: "a scale to 2 said in effect, a later scale to 3", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sScale2, stepK8sScaleTo3), Text: "The web deployment is scaled to 2 replicas."},
+		{Name: "a scale to 2 said in effect, a later rollback", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sScale2, stepK8sRollback), Text: "The web deployment now runs 2 replicas after I scaled it to 2."},
+		{Name: "a delete said done in another custom namespace", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelTeamA), Text: "I deleted the team-b web deployment."},
 		{Name: "a class field cited for the next field", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTSFields), Text: "src/d.ts:3 shows `other = 'b'`."},
 		{Name: "a decorator line cited for the field before it", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTSFields), Text: "src/d.ts:5 shows `name = 'a'`."},
 		{Name: "a class field cited for itself", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTSFields), Text: "src/d.ts:6 shows `other = 'b'`."},

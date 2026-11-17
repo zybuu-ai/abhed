@@ -6337,8 +6337,8 @@
     },
     {
       "name": "a runbook scale said done, the scale call succeeding",
-      "kind": "control",
-      "hash": "1ebfcec1674f0fa9"
+      "kind": "neutral",
+      "hash": "08a4bb4ece3c9a2b"
     },
     {
       "name": "a runbook scale said done, the scale refused",
@@ -6517,18 +6517,18 @@
     },
     {
       "name": "a delete said done in its namespace",
-      "kind": "control",
-      "hash": "9f3a23e4522a3034"
+      "kind": "neutral",
+      "hash": "4ebca0e3f5455d0f"
     },
     {
       "name": "a deployment delete said done from its namespace",
-      "kind": "control",
-      "hash": "3720ccb64f6617ab"
+      "kind": "neutral",
+      "hash": "5849d784c39806f2"
     },
     {
       "name": "a scale said done in its namespace",
-      "kind": "control",
-      "hash": "68fb6af6b107b4bf"
+      "kind": "neutral",
+      "hash": "d2de5dccf0cd3141"
     },
     {
       "name": "an arrow function cited for code of the one before it",
@@ -6767,23 +6767,23 @@
     },
     {
       "name": "a delete said done for prod's web, made in prod",
-      "kind": "control",
-      "hash": "0aa87c91bd138595"
+      "kind": "neutral",
+      "hash": "4b9ac7a6498bac07"
     },
     {
       "name": "a delete said done with -n demo, made in demo",
-      "kind": "control",
-      "hash": "dd3b5e007c2fec0c"
+      "kind": "neutral",
+      "hash": "aad8e00f97489953"
     },
     {
       "name": "a stateful set delete said done, a stateful set deleted",
-      "kind": "control",
-      "hash": "8aa39626362a23bb"
+      "kind": "neutral",
+      "hash": "82dedf29252c11d5"
     },
     {
       "name": "a delete said done, plainly",
-      "kind": "control",
-      "hash": "b75640a2ff9db203"
+      "kind": "neutral",
+      "hash": "15fb9a0442193085"
     },
     {
       "name": "a class field cited for the next field",
@@ -6809,6 +6809,51 @@
       "name": "a decorator line cited for its field",
       "kind": "control",
       "hash": "70f539da20c74fc2"
+    },
+    {
+      "name": "a delete said done, then a finalizer restoring it",
+      "kind": "planted",
+      "hash": "e375769703c41199"
+    },
+    {
+      "name": "a delete said done, then an error of a rollback",
+      "kind": "planted",
+      "hash": "a569107aa1d58b5d"
+    },
+    {
+      "name": "a delete said done, unable and rolled back around it",
+      "kind": "planted",
+      "hash": "514814ee4e1de97c"
+    },
+    {
+      "name": "a delete said done, then aborted and reverted",
+      "kind": "planted",
+      "hash": "1c37530a1200ca3e"
+    },
+    {
+      "name": "a delete said done, then reverted by a webhook",
+      "kind": "planted",
+      "hash": "175dcc1397938922"
+    },
+    {
+      "name": "a delete said done, a JSON failure before it",
+      "kind": "planted",
+      "hash": "9bb29c72e2810864"
+    },
+    {
+      "name": "a scale to 2 said in effect, a later scale to 3",
+      "kind": "planted",
+      "hash": "0217b485315d98e9"
+    },
+    {
+      "name": "a scale to 2 said in effect, a later rollback",
+      "kind": "planted",
+      "hash": "df2e023a8116e2f8"
+    },
+    {
+      "name": "a delete said done in another custom namespace",
+      "kind": "planted",
+      "hash": "a7b80a18ae250722"
     }
   ],
   "strict": [
