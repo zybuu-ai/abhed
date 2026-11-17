@@ -40,7 +40,7 @@ func (l *Loop) EnablePlanExit() {
 		// A registry can be shared by sessions; this one's tool goes on a copy.
 		l.Tools = l.Tools.Clone()
 	}
-	l.Tools.Add(tools.ExitPlan{Submit: l.proposePlan})
+	l.Tools.Replace(tools.ExitPlan{Submit: l.proposePlan})
 }
 
 func (l *Loop) proposePlan(_ context.Context, text string, steps []tools.RunbookStep) error {
@@ -112,6 +112,19 @@ func (l *Loop) offered(t tools.Tool) bool {
 
 // offeredDefs are the definitions of the tools offered in the current mode.
 func (l *Loop) offeredDefs() []model.ToolDef {
+	out := l.offeredDefsOnce()
+	// Past the provider's limit, searched-for tools are unloaded, least
+	// recently used first; a built-in never is. What still exceeds it is
+	// refused by the adapter, naming the cause.
+	if l.Adapter != nil && l.Tools != nil {
+		if over := len(out) - model.ToolLimit(l.Adapter.Profile()); over > 0 && l.Tools.UnloadLeastUsed(over) > 0 {
+			out = l.offeredDefsOnce()
+		}
+	}
+	return out
+}
+
+func (l *Loop) offeredDefsOnce() []model.ToolDef {
 	defs := toolDefs(l.Tools)
 	out := defs[:0:0]
 	for _, d := range defs {

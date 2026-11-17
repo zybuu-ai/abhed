@@ -14,8 +14,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 )
 
 // Tool is one callable capability exposed to the model.
@@ -200,11 +204,39 @@ func NewRegistry(ts ...Tool) *Registry {
 	return r
 }
 
-func (r *Registry) Add(t Tool) {
+// Add registers t and reports whether it did. A name already registered is
+// refused, with a warning, and the first tool keeps it: which of two tools a
+// name runs, and which a policy rule naming it reaches, must not depend on
+// the order they were added in. Replace is for a deliberate swap.
+func (r *Registry) Add(t Tool) bool {
+	if _, dup := r.tools[t.Name()]; dup {
+		warnDuplicate(t.Name())
+		return false
+	}
+	r.order = append(r.order, t.Name())
+	r.tools[t.Name()] = t
+	return true
+}
+
+// Replace registers t in place of the tool of its name, keeping that tool's
+// place in the order, or adds it when there is none: a built-in bound to a
+// session, a tool wrapped to defer it.
+func (r *Registry) Replace(t Tool) {
 	if _, dup := r.tools[t.Name()]; !dup {
 		r.order = append(r.order, t.Name())
 	}
 	r.tools[t.Name()] = t
+}
+
+// WarnOut receives the warning for a tool refused for a name already taken.
+var WarnOut io.Writer = os.Stderr
+
+var warnOutMu sync.Mutex
+
+func warnDuplicate(name string) {
+	warnOutMu.Lock()
+	defer warnOutMu.Unlock()
+	fmt.Fprintf(WarnOut, "abhed: warning: a second tool named %q is not registered: the first one keeps the name\n", name)
 }
 
 func (r *Registry) Get(name string) (Tool, bool) {
@@ -385,6 +417,37 @@ type Definition struct {
 // tool search loads it.
 type Hidden interface {
 	Hidden() bool
+}
+
+// Unloadable is a hidden tool that was loaded on request and can be put back
+// out of the offered set: a deferred MCP tool tool_search loaded.
+type Unloadable interface {
+	Hidden
+	// LastUsed orders loaded tools by when they were last loaded or called.
+	LastUsed() int64
+	Unload()
+}
+
+// UnloadLeastUsed unloads up to n loaded tools, least recently used first,
+// and returns how many it unloaded. Only Unloadable tools are touched: a
+// built-in is never dropped.
+func (r *Registry) UnloadLeastUsed(n int) int {
+	var loaded []Unloadable
+	for _, name := range r.order {
+		if u, ok := r.tools[name].(Unloadable); ok && !u.Hidden() {
+			loaded = append(loaded, u)
+		}
+	}
+	sort.SliceStable(loaded, func(i, j int) bool { return loaded[i].LastUsed() < loaded[j].LastUsed() })
+	done := 0
+	for _, u := range loaded {
+		if done == n {
+			break
+		}
+		u.Unload()
+		done++
+	}
+	return done
 }
 
 // Definitions are the tools offered to the model, in registration order,

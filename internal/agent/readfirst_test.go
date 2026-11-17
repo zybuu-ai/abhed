@@ -99,7 +99,7 @@ func TestReadBeforeEditIsCheckedBeforeAsking(t *testing.T) {
 			l.Approver = counter
 			if c.name == "changed since read" {
 				// The file changes between the read and the edit.
-				l.Tools.Add(touchAfterRead{path: filepath.Join(dir, "a.txt")})
+				l.Tools.Replace(touchAfterRead{path: filepath.Join(dir, "a.txt")})
 			}
 			if _, err := l.Run(context.Background(), "change a"); err != nil {
 				t.Fatal(err)

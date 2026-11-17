@@ -276,8 +276,12 @@ func withModel(props map[string]any, models []string, background bool) map[strin
 
 // agentTypeSchema is the agent_type property: the types this session offers.
 func agentTypeSchema(d *Definitions) map[string]any {
-	return map[string]any{"type": "string", "enum": d.Names(),
-		"description": "One of the agent types listed on the task tool. Defaults to general."}
+	if names := d.enum(); names != nil {
+		return map[string]any{"type": "string", "enum": names,
+			"description": "One of the agent types listed on the task tool. Defaults to general."}
+	}
+	return map[string]any{"type": "string",
+		"description": "An agent type: one listed on the task tool, or another by name; an unknown name lists the types matching it. Defaults to general."}
 }
 
 func mustSchema(v any) json.RawMessage {
@@ -308,8 +312,33 @@ type taskArgs struct {
 
 // unknownType refuses an agent type the session does not offer, naming those it does.
 func unknownType(d *Definitions, what, name string) tools.Result {
+	if found := d.Search(name, 20); len(found) > 0 {
+		var b strings.Builder
+		fmt.Fprintf(&b, "Unknown %s %q. Agent types matching it:", what, name)
+		for _, def := range found {
+			fmt.Fprintf(&b, "\n- %s — %s", def.Name, def.Description)
+		}
+		return tools.Result{Content: b.String(), IsError: true}
+	}
+	names := d.Names()
+	var b strings.Builder
+	shown := 0
+	for _, n := range names {
+		if b.Len()+len(n)+2 > ListingBudget {
+			break
+		}
+		if shown > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(n)
+		shown++
+	}
+	more := ""
+	if shown < len(names) {
+		more = fmt.Sprintf(", and %d more; give a word from the type or the task to search them", len(names)-shown)
+	}
 	return tools.Result{
-		Content: fmt.Sprintf("Unknown %s %q. Available: %s.", what, name, strings.Join(d.Names(), ", ")),
+		Content: fmt.Sprintf("Unknown %s %q. Available: %s%s.", what, name, b.String(), more),
 		IsError: true,
 	}
 }
@@ -1039,7 +1068,7 @@ func onlySkills(reg *tools.Registry, def *Definition) (*tools.Registry, error) {
 		return nil, fmt.Errorf("definition %s names skills this session does not have: %s", def.Name, strings.Join(missing, ", "))
 	}
 	out := reg.Clone()
-	out.Add(cut)
+	out.Replace(cut)
 	return out, nil
 }
 
