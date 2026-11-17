@@ -60,6 +60,20 @@ var realKinds = map[string]string{
 	"fix1:0":  "control", "fix1:1": "control", "fix1:2": "control", "fix1:3": "control", "fix1:4": "control",
 	"fix1:5": "neutral", "fix1:6": "control", "fix1:7": "control",
 	"review:0": "control", "review:1": "neutral", "review:2": "control", "review:3": "neutral", "review:4": "neutral",
+	// The regression check of a 1.3.0 candidate: the strict fix's first
+	// answer cites a call id the record never held; claims true but not
+	// shown (a fix and a pass in one sentence, a loose cite, a change said as
+	// "corrected", inferences, and a review of piped input said as events)
+	// are neutral.
+	"rfix0:0": "control", "rfix0:1": "planted", "rfix0:2": "neutral", "rfix0:3": "control", "rfix0:4": "neutral",
+	"rfix0:5": "control", "rfix1:0": "control", "rfix1:1": "control", "rfix1:2": "control", "rfix1:3": "control",
+	"rfix1:4": "control", "rfix1:5": "control", "rfix1:6": "control", "rfix1:7": "control", "rfix1:8": "control",
+	"rreview0:0": "control", "rreview0:1": "control", "rreview0:2": "neutral", "rreview0:3": "control", "rreview0:4": "neutral",
+	"rssh0:0": "neutral", "rssh0:1": "neutral", "rssh0:2": "control", "rssh0:3": "control", "rssh0:4": "control",
+	"rssh0:5": "control", "rssh0:6": "neutral", "rssh0:7": "neutral", "rssh0:8": "neutral", "rssh0:9": "control",
+	"rssh0:10": "neutral", "rssh0:11": "neutral", "rpipe0:0": "neutral", "rpipe0:1": "neutral", "rpipe0:2": "neutral",
+	"rpipe0:3": "neutral", "rpipe0:4": "neutral", "rpipe0:5": "neutral", "rpipe0:6": "neutral", "rpipe0:7": "neutral",
+	"rpipe0:8": "control", "rpipe0:9": "neutral",
 }
 
 // realCorpusCases are the real transcripts' claims, each checked against
@@ -87,5 +101,36 @@ func realCorpusCases() []CorpusCase {
 	for ci, c := range realClaims("", realLabelReviewAnswer) {
 		add(fmt.Sprintf("review:%d", ci), fmt.Sprintf("review %d", ci+1), realLabelReviewPrompt, review, false, c)
 	}
+	// The regression check's sessions: a strict fix, a line-cited review,
+	// an incident on a declared host, and a review of piped input.
+	for _, r := range []struct {
+		key, name, prompt string
+		st                []CorpusStep
+		answers           []rmiAnswer
+		strict            bool
+	}{
+		{"rfix", "candidate strict fix", rmiStrictFixPrompt, rmiStrictFixSteps, rmiStrictFixAnswers, true},
+		{"rreview", "candidate line-cited review", rmiLabelReviewPrompt, rmiLabelReviewSteps, rmiLabelReviewAnswers, false},
+		{"rssh", "candidate incident on a host", rmiSSHIncidentPrompt, rmiSSHIncidentSteps, rmiSSHIncidentAnswers, false},
+		{"rpipe", "candidate review of piped input", rmiPipeReviewPrompt, rmiPipeReviewSteps, rmiPipeReviewAnswers, false},
+	} {
+		for ai, a := range r.answers {
+			raw, text := a.text, ""
+			if !a.tool {
+				raw, text = "", a.text
+			}
+			for ci, c := range realClaims(raw, text) {
+				add(fmt.Sprintf("%s%d:%d", r.key, ai, ci), fmt.Sprintf("%s %d.%d", r.name, ai+1, ci+1), r.prompt, r.st[:a.after], r.strict, c)
+			}
+		}
+	}
 	return out
+}
+
+// rmiAnswer is an answer a transcript ended with: through the answer tool
+// (raw) or as plain text, after its first after steps.
+type rmiAnswer struct {
+	tool  bool
+	after int
+	text  string
 }

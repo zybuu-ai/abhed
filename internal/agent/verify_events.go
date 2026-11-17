@@ -34,7 +34,7 @@ var (
 	// notPastEd are words in -ed that are no past form.
 	notPastEd = wordSet(`need feed speed seed bleed breed proceed succeed exceed embed shed bed red hundred sacred
 		kindred naked wicked rugged ragged beloved indeed weed reed steed greed creed deed heed shred sled wed bred
-		fled led fed`)
+		fled led fed advanced detailed experienced sophisticated dedicated`)
 	// staticPhrases are participles that describe code as it stands, not an
 	// event: the short allowlist the guide names.
 	staticPhrases = regexp.MustCompile(`\b(?:is|are|be|being)\s+(?:defined|declared|called|named|used|based|typed|exported|embedded|ordered|sorted|keyed|scoped|bounded|nested|shared|required|expected|allowed|supported|meant|known)\b|\b(?:so-called|built-in|well-known|hard-coded|zero-based)\b`)
@@ -83,7 +83,7 @@ func wordSet(s string) map[string]bool {
 }
 
 // resultedInRe is a run's outcome said with its count.
-var resultedInRe = regexp.MustCompile(`\b(?:resulted|ended|finished|exited)\s+(?:in|with)\s+(?:\d|a\s|an\s|no\s)`)
+var resultedInRe = regexp.MustCompile(`\b(?:resulted|ended|finished|exited)\s+(?:in|with)(?:\s+(?:\d|a\s|an\s|no\s|ok\b|success)|\s*[.,;!]?\s*$)`)
 
 // afterChangeRe refers to the session's change as a time: "following the
 // changes", "after the fix". It is judged apart: a change must have been

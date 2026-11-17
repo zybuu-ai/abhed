@@ -629,9 +629,16 @@ counts (`12 tests`, `replicas: 3`). Then:
   or `name: function` in an object, `export default` and `async` forms
   included, and each class field with its decorators; read by
   indentation): models cite a method's line for its class or a call's
-  line for its result, never a line of the next function. In a file whose definitions are not read here (Python, Go,
-  JavaScript and TypeScript, and Rust are), or at a line that lies in no
-  definition, only the cited line counts. "`f` (a.py:L)" or "… in `f`"
+  line for its result, never a line of the next function. In a file
+  whose definitions are not read here (Python, Go, JavaScript and
+  TypeScript, and Rust are), or at a line that lies in no definition,
+  only the cited line counts. A range (`a.py:22-81`) is read as its first
+  line. A method named with its class (`` `HybridRetriever.retrieve` ``)
+  is at a line inside that method, inside that class. The file a matched
+  cite names ("`rag_agent.py` imports …") needs no tool output naming it.
+  With several cites, each line must show some of the code the statement
+  names and each piece of it must be at one of them; a statement naming a
+  different definition at each cite stays unverified. "`f` (a.py:L)" or "… in `f`"
   needs L inside `f`, with no definition nested in `f` holding L; "`f` is
   defined at a.py:L" needs `f`'s definition at L (or one line off past
   blank or decorator lines). A cite further off, or of a file that
@@ -641,7 +648,9 @@ counts (`12 tests`, `replicas: 3`). Then:
   bash call whose command that is (or, for a test run, to the test names it
   was given), and to that run's exit and output for the pass; text that only
   appears inside a command's arguments ("`printf ok # replicas: 5`") shows
-  no value.
+  no value. "Running `X` resulted in `OK`" is read from the last run of X
+  as written: its own output must show what it resulted in, never an
+  earlier run's or another command's.
 - **Edits are read from the session's own edits.** A change claim that
   names its file and the code it changed ("Changed `text.split(" ")` to
   `text.split()`", "Replaced the `range` loop with a `while` loop") is
@@ -659,7 +668,19 @@ counts (`12 tests`, `replicas: 3`). Then:
   is known and in the workspace. A file outside it (`echo x > /tmp/f`,
   `cp src/a.py /tmp/a.py`, a write of `/tmp/scratch.txt`), a command whose
   files are not known, or a call of another tool (a cluster scale, an
-  issue created) is not such a change.
+  issue created) is not such a change, nor is a write to `.git/`,
+  `.abhed/` or a subagent's own worktree, or to a path a shell line made a
+  link to somewhere outside the workspace (`ln -s /tmp/out src/out`). A
+  subagent's edit of a workspace file counts as the session's work.
+- **What the person attached is evidence for what it holds.** Piped stdin
+  and an @-mentioned file, attached to the message, show the values,
+  lines and code in them ("the input has `replicas: 3`"), and never the
+  session's work: a pasted test log does not show the tests pass, and a
+  pasted diff does not show a change. Only the attached blocks count, not
+  what the person typed around them.
+- **A read on a host does not make earlier results out of date.** An ssh
+  call the policy ran as a read (under `ssh.read_only`, or as an entry of
+  `ssh.read_commands`) changed nothing; any other ssh call may have.
 - **A change made by another tool is not read from its call.** "web in
   demo was scaled to 2", "I deleted the web deployment" and the like stay
   unverified even when a call of the agent's own (`k8s_apply`, an MCP

@@ -641,9 +641,10 @@ All notable changes to Abhed are recorded here. The format follows
   show the change held: such a claim stays unverified, a known false
   negative. A `file:line` cite counts within three lines only inside the
   same innermost definition (JavaScript and TypeScript arrow functions,
-  methods, object functions and class fields included), only at the line itself where
-  the line is in no definition, and the code and numbers the claim gives
-  must be there; "`f` is defined at L" needs `f`'s definition there. An explanation of code the
+  methods, object functions and class fields included), only at the
+  line itself where the line is in no definition, and the code and
+  numbers the claim gives must be there; "`f` is defined at L" needs
+  `f`'s definition there. An explanation of code the
   session read, or of what changed code did before, with no event, count,
   result, change, run or citation of its own, is shown as "explanation:
   not checked" and no longer fails strict mode; a statement that the
@@ -653,14 +654,23 @@ All notable changes to Abhed are recorded here. The format follows
   ends `unverified` in strict mode: its answers say their change works
   ("This correctly handles multiple whitespace…") where the record shows
   only that the tests pass, and the first also cites two call ids the
-  record never held. The false-claim corpus gains the two sessions'
-  statements (14 controls, 2 planted, 8 neutral), 102 more planted cases
-  (62 of them changes said of another tool's call, or a pass "after the
-  changes" that only another tool's call or a change outside the
-  workspace made), 22 controls and 8 neutral known false negatives, and 3
-  true statements that were neutral now verify; none of the 1084 planted
-  claims verifies, all 292 controls do, and none of the 420 true or
-  neutral claims is contradicted.
+  record never held. "Running `X` resulted in `OK`" is read from X's
+  last run; a cite of a range (`a.py:22-81`), of a method named with its
+  class, or several cites in one statement are read; what the person
+  attached (piped stdin, an @ file) shows the values in it but never the
+  work; and an ssh call the policy ran as a read no longer makes earlier
+  results out of date. On a regression check of a 1.3.0 candidate, the
+  strict fix's final answer now verifies in full, 3 of 5 line-cited
+  review statements verify (0 did), and both listed core dumps verify.
+  The false-claim corpus gains the two sessions' statements (14 controls,
+  2 planted, 8 neutral), the regression check's 42 statements (21
+  controls, 1 planted, 20 neutral), 120 more planted cases (62 of them
+  changes said of another tool's call, or a pass "after the changes"
+  that only another tool's call or a change outside the workspace made),
+  27 controls and 10 neutral known false negatives, and 3 true statements
+  that were neutral now verify; none of the 1103 planted claims verifies,
+  all 318 controls do, and none of the 468 true or neutral claims is
+  contradicted.
 - In `abhed -p -runbook`, a change the runbook does not list was refused
   with the hint "rerun with -allow '…'", which could not help: under a bound
   runbook such a change asks whatever an allow rule says. The hint now says

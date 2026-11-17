@@ -73,6 +73,9 @@ type facts struct {
 	eventKinds                   []string // the kinds of call its events need
 	scope                        []string // packages or folders a test claim names, such as internal/auth
 	ran                          []string // commands the claim says were run
+	// runOutcome is what a named command's run is said to have resulted in
+	// ("Running `X` resulted in `OK`"): read from that run's own output.
+	runCmd, runOutcome string
 	// modules are the test modules and files a claim names without a folder
 	// (tests.test_text, test_tip.py), as files; theTests: it says "the
 	// tests" and names neither a scope nor every test, so it means the tests
@@ -118,7 +121,7 @@ var (
 	backtickRe = regexp.MustCompile("`([^`\n]{1,200})`")
 	dquoteRe   = regexp.MustCompile(`"([^"\n]{2,200})"`)
 	urlRe      = regexp.MustCompile(`https?://[^\s<>"'` + "`" + `)\]]+`)
-	fileLineRe = regexp.MustCompile(`((?:[\w.\-]+/)*[\w\-]+\.[A-Za-z][A-Za-z0-9]{0,5}):(\d+)(?::\d+)?\b`)
+	fileLineRe = regexp.MustCompile(`((?:[\w.\-]+/)*[\w\-]+\.[A-Za-z][A-Za-z0-9]{0,5}):(\d+)(?::\d+|[-–]\d+)?\b`)
 	pathRe     = regexp.MustCompile(`(?:~|\.{1,2})?/?(?:[\w.\-]+/)+[\w.\-]+|\b[\w\-]+\.(?:go|py|js|mjs|ts|tsx|jsx|json|ya?ml|md|toml|txt|sh|rs|java|kt|c|h|cc|cpp|hpp|rb|php|html|css|sql|lock|mod|sum|cfg|ini|conf|xml|env|log|csv|proto|tf|gradle)\b`)
 	versionRe  = regexp.MustCompile(`\bv?\d+\.\d+\.\d+(?:[-+][\w.]+)?\b`)
 	dateRe     = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?\b`)
@@ -171,7 +174,9 @@ var (
 	passiveRe = regexp.MustCompile(`\b(?:was|were|has been|have been|had been|has now been|have now been|got|gets|is being|are being)\s+(?:\w+ed|rewritten|written|reset|set|put|made|built|rebuilt|done|undone|redone|taken|split|cut)\b`)
 	// changeNounRe is the agent's change named as a thing.
 	changeNounRe = regexp.MustCompile(`\b(?:my|our)\s+(?:change|changes|edit|edits|commit|commits|patch|patches|fix|fixes|refactor|rewrite|update|updates|work|diff|pr|pull request)\b|\b(?:the|this|that)\s+(?:fix|patch|refactor|rewrite|hotfix)\b|\b(?:after|since|with|before)\s+(?:my|our)\s+(?:change|edit|commit|patch|fix|refactor|rewrite|update)\b`)
-	ranRe        = regexp.MustCompile(`\b(?:i|i've|i have|we|we've)\s+(?:also\s+|then\s+|just\s+)?(?:ran|run|executed)\b`)
+	// runResultRe is a named command's run and what it resulted in.
+	runResultRe = regexp.MustCompile("(?i)^\\s*(?:(?:running|executing|the run of|a run of|the command|the final run of|the last run of)\\s+)?`([^`]+)`\\s+(?:resulted|ended|finished|exited)\\s+(?:in|with)\\s+(.+?)\\s*[.!]?\\s*$")
+	ranRe       = regexp.MustCompile(`\b(?:i|i've|i have|we|we've)\s+(?:also\s+|then\s+|just\s+)?(?:ran|run|executed)\b`)
 )
 
 // Words that follow a number without counting anything.
@@ -322,6 +327,10 @@ func extractFacts(claim string) facts {
 	f.afterChange = afterChangeRe.MatchString(normText(backtickRe.ReplaceAllString(claim, " ")))
 	f.theTests = len(f.scope) == 0 && len(f.modules) == 0 && theTestsRe.MatchString(nlow) && !wholeSuiteRe.MatchString(nlow)
 	ranCmd := ranRe.MatchString(lower)
+	if m := runResultRe.FindStringSubmatch(claim); m != nil {
+		f.runCmd = strings.TrimSpace(m[1])
+		f.runOutcome = strings.TrimSpace(strings.Trim(strings.TrimSpace(m[2]), "`.,;"))
+	}
 
 	cut(backtickRe, func(m []string) bool {
 		addLit(m[1])
