@@ -1713,9 +1713,16 @@ _abhed/complete/warm { sessionId } → { warmed: boolean, ms?: number, recent?: 
   `True`, `Self`, `Some`…) and has a contraction, a pronoun, or an article
   in six words or more ("None if x is None else x" is code), unless the
   cursor is in a comment, a docstring or a string, or the language is
-  written in sentences (Markdown, plain text, YAML and the like). Studio also re-parses the
+  written in sentences (Markdown, plain text, YAML and the like). A string
+  that spans lines counts: a Go raw string or JavaScript template (an odd
+  count of backticks before the cursor), a Rust raw string left open, a Ruby
+  or shell heredoc whose closing line has not come, or a Python triple
+  quote; where this is unsure, the text is kept. Studio also parses the
   document with the suggestion inserted, where it has the language's
-  grammar, and drops one that leaves more syntax errors than there were.
+  grammar and the document is at most 256 KB (larger ones are left to the
+  engine's filter), and drops one whose own text holds a syntax error or
+  that leaves more syntax errors than there were. It parses the document
+  once per version and each suggestion incrementally, on the renderer.
 - Completions go first on a model server they share with next edits and
   agent turns: a completion waiting for one of the server's request slots
   (`max_concurrent_requests`, one for `ollama`) is given the next free one

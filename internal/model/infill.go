@@ -290,10 +290,52 @@ func inWords(prefix string) bool {
 	if open := strings.LastIndex(prefix, "/*"); open >= 0 && open > strings.LastIndex(prefix, "*/") {
 		return true
 	}
+	// Strings that span lines: a Go raw string or a JavaScript template (an
+	// odd count of backticks), a Rust raw string, a Ruby or shell heredoc.
+	// Counted roughly: where unsure the text is taken, not dropped.
+	if strings.Count(prefix, "`")%2 == 1 || openRawString(prefix) || openHeredoc(prefix) {
+		return true
+	}
 	// An open string on the cursor's line.
 	stripped := strings.NewReplacer(`\\`, "", `\"`, "", `\'`, "", "\\`", "").Replace(line)
 	return strings.Count(stripped, `"`)%2 == 1 || strings.Count(stripped, "`")%2 == 1 ||
 		strings.Count(stripped, "'")%2 == 1
+}
+
+var (
+	rawStringOpen = regexp.MustCompile(`\br(#*)"`)
+	heredocOpen   = regexp.MustCompile(`<<[~-]?(['"]?)([A-Za-z_][A-Za-z0-9_]*)['"]?`)
+)
+
+// openRawString reports a Rust raw string (r"…", r#"…"#) left open before the cursor.
+func openRawString(prefix string) bool {
+	m := rawStringOpen.FindAllStringSubmatchIndex(prefix, -1)
+	if len(m) == 0 {
+		return false
+	}
+	last := m[len(m)-1]
+	closing := `"` + prefix[last[2]:last[3]]
+	return !strings.Contains(prefix[last[1]:], closing)
+}
+
+// openHeredoc reports a heredoc (<<X, <<-X, <<~X) whose closing line has not come before the cursor.
+func openHeredoc(prefix string) bool {
+	m := heredocOpen.FindAllStringSubmatchIndex(prefix, -1)
+	if len(m) == 0 {
+		return false
+	}
+	last := m[len(m)-1]
+	tag := prefix[last[4]:last[5]]
+	nl := strings.IndexByte(prefix[last[1]:], '\n')
+	if nl < 0 {
+		return false // the cursor is still on the line that opens it
+	}
+	for _, l := range strings.Split(prefix[last[1]+nl+1:], "\n") {
+		if strings.TrimSpace(l) == tag {
+			return false
+		}
+	}
+	return true
 }
 
 // ReadsAsProse reports a suggestion for code whose first line is an English

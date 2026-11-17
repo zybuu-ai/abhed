@@ -108,6 +108,18 @@ func TestReadsAsProse(t *testing.T) {
 		{"Hello there from the app", "msg = \"", "python", false},
 		{"This guide shows how the parts fit together.", "# Guide\n\n", "markdown", false},
 		{"Just x y z", "f = ", "haskell", false},
+		// Strings that span lines (architect review r2): their content is text, kept.
+		{"Hello, you have a new message from the team", "msg := `\n", "go", false},
+		{"Dear user, your account is ready and we're happy", "const t = `\n", "typescript", false},
+		{"Welcome to the app, we hope you like it", "let s = r#\"\n", "rust", false},
+		{"Welcome to the app, we hope you like it", "let s = r\"\n", "rust", false},
+		{"Thanks for signing up, we'll be in touch", "body = <<~TEXT\n", "ruby", false},
+		{"Thanks for signing up, we'll be in touch", "cat <<EOF\nline\n", "shellscript", false},
+		{"It looks like you're writing a script.", "doc = \"\"\"\nUsage:\n", "python", false},
+		// Closed again before the cursor: code once more, and prose dropped.
+		{"It looks like you're working on a Go program.", "msg := `hi`\n", "go", true},
+		{"It looks like you're working on a Rust program.", "let s = r#\"hi\"#;\n", "rust", true},
+		{"It looks like you're working on a Ruby script.", "body = <<~TEXT\n  hi\nTEXT\n", "ruby", true},
 	} {
 		if got := ReadsAsProse(tc.text, tc.prefix, tc.lang); got != tc.want {
 			t.Errorf("ReadsAsProse(%q after %q, %s) = %v", tc.text, tc.prefix, tc.lang, got)

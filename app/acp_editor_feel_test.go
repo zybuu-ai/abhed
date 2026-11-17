@@ -1,17 +1,22 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/model"
 )
 
 // editorModel is one model server for completions and next edits, as a
@@ -304,9 +309,79 @@ func TestEditorServerQueues(t *testing.T) {
 		{config.ProviderConfig{Type: "vllm", BaseURL: "https://gpu.example/v1", MaxConcurrentRequests: 2}, "https://gpu.example/v1"},
 		{config.ProviderConfig{Type: "openai-compatible", BaseURL: "https://api.example/v1"}, ""},
 		{config.ProviderConfig{Type: "anthropic"}, ""},
+		// A local type left at its default endpoint (architect review r2): pooled, keyed as its adapter resolves it.
+		{config.ProviderConfig{Type: "ollama", Model: "qwen2.5-coder:7b"}, model.ServerKey(model.LocalDefaultURL("ollama"))},
+		{config.ProviderConfig{Type: "vllm"}, "http://127.0.0.1:8000/v1"},
+		{config.ProviderConfig{Type: "openai-compatible"}, ""},
 	} {
 		if got := editorServer(tc.p); got != tc.want {
 			t.Errorf("%+v: %q, want %q", tc.p, got, tc.want)
 		}
+	}
+}
+
+// A next edit cancelled while it still waits for a one-slot server's request
+// slot was never sent, and is not charged; one cancelled after it was sent
+// is (architect review r2).
+func TestStudioNextEditQueuedAndCancelledIsNotCharged(t *testing.T) {
+	m := newEditorModel(t, "x", feelWindow)
+	m.hold("chat")
+	sm := newScriptModel(t)
+	acpModelsEnv(t, `{"model":{"default":"m","completion":"coder","providers":{"m":`+stubProvider(sm.URL, "m-1")+
+		`,"coder":{"type":"ollama","base_url":"`+m.URL+`/v1","model":"qwen2.5-coder"}}}}`)
+	ws := t.TempDir()
+	if real, err := filepath.EvalSymlinks(ws); err == nil {
+		ws = real
+	}
+	r := &studioRig{t: t, ws: ws, home: os.Getenv("HOME"), model: sm}
+	r.cl = newStudioClient(t, ws, true)
+	r.cl.ok("initialize", map[string]any{"protocolVersion": 1}, nil)
+	noHold(t)
+	uri := "file://" + r.ws + "/text.py"
+
+	// Another call holds the server's one slot.
+	holder, err := model.New(model.Spec{Type: "ollama", BaseURL: m.URL + "/v1", Model: "qwen2.5-coder"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hctx, hcancel := context.WithCancel(context.Background())
+	defer hcancel()
+	go func() {
+		if ch, err := holder.Complete(hctx, model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: "hi"}}}); err == nil {
+			for range ch {
+			}
+		}
+	}()
+	waitArrival(t, m, "chat")
+
+	charged := func(id string, cancel func()) map[string]any {
+		t.Helper()
+		from := r.cl.mark()
+		send(r, "n-"+id, "_abhed/nextEdit", nextEditParams(id, uri))
+		cancel()
+		r.cl.ok("_abhed/nextEdit/cancel", map[string]any{"sessionId": id}, nil)
+		ans := r.cl.waitFor(from, "the next edit", func(msg rpcMessage) bool { return string(msg.ID) == `"n-`+id+`"` })
+		if !strings.Contains(string(ans.Result), "cancelled") {
+			t.Fatalf("next edit: %s", ans.Result)
+		}
+		r.cl.call("session/close", map[string]any{"sessionId": id})
+		sum, _ := r.recorded(id, agent.EvNextEditSummary)
+		if len(sum) != 1 || sum[0]["cancelled"] != float64(1) {
+			t.Fatalf("next_edit.summary %v", sum)
+		}
+		return sum[0]
+	}
+	// Queued behind the holder, then cancelled: nothing went, nothing is charged.
+	queued := r.open()
+	sum := charged(queued, func() { time.Sleep(300 * time.Millisecond) })
+	if sum["tokens_in"] != float64(0) || sum["tokens_out"] != float64(0) || sum["estimated"] != nil || sum["cost_usd"] != nil {
+		t.Fatalf("a call that never went was charged: %v", sum)
+	}
+	// The slot free, the call goes, and is cancelled at the server: charged by estimate.
+	hcancel()
+	sent := r.open()
+	sum = charged(sent, func() { waitArrival(t, m, "chat") })
+	if tin, _ := sum["tokens_in"].(float64); tin <= 0 || sum["estimated"] != float64(1) {
+		t.Fatalf("a call that went was not charged: %v", sum)
 	}
 }

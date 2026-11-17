@@ -683,10 +683,15 @@ func (c *acpConn) completeCancel(msg rpcMessage) { c.featureCancel(msg, "complet
 // a server on this machine, or one held to a bound of requests (ollama, or
 // max_concurrent_requests), queues them.
 func editorServer(p config.ProviderConfig) string {
-	if p.BaseURL == "" || !p.OnThisMachine() && p.Type != "ollama" && p.MaxConcurrentRequests <= 0 {
+	base := p.BaseURL
+	if base == "" {
+		// A local server type left at its default: keyed by that endpoint, as its adapter and the slot pools resolve it.
+		base = model.LocalDefaultURL(p.Type)
+	}
+	if base == "" || !p.OnThisMachine() && p.Type != "ollama" && p.MaxConcurrentRequests <= 0 {
 		return ""
 	}
-	return model.ServerKey(p.BaseURL)
+	return model.ServerKey(base)
 }
 
 // featureCancel cancels an editor feature's request in flight: with seq,

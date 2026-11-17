@@ -37,7 +37,8 @@ first: reasoning written into the text is removed, a fenced block gives its
 code, and code repeated from around the cursor is trimmed, including the
 rest of the cursor's line written again at the end of a one-line answer. A
 reply that still reads as an explanation, or opens as an English sentence
-where code is written (not in a comment, a docstring or a string, nor in
+where code is written (not in a comment, a docstring or a string, one that
+spans lines included, nor in
 Markdown, plain text or a configuration file), is not offered; Studio is
 told why (`dropped`). Code shaped like a sentence (`None if x is None else
 x`) is not taken for one: a sentence must also have a contraction, a pronoun
