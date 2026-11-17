@@ -34,6 +34,7 @@ const (
 	sourceUser      = "user"
 	sourceWorkspace = "workspace"
 	sourceManaged   = "managed"
+	sourcePlugin    = "plugin"
 	sourceMCP       = "mcp"
 )
 
@@ -68,13 +69,13 @@ type slashCmd struct {
 // and never while the registry's lock is held.
 type slashSource interface {
 	// Source is the kind of every command it supplies: user, workspace,
-	// managed or mcp. The loader that builds the source decides it.
+	// managed, plugin or mcp. The loader that builds the source decides it.
 	Source() string
 	SlashCommands() []slashCmd
 }
 
 // runtimeSources are the kinds a slashSource may be.
-var runtimeSources = []string{sourceUser, sourceWorkspace, sourceManaged, sourceMCP}
+var runtimeSources = []string{sourceUser, sourceWorkspace, sourceManaged, sourcePlugin, sourceMCP}
 
 // runtimeName is the shape of a run-time command's name: ASCII only, so no
 // character can pass for another from a different script.
