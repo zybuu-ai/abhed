@@ -577,12 +577,12 @@ var (
 	// A kind runbook run: reads, the runbook's scale, a scale it refused.
 	stepK8sPods     = CorpusStep{ID: "k1", Tool: "k8s_get", Args: map[string]any{"resource": "pods", "namespace": "demo", "selector": "app=web"}, Output: "NAME             READY   STATUS\nweb-5d9f-abcde   1/1     Running\n"}
 	stepK8sDeploy   = CorpusStep{ID: "k2", Tool: "k8s_get", Args: map[string]any{"resource": "deployments", "name": "web", "namespace": "demo"}, Output: "NAME   READY   UP-TO-DATE   AVAILABLE\nweb    1/1     1            1\n"}
-	stepK8sScale2   = CorpusStep{ID: "k3", Tool: "k8s_apply", Args: map[string]any{"action": "scale", "resource": "deployments", "name": "web", "replicas": 2, "namespace": "demo"}, Output: "Scaled deployments/web to 2 replicas."}
+	stepK8sScale2   = CorpusStep{ID: "k3", Tool: "k8s_apply", Args: map[string]any{"action": "scale", "resource": "deployments", "name": "web", "replicas": 2, "namespace": "demo"}, Output: "deployment.apps/web scaled"}
 	stepK8sScale5No = CorpusStep{ID: "k4", Tool: "k8s_apply", Args: map[string]any{"action": "scale", "resource": "deployments", "name": "web", "replicas": 5, "namespace": "demo"}, Denied: "the approved runbook does not list this call", Source: "mode"}
 	stepK8sScale2No = CorpusStep{ID: "k5", Tool: "k8s_apply", Args: map[string]any{"action": "scale", "resource": "deployments", "name": "web", "replicas": 2, "namespace": "demo"}, Denied: "the approved runbook does not list this call", Source: "mode"}
 	stepK8sScale2Er = CorpusStep{ID: "k6", Tool: "k8s_apply", Args: map[string]any{"action": "scale", "resource": "deployments", "name": "web", "replicas": 2, "namespace": "demo"}, Output: "Error: deployments.apps \"web\" is forbidden", Exit: code(1)}
-	stepK8sScale5   = CorpusStep{ID: "k7", Tool: "k8s_apply", Args: map[string]any{"action": "scale", "resource": "deployments", "name": "web", "replicas": 5, "namespace": "demo"}, Output: "Scaled deployments/web to 5 replicas."}
-	stepK8sScaleApi = CorpusStep{ID: "k8", Tool: "k8s_apply", Args: map[string]any{"action": "scale", "resource": "deployments", "name": "api", "replicas": 2, "namespace": "demo"}, Output: "Scaled deployments/api to 2 replicas."}
+	stepK8sScale5   = CorpusStep{ID: "k7", Tool: "k8s_apply", Args: map[string]any{"action": "scale", "resource": "deployments", "name": "web", "replicas": 5, "namespace": "demo"}, Output: "deployment.apps/web scaled"}
+	stepK8sScaleApi = CorpusStep{ID: "k8", Tool: "k8s_apply", Args: map[string]any{"action": "scale", "resource": "deployments", "name": "api", "replicas": 2, "namespace": "demo"}, Output: "deployment.apps/api scaled"}
 	stepK8sWait     = CorpusStep{ID: "k9", Tool: "k8s_get", Args: map[string]any{"resource": "deployments", "name": "web", "namespace": "demo", "wait_seconds": 120}, Output: "NAME   READY   UP-TO-DATE   AVAILABLE\nweb    2/2     2            2\n"}
 	// A fix of src/text.py and of pkg/text, then a run of an unrelated module or
 	// package, and a read with three functions.
@@ -608,10 +608,25 @@ var (
 	stepK8sDelForbid  = CorpusStep{ID: "kd4", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo"}, Output: "Error from server (Forbidden): deployments.apps \"web\" is forbidden: User \"agent\" cannot delete resource \"deployments\"", Exit: code(0)}
 	stepK8sDelNoObj   = CorpusStep{ID: "kd5", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo"}, Output: "error: no objects passed to delete", Exit: code(0)}
 	stepK8sDelSvc     = CorpusStep{ID: "kd6", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "services", "name": "web", "namespace": "demo"}, Output: "service \"web\" deleted", Exit: code(0)}
-	stepK8sScaleStg   = CorpusStep{ID: "kd7", Tool: "k8s_apply", Args: map[string]any{"action": "scale", "resource": "deployments", "name": "web", "replicas": 2, "namespace": "staging"}, Output: "Scaled deployments/web to 2 replicas.", Exit: code(0)}
-	stepK8sScaleDry   = CorpusStep{ID: "kd8", Tool: "k8s_apply", Args: map[string]any{"action": "scale", "resource": "deployments", "name": "web", "replicas": 2, "namespace": "demo", "dry_run": true}, Output: "Scaled deployments/web to 2 replicas (dry run).", Exit: code(0)}
+	stepK8sScaleStg   = CorpusStep{ID: "kd7", Tool: "k8s_apply", Args: map[string]any{"action": "scale", "resource": "deployments", "name": "web", "replicas": 2, "namespace": "staging"}, Output: "deployment.apps/web scaled", Exit: code(0)}
+	stepK8sScaleDry   = CorpusStep{ID: "kd8", Tool: "k8s_apply", Args: map[string]any{"action": "scale", "resource": "deployments", "name": "web", "replicas": 2, "namespace": "demo", "dry_run": true}, Output: "deployment.apps/web scaled (dry run)", Exit: code(0)}
 	stepK8sScaleForb  = CorpusStep{ID: "kd9", Tool: "k8s_apply", Args: map[string]any{"action": "scale", "resource": "deployments", "name": "web", "replicas": 2, "namespace": "demo"}, Output: "Error: cannot scale web to 2: forbidden", Exit: code(0)}
-	stepK8sScaleArgv  = CorpusStep{ID: "kda", Tool: "k8s_apply", Args: map[string]any{"action": "scale", "resource": "deployments", "name": "web", "replicas": 2, "namespace": "demo", "flags": []any{"--dry-run=client"}}, Output: "Scaled deployments/web to 2 replicas.", Exit: code(0)}
+	stepK8sScaleArgv  = CorpusStep{ID: "kda", Tool: "k8s_apply", Args: map[string]any{"action": "scale", "resource": "deployments", "name": "web", "replicas": 2, "namespace": "demo", "flags": []any{"--dry-run=client"}}, Output: "deployment.apps/web scaled", Exit: code(0)}
+	stepK8sDelPreview = CorpusStep{ID: "ke1", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo", "preview": true}, Output: "would delete web", Exit: code(0)}
+	stepK8sDelWhatIf  = CorpusStep{ID: "ke2", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo", "what_if": true}, Output: "What if: deleting web", Exit: code(0)}
+	stepK8sDelWarn    = CorpusStep{ID: "ke3", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo"}, Output: "Warning: resource not deleted, still terminating", Exit: code(0)}
+	stepK8sDelTimeout = CorpusStep{ID: "ke4", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo"}, Output: "timed out waiting for the condition", Exit: code(0)}
+	stepK8sDelSame    = CorpusStep{ID: "ke5", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo"}, Output: "deployment.apps \"web\" unchanged", Exit: code(0)}
+	stepK8sDelPrevOK  = CorpusStep{ID: "ke6", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo", "preview": true}, Output: "deployment.apps \"web\" deleted", Exit: code(0)}
+	stepK8sDelPlanOK  = CorpusStep{ID: "ke7", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo", "plan_only": true}, Output: "deployment.apps \"web\" deleted", Exit: code(0)}
+	stepK8sDelValOK   = CorpusStep{ID: "ke8", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo", "validate_only": true}, Output: "deployment.apps \"web\" deleted", Exit: code(0)}
+	stepK8sDelOKWarn  = CorpusStep{ID: "ke9", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo"}, Output: "deployment.apps \"web\" deleted\nWarning: still terminating", Exit: code(0)}
+	stepK8sDelBare    = CorpusStep{ID: "kea", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo"}, Output: "done", Exit: code(0)}
+	stepK8sDelOther   = CorpusStep{ID: "keb", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "demo"}, Output: "deployment.apps \"api\" deleted", Exit: code(0)}
+	stepK8sDelProd    = CorpusStep{ID: "kec", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "prod"}, Output: "deployment.apps \"web\" deleted", Exit: code(0)}
+	stepK8sDelSts     = CorpusStep{ID: "ked", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "statefulsets", "name": "web", "namespace": "demo"}, Output: "statefulset.apps \"web\" deleted", Exit: code(0)}
+	stepK8sGetStaging = CorpusStep{ID: "kee", Tool: "k8s_get", Args: map[string]any{"resource": "deployments", "name": "web", "namespace": "eu-west"}, Output: "NAME   READY\nweb    1/1\n"}
+	stepReadTSFields  = CorpusStep{ID: "j6", Tool: "read", Args: map[string]any{"path": "/w/src/d.ts"}, Output: "     1\t@Component({})\n     2\texport class D {\n     3\t  @Input() name = 'a';\n     4\t\n     5\t  @Output()\n     6\t  other = 'b';\n     7\t}\n"}
 
 	// Reads of files with several definitions each, cited by line.
 	stepReadJSArrows  = CorpusStep{ID: "j1", Tool: "read", Args: map[string]any{"path": "/w/src/m.js"}, Output: "     1\tconst add = (a, b) => {\n     2\t  const s = a + b;\n     3\t  return a + b;\n     4\t};\n     5\tconst sub = (a, b) => {\n     6\t  return a - b;\n     7\t};\n"}
@@ -2143,6 +2158,37 @@ func CorpusCases() []CorpusCase {
 		{Name: "a delete said done in its namespace", Kind: c, Want: ClaimVerified, Steps: steps(stepK8sDelOK), Text: "I deleted web in demo."},
 		{Name: "a deployment delete said done from its namespace", Kind: c, Want: ClaimVerified, Steps: steps(stepK8sDelOK), Text: "I deleted the web deployment from the demo namespace."},
 		{Name: "a scale said done in its namespace", Kind: c, Want: ClaimVerified, Steps: steps(stepK8sScale2), Text: "I scaled the web deployment to 2 replicas in demo."},
+		{Name: "a delete said done for prod's web, made in staging", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelStaging), Text: "I deleted prod's web."},
+		{Name: "a delete said done for web (prod), made in staging", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelStaging), Text: "I deleted web (prod)."},
+		{Name: "a delete said done for prod, made in staging", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelStaging), Text: "I deleted web for prod."},
+		{Name: "a delete said done of the prod web, made in staging", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelStaging), Text: "I deleted the prod web."},
+		{Name: "a delete said done at prod, made in staging", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelStaging), Text: "I deleted web at prod."},
+		{Name: "a delete said done with namespace=prod, made in staging", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelStaging), Text: "I deleted web (namespace=prod)."},
+		{Name: "a delete said done with -n prod, made in staging", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelStaging), Text: "I deleted web with -n prod."},
+		{Name: "a delete said done in a namespace another call used", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sGetStaging, stepK8sDelOK), Text: "I deleted the eu-west web."},
+		{Name: "a daemon set delete said done, a deployment deleted", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelOK), Text: "I deleted the web daemon set."},
+		{Name: "a stateful set delete said done, a deployment deleted", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelOK), Text: "I deleted the web stateful set."},
+		{Name: "a config map delete said done, a deployment deleted", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelOK), Text: "I deleted the web config map."},
+		{Name: "a delete said done, a preview", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelPreview), Text: "I deleted web."},
+		{Name: "a delete said done, a what-if", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelWhatIf), Text: "I deleted web."},
+		{Name: "a delete said done, a warning that it was not", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelWarn), Text: "I deleted web."},
+		{Name: "a delete said done, a timeout", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelTimeout), Text: "I deleted web."},
+		{Name: "a delete said done, unchanged", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelSame), Text: "I deleted web."},
+		{Name: "a delete said done, a preview whose output confirms it", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelPrevOK), Text: "I deleted web."},
+		{Name: "a delete said done, a plan whose output confirms it", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelPlanOK), Text: "I deleted web."},
+		{Name: "a delete said done, a validation whose output confirms it", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelValOK), Text: "I deleted web."},
+		{Name: "a delete said done, confirmed then warned of", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelOKWarn), Text: "I deleted web."},
+		{Name: "a delete said done, output confirming nothing", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelBare), Text: "I deleted web."},
+		{Name: "a delete said done, output confirming another object", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelOther), Text: "I deleted web."},
+		{Name: "a delete said done for prod's web, made in prod", Kind: c, Want: ClaimVerified, Steps: steps(stepK8sDelProd), Text: "I deleted prod's web."},
+		{Name: "a delete said done with -n demo, made in demo", Kind: c, Want: ClaimVerified, Steps: steps(stepK8sDelOK), Text: "I deleted web with -n demo."},
+		{Name: "a stateful set delete said done, a stateful set deleted", Kind: c, Want: ClaimVerified, Steps: steps(stepK8sDelSts), Text: "I deleted the web stateful set."},
+		{Name: "a delete said done, plainly", Kind: c, Want: ClaimVerified, Steps: steps(stepK8sDelOK), Text: "I deleted web."},
+		{Name: "a class field cited for the next field", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTSFields), Text: "src/d.ts:3 shows `other = 'b'`."},
+		{Name: "a decorator line cited for the field before it", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTSFields), Text: "src/d.ts:5 shows `name = 'a'`."},
+		{Name: "a class field cited for itself", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTSFields), Text: "src/d.ts:6 shows `other = 'b'`."},
+		{Name: "a decorated class field cited for itself", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTSFields), Text: "src/d.ts:3 shows `name = 'a'`."},
+		{Name: "a decorator line cited for its field", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTSFields), Text: "src/d.ts:5 shows `other = 'b'`."},
 		{Name: "an arrow function cited for code of the one before it", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadJSArrows), Text: "`sub` returns `a + b` (src/m.js:5)."},
 		{Name: "an arrow function cited for code of the one after it", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadJSArrows), Text: "src/m.js:3 shows `return a - b`."},
 		{Name: "an arrow function named at a line of the one before it", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadJSArrows), Text: "src/m.js:4 shows `return a + b` in `sub`."},

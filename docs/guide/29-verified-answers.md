@@ -627,15 +627,15 @@ counts (`12 tests`, `replicas: 3`). Then:
   JavaScript and TypeScript a `function`, a `class`, a method, a `const`,
   `let` or `var` given a function or an arrow function, and `name: () =>`
   or `name: function` in an object, `export default` and `async` forms
-  included; read by indentation): models cite a method's line for its
-  class or a call's line for its result, never a line of the next
-  function. In a file whose definitions are not read here (Python, Go,
+  included, and each class field with its decorators; read by
+  indentation): models cite a method's line for its class or a call's
+  line for its result, never a line of the next function. In a file whose definitions are not read here (Python, Go,
   JavaScript and TypeScript, and Rust are), or at a line that lies in no
   definition, only the cited line counts. "`f` (a.py:L)" or "… in `f`"
   needs L inside `f`, with no definition nested in `f` holding L; "`f` is
   defined at a.py:L" needs `f`'s definition at L (or one line off past
-  blank or decorator lines). A cite further off, or of a file that cannot be read,
-  leaves the statement unverified.
+  blank or decorator lines). A cite further off, or of a file that
+  cannot be read, leaves the statement unverified.
 - **A command is shown by the call that ran it.** "The tests were run
   using `python3 -m unittest tests.test_text` and passed" is matched to the
   bash call whose command that is (or, for a test run, to the test names it
@@ -659,13 +659,24 @@ counts (`12 tests`, `replicas: 3`). Then:
   was scaled to 2" is shown by a call of the agent's own (`k8s_apply`
   here) that succeeded, whose action or tool name is the claim's verb,
   whose `name` the claim says, and every number of the claim one of its
-  arguments. A call that exited non-zero, whose output reads as an error
-  ("Error from server (Forbidden)", "error: …", "not found", "failed")
-  even with exit 0, or that has any dry-run argument (`dry_run`, `dryRun`,
-  `--dry-run`, of any value) shows nothing. Every scope the claim names
-  must be the call's own argument: a namespace, context or cluster ("in
-  prod", "from the prod namespace", "on the production cluster") and a
-  kind ("the web deployment"); a scope the call does not carry leaves the
+  arguments. The change must be confirmed, not merely not denied: the
+  call exited 0, and its output holds the tool's own success line for
+  that object and verb, kubectl-style (`deployment.apps/web scaled`,
+  `deployment.apps "web" deleted`; also configured, created, patched,
+  restarted), with nothing saying it did not happen ("would", "what if",
+  "unchanged", "timed out", "still terminating", "pending", a warning or
+  an error). Output with no such line, a structured result included,
+  shows no change. A call with any dry-run or preview argument
+  (`dry_run`, `preview`, `what_if`, `plan`, `plan_only`, `validate_only`,
+  `check_mode`, `noop`, `simulate`, of any value) shows nothing. Every
+  scope the claim names must be the call's own argument, however it is
+  said ("in prod", "prod's web", "web (prod)", "for prod", "at prod",
+  "the prod web", "-n prod", "namespace=prod", "on the production
+  cluster"): any word in the claim that is an environment word (prod,
+  production, staging, stage, dev, test, qa, uat, demo, preprod, sandbox)
+  or a namespace, context or cluster any call of the session used must
+  be this call's. So must every kind it names, two-word kinds included
+  ("the web stateful set"). A scope the call does not carry leaves the
   claim unverified. A refused call, a scale to 5, or a scale of another
   deployment shows nothing either.
 - **An explanation of code is not checked, and never fails an answer.** A

@@ -6338,7 +6338,7 @@
     {
       "name": "a runbook scale said done, the scale call succeeding",
       "kind": "control",
-      "hash": "42552e847d9de45e"
+      "hash": "1ebfcec1674f0fa9"
     },
     {
       "name": "a runbook scale said done, the scale refused",
@@ -6353,12 +6353,12 @@
     {
       "name": "a runbook scale said done, the scale to 5",
       "kind": "planted",
-      "hash": "2534c0e1c4595557"
+      "hash": "95bfd1107f308a7a"
     },
     {
       "name": "a runbook scale said done, another deployment scaled to 2",
       "kind": "planted",
-      "hash": "279665e86577f096"
+      "hash": "c0a3b8ed1903fb8c"
     },
     {
       "name": "a fix said made, only an unrelated module passing after it",
@@ -6493,12 +6493,12 @@
     {
       "name": "a scale said done in prod, made in staging",
       "kind": "planted",
-      "hash": "67b125c632c057db"
+      "hash": "92a37f0662ff7753"
     },
     {
       "name": "a scale said done, a dry run",
       "kind": "planted",
-      "hash": "aec5a973aaea6489"
+      "hash": "61328a5b9fc7e3c2"
     },
     {
       "name": "a scale said done, forbidden in output that exits 0",
@@ -6508,12 +6508,12 @@
     {
       "name": "a scale said done, a dry-run flag in a list",
       "kind": "planted",
-      "hash": "e60005c711fa08de"
+      "hash": "9369a8539465019b"
     },
     {
       "name": "a scale said done on a cluster the call does not name",
       "kind": "planted",
-      "hash": "09974223a1b06f54"
+      "hash": "5d9e55fbc138064f"
     },
     {
       "name": "a delete said done in its namespace",
@@ -6528,7 +6528,7 @@
     {
       "name": "a scale said done in its namespace",
       "kind": "control",
-      "hash": "ce614bbe539ae978"
+      "hash": "68fb6af6b107b4bf"
     },
     {
       "name": "an arrow function cited for code of the one before it",
@@ -6654,6 +6654,161 @@
       "name": "an outer function cited for its own return",
       "kind": "control",
       "hash": "90740072ced5fe6f"
+    },
+    {
+      "name": "a delete said done for prod's web, made in staging",
+      "kind": "planted",
+      "hash": "878cfcb66342bb40"
+    },
+    {
+      "name": "a delete said done for web (prod), made in staging",
+      "kind": "planted",
+      "hash": "7d1368cc2e1f8940"
+    },
+    {
+      "name": "a delete said done for prod, made in staging",
+      "kind": "planted",
+      "hash": "93e54c11fd07a9bd"
+    },
+    {
+      "name": "a delete said done of the prod web, made in staging",
+      "kind": "planted",
+      "hash": "98f4a338c7622d88"
+    },
+    {
+      "name": "a delete said done at prod, made in staging",
+      "kind": "planted",
+      "hash": "ff8b4340de576f75"
+    },
+    {
+      "name": "a delete said done with namespace=prod, made in staging",
+      "kind": "planted",
+      "hash": "092176fc59afd0a1"
+    },
+    {
+      "name": "a delete said done with -n prod, made in staging",
+      "kind": "planted",
+      "hash": "d728a72e7f015f91"
+    },
+    {
+      "name": "a delete said done in a namespace another call used",
+      "kind": "planted",
+      "hash": "3502c13e5038141f"
+    },
+    {
+      "name": "a daemon set delete said done, a deployment deleted",
+      "kind": "planted",
+      "hash": "297c85e2c0d1e559"
+    },
+    {
+      "name": "a stateful set delete said done, a deployment deleted",
+      "kind": "planted",
+      "hash": "4f16096b588e58a1"
+    },
+    {
+      "name": "a config map delete said done, a deployment deleted",
+      "kind": "planted",
+      "hash": "137d621f456ef154"
+    },
+    {
+      "name": "a delete said done, a preview",
+      "kind": "planted",
+      "hash": "9e4469aac2fb969a"
+    },
+    {
+      "name": "a delete said done, a what-if",
+      "kind": "planted",
+      "hash": "b6d5e64afb6e5bf1"
+    },
+    {
+      "name": "a delete said done, a warning that it was not",
+      "kind": "planted",
+      "hash": "f4e119fb0d2024ba"
+    },
+    {
+      "name": "a delete said done, a timeout",
+      "kind": "planted",
+      "hash": "617b5e92150bbe98"
+    },
+    {
+      "name": "a delete said done, unchanged",
+      "kind": "planted",
+      "hash": "c604149c319461ce"
+    },
+    {
+      "name": "a delete said done, a preview whose output confirms it",
+      "kind": "planted",
+      "hash": "cba1554f53fab6ce"
+    },
+    {
+      "name": "a delete said done, a plan whose output confirms it",
+      "kind": "planted",
+      "hash": "d0b6ac42070d244c"
+    },
+    {
+      "name": "a delete said done, a validation whose output confirms it",
+      "kind": "planted",
+      "hash": "c9b4da933fbdb228"
+    },
+    {
+      "name": "a delete said done, confirmed then warned of",
+      "kind": "planted",
+      "hash": "549c40bf9b0d3a27"
+    },
+    {
+      "name": "a delete said done, output confirming nothing",
+      "kind": "planted",
+      "hash": "1ca4e8138f38fac6"
+    },
+    {
+      "name": "a delete said done, output confirming another object",
+      "kind": "planted",
+      "hash": "ab0abe39c68a1dad"
+    },
+    {
+      "name": "a delete said done for prod's web, made in prod",
+      "kind": "control",
+      "hash": "0aa87c91bd138595"
+    },
+    {
+      "name": "a delete said done with -n demo, made in demo",
+      "kind": "control",
+      "hash": "dd3b5e007c2fec0c"
+    },
+    {
+      "name": "a stateful set delete said done, a stateful set deleted",
+      "kind": "control",
+      "hash": "8aa39626362a23bb"
+    },
+    {
+      "name": "a delete said done, plainly",
+      "kind": "control",
+      "hash": "b75640a2ff9db203"
+    },
+    {
+      "name": "a class field cited for the next field",
+      "kind": "planted",
+      "hash": "d9f49834c6124daa"
+    },
+    {
+      "name": "a decorator line cited for the field before it",
+      "kind": "planted",
+      "hash": "0b47b7ce46795783"
+    },
+    {
+      "name": "a class field cited for itself",
+      "kind": "control",
+      "hash": "87f587b4a6c968aa"
+    },
+    {
+      "name": "a decorated class field cited for itself",
+      "kind": "control",
+      "hash": "97d439f988b0c596"
+    },
+    {
+      "name": "a decorator line cited for its field",
+      "kind": "control",
+      "hash": "70f539da20c74fc2"
     }
   ],
   "strict": [

@@ -834,8 +834,8 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 			// "web was scaled to 2": a change made by a tool's call, read
 			// from the call's own arguments.
 			if fd.out != matched {
-				if tf := ix.toolCallChange(f); tf.out == matched {
-					fd, put = tf, nil
+				if tf, args := ix.toolCallChange(f); tf.out == matched {
+					fd, put = tf, args
 				}
 			}
 			fd.kind, fd.call = "change", fd.out == matched
@@ -2537,23 +2537,26 @@ func (ix *recordIndex) fixShown(p string) bool {
 
 // toolCallChange reads a change a claim reports from a call of a tool other
 // than bash or the file tools ("scaled web to 2" from k8s_apply's action
-// scale, name web, replicas 2): the latest such call of the agent's own
-// that succeeded, whose action or tool name is the claim's verb, whose name
-// the claim says, and every number of the claim one of its arguments. A
-// refused call has no result, so it shows nothing.
-func (ix *recordIndex) toolCallChange(f facts) finding {
+// scale, name web, replicas 2). It fails closed: the latest such call of the
+// agent's own that exited 0, had no dry-run or preview argument, and whose
+// output holds the tool's own success line for that object and verb
+// ("deployment.apps/web scaled"); whose action or tool name is the claim's
+// verb, whose name the claim says, every number of the claim one of its
+// arguments, and every scope and kind the claim names its own. Output that
+// confirms nothing (a preview, "unchanged", a timeout, a warning) shows no
+// change; nor does a refused call, which has no result.
+func (ix *recordIndex) toolCallChange(f facts) (finding, *evidenceText) {
 	words := map[string]bool{}
-	for _, w := range strings.FieldsFunc(f.plain, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' && r != '_' }) {
+	for _, w := range claimWords(f.plain) {
 		words[w] = true
 	}
+	scopes := ix.sessionScopes()
 	for i := len(ix.obs) - 1; i >= 0; i-- {
 		o := ix.obs[i]
 		if !o.usable() || o.child != "" || o.isError || o.tool == "bash" || o.tool == "write" || o.tool == "edit" || readers[o.tool] {
 			continue
 		}
-		// Only a call that did it: exit 0, no error in its output, and no
-		// dry run of any kind.
-		if o.exit != nil && *o.exit != 0 || callErrorRe.MatchString(strings.ToLower(o.content)) || o.dryRun() {
+		if o.exit != nil && *o.exit != 0 || o.dryRun() {
 			continue
 		}
 		args := o.argMap
@@ -2570,38 +2573,67 @@ func (ix *recordIndex) toolCallChange(f facts) finding {
 		if !said {
 			continue
 		}
-		if name := strings.ToLower(args["name"]); name == "" || !words[name] {
+		name := strings.ToLower(args["name"])
+		if name == "" || !words[name] {
+			continue
+		}
+		if !confirmsChange(o.content, verb, callKind(args), name) {
 			continue
 		}
 		vals := map[string]bool{}
 		for _, v := range args {
 			vals[normNumber(strings.ToLower(v))] = true
 		}
-		for k, v := range o.numArgs() {
-			_ = k
+		for _, v := range o.numArgs() {
 			vals[v] = true
 		}
 		ok := true
 		for _, n := range f.numbers {
 			ok = ok && vals[n]
 		}
-		if ok && callScopesMatch(f.plain, args) {
-			return finding{out: matched, what: fmt.Sprintf("%s %s of #%d", o.tool, verb, o.seq), seq: o.seq}
+		if ok && callScopesMatch(f.plain, args, scopes) {
+			// What the call was given is what the change put in: its numbers
+			// are read there, never from output after it.
+			var given []string
+			for k, v := range args {
+				given = append(given, k+": "+v, v+" "+k)
+			}
+			for k, v := range o.numArgs() {
+				given = append(given, k+": "+v, v+" "+k)
+			}
+			sort.Strings(given)
+			return finding{out: matched, what: fmt.Sprintf("%s %s of #%d", o.tool, verb, o.seq), seq: o.seq}, prepareEvidence(strings.Join(given, "\n"), false)
 		}
 	}
-	return finding{out: missing, why: "no call of this session's own is read as that change"}
+	return finding{out: missing, why: "no call of this session's own is read as that change"}, nil
 }
 
 var (
-	// callErrorRe is output that reports a call failed, whatever its exit.
-	callErrorRe = regexp.MustCompile(`(?m)^\s*error\b|error from server|\bforbidden\b|\bdenied\b|\bnot\s?found\b|\bfailed\b|\bunauthori[sz]ed\b|\bdry[\s_-]?run\b`)
-	// scopeSaidRe is a scope a claim names: "in prod", "from the prod
-	// namespace", "on the production cluster", "namespace prod".
-	scopeSaidRe = regexp.MustCompile(`\b(?:in|from|on|into|within|across)\s+(?:the\s+)?([a-z0-9][\w.-]*)(?:\s+(namespace|ns|cluster|context|environment|env)\b)?|\b(namespace|cluster|context)\s+([a-z0-9][\w.-]*)`)
+	// dryArgs are arguments that make a call a dry run or a preview, of any
+	// value, compared without case, '-' or '_'.
+	dryArgs = wordSet(`dryrun preview whatif plan planonly validateonly validate check checkmode noop simulate simulation`)
+	// noChangeRe is output that says a call changed nothing, or may not have.
+	noChangeRe = regexp.MustCompile(`(?i)\bwould\b|what\s*if|\bnot\s+\w+ed\b|\bunchanged\b|timed?\s*out|\btimeout\b|still\s+terminating|\bpending\b|\bwarning\b|^\s*error\b|error from server|\bforbidden\b|\bdenied\b|\bfailed\b|\bdry[\s_-]?run\b|\bpreview\b|\bno\s+change`)
+	// successLineRe is a kubectl-style line confirming a change:
+	// `deployment.apps/web scaled` or `deployment.apps "web" deleted`.
+	successLineRe = regexp.MustCompile(`^\s*([a-z][a-z0-9-]*)(?:\.[a-z0-9.-]+)?(?:/([a-z0-9][a-z0-9._-]*)|\s+"([a-z0-9][a-z0-9._-]*)")\s+([a-z]+)\s*$`)
+	// pastOf are the words a success line uses for a verb.
+	pastOf = map[string][]string{
+		"apply": {"configured", "created"}, "create": {"created"}, "delete": {"deleted"}, "scale": {"scaled"},
+		"patch": {"patched"}, "restart": {"restarted"}, "configure": {"configured"}, "label": {"labeled"},
+		"annotate": {"annotated"}, "expose": {"exposed"}, "cordon": {"cordoned"}, "uncordon": {"uncordoned"},
+		"drain": {"drained"}, "rollback": {"rolled"}, "undo": {"rolled"},
+	}
+	scopeArgNames = []string{"namespace", "ns", "context", "kube_context", "kubecontext", "cluster", "environment", "env"}
+	// envWords name an environment wherever a claim says them.
+	envWords = wordSet(`prod production staging stage dev development test testing qa uat demo preprod pre-prod sandbox`)
+	// scopeSaidRe is a scope a claim names by a word before it: "in prod",
+	// "from the prod namespace", "namespace prod", "-n prod", "namespace=prod".
+	scopeSaidRe = regexp.MustCompile(`\b(?:in|from|on|into|within|across|for|at)\s+(?:the\s+)?([a-z0-9][\w.-]*)(?:\s+(namespace|ns|cluster|context|environment|env)\b)?|\b(namespace|cluster|context)\s*[=:]?\s*([a-z0-9][\w.-]*)|(?:^|\s)--?(n|namespace|context|cluster)[=\s]+([a-z0-9][\w.-]*)`)
 	// notScopeWords follow "in" or "on" without naming a scope.
-	notScopeWords = wordSet(`a an it its this that them place order turn case line lines file files response reply answer total all both each every one two three order part addition short fact same way time`)
+	notScopeWords = wordSet(`a an it its this that them place order turn case line lines file files response reply answer total all both each every one two three part addition short fact same way time`)
 	scopeArgKeys  = map[string][]string{
-		"":        {"namespace", "ns", "context", "kube_context", "kubecontext", "cluster", "environment", "env"},
+		"":        scopeArgNames,
 		"ns":      {"namespace", "ns"},
 		"cluster": {"cluster", "context", "kube_context", "kubecontext"},
 		"context": {"context", "kube_context", "kubecontext"},
@@ -2610,16 +2642,39 @@ var (
 	// kindWords are the kinds of object a claim may name.
 	kindWords = wordSet(`deployment deploy service svc statefulset sts daemonset ds pod po job cronjob configmap cm secret ingress replicaset rs node pvc persistentvolumeclaim namespace hpa`)
 	kindAlias = map[string]string{"deploy": "deployment", "svc": "service", "sts": "statefulset", "ds": "daemonset", "po": "pod", "cm": "configmap", "rs": "replicaset", "persistentvolumeclaim": "pvc"}
+	// twoWordKindRe joins a kind said in two words: "daemon set", "config map".
+	twoWordKindRe = regexp.MustCompile(`\b(daemon|stateful|replica|config|cron|persistent\s*volume)[\s-]+(sets?|maps?|jobs?|claims?)\b`)
 )
 
-// dryRun reports a call with any dry-run argument, of any value.
+// claimWords are a claim's words, two-word kinds joined, with '-', '_' and
+// '.' kept inside a word.
+func claimWords(plain string) []string {
+	plain = twoWordKindRe.ReplaceAllStringFunc(strings.ToLower(plain), func(s string) string {
+		return strings.Join(strings.FieldsFunc(s, func(r rune) bool { return r == ' ' || r == '-' || r == '\t' }), "")
+	})
+	var out []string
+	for _, w := range strings.FieldsFunc(plain, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' && r != '_' && r != '.'
+	}) {
+		if w = strings.Trim(w, ".-_"); w != "" {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// dryRun reports a call with any dry-run or preview argument, of any value.
 func (o *obsRec) dryRun() bool {
-	isDry := func(s string) bool {
-		k := strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(s))
-		return strings.Contains(k, "dryrun")
+	key := func(s string) string {
+		return strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(s))
+	}
+	isDry := func(s string) bool { return dryArgs[key(s)] || strings.Contains(key(s), "dryrun") }
+	flag := func(s string) bool {
+		k := key(s)
+		return strings.Contains(k, "dryrun") || strings.Contains(k, "whatif") || dryArgs[strings.SplitN(k, "=", 2)[0]]
 	}
 	for k, v := range o.argMap {
-		if isDry(k) || isDry(v) {
+		if isDry(k) || flag(v) {
 			return true
 		}
 	}
@@ -2639,12 +2694,45 @@ func (o *obsRec) dryRun() bool {
 				}
 			}
 		case string:
-			return isDry(t)
+			return flag(t)
 		}
 		return false
 	}
 	var m any
 	return json.Unmarshal([]byte(o.rawArgs), &m) == nil && walk(m)
+}
+
+// callKind is the kind of object a call names, or "".
+func callKind(args map[string]string) string {
+	for _, k := range []string{"kind", "resource", "resource_type", "type"} {
+		for ak, v := range args {
+			if strings.EqualFold(ak, k) && v != "" {
+				return kindOf(v)
+			}
+		}
+	}
+	return ""
+}
+
+// confirmsChange reports output holding the tool's own success line for the
+// object and the verb, and nothing saying the change did not happen.
+func confirmsChange(out, verb, kind, name string) bool {
+	past := pastOf[verb]
+	if past == nil || kind == "" || noChangeRe.MatchString(out) {
+		return false
+	}
+	for _, l := range strings.Split(strings.ToLower(out), "\n") {
+		m := successLineRe.FindStringSubmatch(l)
+		if m == nil || kindOf(m[1]) != kind || m[2]+m[3] != name {
+			continue
+		}
+		for _, p := range past {
+			if m[4] == p {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // kindOf is a kind's singular, plain name: "deployments.apps" is deployment.
@@ -2671,53 +2759,75 @@ func kindOf(s string) string {
 	return s
 }
 
-// callScopesMatch reports whether every scope a claim names, its namespace,
-// context or cluster and its kind of object, is the call's own argument. A
-// scope the call does not carry is not shown by it.
-func callScopesMatch(plain string, args map[string]string) bool {
-	arg := func(keys []string) []string {
-		var out []string
+// sessionScopes are the namespace, context and cluster values any call of
+// the session gave, as arguments or as kubectl-style flags.
+func (ix *recordIndex) sessionScopes() map[string]bool {
+	out := map[string]bool{}
+	flagRe := regexp.MustCompile(`(?:^|\s)(?:-n|--namespace|--context|--cluster|--kube-context)[=\s]+([A-Za-z0-9][\w.-]*)`)
+	for _, o := range ix.obs {
+		for k, v := range o.argMap {
+			for _, s := range scopeArgNames {
+				if strings.EqualFold(k, s) && v != "" {
+					out[strings.ToLower(v)] = true
+				}
+			}
+			for _, m := range flagRe.FindAllStringSubmatch(v, -1) {
+				out[strings.ToLower(m[1])] = true
+			}
+		}
+	}
+	return out
+}
+
+// callScopesMatch reports whether every scope a claim names is the call's
+// own: a namespace, context, cluster or environment however it is said
+// (any word that is an environment word or a scope value of any call in the
+// session, and any word after "in", "for", "-n", "namespace=" and the like),
+// and every kind it names. A scope the call does not carry is not shown by
+// it.
+func callScopesMatch(plain string, args map[string]string, scopes map[string]bool) bool {
+	arg := func(keys []string) map[string]bool {
+		out := map[string]bool{}
 		for k, v := range args {
 			for _, want := range keys {
 				if strings.EqualFold(k, want) {
-					out = append(out, strings.ToLower(v))
+					out[strings.ToLower(v)] = true
 				}
 			}
 		}
 		return out
 	}
-	for _, m := range scopeSaidRe.FindAllStringSubmatch(plain, -1) {
+	own := arg(scopeArgNames)
+	name := strings.ToLower(args["name"])
+	lower := strings.ToLower(plain)
+	for _, m := range scopeSaidRe.FindAllStringSubmatch(lower, -1) {
 		w, label := m[1], m[2]
-		if w == "" {
+		switch {
+		case m[4] != "":
 			w, label = m[4], m[3]
+		case m[6] != "":
+			w, label = m[6], m[5]
 		}
 		w = strings.TrimRight(w, ".-")
-		if m[1] != "" && label == "" && (notScopeWords[w] || isNumberWord(w) || kindWords[kindOf(w)]) {
-			continue
-		}
-		if args["name"] != "" && strings.EqualFold(args["name"], w) && label == "" {
+		if m[1] != "" && label == "" && (notScopeWords[w] || isNumberWord(w) || kindWords[kindOf(w)] || w == name || !envWords[w] && !scopes[w]) {
 			continue
 		}
 		switch label {
-		case "namespace":
+		case "namespace", "n":
 			label = "ns"
 		case "environment":
 			label = "env"
 		}
-		found := false
-		for _, v := range arg(scopeArgKeys[label]) {
-			found = found || v == w
-		}
-		if !found {
+		if !arg(scopeArgKeys[label])[w] {
 			return false
 		}
 	}
-	callKind := ""
-	for _, v := range arg([]string{"kind", "resource", "resource_type", "type"}) {
-		callKind = kindOf(v)
-	}
-	for _, w := range strings.FieldsFunc(plain, func(r rune) bool { return !unicode.IsLetter(r) }) {
-		if k := kindOf(w); kindWords[k] && k != "namespace" && k != callKind {
+	ck := callKind(args)
+	for _, w := range claimWords(plain) {
+		if (envWords[w] || scopes[w]) && w != name && !own[w] {
+			return false
+		}
+		if k := kindOf(w); kindWords[k] && k != "namespace" && k != ck {
 			return false
 		}
 	}
@@ -2827,7 +2937,80 @@ func codeBlocks(path string, lines map[int]string) ([]codeBlock, bool) {
 		}
 		out = append(out, b)
 	}
+	if ext == ".js" {
+		out = append(out, classFields(nums, lines, out, indentOf)...)
+	}
 	return out, true
+}
+
+var (
+	// fieldLineRe is a class field, decorators on its line included:
+	// `@Input() name = 'a';`, `private readonly n: number;`.
+	fieldLineRe = regexp.MustCompile(`^\s*(?:@[\w.]+(?:\([^)]*\))?\s+)*(?:(?:public|private|protected|static|readonly|declare|override|abstract|accessor)\s+)*(#?[A-Za-z_$][\w$]*)[?!]?\s*(?::[^=;(]+)?(?:=[^=>].*|;)?\s*$`)
+)
+
+// classFields are a JavaScript or TypeScript class's fields, each its own
+// block with the decorator lines above it: a cite of one field's line is
+// not of the next.
+func classFields(nums []int, lines map[int]string, bs []codeBlock, indentOf func(string) int) []codeBlock {
+	starts := map[int]bool{}
+	for _, b := range bs {
+		starts[b.start] = true
+	}
+	inMember := func(n int, cls codeBlock) bool {
+		for _, b := range bs {
+			if b.start > cls.start && b.start <= n && n <= b.end {
+				return true
+			}
+		}
+		return false
+	}
+	var out []codeBlock
+	for _, cls := range bs {
+		if !cls.class {
+			continue
+		}
+		member := -1
+		for i, n := range nums {
+			if n <= cls.start || n > cls.end {
+				continue
+			}
+			l := lines[n]
+			if strings.TrimSpace(l) == "" || closingLineRe.MatchString(l) && indentOf(l) <= cls.indent {
+				continue
+			}
+			if member < 0 {
+				member = indentOf(l)
+			}
+			if indentOf(l) != member || starts[n] || inMember(n, cls) || decoratorRe.MatchString(l) && !fieldLineRe.MatchString(l) {
+				continue
+			}
+			m := fieldLineRe.FindStringSubmatch(l)
+			if m == nil || notMethodNames[m[1]] {
+				continue
+			}
+			f := codeBlock{name: strings.TrimPrefix(m[1], "#"), start: n, end: n, indent: member}
+			// Decorator lines just above it are its own.
+			for j := i - 1; j >= 0 && nums[j] > cls.start && decoratorRe.MatchString(lines[nums[j]]) && indentOf(lines[nums[j]]) == member; j-- {
+				f.start = nums[j]
+			}
+			for _, k := range nums[i+1:] {
+				kl := lines[k]
+				if strings.TrimSpace(kl) == "" {
+					continue
+				}
+				if indentOf(kl) <= member {
+					if closingLineRe.MatchString(kl) && indentOf(kl) == member {
+						f.end = k
+					}
+					break
+				}
+				f.end = k
+			}
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // innermostBlock is the definition nearest around line n, or nil.
