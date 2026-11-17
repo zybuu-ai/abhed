@@ -42,8 +42,10 @@ Where the build differs from the sections below, the build is right:
   `app/serve_signin.go`. Guide: `docs/guide/38-signing-in.md`.
 - ACP credentials go in `_meta["zybuu.ai/abhed"]`, as every other `_meta`
   of the contract (studio-acp-contract §1.5).
-- Server guest web sessions (2.5) are not in 1.3.0's Community build; a
-  server's front door is unchanged apart from serve's first-start question.
+- Server guest web sessions (2.5): `auth.guest` (off by default) adds
+  Continue as guest to the local sign-in page; a guest is `guest:<id>` with
+  no groups, its sessions removed when it signs out or after
+  `auth.guest_hours` (8).
 - No variable hands a person's folder to a child process: every process
   answers who is working through the gate itself.
 - A remembered server sign-in is checked at start; one with no credential,

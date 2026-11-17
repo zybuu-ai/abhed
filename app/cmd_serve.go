@@ -206,6 +206,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 		}
 	}
 	eventStore, closeStore, err := openServeStore(context.Background(), cfg)
+
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
@@ -366,6 +367,17 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 2
 	}
 	srv := server.New(opts)
+	if cfg.Auth.Guest {
+		// What a console guest kept goes when the guest signs out or expires.
+		end := func(owner string) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			n := srv.RemoveOwnerSessions(ctx, "", owner)
+			slog.Info("a console guest ended; its sessions are removed", "owner", owner, "sessions", n)
+		}
+		guestEnded.Store(&end)
+		defer guestEnded.Store(nil)
+	}
 	// Every session's egress proxy stops with the server, before the store
 	// closes, so the last summaries it records are kept.
 	if c, ok := sb.(io.Closer); ok {
@@ -601,6 +613,16 @@ func (a *App) buildAuth(ctx context.Context, cfg config.Config, workspace string
 		if v != nil {
 			mw.Verifier = auth.ChainVerifier(mw.Verifier, v)
 		}
+	}
+	if cfg.Auth.Guest {
+		g := auth.NewGuestAuth(time.Duration(cfg.Auth.GuestHours)*time.Hour, cfg.Auth.CookieSecure, cfg.Auth.DefaultTenant,
+			func(owner string) {
+				if end := guestEnded.Load(); end != nil {
+					(*end)(owner)
+				}
+			})
+		mw.Providers = append(mw.Providers, g)
+		public = append(public, g.PublicPaths()...)
 	}
 	mw.PublicPaths = public
 	if err := addClientCertAuth(cfg, mw); err != nil {

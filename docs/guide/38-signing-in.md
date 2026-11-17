@@ -216,3 +216,19 @@ A server signs its own users in (`auth.mode`), as before. In a terminal,
 asks first: set up local accounts (it shows how and serves nothing), serve
 on this machine only, or serve as configured. Under a supervisor, with no
 terminal, it serves as it always has.
+
+### Guests on a server's console
+
+```json
+{ "auth": { "mode": "local", "guest": true, "guest_hours": 8 } }
+```
+
+`auth.guest` (off by default) adds **Continue as guest** to the console's
+sign-in page. A guest works as an identity of its own (`guest:<id>`), with
+no groups and in the default tenant, under every rule, sandbox and approval
+anyone has; no guest can reach another's sessions. When the guest signs out,
+or its browser session ends (`auth.guest_hours`, 8 by default), its
+sessions are stopped and removed. It needs `auth.mode` `local` or `oidc`.
+Think before turning it on: a guest's agent runs commands on the server for
+anyone who can reach the page.
+

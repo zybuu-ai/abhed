@@ -963,6 +963,13 @@ type AuthConfig struct {
 	// AllowSignup lets anyone create a local account. Off by default: an
 	// open signup on an internal tool is rarely what an operator intends.
 	AllowSignup bool `json:"allow_signup,omitempty"`
+	// Guest offers "Continue as guest" on the console: a browser session as
+	// an identity of its own, with no groups, whose sessions are removed when
+	// it signs out or expires. Off by default; an agent that runs commands
+	// for whoever reaches the server is rarely what an operator intends.
+	Guest bool `json:"guest,omitempty"`
+	// GuestHours is how long a guest's browser session lasts (8).
+	GuestHours int `json:"guest_hours,omitempty"`
 	// DefaultTenant is assigned to accounts created without one.
 	DefaultTenant string `json:"default_tenant,omitempty"`
 	// UsersFile is where local accounts are kept when there is no database.
@@ -2421,6 +2428,12 @@ func (c Config) Validate() error {
 	}
 	if err := c.validateClientAuth(); err != nil {
 		return err
+	}
+	if c.Auth.Guest && c.Auth.Mode != "local" && c.Auth.Mode != "oidc" {
+		return fmt.Errorf("auth.guest offers guests beside signed-in people, so it needs auth.mode local or oidc")
+	}
+	if h := c.Auth.GuestHours; h < 0 || h > 720 {
+		return fmt.Errorf("auth.guest_hours is %d; use 1 to 720, or 0 for 8", h)
 	}
 	if err := c.validateTLS(); err != nil {
 		return err

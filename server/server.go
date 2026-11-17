@@ -4785,7 +4785,9 @@ type overviewResponse struct {
 	// either an open form or nothing at all — with only AllowSignup, an
 	// invite-only deployment is indistinguishable from a closed one and the
 	// UI correctly hides a door that is in fact open.
-	InviteSignup  bool   `json:"invite_signup"`
+	InviteSignup bool `json:"invite_signup"`
+	// GuestSignIn offers "Continue as guest" (auth.guest).
+	GuestSignIn   bool   `json:"guest_sign_in,omitempty"`
 	ProviderLabel string `json:"provider_label,omitempty"`
 	// AdminURL is where the Admin link goes, when an edition has mounted a
 	// page there. Empty means no page: the link is not drawn, whoever is
@@ -4880,6 +4882,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		o.AllowSignup = cfg.Auth.AllowSignup
 		o.InviteSignup = !cfg.Auth.AllowSignup && s.opts.Invites != nil
 	}
+	o.GuestSignIn = cfg.Auth.Guest
 	o.AdminURL = s.opts.AdminURL
 	for _, p := range s.signIns() {
 		if u, label := p.SignIn(); u != "" {

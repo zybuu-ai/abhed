@@ -215,6 +215,11 @@ All notable changes to Abhed are recorded here. The format follows
   policy can require sign-in, require a server's, turn guest off, and bound
   how long a sign-in is remembered (`auth.client`). See [Signing
   in](docs/guide/38-signing-in.md).
+- Guests on a server's console: `auth.guest` (off by default) offers
+  Continue as guest on the sign-in page. A guest is an identity of its own
+  with no groups, under every rule anyone has; its sessions are stopped and
+  removed when it signs out or after `auth.guest_hours` (8). It needs
+  `auth.mode` `local` or `oidc`.
 - `abhed serve` in a terminal, with no sign-in on an address other machines
   can reach, asks first: set up local accounts, serve on this machine only,
   or serve as configured.
