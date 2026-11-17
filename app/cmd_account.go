@@ -187,6 +187,22 @@ and answers are read from the terminal, or one per line from stdin.`)
 		fmt.Fprintf(out, "Signed in as %s.\n", e.Display())
 		return 0
 	case "signout":
+		if rem, ok, err := s.Remembered(nil); err != nil {
+			return fail(err)
+		} else if ok {
+			// As /account signout: that sign-in ends everywhere, a server's token too.
+			if err := usePrincipal(s.Principal(rem)); err != nil {
+				return fail(err)
+			}
+			note, err := signOutHere()
+			endGuest()
+			if err != nil {
+				return fail(err)
+			}
+			if note != "" {
+				fmt.Fprintln(errOut, note)
+			}
+		}
 		if err := s.Forget(); err != nil {
 			return fail(err)
 		}
