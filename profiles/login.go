@@ -87,7 +87,9 @@ func Discover(ctx context.Context, c *http.Client, base string) (*Discovery, err
 }
 
 // Resolve makes an endpoint absolute against base. An absolute endpoint on
-// another host is allowed only over https.
+// another host is allowed only over https, or over http when it and the
+// server are both on this machine (an identity provider run beside a local
+// server), where nothing crosses the network.
 func Resolve(base, endpoint string) (string, error) {
 	if endpoint == "" {
 		return "", errors.New("the server named no endpoint for this step")
@@ -106,7 +108,8 @@ func Resolve(base, endpoint string) (string, error) {
 		}
 		return strings.TrimRight(base, "/") + endpoint, nil
 	}
-	if e.Host != b.Host && e.Scheme != "https" {
+	local := e.Scheme == "http" && Loopback(e.Hostname()) && Loopback(b.Hostname())
+	if e.Host != b.Host && e.Scheme != "https" && !local {
 		return "", fmt.Errorf("endpoint %s is on another host over plain http", endpoint)
 	}
 	return e.String(), nil
