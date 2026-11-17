@@ -106,7 +106,8 @@ concurrently, so events keep streaming while a person decides.
 With `approvals: true` and no handler, the asks are yielded by `stream()`
 instead, to answer with `approve(requestId, decision)`. An ask nobody can
 answer is refused rather than left waiting, and so is one still open when
-the process ends or its run is stopped.
+the process's input ends. One open when its run is stopped ends as
+interrupted, and an answer that arrives with the stop is not applied.
 
 **Show arguments through `visible()`.** A tool call's arguments are the
 model's, unescaped: a value can hold a right-to-left override, a terminal

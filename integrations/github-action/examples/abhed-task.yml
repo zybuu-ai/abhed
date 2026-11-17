@@ -42,7 +42,8 @@ jobs:
           deny: |
             bash(git push*)
             web_fetch
-          max-budget-usd: "2"
+          # max-budget-usd too, from Abhed 1.3.0
+          max-turns: "40"
       - name: The diff the agent left
         if: always()
         run: git diff --stat

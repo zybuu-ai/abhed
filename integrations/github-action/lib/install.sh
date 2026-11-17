@@ -12,6 +12,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out() { [ -n "${GITHUB_OUTPUT:-}" ] && printf '%s=%s\n' "$1" "$2" >> "$GITHUB_OUTPUT"; return 0; }
 fail() { echo "::error::abhed install: $*" >&2; exit 1; }
+sha() { if command -v sha256sum >/dev/null; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi; }
 
 if [ -n "${ABHED_PATH:-}" ]; then
   [ -x "$ABHED_PATH" ] || fail "abhed-path $ABHED_PATH is not an executable file"
@@ -19,6 +20,7 @@ if [ -n "${ABHED_PATH:-}" ]; then
   bin="$dir/$(basename "$ABHED_PATH")"
   [ -n "${GITHUB_PATH:-}" ] && echo "$dir" >> "$GITHUB_PATH"
   out path "$bin"
+  out bin-sha256 "$(sha "$bin")"
   out version "$("$bin" -version 2>/dev/null | head -1 || true)"
   exit 0
 fi
@@ -55,8 +57,7 @@ rm -rf "$dest" && mkdir -p "$dest"
 archive="$dest/$name.tar.gz"
 curl -fsSL --proto '=https,file' --retry 3 -o "$archive" "$base/$version/$name.tar.gz" || fail "could not download $name.tar.gz"
 
-if command -v sha256sum >/dev/null; then got="$(sha256sum "$archive" | awk '{print $1}')"
-else got="$(shasum -a 256 "$archive" | awk '{print $1}')"; fi
+got="$(sha "$archive")"
 [ "$got" = "$want" ] || { rm -f "$archive"; fail "$name.tar.gz has SHA-256 $got, not the pinned $want; nothing was run"; }
 
 # The release's own signature too, when asked: the checksum file must be
@@ -77,6 +78,8 @@ bin="$dest/$name/abhed"
 [ -x "$bin" ] || fail "the archive holds no $name/abhed"
 [ -n "${GITHUB_PATH:-}" ] && echo "$dest/$name" >> "$GITHUB_PATH"
 out path "$bin"
+# Checked again before each later run of it.
+out bin-sha256 "$(sha "$bin")"
 out version "$version"
 out archive "$archive"
 echo "abhed $version ($os-$arch), SHA-256 $got"

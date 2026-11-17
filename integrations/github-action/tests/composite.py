@@ -142,7 +142,7 @@ def run_action(inputs, *, workspace, temp, github=None, env=None):
     extra_path = []
     uses = []
     failed = False
-    base_env = {"PATH": os.environ["PATH"], "HOME": os.path.join(temp, "_home"), "RUNNER_TEMP": temp,
+    base_env = {"PATH": os.environ["PATH"], "HOME": os.path.join(os.path.dirname(temp), "_home"), "RUNNER_TEMP": temp,
                 "GITHUB_ACTION_PATH": ACTION, "GITHUB_STEP_SUMMARY": summary, "GITHUB_PATH": path_file,
                 "GITHUB_WORKSPACE": workspace, "GITHUB_EVENT_NAME": gh["event_name"],
                 "GITHUB_REPOSITORY": gh["repository"], "GITHUB_API_URL": gh["api_url"],

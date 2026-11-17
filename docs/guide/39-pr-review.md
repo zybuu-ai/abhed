@@ -36,7 +36,7 @@ jobs:
           model-provider: anthropic
           model: claude-opus-5
           model-api-key: ${{ secrets.ABHED_MODEL_KEY }}
-          max-budget-usd: "1"
+          max-turns: "30"
 ```
 
 The full workflow is `integrations/github-action/examples/abhed-review.yml`.
@@ -47,14 +47,20 @@ and head commits, and both must be in the checkout.
 
 1. **Finds the pull request.** On `pull_request`, from the event; on
    `workflow_dispatch`, from `pr-number`, looked up with the job's token.
-   Its base and head must be commit ids.
+   Its base and head must be commit ids. On `workflow_dispatch` the
+   checkout must be at that head: if the pull request moved after it was
+   checked out, the review stops rather than post on a commit it never read.
 2. **Takes the diff** with `git diff base...head`, with hooks off, no
    external diff and no textconv, so nothing the repository configures runs.
    A diff over 400 KB is cut, and the agent told so.
 3. **Reviews it read-only.** `abhed -p` runs in `plan` mode with the tools
    `read`, `glob` and `grep` only (`-tools`), without the repository's memory
    files, extensions or skills (`-bare`), and with the workspace's
-   `.abhed/config.json` untrusted, so it can only tighten. The diff is the
+   `.abhed/config.json` untrusted, so it can only tighten. Its settings are
+   the action's own inputs, and a `policy-file` in the workspace is read
+   from the pull request's base commit, never its head; a review refuses a
+   policy that sets `hooks`, `mcp`, `extensions`, `skills`, `agents`, the web
+   tools, `rag`, `kubernetes` or `ssh`, or `sandbox.min_tier: none`. The diff is the
    run's input; the answer must match a JSON schema of a summary and
    findings (path, line, severity, title, body). Answers are labelled
    (`verify: label`), and the label goes in the review.
@@ -66,9 +72,12 @@ and head commits, and both must be in the checkout.
    - A finding whose line is in the diff becomes an inline comment on that
      line of the new version; the others are listed in the review's body
      with their file and line. At most 50 inline comments.
-   - Text from the model is made safe to post: an `@name` is put in code so
-     it notifies no one, an HTML comment cannot hide text, and every field
-     is bounded.
+   - Text from the model is made safe to post, in every field and path:
+     each `@` is followed by a zero-width joiner, so no mention notifies
+     anyone whatever surrounds it, in code or not; HTML comments and tags
+     are removed, so none renders; and every field is bounded. Markdown
+     itself is kept, so a finding can still be laid out to mislead (a
+     link's text and target differ, say): read it as the model's text.
    - If GitHub refuses an inline line, the review is posted again with the
      findings in its body.
 5. **Uploads the evidence**: the run's output, its exported record and the
@@ -76,6 +85,17 @@ and head commits, and both must be in the checkout.
 
 `review-instructions` adds your maintainers' own points to the review task.
 `post-review: false` only writes the review to the evidence.
+
+### On a release before 1.3.0
+
+`-tools` and `-bare` are new in 1.3.0, and the action pins v1.2.9 until
+1.3.0 is published. On an older release the review still runs: `plan` mode,
+with deny rules for every built-in tool but `read`, `glob` and `grep`
+(the answer's own tool excepted), and a warning in the log. Two things
+differ: a deny rule names the tools that exist, where `-tools` names the
+only ones allowed, and the repository's `ABHED.md` reaches the model,
+another place for the pull request's text to try to steer it. Set
+`abhed-version` and `abhed-sha256` to a 1.3.0 release to close both.
 
 ## Pull requests from forks
 
@@ -111,12 +131,12 @@ open it from a fork. Everything the agent reads is theirs.
 | Threat | Defence |
 |---|---|
 | The pull request's code runs on the runner (a test, a build script, a git hook, a textconv driver) | Nothing is built or tested. The diff is taken with hooks, external diff and textconv off. The agent has `read`, `glob` and `grep` only, in `plan` mode: no `bash`, no writes, no network tools. |
-| The pull request's configuration loosens the run | The workspace's `.abhed/config.json` is untrusted: only what tightens applies. `-bare` drops its memory files, extensions and skills. A `policy-file`, if given, is copied out of the workspace before the run, so the agent cannot change it during the run. |
-| Prompt injection: text in the diff tells the agent to approve, to post something, or to leak a secret | The review's event is chosen by the action from the findings' severities, never by the model, and is never `APPROVE`. The model's text is posted only as review text, with mentions defused and HTML comments broken. The agent holds no token and cannot reach the network, so it has nothing to leak and no way to send it. Injection can still make a review wrong or noisy: it is advice, and the job never merges anything. |
+| The pull request's configuration loosens the run, or points the model key elsewhere | The workspace's `.abhed/config.json` is untrusted: only what tightens applies. `-bare` drops its memory files, extensions and skills. A `policy-file` in the workspace is read from the base commit, never the head, and a review takes no hooks, MCP servers, extensions, skills, web tools or `min_tier: none` from any policy. The provider the inputs name replaces any policy entry of that name whole, so the key's variable is never bound to a `base_url` the pull request wrote. |
+| Prompt injection: text in the diff tells the agent to approve, to post something, or to leak a secret | The review's event is chosen by the action from the findings' severities, never by the model, and is never `APPROVE`. The model's text is posted only as review text, with every `@` defused and HTML removed. The agent holds no token and cannot reach the network, so it has nothing to leak and no way to send it. Injection can still make a review wrong or noisy: it is advice, and the job never merges anything. |
 | The job's token is used by the agent | The token is in the posting step's environment only. The agent runs under `env -i`, which drops every GitHub credential, and the action refuses a checkout that kept the token in `.git/config` (`persist-credentials: false`). |
 | The model key is taken | It is a secret, masked in logs, passed in one variable to Abhed only, never on a command line or in a file. A fork's `pull_request` run never has it. The agent has no command tool to read its environment. |
 | The workflow is changed by the pull request | On `pull_request` the workflow file comes from the pull request, so a pull request can change its own run, but that run has no secrets (fork) or comes from someone with write access already (same repository). `permissions:` limits the token to `contents: read` and `pull-requests: write`. |
-| A tampered Abhed binary | The release archive is checked against the SHA-256 the action pins, and by default against the release's Sigstore signature, before it runs. Pin the action itself to a full commit. |
+| A tampered Abhed binary | The release archive is checked against the SHA-256 the action pins, and by default against the release's Sigstore signature, before it runs, and the binary's hash is checked again before each later run of it. The run's `TMPDIR` and home are outside the runner's temp folder, which holds the binary and the job's file commands. Pin the action itself to a full commit. |
 | A tag or action moved under you | Every action this one uses is pinned to a full commit. |
 
 **Not defended.**
@@ -129,8 +149,10 @@ open it from a fork. Everything the agent reads is theirs.
   model sees the pull request's text.
 - A self-hosted runner shared with other jobs. The review runs nothing from
   the pull request, but the runner's own state is outside this model.
-- Cost. A large or adversarial diff costs tokens; set `max-budget-usd` and
-  a job `timeout-minutes`.
+- Cost. A large or adversarial diff costs tokens; set `max-turns` (and
+  `max-budget-usd` from 1.3.0) and a job `timeout-minutes`.
+- Who reads the evidence. On a public repository anyone signed in can
+  download it; see [The evidence](38-github-action.md#the-evidence).
 
 ## Mentioning the bot
 

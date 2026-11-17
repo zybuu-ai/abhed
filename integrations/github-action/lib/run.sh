@@ -5,17 +5,28 @@
 #
 # The agent runs under `env -i`: it is given PATH, a home, the locale, the
 # model key's variable and the names in ABHED_ENV_PASSTHROUGH, and nothing
-# else of the runner's environment, so no GitHub token reaches it.
+# else of the runner's environment, so no GitHub token reaches it. Its home
+# and temp folder are fresh, outside the runner's temp folder, so a command
+# the sandbox lets write its temp folder cannot reach the runner's file
+# commands, the evidence or the installed binary.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-fail() { echo "::error::abhed: $*" >&2; exit 2; }
+# fd 3 is the step's stderr, which a redirected command's failure still reaches.
+exec 3>&2
+fail() { echo "::error::abhed: $*" >&3; exit 2; }
 
 bin="${ABHED_BIN:?}"
 ws="$(cd "${ABHED_WORKSPACE:-.}" && pwd)"
 ev="${ABHED_EVIDENCE_DIR:?}"
 mkdir -p "$ev"
 chmod 700 "$ev"
+
+sha() { if command -v sha256sum >/dev/null; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi; }
+# The binary is checked before every run of it: what the agent's run could
+# have reached must not decide what runs after it, outside the sandbox.
+want_sha="${ABHED_BIN_SHA256:-$(sha "$bin")}"
+check_bin() { [ "$(sha "$bin")" = "$want_sha" ] || fail "$bin changed since it was installed; nothing more is run"; }
 
 # A token actions/checkout left in the checkout's git configuration is
 # readable by the agent; refuse to run beside it unless told otherwise.
@@ -25,15 +36,69 @@ if [ "${ABHED_ALLOW_PERSISTED_CREDENTIALS:-false}" != "true" ] && git -C "$ws" r
   fi
 fi
 
+# The run's own temp folder and home, fresh, never under the runner's temp
+# folder: RUNNER_TEMP holds the file commands (GITHUB_ENV, GITHUB_PATH),
+# the evidence and the binary. The home, which holds the run's record, is
+# not under /tmp either, which macOS's sandbox lets every command write.
+run_tmp="$(mktemp -d /tmp/abhed-run.XXXXXXXX)"
+chmod 700 "$run_tmp"
+home="$HOME"
+made_home=""
+if [ "${ABHED_ISOLATE_HOME:-true}" = "true" ]; then
+  mkdir -p "$HOME"
+  home="$(mktemp -d "$HOME/.abhed-action.XXXXXXXX")"
+  chmod 700 "$home"
+  made_home="$home"
+fi
+cleanup() { rm -rf "$run_tmp" ${made_home:+"$made_home"} 2>/dev/null || true; }
+trap cleanup EXIT
+if [ -n "${RUNNER_TEMP:-}" ]; then
+  rt="$(cd "$RUNNER_TEMP" && pwd -P)"
+  for d in "$run_tmp" "$home"; do
+    case "$(cd "$d" && pwd -P)/" in "$rt/"*) fail "the run's folders would be inside RUNNER_TEMP" ;; esac
+  done
+fi
+
+envs=("PATH=$PATH" "HOME=$home" "LANG=${LANG:-C.UTF-8}" "TMPDIR=$run_tmp" "CI=true")
+[ -n "${USER:-}" ] && envs+=("USER=$USER")
+[ -n "${ABHED_KEY_ENV:-}" ] && envs+=("$ABHED_KEY_ENV=${ABHED_ACTION_MODEL_KEY:-}")
+for name in ${ABHED_ENV_PASSTHROUGH//,/ }; do
+  [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "env-passthrough: $name is not a variable name"
+  case "$name" in
+    GITHUB_TOKEN|GH_TOKEN|ACTIONS_*|*_REQUEST_TOKEN|*RUNTIME_TOKEN|RUNNER_TEMP|GITHUB_ENV|GITHUB_PATH|GITHUB_OUTPUT|GITHUB_STEP_SUMMARY|GITHUB_STATE)
+      fail "env-passthrough: $name is a GitHub credential or file command and is never passed to the agent" ;;
+  esac
+  [ -n "${!name+x}" ] && envs+=("$name=${!name}")
+done
+abhed() { check_bin; env -i "${envs[@]}" "$bin" "$@"; }
+# A flag this version lacks is found before the run, not as a failed run.
+has() { check_bin; env -i "${envs[@]}" "$bin" "$@" -version >/dev/null 2>&1; }
+version() { abhed -version 2>&1 | head -1; }
+
 args=(-C "$ws" -p -no-stdin -output-format stream-json)
 [ -n "${ABHED_STDIN_FILE:-}" ] && args=(-C "$ws" -p -output-format stream-json)
 [ -n "${ABHED_PERMISSION_MODE:-}" ] && args+=(-mode "$ABHED_PERMISSION_MODE")
 [ -n "${ABHED_VERIFY:-}" ] && args+=(-verify "$ABHED_VERIFY")
 [ -n "${ABHED_SETTINGS:-}" ] && args+=(-settings "$ABHED_SETTINGS")
 [ -n "${ABHED_MAX_TURNS:-}" ] && args+=(-max-turns "$ABHED_MAX_TURNS")
-[ -n "${ABHED_MAX_BUDGET_USD:-}" ] && args+=(-max-budget-usd "$ABHED_MAX_BUDGET_USD")
-[ -n "${ABHED_TOOLS:-}" ] && args+=(-tools "$ABHED_TOOLS")
-[ "${ABHED_BARE:-false}" = "true" ] && args+=(-bare)
+if [ -n "${ABHED_MAX_BUDGET_USD:-}" ]; then
+  has -max-budget-usd 1 || fail "max-budget-usd needs Abhed 1.3.0 or later; this is $(version). Set abhed-version and abhed-sha256, or use max-turns"
+  args+=(-max-budget-usd "$ABHED_MAX_BUDGET_USD")
+fi
+if [ -n "${ABHED_TOOLS:-}" ] || [ "${ABHED_BARE:-false}" = "true" ]; then
+  if has -tools read -bare; then
+    [ -n "${ABHED_TOOLS:-}" ] && args+=(-tools "$ABHED_TOOLS")
+    [ "${ABHED_BARE:-false}" = "true" ] && args+=(-bare)
+  elif [ -n "${ABHED_TOOLS_FALLBACK_DENY:-}" ]; then
+    # Before 1.3.0 there is no -tools or -bare: the tools are narrowed by
+    # deny rules instead, which plan mode backs, and the repository's memory
+    # files are read.
+    echo "::warning::abhed: $(version) has no -tools or -bare; the review is narrowed by deny rules instead, and the repository's ABHED.md is read. Abhed 1.3.0 narrows it fully."
+    args+=(-deny "$ABHED_TOOLS_FALLBACK_DENY")
+  else
+    fail "-tools and -bare need Abhed 1.3.0 or later; this is $(version)"
+  fi
+fi
 [ -n "${ABHED_JSON_SCHEMA:-}" ] && args+=(-json-schema "$ABHED_JSON_SCHEMA")
 # One rule per line; a line may hold several, comma-separated, as -allow takes them.
 while IFS= read -r rule; do
@@ -47,32 +112,12 @@ done <<< "${ABHED_DENY:-}"
 [ -n "${ABHED_TASK:-}" ] || fail "no task given"
 args+=(-- "$ABHED_TASK")
 
-# The run's own home, so the runner's ~/.abhed (a self-hosted runner's
-# configuration, say) neither loosens nor mixes with this run's record.
-home="$HOME"
-if [ "${ABHED_ISOLATE_HOME:-true}" = "true" ]; then
-  home="${RUNNER_TEMP:-/tmp}/abhed-home"
-  mkdir -p "$home"
-  chmod 700 "$home"
-fi
-
-envs=("PATH=$PATH" "HOME=$home" "LANG=${LANG:-C.UTF-8}" "TMPDIR=${RUNNER_TEMP:-${TMPDIR:-/tmp}}" "CI=true")
-[ -n "${USER:-}" ] && envs+=("USER=$USER")
-[ -n "${ABHED_KEY_ENV:-}" ] && envs+=("$ABHED_KEY_ENV=${ABHED_ACTION_MODEL_KEY:-}")
-for name in ${ABHED_ENV_PASSTHROUGH//,/ }; do
-  [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "env-passthrough: $name is not a variable name"
-  case "$name" in
-    GITHUB_TOKEN|GH_TOKEN|ACTIONS_*|*_REQUEST_TOKEN|*RUNTIME_TOKEN) fail "env-passthrough: $name is a GitHub credential and is never passed to the agent" ;;
-  esac
-  [ -n "${!name+x}" ] && envs+=("$name=${!name}")
-done
-
-"$bin" -version > "$ev/abhed-version.txt" 2>&1 || true
+version > "$ev/abhed-version.txt" || true
 code=0
 if [ -n "${ABHED_STDIN_FILE:-}" ]; then
-  env -i "${envs[@]}" "$bin" "${args[@]}" < "$ABHED_STDIN_FILE" > "$ev/run.jsonl" 2> "$ev/stderr.log" || code=$?
+  abhed "${args[@]}" < "$ABHED_STDIN_FILE" > "$ev/run.jsonl" 2> "$ev/stderr.log" || code=$?
 else
-  env -i "${envs[@]}" "$bin" "${args[@]}" < /dev/null > "$ev/run.jsonl" 2> "$ev/stderr.log" || code=$?
+  abhed "${args[@]}" < /dev/null > "$ev/run.jsonl" 2> "$ev/stderr.log" || code=$?
 fi
 # stderr holds Abhed's notes (each refusal and what would allow it), never the key.
 cat "$ev/stderr.log" >&2 || true
@@ -81,10 +126,10 @@ sid="$(python3 "$here/abhed_action.py" result --run "$ev/run.jsonl" --evidence "
 if [ -n "$sid" ]; then
   # The record, as recorded and chained, and a transcript to read. The copy
   # verifies with `abhed record verify record.jsonl` anywhere.
-  env -i "${envs[@]}" "$bin" -C "$ws" record export "$sid" -o "$ev/record.jsonl" > /dev/null 2>> "$ev/export.log" || echo "::warning::abhed: the record could not be exported; see export.log"
-  env -i "${envs[@]}" "$bin" -C "$ws" record export "$sid" -format html -o "$ev/transcript.html" > /dev/null 2>> "$ev/export.log" || true
+  abhed -C "$ws" record export "$sid" -o "$ev/record.jsonl" > /dev/null 2>> "$ev/export.log" || echo "::warning::abhed: the record could not be exported; see export.log"
+  abhed -C "$ws" record export "$sid" -format html -o "$ev/transcript.html" > /dev/null 2>> "$ev/export.log" || true
   if [ -f "$ev/record.jsonl" ]; then
-    env -i "${envs[@]}" "$bin" record verify "$ev/record.jsonl" > "$ev/record-verify.txt" 2>&1 || echo "::warning::abhed: the exported record did not verify; see record-verify.txt"
+    abhed record verify "$ev/record.jsonl" > "$ev/record-verify.txt" 2>&1 || echo "::warning::abhed: the exported record did not verify; see record-verify.txt"
   fi
 fi
 echo "abhed exited $code"

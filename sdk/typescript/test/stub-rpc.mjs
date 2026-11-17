@@ -50,6 +50,9 @@ const next = async () => {
 };
 const waitFor = (want) =>
   new Promise((resolve) => {
+    // A line read before the prompt began waiting is taken first.
+    const i = lines.findIndex(want);
+    if (i >= 0) return resolve(lines.splice(i, 1)[0]);
     if (eof) return resolve(null);
     readers.push({ want, resolve });
   });

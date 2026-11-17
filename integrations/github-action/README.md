@@ -30,6 +30,9 @@ steps:
       allow: bash(go test*)
 ```
 
+Until Abhed 1.3.0 is published the action pins v1.2.9: set `abhed-version`
+and `abhed-sha256` to run a later release.
+
 Full examples are in [`examples/`](examples). The guides are
 [GitHub Action](../../docs/guide/38-github-action.md) and
 [Pull request review](../../docs/guide/39-pr-review.md), which holds the

@@ -46,7 +46,8 @@ jobs:
           model-provider: anthropic
           model: claude-opus-5
           model-api-key: ${{ secrets.ABHED_MODEL_KEY }}
-          max-budget-usd: "1"
+          # max-budget-usd too, from Abhed 1.3.0
+          max-turns: "30"
           request-changes-on: never
           review-instructions: |
             Pay attention to error handling and to tests for changed behaviour.

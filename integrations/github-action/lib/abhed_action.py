@@ -27,6 +27,8 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 # ---------------------------------------------------------------------------
 # settings
 
+SHA = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
+
 
 def deep_merge(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(base)
@@ -38,17 +40,32 @@ def deep_merge(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def build_settings(policy_text: str, provider_type: str, model: str, base_url: str, key_env: str) -> Dict[str, Any]:
-    """The run's -settings: the policy file, with the provider the inputs name laid over it.
+# Settings a review never takes, whoever wrote the policy: each runs or
+# reaches something beyond reading the checkout.
+REVIEW_REFUSED = ("hooks", "mcp", "extensions", "skills", "agents", "web_fetch", "web_search", "rag", "kubernetes", "ssh")
 
+
+def build_settings(policy_text: str, provider_type: str, model: str, base_url: str, key_env: str,
+                   review: bool = False) -> Dict[str, Any]:
+    """The run's -settings: the policy, with the provider the inputs name laid over it.
+
+    The provider the inputs name replaces any entry of that name whole, so no
+    field of the policy's (a base_url, say) is kept beside the key's variable.
     The key is never written here, only the name of the variable holding it.
     """
     settings: Dict[str, Any] = {}
     if policy_text.strip():
         v = json.loads(policy_text)
         if not isinstance(v, dict):
-            raise ValueError("the policy file must hold a JSON object")
+            raise ValueError("the policy must be a JSON object")
         settings = v
+    if review:
+        bad = [k for k in REVIEW_REFUSED if k in settings]
+        if bad:
+            raise ValueError("a review takes no " + ", ".join(bad) + " from the policy: it only reads the checkout")
+        sb = settings.get("sandbox")
+        if isinstance(sb, dict) and sb.get("min_tier") == "none":
+            raise ValueError("a review never runs with sandbox.min_tier none")
     if provider_type or model or base_url:
         if not (provider_type and model):
             raise ValueError("model-provider and model are needed together")
@@ -57,18 +74,77 @@ def build_settings(policy_text: str, provider_type: str, model: str, base_url: s
             prov["base_url"] = base_url
         if key_env:
             prov["api_key_env"] = key_env
-        settings = deep_merge(settings, {"model": {"default": "github-action", "providers": {"github-action": prov}}})
+        m = dict(settings.get("model") or {}) if isinstance(settings.get("model"), dict) else {}
+        providers = dict(m.get("providers") or {}) if isinstance(m.get("providers"), dict) else {}
+        providers["github-action"] = prov
+        m["providers"], m["default"] = providers, "github-action"
+        settings = dict(settings, model=m)
     return settings
 
 
-def cmd_settings(a: argparse.Namespace) -> int:
-    text = ""
-    if a.policy:
-        with open(a.policy, encoding="utf-8") as f:
-            text = f.read()
+def git_blob(workspace: str, ref: str, rel: str) -> str:
+    """A file as committed at ref, read as a blob: no textconv, no filter, no hook."""
+    p = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "cat-file", "blob", f"{ref}:{rel}"], cwd=workspace,
+                       capture_output=True, text=True, errors="replace")
+    if p.returncode != 0:
+        raise ValueError(f"{rel} could not be read from {ref[:12]} (is it committed there, and the checkout made with fetch-depth: 0?)")
+    return p.stdout
+
+
+def event_base() -> str:
+    """The base commit of the pull request the job's event is about, if any."""
+    path = os.environ.get("GITHUB_EVENT_PATH", "")
+    if not path or not os.path.exists(path):
+        return ""
+    with open(path, encoding="utf-8") as f:
+        ev = json.load(f)
+    pr = ev.get("pull_request") if isinstance(ev, dict) else None
     try:
-        s = build_settings(text, a.provider_type, a.model, a.base_url, a.key_env)
-    except (ValueError, json.JSONDecodeError) as e:
+        return str(pr["base"]["sha"]) if isinstance(pr, dict) else ""
+    except (KeyError, TypeError):
+        return ""
+
+
+def read_policy(path: str, workspace: str, trusted_ref: str) -> Tuple[str, str]:
+    """The policy file's text, and where it was read from.
+
+    A file in the workspace is the checkout's, which a pull request writes.
+    On a pull request it is read from trusted_ref (the base commit) instead,
+    so the change under review never chooses its own policy; elsewhere the
+    checkout is the workflow's own ref. A file outside the workspace is the
+    workflow's.
+    """
+    ws = os.path.realpath(workspace)
+    full = os.path.realpath(path if os.path.isabs(path) else os.path.join(ws, path))
+    inside = full == ws or full.startswith(ws + os.sep)
+    if inside and trusted_ref:
+        if not SHA.match(trusted_ref):
+            raise ValueError(f"{trusted_ref!r} is not a commit id")
+        rel = os.path.relpath(full, ws)
+        return git_blob(ws, trusted_ref, rel), f"{rel} at {trusted_ref[:12]}"
+    with open(full, encoding="utf-8") as f:
+        return f.read(), full
+
+
+def cmd_settings(a: argparse.Namespace) -> int:
+    try:
+        texts: List[str] = []
+        if a.policy:
+            ref = a.trusted_ref or event_base()
+            text, where = read_policy(a.policy, a.workspace or ".", ref)
+            print(f"abhed: policy from {where}", file=sys.stderr)
+            texts.append(text)
+        if a.policy_json.strip():
+            texts.append(a.policy_json)
+        merged: Dict[str, Any] = {}
+        for t in texts:
+            v = json.loads(t)
+            if not isinstance(v, dict):
+                raise ValueError("the policy must be a JSON object")
+            merged = deep_merge(merged, v)
+        s = build_settings(json.dumps(merged) if merged else "", a.provider_type, a.model, a.base_url, a.key_env,
+                           review=a.review)
+    except (ValueError, OSError, json.JSONDecodeError) as e:
         print(f"::error::abhed action: {e}", file=sys.stderr)
         return 2
     fd = os.open(a.out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -111,7 +187,8 @@ def set_output(name: str, value: str) -> None:
 
 
 def md_escape(s: str) -> str:
-    return s.replace("|", "\\|").replace("\n", " ")
+    """A value for a table cell of the step summary, which the run's own text reaches."""
+    return neutral(s, 2000).replace("|", "\\|").replace("\n", " ")
 
 
 def summary_markdown(r: Optional[Dict[str, Any]], code: int) -> str:
@@ -223,9 +300,6 @@ def git(args: List[str], cwd: str) -> str:
                           capture_output=True, text=True, errors="replace").stdout
 
 
-SHA = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
-
-
 def github_get(api: str, path: str, token: str) -> Any:
     req = urllib.request.Request(f"{api.rstrip('/')}{path}", headers={
         "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
@@ -272,7 +346,14 @@ def cmd_review_context(a: argparse.Namespace) -> int:
 
     try:
         base, head, num = review_context(os.environ.get("GITHUB_EVENT_NAME", ""), event, a.pr.strip(), get)
-    except (ValueError, KeyError, urllib.error.URLError) as e:
+        if not isinstance(event.get("pull_request"), dict):
+            # Looked up, not from the event: the checkout must be that head, or
+            # the review would be posted on a commit nobody read.
+            checked = git(["rev-parse", "HEAD"], a.workspace).strip()
+            if checked != head:
+                raise ValueError(f"the checkout is {checked[:12]}, but pull request #{num} is now at {head[:12]}; "
+                                 "check out refs/pull/N/head and run again")
+    except (ValueError, KeyError, urllib.error.URLError, subprocess.CalledProcessError) as e:
         print(f"::error::abhed review: {e}", file=sys.stderr)
         return 2
     print(f"base={base}\nhead={head}\npr={num}")
@@ -335,15 +416,20 @@ def commentable_lines(diff: str) -> Dict[str, Set[int]]:
     return out
 
 
-MENTION = re.compile(r"(?<![\w`])@([A-Za-z0-9][A-Za-z0-9-]*(?:/[A-Za-z0-9._-]+)?)")
+ZWJ = "\u200d"
+HTML_COMMENT = re.compile(r"<!--.*?(-->|$)", re.S)
+HTML_TAG = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>")
 
 
 def neutral(text: str, limit: int) -> str:
-    """Review text the model wrote, made safe to post: no @mention notifies
-    anyone, no HTML comment hides text, and it is bounded."""
+    """Text the model wrote, made safe to post in every field and path:
+    each @ is followed by a zero-width joiner, so no mention notifies anyone
+    whatever surrounds it; HTML comments and tags are removed; and it is
+    bounded."""
     text = text.replace("\r", "")
-    text = MENTION.sub(r"`@\1`", text)
-    text = text.replace("<!--", "&lt;!--")
+    text = HTML_COMMENT.sub("", text)
+    text = HTML_TAG.sub("", text)
+    text = text.replace("@", "@" + ZWJ)
     if len(text) > limit:
         text = text[: limit - 20] + "\n\n[cut for length]"
     return text
@@ -461,6 +547,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
     s = sub.add_parser("settings")
     s.add_argument("--policy", default="")
+    s.add_argument("--policy-json", default="")
+    s.add_argument("--workspace", default=".")
+    s.add_argument("--trusted-ref", default="")
+    s.add_argument("--review", action="store_true")
     s.add_argument("--provider-type", default="")
     s.add_argument("--model", default="")
     s.add_argument("--base-url", default="")
@@ -477,6 +567,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
     s = sub.add_parser("review-context")
     s.add_argument("--pr", default="")
+    s.add_argument("--workspace", default=".")
     s.set_defaults(fn=cmd_review_context)
 
     s = sub.add_parser("review-prep")

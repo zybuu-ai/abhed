@@ -504,11 +504,15 @@ All notable changes to Abhed are recorded here. The format follows
   with `-verify strict` by default; uploads the run's output, its exported
   record (verifiable with `abhed record verify`) and a transcript as an
   artifact; and fails the job on a non-zero exit. Inputs take the task, the
-  model provider (its key from a secret, masked, in one variable), a policy
-  file passed as `-settings` from a copy outside the workspace, allow and
-  deny rules, limits, and the variables to pass through. The agent runs
-  under `env -i`: no GitHub token reaches it, and a checkout that kept its
-  token in `.git/config` is refused. `pull_request_target` is refused.
+  model provider (its key from a secret, masked, in one variable, its entry
+  never merged with a policy's), a policy as `-settings` (a file in the
+  workspace is read from the pull request's base commit on a pull request),
+  allow and deny rules, limits, and the variables to pass through. The
+  agent runs under `env -i`: no GitHub token reaches it, and a checkout that
+  kept its token in `.git/config` is refused. Its home and `TMPDIR` are
+  fresh folders outside the runner's temp folder, and the binary's hash is
+  checked again before every later run of it. A flag newer than the pinned
+  release is refused before the run. `pull_request_target` is refused.
   See [The GitHub Action](docs/guide/38-github-action.md).
 - Pull request review, the action's `mode: review`. It takes the diff
   between the pull request's base and head with hooks and textconv off,
@@ -516,7 +520,10 @@ All notable changes to Abhed are recorded here. The format follows
   `-bare`, the workspace's configuration untrusted, a JSON schema for the
   findings) and posts one review: `COMMENT`, or `REQUEST_CHANGES` at a
   severity you set, never `APPROVE`, with an inline comment on each finding
-  whose line is in the diff. Only the posting step holds the token. On
+  whose line is in the diff. Every `@` in the model's text is defused and
+  HTML is removed. Only the posting step holds the token. On a release
+  before 1.3.0, which lacks `-tools` and `-bare`, deny rules narrow the
+  tools instead. On
   `pull_request` a fork's pull request has no model key and is skipped with
   a notice; a maintainer reviews it with `workflow_dispatch`. See
   [Pull request review](docs/guide/39-pr-review.md), with its threat model.

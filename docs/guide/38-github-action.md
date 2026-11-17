@@ -37,7 +37,7 @@ jobs:
             bash(go test*)
           deny: |
             bash(git push*)
-          max-budget-usd: "2"
+          max-turns: "40"
 ```
 
 Pin the action to a full commit, as you pin every action: a tag can be moved
@@ -56,19 +56,32 @@ ready to copy.
    Another version needs its own hash: `abhed-version: v1.3.0` with
    `abhed-sha256:` the archive's line from that release's `SHA256SUMS`.
    `abhed-path` uses a binary already on the runner instead.
-2. **Installs bubblewrap** on a Linux runner that lacks it (when `sudo` works
-   without a password, as on GitHub's own runners), so commands run in the
-   process sandbox. Abhed refuses to start rather than run commands with a
-   weaker sandbox than the configuration asks for.
-3. **Writes the run's settings.** `policy-file` is copied out of the
-   workspace first, so the agent cannot change the copy the run reads, and
-   passed as `-settings` ([The command line](18-cli.md)). The model inputs are
-   laid over it as a provider named `github-action`; the key is not written
-   there, only the name of the variable that holds it.
+2. **Installs bubblewrap** on a GitHub-hosted Linux runner that lacks it,
+   and on Ubuntu 24.04 adds an AppArmor profile that lets `bwrap` alone make
+   user namespaces, so commands run in the process sandbox. Abhed refuses to
+   start rather than run commands with a weaker sandbox than the
+   configuration asks for. On a self-hosted runner it changes nothing unless
+   `install-sandbox: true` (and `sudo` needs no password there); otherwise
+   install bubblewrap yourself. `install-sandbox: false` skips it everywhere.
+3. **Writes the run's settings**, passed as `-settings`
+   ([The command line](18-cli.md)): `policy-file`, then the inline `policy`
+   input over it, then the model inputs as a provider named
+   `github-action`. That provider replaces any entry of the same name
+   whole, so a policy cannot keep its own `base_url` beside your key; the
+   key is not written there, only the name of the variable that holds it.
+   A `policy-file` inside the workspace is read from the checkout only when
+   the checkout is the workflow's own ref. On a `pull_request` event it is
+   read from the pull request's base commit (`git cat-file`, so nothing the
+   repository configures runs), and a file the base lacks is an error: the
+   change under review never chooses its own policy. That needs the base in
+   the checkout (`fetch-depth: 0`).
 4. **Runs the task** with `abhed -p -output-format stream-json`, the task
    after `--` so one starting with `-` is not read as a flag.
 5. **Keeps the evidence** and uploads it as the `abhed-evidence` artifact
-   (`upload-evidence`, `evidence-name`, `evidence-retention-days`).
+   (`upload-evidence`, `evidence-name`, `evidence-retention-days`). The
+   binary's SHA-256 is checked again before each later run of it (the
+   record's export and check), so nothing the run reached decides what
+   runs after it.
 6. **Fails the job** when `abhed` exited non-zero (`fail-on-error`), after
    the upload, so a failed run still leaves its evidence.
 
@@ -79,16 +92,18 @@ ready to copy.
 | `task` | | the task |
 | `model-provider`, `model`, `model-base-url` | | the provider type (`anthropic`, `openai`, `openai-compatible`, ...), model id and base URL; empty uses the policy file's model |
 | `model-api-key` | | the provider's key; pass a secret |
-| `policy-file` | | a JSON settings file: `permissions`, `sandbox`, `limits`, `verify`, `model` |
+| `policy-file` | | a JSON settings file: `permissions`, `sandbox`, `limits`, `verify`, `model`; see above for where it is read from |
+| `policy` | | the same as inline JSON, laid over `policy-file` |
 | `permission-mode` | `default` | `default`, `accept-edits`, `plan` or `auto` |
 | `allow`, `deny` | | rules, one per line; a line may hold several, comma-separated |
 | `verify` | `strict` | `off`, `label` or `strict` |
-| `max-turns`, `max-budget-usd` | | limits for the run |
+| `max-turns`, `max-budget-usd` | | limits for the run; `max-budget-usd` needs Abhed 1.3.0 or later, and an older version is refused before the run |
 | `env-passthrough` | | runner variables the agent's process may see, comma-separated |
 | `isolate-home` | `true` | give the run a home of its own |
 | `allow-persisted-credentials` | `false` | run beside a token `actions/checkout` left in `.git/config` |
 | `allow-pull-request-target` | `false` | run on a `pull_request_target` event |
-| `abhed-version`, `abhed-sha256`, `abhed-path`, `verify-signature`, `install-sandbox` | | the install, above |
+| `abhed-version`, `abhed-sha256`, `abhed-path`, `verify-signature` | | the install, above |
+| `install-sandbox` | `auto` | `auto` (GitHub-hosted runners only), `true` or `false` |
 | `fail-on-error`, `upload-evidence`, `evidence-name`, `evidence-retention-days` | | the end of the job |
 
 Outputs: `exit-code`, `session-id`, `verdict` (`verified` or `unverified`),
@@ -118,6 +133,14 @@ The job's summary page shows the exit code, how the run ended, the verdict,
 tokens and cost, each policy refusal, and each statement that was not
 verified.
 
+**Who can read the evidence.** It holds everything the agent read and
+wrote: file contents, command output, the task and the answer. GitHub's
+log masking does not apply to artifacts, and stored secrets are redacted in
+the record only when they are in Abhed's own secret store. On a public
+repository any signed-in user can download a workflow's artifacts. There,
+set `upload-evidence: false`, or keep the retention short and the task
+away from anything private.
+
 ## Secrets and credentials
 
 - **The model key** reaches Abhed in one environment variable, named in the
@@ -137,11 +160,22 @@ verified.
   repository's git configuration unless `persist-credentials: false`; the
   agent can read that file. The action refuses to run beside it unless
   `allow-persisted-credentials: true`.
-- **Its own home.** With `isolate-home` (the default) the run's home is a
-  fresh folder under the runner's temp folder, so a self-hosted runner's
-  `~/.abhed/config.json` neither loosens the run nor collects its record.
-  Toolchain caches under the home start empty; set their own variables
-  (`GOMODCACHE`, say) and pass them with `env-passthrough` to reuse them.
+- **Its own home and temp folder.** With `isolate-home` (the default) the
+  run's home is a fresh folder under the runner user's home, so a
+  self-hosted runner's `~/.abhed/config.json` neither loosens the run nor
+  collects its record. Its `TMPDIR` is a fresh folder under `/tmp`. Neither
+  is under the runner's temp folder, which holds the job's file commands
+  (`GITHUB_ENV`, `GITHUB_PATH`), the evidence and the installed binary:
+  macOS's process sandbox lets a command write its `TMPDIR`, and these must
+  stay out of its reach. Both are removed when the step ends. Toolchain
+  caches under the home start empty; set their own variables (`GOMODCACHE`,
+  say) and pass them with `env-passthrough` to reuse them. The file-command
+  variables and `RUNNER_TEMP` are never passed.
+- **Self-hosted runners.** The action assumes a runner that runs one job
+  and is then thrown away, as GitHub's are. On a runner you keep, the run's
+  commands are bounded by the sandbox, but the runner's own state (its
+  user's home, other jobs' work folders) is outside what the action can
+  protect; give such a runner to trusted workflows only.
 - **Permissions.** Give the job the least it needs: `contents: read` for a
   task whose changes stay on the runner. The action pushes nothing.
 - **pull_request_target** runs with secrets and a write token on a pull
@@ -156,6 +190,12 @@ pin itself, so the pin moves by a commit after each release is published,
 and a workflow that pins the action to a commit gets the Abhed release that
 commit pins. To run a newer release first, set `abhed-version` and
 `abhed-sha256`.
+
+The pin is v1.2.9 until 1.3.0 is published. On it, `max-budget-usd` is
+refused (use `max-turns`), and a review falls back as
+[Pull request review](39-pr-review.md#on-a-release-before-130) describes.
+Each flag newer than the binary is detected before the run, never found as
+a failed run.
 
 ## Testing the action
 
