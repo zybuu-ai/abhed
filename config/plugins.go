@@ -2,7 +2,8 @@ package config
 
 import (
 	"fmt"
-	"slices"
+	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 
@@ -17,9 +18,10 @@ type PluginsConfig struct {
 	Disabled bool `json:"disabled,omitempty"`
 	// RequireSignature refuses a bundle trusted by a digest pin alone.
 	RequireSignature bool `json:"require_signature,omitempty"`
-	// AllowedPublishers and AllowedBundles, when either is set, are the only
-	// signers and manifest digests a bundle may match; the person's own
-	// publishers are then not consulted.
+	// AllowedPublishers and AllowedBundles, when either is set, are the
+	// signers and manifest digests a bundle must match: one of them signed it,
+	// or its digest is listed. The org policy's lists are a layer of their
+	// own, which a bundle must pass too, so neither layer widens the other.
 	AllowedPublishers []plugin.Publisher `json:"allowed_publishers,omitempty"`
 	AllowedBundles    []string           `json:"allowed_bundles,omitempty"`
 	// Sources are the organisation's plugin indexes. When set, a URL install
@@ -39,22 +41,92 @@ const OrgSourceName = "org"
 // OrgPluginIndex is where an org server serves its plugin index.
 const OrgPluginIndex = "/v1/plugins/index"
 
-// PluginPolicy is the managed plugin policy in the plugin package's terms,
-// with the org server as a source when plugins.org_source says so.
+// orgPlugins is the org policy's plugins section, kept apart from the
+// machine's managed file: each layer must admit a bundle.
+type orgPlugins struct {
+	PluginsConfig
+	// pinned is whether the machine pins the org's signing keys. Only then
+	// may the org's lists and source grant trust; otherwise they only narrow.
+	pinned bool
+}
+
+// PluginPolicy is the plugin policy in the plugin package's terms: the
+// machine's managed file and the org policy each a layer, with the org
+// server as a source when plugins.org_source says so.
 func (c Config) PluginPolicy() plugin.Policy {
 	p := c.Plugins
-	pol := plugin.Policy{Disabled: p.Disabled, RequireSignature: p.RequireSignature,
-		AllowedPublishers: p.AllowedPublishers, AllowedBundles: p.AllowedBundles, Sources: slices.Clone(p.Sources)}
-	if p.OrgSource {
+	pol := plugin.Policy{Disabled: p.Disabled, RequireSignature: p.RequireSignature}
+	for _, s := range p.Sources {
+		s.Trusted = true
+		pol.Sources = append(pol.Sources, s)
+	}
+	if len(p.AllowedPublishers) > 0 || len(p.AllowedBundles) > 0 {
+		pol.Lists = append(pol.Lists, plugin.AllowList{Layer: "managed configuration's", Publishers: p.AllowedPublishers,
+			Bundles: p.AllowedBundles, Grants: true})
+	}
+	orgSource, orgSourceTrusted := p.OrgSource, p.OrgSource
+	if o := c.orgPlugins; o != nil {
+		pol.Disabled = pol.Disabled || o.Disabled
+		pol.RequireSignature = pol.RequireSignature || o.RequireSignature
+		if len(o.AllowedPublishers) > 0 || len(o.AllowedBundles) > 0 {
+			pol.Lists = append(pol.Lists, plugin.AllowList{Layer: "org policy's", Publishers: o.AllowedPublishers,
+				Bundles: o.AllowedBundles, Grants: o.pinned})
+		}
+		if o.OrgSource {
+			orgSource = true
+			orgSourceTrusted = orgSourceTrusted || o.pinned
+		}
+	}
+	if orgSource {
 		server := c.OrgPolicy.URL
 		if server == "" {
 			server = c.Org.URL
 		}
 		if server = strings.TrimRight(server, "/"); server != "" {
-			pol.Sources = append(pol.Sources, plugin.Source{Name: OrgSourceName, URL: server + OrgPluginIndex})
+			pol.Sources = append(pol.Sources, plugin.Source{Name: OrgSourceName, URL: server + OrgPluginIndex, Trusted: orgSourceTrusted})
 		}
 	}
 	return pol
+}
+
+// PluginTrustedRoot is the Sigstore trusted root signatures are checked
+// against: the managed file's, else the person's own copy (s's), else none.
+func (c Config) PluginTrustedRoot(s *plugin.Store) (*plugin.TrustedRoot, error) {
+	if p := c.Plugins.TrustedRoot; p != "" {
+		return plugin.ReadTrustedRoot(p)
+	}
+	if s == nil {
+		return nil, nil
+	}
+	if _, err := os.Stat(s.TrustedRootFile()); err != nil {
+		return nil, nil
+	}
+	return plugin.ReadTrustedRoot(s.TrustedRootFile())
+}
+
+// LoadedPlugins are the approved plugins this load added, in name order.
+// Experimental: its element type is package plugin's, which may change in a
+// minor release until 2.0.
+func (c Config) LoadedPlugins() []plugin.Loaded { return c.loadedPlugins }
+
+// validatePlugins refuses a plugins section that could not be applied as written.
+func (p PluginsConfig) validate() error {
+	for _, pub := range p.AllowedPublishers {
+		if err := pub.Valid(); err != nil {
+			return fmt.Errorf("plugins.allowed_publishers: %w", err)
+		}
+	}
+	for _, d := range p.AllowedBundles {
+		if len(d) != 64 || strings.Trim(d, "0123456789abcdef") != "" {
+			return fmt.Errorf("plugins.allowed_bundles: %q is not a manifest's SHA-256 (64 lower-case hex digits)", d)
+		}
+	}
+	for _, s := range p.Sources {
+		if u, err := url.Parse(s.URL); s.Name == "" || err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("plugins.sources: %q needs a name and an https URL", s.Name)
+		}
+	}
+	return nil
 }
 
 // PluginLayer is the layer a plugin's hooks are credited to.
@@ -78,7 +150,7 @@ var pluginStore = plugin.DefaultStore
 
 // applyPlugins adds each approved plugin that today's policy admits: its
 // hooks and MCP servers into the configuration, under names carrying the
-// plugin's, and its agents, skills and commands to LoadedPlugins for their
+// plugin's, and its agents, skills and commands to loadedPlugins for their
 // loaders. A plugin whose names clash, or whose hooks would not run as
 // written, is left out whole.
 func applyPlugins(cfg *Config, w warnSink) {
@@ -86,7 +158,12 @@ func applyPlugins(cfg *Config, w warnSink) {
 	if err != nil {
 		return
 	}
-	loaded, warns := plugin.LoadAll(s, cfg.PluginPolicy(), runningVersion())
+	root, err := cfg.PluginTrustedRoot(s)
+	if err != nil {
+		m := "plugins: the Sigstore trusted root does not read, so no signature is taken: " + err.Error()
+		w.emit("plugin\x00"+m, m)
+	}
+	loaded, warns := plugin.LoadAll(s, cfg.PluginPolicy(), runningVersion(), root)
 	for _, m := range warns {
 		w.emit("plugin\x00"+m, m)
 	}
@@ -112,7 +189,7 @@ func applyPlugins(cfg *Config, w warnSink) {
 			cfg.MCP.Servers = append(cfg.MCP.Servers, MCPServerConfig{Name: sv.Name, Command: sv.Command, Args: sv.Args,
 				URL: sv.URL, HeadersEnv: sv.HeadersEnv, Enabled: true, AllowTools: sv.AllowTools, Digest: sv.Digest})
 		}
-		cfg.LoadedPlugins = append(cfg.LoadedPlugins, l)
+		cfg.loadedPlugins = append(cfg.loadedPlugins, l)
 	}
 }
 
@@ -142,7 +219,7 @@ func pluginClash(cfg Config, l plugin.Loaded) string {
 
 // PluginServer names the plugin an MCP server came from, or "".
 func (c Config) PluginServer(name string) string {
-	for _, l := range c.LoadedPlugins {
+	for _, l := range c.loadedPlugins {
 		for _, s := range l.MCPServers {
 			if s.Name == name {
 				return l.Name
@@ -154,7 +231,7 @@ func (c Config) PluginServer(name string) string {
 
 // DropPlugins leaves every plugin out, as a bare run does.
 func (c *Config) DropPlugins() {
-	if len(c.LoadedPlugins) == 0 {
+	if len(c.loadedPlugins) == 0 {
 		return
 	}
 	kept := c.Hooks.Run[:0:0]
@@ -171,5 +248,5 @@ func (c *Config) DropPlugins() {
 		}
 	}
 	c.MCP.Servers = servers
-	c.LoadedPlugins = nil
+	c.loadedPlugins = nil
 }

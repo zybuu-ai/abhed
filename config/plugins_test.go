@@ -3,8 +3,12 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/zybuu-ai/abhed/plugin"
 )
 
 // An org policy may turn plugins off, require signatures, list publishers
@@ -63,5 +67,116 @@ func TestUserFileCannotSetPluginPolicy(t *testing.T) {
 	}
 	if len(cfg.Plugins.AllowedBundles) != 0 || len(cfg.Plugins.Sources) != 0 {
 		t.Fatalf("the user's file set the plugin policy: %+v", cfg.Plugins)
+	}
+}
+
+// The machine's managed lists and the org policy's are layers: a bundle
+// must pass both, an org without pinned keys only narrows, and the person's
+// own publishers count only within them.
+func TestPluginPolicyLayers(t *testing.T) {
+	iss := "https://issuer.acme.example"
+	a := &plugin.Signer{Identity: "a@acme.example", Issuer: iss}
+	b := &plugin.Signer{Identity: "b@acme.example", Issuer: iss}
+	x, y := strings.Repeat("1", 64), strings.Repeat("2", 64)
+	pub := func(s *plugin.Signer) []plugin.Publisher {
+		return []plugin.Publisher{{Identity: s.Identity, Issuer: iss}}
+	}
+	cfg := func(managed PluginsConfig, org *PluginsConfig, pinned bool) Config {
+		c := Default()
+		c.Plugins = managed
+		if org != nil {
+			c.orgPlugins = &orgPlugins{PluginsConfig: *org, pinned: pinned}
+		}
+		return c
+	}
+	for _, tc := range []struct {
+		name string
+		c    Config
+		e    plugin.Evidence
+		mine []plugin.Publisher
+		ok   bool
+	}{
+		{"managed publishers, org bundles: signed by A, digest not listed", cfg(PluginsConfig{AllowedPublishers: pub(a)}, &PluginsConfig{AllowedBundles: []string{x}}, false),
+			plugin.Evidence{Digest: y, Signer: a}, nil, false},
+		{"managed publishers, org bundles: X unsigned", cfg(PluginsConfig{AllowedPublishers: pub(a)}, &PluginsConfig{AllowedBundles: []string{x}}, true),
+			plugin.Evidence{Digest: x}, nil, false},
+		{"managed publishers, org bundles: X signed by A", cfg(PluginsConfig{AllowedPublishers: pub(a)}, &PluginsConfig{AllowedBundles: []string{x}}, false),
+			plugin.Evidence{Digest: x, Signer: a}, nil, true},
+		{"managed bundles, org publishers: signed by B, digest not listed", cfg(PluginsConfig{AllowedBundles: []string{x}}, &PluginsConfig{AllowedPublishers: pub(b)}, true),
+			plugin.Evidence{Digest: y, Signer: b}, nil, false},
+		{"unpinned org publishers, the person trusts nobody", cfg(PluginsConfig{}, &PluginsConfig{AllowedPublishers: pub(b)}, false),
+			plugin.Evidence{Digest: y, Signer: b}, nil, false},
+		{"unpinned org publishers, the person trusts B", cfg(PluginsConfig{}, &PluginsConfig{AllowedPublishers: pub(b)}, false),
+			plugin.Evidence{Digest: y, Signer: b}, pub(b), true},
+		{"unpinned org publishers, the person trusts A only", cfg(PluginsConfig{}, &PluginsConfig{AllowedPublishers: pub(b)}, false),
+			plugin.Evidence{Digest: y, Signer: a}, pub(a), false},
+		{"pinned org publishers grant", cfg(PluginsConfig{}, &PluginsConfig{AllowedPublishers: pub(b)}, true),
+			plugin.Evidence{Digest: y, Signer: b}, nil, true},
+		{"unpinned org bundles do not grant an unpinned digest", cfg(PluginsConfig{}, &PluginsConfig{AllowedBundles: []string{x}}, false),
+			plugin.Evidence{Digest: x}, nil, false},
+		{"org require_signature binds", cfg(PluginsConfig{}, &PluginsConfig{RequireSignature: true}, false),
+			plugin.Evidence{Digest: x, Pin: x}, nil, false},
+		{"org disabled binds", cfg(PluginsConfig{}, &PluginsConfig{Disabled: true}, false),
+			plugin.Evidence{Digest: x, Signer: a}, pub(a), false},
+	} {
+		_, err := tc.c.PluginPolicy().Admit(tc.e, tc.mine)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: %v", tc.name, err)
+		}
+	}
+	// The org source is trusted only from pinned keys or the machine's file.
+	c := cfg(PluginsConfig{}, &PluginsConfig{OrgSource: true}, false)
+	c.Org.URL = "https://abhed.acme.example"
+	if s := c.PluginPolicy().Sources; len(s) != 1 || s[0].Trusted {
+		t.Fatalf("an unpinned org's source: %+v", s)
+	}
+	c = cfg(PluginsConfig{}, &PluginsConfig{OrgSource: true}, true)
+	c.Org.URL = "https://abhed.acme.example"
+	if s := c.PluginPolicy().Sources; len(s) != 1 || !s[0].Trusted {
+		t.Fatalf("a pinned org's source: %+v", s)
+	}
+}
+
+// The org's plugins section leaves the merged document, so it never
+// combines field by field with the machine's.
+func TestTakeOrgPlugins(t *testing.T) {
+	doc, _ := decodeDoc([]byte(`{"plugins":{"allowed_bundles":["` + strings.Repeat("1", 64) + `"]},"limits":{"max_turns":3}}`))
+	c := Default()
+	if err := takeOrgPlugins(&c, doc, false, "org"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc["plugins"]; ok || c.orgPlugins == nil || len(c.orgPlugins.AllowedBundles) != 1 || c.orgPlugins.pinned {
+		t.Fatalf("doc %v org %+v", doc, c.orgPlugins)
+	}
+	bad, _ := decodeDoc([]byte(`{"plugins":{"allowed_publishers":[{"identity":"r@*","issuer":"https://i"}]}}`))
+	if err := takeOrgPlugins(&c, bad, false, "org"); err == nil {
+		t.Fatal("an email wildcard was taken")
+	}
+}
+
+// Through a real signed org policy: the machine lists publishers, the org
+// lists bundles, and the policy has both as layers rather than a union.
+func TestOrgPluginListsAreALayer(t *testing.T) {
+	withManaged(t, `{"plugins":{"allowed_publishers":[{"identity":"a@acme.example","issuer":"https://issuer.acme.example"}]}}`)
+	f := newOrg(t)
+	x := strings.Repeat("1", 64)
+	f.write(t, `{"plugins":{"allowed_bundles":["`+x+`"],"require_signature":true}}`, time.Now())
+	cfg, err := LoadWith(t.TempDir(), LoadOptions{Warn: func(string) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pol := cfg.PluginPolicy()
+	if len(pol.Lists) != 2 || !pol.RequireSignature || len(cfg.Plugins.AllowedBundles) != 0 {
+		t.Fatalf("policy %+v plugins %+v", pol, cfg.Plugins)
+	}
+	a := &plugin.Signer{Identity: "a@acme.example", Issuer: "https://issuer.acme.example"}
+	if _, err := pol.Admit(plugin.Evidence{Digest: strings.Repeat("2", 64), Signer: a}, nil); err == nil {
+		t.Fatal("the org's bundle list did not narrow the machine's publisher")
+	}
+	if _, err := pol.Admit(plugin.Evidence{Digest: x, Signer: a}, nil); err != nil {
+		t.Fatalf("a bundle both admit: %v", err)
+	}
+	if !slices.Contains(cfg.OrgPolicy.Keys, "plugins.allowed_bundles") {
+		t.Errorf("org keys %v", cfg.OrgPolicy.Keys)
 	}
 }

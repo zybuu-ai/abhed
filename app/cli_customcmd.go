@@ -66,7 +66,7 @@ func ensureCustomCommands(st *cliState, r *ui.Renderer) {
 	}
 }
 
-// loadCustomCommands reads the managed, user and workspace commands and
+// loadCustomCommands reads the managed, user, plugin and workspace commands and
 // registers them, then the MCP servers' prompts, as run-time sources:
 // built-ins still win every name.
 func loadCustomCommands(st *cliState) {
@@ -87,7 +87,7 @@ func loadCustomCommands(st *cliState) {
 	}
 	// Earlier sources win a name the registry has not given a built-in.
 	st.dynamic = nil
-	for _, kind := range []string{customcmd.SourceManaged, customcmd.SourceUser, customcmd.SourceWorkspace} {
+	for _, kind := range []string{customcmd.SourceManaged, customcmd.SourceUser, customcmd.SourcePlugin, customcmd.SourceWorkspace} {
 		if len(bySource[kind]) > 0 {
 			st.dynamic = append(st.dynamic, customSource{kind: kind, cmds: bySource[kind]})
 		}
@@ -419,7 +419,7 @@ func readCustomCommands(cfg config.Config, ws string) *customState {
 		}
 	}
 	var fromPlugins []customcmd.File
-	for _, l := range cfg.LoadedPlugins {
+	for _, l := range cfg.LoadedPlugins() {
 		for _, f := range l.Commands {
 			fromPlugins = append(fromPlugins, customcmd.File{Rel: f.Rel, Path: f.Path, Data: f.Data})
 		}

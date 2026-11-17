@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/zybuu-ai/abhed/internal/frontmatter"
 )
 
@@ -136,9 +138,11 @@ func ReadArchive(r io.Reader) (map[string][]byte, error) {
 		return nil, fmt.Errorf("not a gzipped tar: %w", err)
 	}
 	defer func() { _ = gz.Close() }()
-	tr := tar.NewReader(gz)
+	// Every decompressed byte counts, headers and PAX records included, so
+	// a small upload cannot inflate without bound.
+	tr := tar.NewReader(&boundedReader{r: gz, left: MaxTotal + 16<<20})
 	out := map[string][]byte{}
-	total := 0
+	total, entries := 0, 0
 	for {
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -146,6 +150,9 @@ func ReadArchive(r io.Reader) (map[string][]byte, error) {
 		}
 		if err != nil {
 			return nil, fmt.Errorf("read the archive: %w", err)
+		}
+		if entries++; entries > 2*MaxFiles {
+			return nil, fmt.Errorf("more than %d archive entries", 2*MaxFiles)
 		}
 		name := strings.TrimPrefix(h.Name, "./")
 		if name == "" || strings.HasPrefix(name, "/") || strings.Contains(name, "\\") || slices.Contains(strings.Split(name, "/"), "..") {
@@ -182,6 +189,24 @@ func ReadArchive(r io.Reader) (map[string][]byte, error) {
 	return stripTop(out), nil
 }
 
+// boundedReader fails once more than left bytes were read.
+type boundedReader struct {
+	r    io.Reader
+	left int64
+}
+
+func (b *boundedReader) Read(p []byte) (int, error) {
+	if b.left <= 0 {
+		return 0, fmt.Errorf("the archive decompresses to more than %d bytes", MaxTotal)
+	}
+	if int64(len(p)) > b.left {
+		p = p[:b.left]
+	}
+	n, err := b.r.Read(p)
+	b.left -= int64(n)
+	return n, err
+}
+
 // stripTop drops a single folder every entry sits under, as `tar czf x.tgz
 // dir` makes, when the manifest is not at the root.
 func stripTop(files map[string][]byte) map[string][]byte {
@@ -213,6 +238,9 @@ func FromFiles(raw map[string][]byte) (*Bundle, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := caseClash(raw); err != nil {
+		return nil, err
+	}
 	b := &Bundle{Manifest: m, ManifestBytes: mdata, Digest: Digest(mdata), Signature: raw[SignatureName], Files: map[string][]byte{}}
 	listed := map[string]bool{}
 	for _, f := range m.Files {
@@ -240,6 +268,24 @@ func FromFiles(raw map[string][]byte) (*Bundle, error) {
 		return nil, err
 	}
 	return b, nil
+}
+
+// caseClash refuses two paths, or two folders on the way to them, that a
+// file system folding case or Unicode forms would take for one.
+func caseClash(files map[string][]byte) error {
+	seen := map[string]string{}
+	for p := range files {
+		parts := strings.Split(p, "/")
+		for i := range parts {
+			prefix := strings.Join(parts[:i+1], "/")
+			key := strings.ToLower(norm.NFC.String(prefix))
+			if other, ok := seen[key]; ok && other != prefix {
+				return fmt.Errorf("%s and %s are the same name on a file system that folds case", other, prefix)
+			}
+			seen[key] = prefix
+		}
+	}
+	return nil
 }
 
 // Contents are what a bundle adds, by kind.
@@ -306,7 +352,8 @@ func (b *Bundle) checkContents() error {
 	for _, pair := range []struct {
 		kind       string
 		need, have []string
-	}{{"tools", need.Tools, have.Tools}, {"egress", need.Egress, have.Egress}, {"hooks", need.Hooks, have.Hooks}, {"mcp_servers", need.MCPServers, have.MCPServers}} {
+	}{{"tools", need.Tools, have.Tools}, {"egress", need.Egress, have.Egress}, {"hooks", need.Hooks, have.Hooks},
+		{"mcp_servers", need.MCPServers, have.MCPServers}, {"env", need.Env, have.Env}} {
 		for _, n := range pair.need {
 			if !slices.Contains(pair.have, n) {
 				missing = append(missing, pair.kind+" "+n)
@@ -317,6 +364,27 @@ func (b *Bundle) checkContents() error {
 		return fmt.Errorf("the manifest's capabilities leave out what its content uses: %s", strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+// InheritsTools reports an agent or command that lists no tools, so it
+// may use every tool the session has.
+func (b *Bundle) InheritsTools() bool {
+	cont := b.Contents()
+	for _, p := range append(append([]string{}, cont.Agents...), cont.Commands...) {
+		doc, err := frontmatter.Parse(string(b.Files[p]))
+		if err != nil {
+			return true
+		}
+		listed := false
+		for _, f := range doc.Top() {
+			k := strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(strings.Trim(f.Key, `"'`)))
+			listed = listed || k == "tools" || k == "allowedtools"
+		}
+		if !listed {
+			return true
+		}
+	}
+	return false
 }
 
 // Needs are the capabilities b's content uses: the tools its agents and
@@ -364,8 +432,11 @@ func (b *Bundle) Needs() Capabilities {
 			host, _ := hostOf(s.URL)
 			add(&c.Egress, host)
 		}
+		for _, v := range s.HeadersEnv {
+			add(&c.Env, v)
+		}
 	}
-	for _, l := range []*[]string{&c.Tools, &c.Egress, &c.Hooks, &c.MCPServers} {
+	for _, l := range []*[]string{&c.Tools, &c.Egress, &c.Hooks, &c.MCPServers, &c.Env} {
 		sort.Strings(*l)
 	}
 	return c

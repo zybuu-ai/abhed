@@ -51,22 +51,19 @@ type Entry struct {
 
 // Install is one version of a plugin as installed.
 type Install struct {
-	Version   string    `json:"version"`
-	Publisher string    `json:"publisher"`
-	Digest    string    `json:"digest"`
-	Dir       string    `json:"dir"`
-	Basis     string    `json:"basis"`
+	Version   string `json:"version"`
+	Publisher string `json:"publisher"`
+	Digest    string `json:"digest"`
+	Dir       string `json:"dir"`
+	Basis     string `json:"basis"`
+	// Signer is who signed, as verified at install, for the person to read.
+	// Nothing trusts it: a load verifies the staged signature again.
 	Signer    *Signer   `json:"signer,omitempty"`
 	Pin       string    `json:"pin,omitempty"`
 	Source    string    `json:"source,omitempty"`
 	From      string    `json:"from,omitempty"`
 	Installed time.Time `json:"installed_at"`
 	Approved  time.Time `json:"approved_at,omitzero"`
-}
-
-// Evidence is what the install knew, to judge it again under today's policy.
-func (i *Install) Evidence() Evidence {
-	return Evidence{Digest: i.Digest, Signer: i.Signer, Pin: i.Pin, Source: i.Source}
 }
 
 // Lock takes the store's lock for a change.
@@ -100,7 +97,24 @@ func (s *Store) Read() (*State, error) {
 	if st.Plugins == nil {
 		st.Plugins = map[string]*Entry{}
 	}
+	// The folders named here are removed on approve and remove, so each must
+	// be the one its digest names under its plugin, and nothing else.
+	for name, e := range st.Plugins {
+		if !nameRE.MatchString(name) || e == nil {
+			return nil, fmt.Errorf("%s: %q is not a plugin name", s.StateFile, name)
+		}
+		for _, i := range []*Install{e.Approved, e.Pending} {
+			if i != nil && (!hexRE.MatchString(i.Digest) || i.Dir != DirFor(i.Digest)) {
+				return nil, fmt.Errorf("%s: plugin %s names a folder that is not its digest's", s.StateFile, name)
+			}
+		}
+	}
 	return st, nil
+}
+
+// TrustedRootFile is the person's own Sigstore trusted root.
+func (s *Store) TrustedRootFile() string {
+	return filepath.Join(filepath.Dir(s.StateFile), "plugin-trusted-root.json")
 }
 
 // Write replaces the state file whole.
@@ -138,8 +152,9 @@ func randomHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
-// DirFor is the folder name a bundle of digest goes in under its plugin.
-func DirFor(digest string) string { return digest[:16] }
+// DirFor is the folder name a bundle of digest goes in under its plugin:
+// the whole digest, so no two bundles can share one.
+func DirFor(digest string) string { return digest }
 
 // Path is the absolute folder of an install.
 func (s *Store) Path(name string, i *Install) string {

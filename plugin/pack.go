@@ -11,7 +11,7 @@ import (
 // capabilities the content uses. It returns the manifest's bytes, checked
 // as a bundle would be. It is what a publisher runs before signing.
 func Pack(m Manifest, files map[string][]byte) ([]byte, error) {
-	m.Files = m.Files[:0]
+	m.Files = nil
 	paths := make([]string, 0, len(files))
 	for p := range files {
 		if p == ManifestName || p == SignatureName {
@@ -36,6 +36,9 @@ func Pack(m Manifest, files map[string][]byte) ([]byte, error) {
 	}
 	if len(m.Capabilities.MCPServers) == 0 {
 		m.Capabilities.MCPServers = need.MCPServers
+	}
+	if len(m.Capabilities.Env) == 0 {
+		m.Capabilities.Env = need.Env
 	}
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {

@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -23,7 +24,9 @@ import (
 // verification checks for a blob: the certificate chain to a trusted CA at
 // the time the transparency log integrated the entry, the log's signed entry
 // timestamp, that the entry covers this digest and signature, and the
-// signature itself. It does not check inclusion proofs or CT SCTs.
+// signature itself. It does not check inclusion proofs, checkpoints or the
+// certificate's CT SCTs, and it reads only Rekor v1 entries, whose signed
+// entry timestamp makes offline verification possible.
 
 // Signer is who signed: the certificate's identity and its OIDC issuer.
 type Signer struct {
@@ -33,20 +36,53 @@ type Signer struct {
 
 func (s Signer) String() string { return s.Identity + " (" + s.Issuer + ")" }
 
-// Publisher is an allowed signer. Identity may end in '*' to match any
-// identity it prefixes, as a workflow URI with any tag.
+// Publisher is an allowed signer: a certificate identity and its OIDC
+// issuer. A URI identity may end in '*' right after a '/' or '@', to match
+// any identity it prefixes, as a workflow at any tag; an email never may.
 type Publisher struct {
 	Identity string `json:"identity"`
 	Issuer   string `json:"issuer"`
 }
 
-// Matches reports whether s is this publisher.
+// Valid says why p cannot be used, nil when it can.
+func (p Publisher) Valid() error {
+	if p.Identity == "" || p.Issuer == "" {
+		return errors.New("a publisher names an identity and an issuer")
+	}
+	if u, err := url.Parse(p.Issuer); err != nil || u.Scheme != "https" || u.Host == "" {
+		return fmt.Errorf("issuer %q is not an https URL", p.Issuer)
+	}
+	for _, s := range []string{p.Identity, p.Issuer} {
+		if err := checkText("publisher", s, 512); err != nil {
+			return err
+		}
+	}
+	prefix, wild := strings.CutSuffix(p.Identity, "*")
+	if strings.Contains(prefix, "*") {
+		return fmt.Errorf("identity %q: '*' may only end it", p.Identity)
+	}
+	if wild {
+		if !strings.Contains(prefix, "://") {
+			return fmt.Errorf("identity %q: only a URI identity may end in '*'; an email is named whole", p.Identity)
+		}
+		if !strings.HasSuffix(prefix, "/") && !strings.HasSuffix(prefix, "@") {
+			return fmt.Errorf("identity %q: '*' must follow '/' or '@', so it cannot run on into another name", p.Identity)
+		}
+		if u, err := url.Parse(prefix); err != nil || u.Host == "" || strings.Trim(u.Path, "/") == "" {
+			return fmt.Errorf("identity %q: name at least the owner before '*'", p.Identity)
+		}
+	}
+	return nil
+}
+
+// Matches reports whether s is this publisher. A publisher that is not
+// Valid matches nobody.
 func (p Publisher) Matches(s Signer) bool {
-	if p.Issuer == "" || p.Identity == "" || p.Issuer != s.Issuer {
+	if p.Valid() != nil || p.Issuer != s.Issuer {
 		return false
 	}
 	if prefix, ok := strings.CutSuffix(p.Identity, "*"); ok {
-		return prefix != "" && strings.HasPrefix(s.Identity, prefix)
+		return strings.HasPrefix(s.Identity, prefix)
 	}
 	return p.Identity == s.Identity
 }
@@ -204,8 +240,9 @@ type tlogEntry struct {
 }
 
 type hashedRekord struct {
-	Kind string `json:"kind"`
-	Spec struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Spec       struct {
 		Data struct {
 			Hash struct {
 				Algorithm string `json:"algorithm"`
@@ -240,8 +277,8 @@ func VerifySignature(root *TrustedRoot, artifact, bundle []byte, now time.Time) 
 	if err := json.Unmarshal(bundle, &b); err != nil {
 		return Signer{}, fmt.Errorf("signature bundle: %w", err)
 	}
-	if !strings.HasPrefix(b.MediaType, "application/vnd.dev.sigstore.bundle") {
-		return Signer{}, fmt.Errorf("signature bundle: media type %q is not a Sigstore bundle", b.MediaType)
+	if err := checkBundleFormat(bundle, b.MediaType); err != nil {
+		return Signer{}, err
 	}
 	var leafB64 string
 	switch vm := b.VerificationMaterial; {
@@ -302,12 +339,42 @@ func VerifySignature(root *TrustedRoot, artifact, bundle []byte, now time.Time) 
 	return signerOf(leaf)
 }
 
+// The Sigstore bundle media types this verifier reads.
+var bundleMediaTypes = []string{
+	"application/vnd.dev.sigstore.bundle.v0.3+json",
+	"application/vnd.dev.sigstore.bundle+json;version=0.3",
+	"application/vnd.dev.sigstore.bundle+json;version=0.2",
+}
+
+// checkBundleFormat refuses, saying which, a bundle this verifier does not
+// read: cosign's own legacy bundle, and Sigstore bundle versions other than
+// 0.2 and 0.3.
+func checkBundleFormat(raw []byte, mediaType string) error {
+	if mediaType == "" {
+		var legacy map[string]json.RawMessage
+		if json.Unmarshal(raw, &legacy) == nil {
+			if _, ok := legacy["base64Signature"]; ok {
+				return errors.New("signature bundle: this is cosign's legacy bundle format, which is not supported; " +
+					"sign with cosign 3 (cosign sign-blob --bundle FILE.sigstore.json), or cosign 2.4 or later with --new-bundle-format")
+			}
+		}
+		return errors.New("signature bundle: it has no mediaType, so it is not a Sigstore bundle")
+	}
+	for _, m := range bundleMediaTypes {
+		if strings.EqualFold(strings.ReplaceAll(mediaType, " ", ""), m) {
+			return nil
+		}
+	}
+	return fmt.Errorf("signature bundle: media type %q is not supported; Sigstore bundles 0.2 and 0.3 are", mediaType)
+}
+
 func (r *TrustedRoot) verifyEntry(e tlogEntry, digest, sig, leafDER []byte, now time.Time) (time.Time, error) {
 	if e.KindVersion.Kind != "hashedrekord" {
 		return time.Time{}, fmt.Errorf("entry kind %q is not hashedrekord", e.KindVersion.Kind)
 	}
-	if e.InclusionPromise == nil || e.InclusionPromise.SignedEntryTimestamp == "" {
-		return time.Time{}, errors.New("the entry has no signed entry timestamp to check offline")
+	if e.KindVersion.Version != "0.0.1" || e.InclusionPromise == nil || e.InclusionPromise.SignedEntryTimestamp == "" {
+		return time.Time{}, errors.New("the entry carries no signed entry timestamp (as a Rekor v2 log's do not, relying on an RFC 3161 timestamp and a checkpoint), " +
+			"and only Rekor v1 entries with one are verified offline here")
 	}
 	keyID, err := base64.StdEncoding.DecodeString(e.LogID.KeyID)
 	if err != nil {
@@ -363,6 +430,10 @@ func (r *TrustedRoot) verifyEntry(e tlogEntry, digest, sig, leafDER []byte, now 
 	var body hashedRekord
 	if err := json.Unmarshal(bodyJSON, &body); err != nil {
 		return time.Time{}, fmt.Errorf("entry body: %w", err)
+	}
+	// The SET covers the body, not kindVersion: the body says what it is.
+	if body.Kind != "hashedrekord" || body.APIVersion != "0.0.1" {
+		return time.Time{}, fmt.Errorf("the log entry is a %s %s, not a hashedrekord 0.0.1", body.Kind, body.APIVersion)
 	}
 	if body.Spec.Data.Hash.Algorithm != "sha256" || body.Spec.Data.Hash.Value != hex.EncodeToString(digest) {
 		return time.Time{}, errors.New("the log entry is for another artifact")

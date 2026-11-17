@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -223,8 +224,25 @@ func TestManifestStrict(t *testing.T) {
 
 func TestPolicyAdmit(t *testing.T) {
 	s := &plugin.Signer{Identity: signer, Issuer: issuer}
+	other := &plugin.Signer{Identity: "other@acme.example", Issuer: issuer}
 	mine := []plugin.Publisher{{Identity: signer, Issuer: issuer}}
-	d := strings.Repeat("a", 64)
+	d, x := strings.Repeat("a", 64), strings.Repeat("c", 64)
+	pubs := func(ids ...string) []plugin.Publisher {
+		var out []plugin.Publisher
+		for _, id := range ids {
+			out = append(out, plugin.Publisher{Identity: id, Issuer: issuer})
+		}
+		return out
+	}
+	managedPubs := plugin.AllowList{Layer: "managed", Publishers: pubs(signer), Grants: true}
+	managedBundles := plugin.AllowList{Layer: "managed", Bundles: []string{x}, Grants: true}
+	orgPubs := func(grants bool, ids ...string) plugin.AllowList {
+		return plugin.AllowList{Layer: "org", Publishers: pubs(ids...), Grants: grants}
+	}
+	orgBundles := func(grants bool, ds ...string) plugin.AllowList {
+		return plugin.AllowList{Layer: "org", Bundles: ds, Grants: grants}
+	}
+	src := []plugin.Source{{Name: "acme", URL: "https://x/v1/plugins/index", Trusted: true}}
 	cases := []struct {
 		name  string
 		p     plugin.Policy
@@ -239,18 +257,46 @@ func TestPolicyAdmit(t *testing.T) {
 		{"unsigned, wrong pin", plugin.Policy{}, plugin.Evidence{Digest: d, Pin: strings.Repeat("b", 64)}, nil, ""},
 		{"disabled", plugin.Policy{Disabled: true}, plugin.Evidence{Digest: d, Signer: s}, mine, ""},
 		{"signature required, pinned", plugin.Policy{RequireSignature: true}, plugin.Evidence{Digest: d, Pin: d}, nil, ""},
-		{"org publishers, mine ignored", plugin.Policy{AllowedPublishers: []plugin.Publisher{{Identity: "other@x", Issuer: issuer}}},
-			plugin.Evidence{Digest: d, Signer: s}, mine, ""},
-		{"org publisher prefix", plugin.Policy{AllowedPublishers: []plugin.Publisher{{Identity: "release@*", Issuer: issuer}}},
-			plugin.Evidence{Digest: d, Signer: s}, nil, plugin.BasisSignature},
-		{"org lists, user pin not enough", plugin.Policy{AllowedBundles: []string{strings.Repeat("c", 64)}}, plugin.Evidence{Digest: d, Pin: d}, nil, ""},
-		{"org bundle pin", plugin.Policy{AllowedBundles: []string{d}}, plugin.Evidence{Digest: d}, nil, plugin.BasisOrgPin},
-		{"org source", plugin.Policy{Sources: []plugin.Source{{Name: "acme", URL: "https://x/v1/plugins/index"}}}, plugin.Evidence{Digest: d, Source: "acme"}, nil, plugin.BasisSource},
+		{"signature required, signed by a stranger, pinned", plugin.Policy{RequireSignature: true}, plugin.Evidence{Digest: d, Signer: other, Pin: d}, nil, ""},
+
+		// The machine's managed lists grant.
+		{"managed publisher, nobody of mine", plugin.Policy{Lists: []plugin.AllowList{managedPubs}}, plugin.Evidence{Digest: d, Signer: s}, nil, plugin.BasisSignature},
+		{"managed publisher list, my own other publisher", plugin.Policy{Lists: []plugin.AllowList{managedPubs}}, plugin.Evidence{Digest: d, Signer: other},
+			pubs("other@acme.example"), ""},
+		{"managed bundle digest", plugin.Policy{Lists: []plugin.AllowList{managedBundles}}, plugin.Evidence{Digest: x}, nil, plugin.BasisOrgPin},
+		{"managed bundles, my pin of another", plugin.Policy{Lists: []plugin.AllowList{managedBundles}}, plugin.Evidence{Digest: d, Pin: d}, nil, ""},
+
+		// Managed publishers and org bundles: a bundle must pass both.
+		{"managed publishers + org bundles, signed, not listed", plugin.Policy{Lists: []plugin.AllowList{managedPubs, orgBundles(false, x)}},
+			plugin.Evidence{Digest: d, Signer: s}, nil, ""},
+		{"managed publishers + org bundles, listed, unsigned", plugin.Policy{Lists: []plugin.AllowList{managedPubs, orgBundles(false, x)}},
+			plugin.Evidence{Digest: x}, nil, ""},
+		{"managed publishers + org bundles, both", plugin.Policy{Lists: []plugin.AllowList{managedPubs, orgBundles(false, x)}},
+			plugin.Evidence{Digest: x, Signer: s}, nil, plugin.BasisSignature},
+		// Managed bundles and org publishers: both, the other way round.
+		{"managed bundles + org publishers, org signer, not listed", plugin.Policy{Lists: []plugin.AllowList{managedBundles, orgPubs(true, signer)}},
+			plugin.Evidence{Digest: d, Signer: s}, nil, ""},
+		{"managed bundles + org publishers, both", plugin.Policy{Lists: []plugin.AllowList{managedBundles, orgPubs(true, signer)}},
+			plugin.Evidence{Digest: x, Signer: s}, nil, plugin.BasisSignature},
+
+		// An org whose keys are not pinned only narrows.
+		{"unpinned org publisher, nobody of mine", plugin.Policy{Lists: []plugin.AllowList{orgPubs(false, signer)}}, plugin.Evidence{Digest: d, Signer: s}, nil, ""},
+		{"unpinned org publisher, mine too", plugin.Policy{Lists: []plugin.AllowList{orgPubs(false, signer)}}, plugin.Evidence{Digest: d, Signer: s}, mine, plugin.BasisSignature},
+		{"unpinned org publisher, my other publisher", plugin.Policy{Lists: []plugin.AllowList{orgPubs(false, signer)}}, plugin.Evidence{Digest: d, Signer: other},
+			pubs("other@acme.example"), ""},
+		{"unpinned org bundles, unsigned, listed, no pin", plugin.Policy{Lists: []plugin.AllowList{orgBundles(false, d)}}, plugin.Evidence{Digest: d}, nil, ""},
+		{"unpinned org bundles, unsigned, listed, my pin", plugin.Policy{Lists: []plugin.AllowList{orgBundles(false, d)}}, plugin.Evidence{Digest: d, Pin: d}, nil, plugin.BasisPin},
+		{"unpinned org bundles, my pin of another", plugin.Policy{Lists: []plugin.AllowList{orgBundles(false, x)}}, plugin.Evidence{Digest: d, Pin: d}, nil, ""},
+		// Pinned org keys grant, as the managed file does.
+		{"pinned org publisher, nobody of mine", plugin.Policy{Lists: []plugin.AllowList{orgPubs(true, signer)}}, plugin.Evidence{Digest: d, Signer: s}, nil, plugin.BasisSignature},
+		{"pinned org bundle", plugin.Policy{Lists: []plugin.AllowList{orgBundles(true, d)}}, plugin.Evidence{Digest: d}, nil, plugin.BasisOrgPin},
+
+		// Sources.
+		{"trusted source", plugin.Policy{Sources: src}, plugin.Evidence{Digest: d, Source: "acme"}, nil, plugin.BasisSource},
+		{"untrusted source only narrows", plugin.Policy{Sources: []plugin.Source{{Name: "acme", URL: "https://x/i"}}}, plugin.Evidence{Digest: d, Source: "acme"}, nil, ""},
 		{"source no longer listed", plugin.Policy{}, plugin.Evidence{Digest: d, Source: "acme"}, nil, ""},
-		{"source, but org publishers", plugin.Policy{Sources: []plugin.Source{{Name: "acme", URL: "https://x/i"}},
-			AllowedPublishers: []plugin.Publisher{{Identity: "other@x", Issuer: issuer}}}, plugin.Evidence{Digest: d, Source: "acme"}, nil, ""},
-		{"signed by a stranger, from a source", plugin.Policy{Sources: []plugin.Source{{Name: "acme", URL: "https://x/i"}}},
-			plugin.Evidence{Digest: d, Signer: s, Source: "acme"}, nil, plugin.BasisSource},
+		{"source, but a managed publisher list", plugin.Policy{Sources: src, Lists: []plugin.AllowList{managedPubs}}, plugin.Evidence{Digest: d, Source: "acme"}, nil, ""},
+		{"signed by a stranger, from a trusted source", plugin.Policy{Sources: src}, plugin.Evidence{Digest: d, Signer: other, Source: "acme"}, nil, plugin.BasisSource},
 	}
 	for _, c := range cases {
 		basis, err := c.p.Admit(c.e, c.mine)
@@ -262,6 +308,158 @@ func TestPolicyAdmit(t *testing.T) {
 	if p.SourceFor("https://abhed.acme.example/v1/plugins/bundles/x.tgz") != "acme" ||
 		p.SourceFor("https://evil.example/v1/plugins/x.tgz") != "" || p.SourceFor("http://abhed.acme.example/v1/plugins/x.tgz") != "" {
 		t.Error("SourceFor matched wrongly")
+	}
+}
+
+// '*' ends a URI identity after '/' or '@' only, and never an email.
+func TestPublisherWildcard(t *testing.T) {
+	gh := "https://token.actions.githubusercontent.com"
+	for _, c := range []struct {
+		identity string
+		valid    bool
+		matches  []string
+		not      []string
+	}{
+		{"https://github.com/acme/plugins/.github/workflows/release.yml@*", true,
+			[]string{"https://github.com/acme/plugins/.github/workflows/release.yml@refs/tags/v1.2.0"},
+			[]string{"https://github.com/acme/plugins/.github/workflows/release.yml.evil@x"}},
+		{"https://github.com/acme/*", true, []string{"https://github.com/acme/plugins/x"}, []string{"https://github.com/acme-evil/x"}},
+		{"https://github.com/acme*", false, nil, []string{"https://github.com/acme-evil/x"}},
+		{"https://github.com/*", false, nil, nil},
+		{"release@acme*", false, nil, []string{"release@acme.evil.example"}},
+		{"release@*", false, nil, nil},
+		{"*", false, nil, nil},
+		{"release@acme.example", true, []string{"release@acme.example"}, []string{"release@acme.example.evil"}},
+	} {
+		p := plugin.Publisher{Identity: c.identity, Issuer: gh}
+		if (p.Valid() == nil) != c.valid {
+			t.Errorf("%s: valid %v, want %v", c.identity, p.Valid(), c.valid)
+		}
+		for _, id := range c.matches {
+			if !p.Matches(plugin.Signer{Identity: id, Issuer: gh}) {
+				t.Errorf("%s does not match %s", c.identity, id)
+			}
+		}
+		for _, id := range c.not {
+			if p.Matches(plugin.Signer{Identity: id, Issuer: gh}) {
+				t.Errorf("%s matches %s", c.identity, id)
+			}
+		}
+	}
+	if (plugin.Publisher{Identity: "release@acme.example", Issuer: "http://issuer"}).Valid() == nil {
+		t.Error("an http issuer is valid")
+	}
+}
+
+// A server's headers_env is a capability the approval shows, and a
+// credential's name is never one.
+func TestHeadersEnv(t *testing.T) {
+	spec := sample()
+	spec.MCPServers[0].HeadersEnv = map[string]string{"Authorization": "ACME_TICKETS_BEARER"}
+	dir := filepath.Join(t.TempDir(), "b")
+	plugintest.Write(dir, spec)
+	b, err := plugin.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := strings.Join(plugin.Describe(b), "\n")
+	if !strings.Contains(out, "header Authorization <- $ACME_TICKETS_BEARER") || !strings.Contains(out, "env      ACME_TICKETS_BEARER") {
+		t.Fatalf("the approval does not show the header:\n%s", out)
+	}
+	// Under-declared: the manifest must request the variable.
+	spec.Capabilities = &plugin.Capabilities{Tools: []string{"grep", "read"}, Egress: []string{"tickets.acme.example"}, Hooks: []string{"tool_call"}, MCPServers: []string{"tickets"}}
+	plugintest.Write(dir, spec)
+	if _, err := plugin.Open(dir); err == nil || !strings.Contains(err.Error(), "env ACME_TICKETS_BEARER") {
+		t.Fatalf("an undeclared env opened: %v", err)
+	}
+	for _, name := range []string{"ANTHROPIC_API_KEY", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "ABHED_SESSION", "OPENAI_API_KEY", "MY_PASSWORD",
+		"GOOGLE_APPLICATION_CREDENTIALS", "AZURE_CLIENT_ID", "SOME_SECRET", "CLAUDE_CODE_OAUTH_TOKEN", "acme_api_key"} {
+		if !plugin.SensitiveEnv(name) {
+			t.Errorf("%s is not sensitive", name)
+		}
+		m := `{"schema":1,"name":"a","version":"1.0.0","publisher":"p","files":[],"capabilities":{"env":["` + name + `"],"mcp_servers":["s"],"egress":["x.example"]},` +
+			`"mcp_servers":[{"name":"s","url":"https://x.example/mcp","headers_env":{"Authorization":"` + name + `"}}]}`
+		if _, err := plugin.ParseManifest([]byte(m)); err == nil {
+			t.Errorf("headers_env %s was taken", name)
+		}
+	}
+	// An upgrade that adds one says so.
+	old, _ := plugin.Open(writeSample(t, sample()))
+	diff := strings.Join(plugin.Diff(old, b), "\n")
+	if !strings.Contains(diff, "+ requests env ACME_TICKETS_BEARER") || !strings.Contains(diff, "header Authorization <- $ACME_TICKETS_BEARER") {
+		t.Fatalf("the diff hides the header:\n%s", diff)
+	}
+}
+
+func writeSample(t *testing.T, spec plugintest.Spec) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "s")
+	plugintest.Write(dir, spec)
+	return dir
+}
+
+// A manifest string a terminal would not print as itself is refused, and
+// what Describe prints is escaped all the same.
+func TestTerminalEscapesRefused(t *testing.T) {
+	for _, m := range []string{
+		`{"schema":1,"name":"a","version":"1.0.0","publisher":"p","description":"fine\u001b[1A\u001b[2Khook gone","files":[],"capabilities":{}}`,
+		`{"schema":1,"name":"a","version":"1.0.0","publisher":"p\r","files":[],"capabilities":{}}`,
+		`{"schema":1,"name":"a","version":"1.0.0","publisher":"p","files":[],"capabilities":{"hooks":["stop"]},"hooks":[{"name":"h","events":["stop"],"command":"true\u001b[2K"}]}`,
+		`{"schema":1,"name":"a","version":"1.0.0","publisher":"\u202eevil","files":[],"capabilities":{}}`,
+	} {
+		if _, err := plugin.ParseManifest([]byte(m)); err == nil || !strings.Contains(err.Error(), "does not print as itself") {
+			t.Errorf("taken: %s (%v)", m, err)
+		}
+	}
+	b := &plugin.Bundle{Manifest: &plugin.Manifest{Schema: 1, Name: "a", Version: "1.0.0", Publisher: "p\x1b[2K",
+		Description: "d\x1b[1A", Hooks: []plugin.Hook{{Name: "h", Events: []string{"stop"}, Command: "x\x1b[2Ky"}}}, Files: map[string][]byte{}}
+	for _, l := range plugin.Describe(b) {
+		if strings.ContainsRune(l, 0x1b) {
+			t.Fatalf("an escape reached the terminal: %q", l)
+		}
+	}
+}
+
+// Two paths a case-folding file system takes for one are refused.
+func TestCaseClashRefused(t *testing.T) {
+	spec := sample()
+	spec.Files["docs/A/x.md"] = "x\n"
+	spec.Files["docs/a/y.md"] = "y\n"
+	dir := filepath.Join(t.TempDir(), "b")
+	if err := func() (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("%v", r)
+			}
+		}()
+		plugintest.Write(dir, spec)
+		return nil
+	}(); err != nil {
+		if !strings.Contains(err.Error(), "folds case") {
+			t.Fatal(err)
+		}
+		return
+	}
+	if _, err := plugin.Open(dir); err == nil || !strings.Contains(err.Error(), "folds case") {
+		t.Fatalf("a case clash opened: %v", err)
+	}
+}
+
+// An archive that inflates past the bound is refused while reading.
+func TestArchiveInflationBounded(t *testing.T) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	// Many directory entries with PAX padding: no file, all decompressed bytes.
+	pad := strings.Repeat("p", 60000)
+	for i := 0; i < 1500; i++ {
+		_ = tw.WriteHeader(&tar.Header{Name: fmt.Sprintf("docs/d%d/", i), Typeflag: tar.TypeDir, Mode: 0o700,
+			PAXRecords: map[string]string{"comment": pad}, Format: tar.FormatPAX})
+	}
+	_ = tw.Close()
+	_ = gz.Close()
+	if _, err := plugin.ReadArchive(&buf); err == nil || !strings.Contains(err.Error(), "decompresses to more than") {
+		t.Fatalf("an inflating archive was read: %v", err)
 	}
 }
 
@@ -282,7 +480,7 @@ func TestStoreLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Pending content never loads.
-	if got, _ := plugin.LoadAll(s, plugin.Policy{}, "1.3.0"); len(got) != 0 {
+	if got, _ := plugin.LoadAll(s, plugin.Policy{}, "1.3.0", nil); len(got) != 0 {
 		t.Fatalf("pending content loaded: %+v", got)
 	}
 	st, _ = s.Read()
@@ -293,7 +491,7 @@ func TestStoreLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = s.Write(st)
-	got, warns := plugin.LoadAll(s, plugin.Policy{}, "1.3.0")
+	got, warns := plugin.LoadAll(s, plugin.Policy{}, "1.3.0", nil)
 	if len(got) != 1 || len(warns) != 0 {
 		t.Fatalf("approved plugin: %+v %v", got, warns)
 	}
@@ -303,17 +501,17 @@ func TestStoreLifecycle(t *testing.T) {
 		t.Fatalf("loaded = %+v", l)
 	}
 	// Policy applies at load: disabled loads nothing.
-	if got, _ := plugin.LoadAll(s, plugin.Policy{Disabled: true}, "1.3.0"); len(got) != 0 {
+	if got, _ := plugin.LoadAll(s, plugin.Policy{Disabled: true}, "1.3.0", nil); len(got) != 0 {
 		t.Fatal("loaded under plugins.disabled")
 	}
-	if got, w := plugin.LoadAll(s, plugin.Policy{RequireSignature: true}, "1.3.0"); len(got) != 0 || len(w) != 1 {
+	if got, w := plugin.LoadAll(s, plugin.Policy{RequireSignature: true}, "1.3.0", nil); len(got) != 0 || len(w) != 1 {
 		t.Fatal("an unsigned plugin loaded under require_signature")
 	}
 	// A file changed on disk after approval stops the plugin loading.
 	hook := filepath.Join(l.Root, "hooks", "no-rm.sh")
 	orig, _ := os.ReadFile(hook)
 	_ = os.WriteFile(hook, []byte("#!/bin/sh\nexit 0\n#x\n"), 0o600)
-	if got, w := plugin.LoadAll(s, plugin.Policy{}, "1.3.0"); len(got) != 0 || len(w) != 1 || !strings.Contains(w[0], "sha256") {
+	if got, w := plugin.LoadAll(s, plugin.Policy{}, "1.3.0", nil); len(got) != 0 || len(w) != 1 || !strings.Contains(w[0], "sha256") {
 		t.Fatalf("a tampered plugin loaded: %v", w)
 	}
 	_ = os.WriteFile(hook, orig, 0o600)
@@ -330,7 +528,7 @@ func TestStoreLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = s.Write(st)
-	if got, _ := plugin.LoadAll(s, plugin.Policy{}, "1.3.0"); len(got) != 1 || got[0].Version != "1.0.0" {
+	if got, _ := plugin.LoadAll(s, plugin.Policy{}, "1.3.0", nil); len(got) != 1 || got[0].Version != "1.0.0" {
 		t.Fatalf("during an upgrade the approved version must keep loading: %+v", got)
 	}
 	diff := strings.Join(plugin.Diff(b, b2), "\n")

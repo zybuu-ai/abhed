@@ -16,7 +16,11 @@ A plugin adds content. It never adds policy:
 - Nothing in a bundle runs when you install it.
 - Installed content stays off until you approve that exact content.
 - A plugin never takes a name already in use. Your skills, agents, commands,
-  hooks and servers, and the organisation's, keep theirs.
+  hooks and servers, and the organisation's, keep theirs. A plugin ranks right
+  after your own files: before a workspace's skills and commands, and after a
+  workspace's agent definitions, as your own definitions are.
+- A server's headers from the environment are listed, and a variable named
+  like a credential is never one of them.
 
 The design is in [Plugin bundles](../architecture/plugins.md).
 
@@ -39,14 +43,15 @@ acme-review 1.0.0 from Acme
 It adds:
   agent    reviewer
   skill    lint
-  command  /review
+  command  /acme-check
   hook     acme-review/no-rm on tool_call: sh ${ABHED_PLUGIN_ROOT}/hooks/no-rm.sh
-  mcp      acme-review-tickets: https://tickets.acme.example/mcp
+  mcp      acme-review-tickets: https://tickets.acme.example/mcp (header Authorization <- $ACME_TICKETS_BEARER)
 It requests:
   tools    grep, read
   egress   tickets.acme.example
   hooks    tool_call
   mcp      tickets
+  env      ACME_TICKETS_BEARER (sent as headers to its servers)
 Trusted by: a Sigstore signature from release@acme.example (https://token.actions.githubusercontent.com)
 Installed acme-review 1.0.0, waiting for approval: it does not load until approved.
 ```
@@ -57,6 +62,12 @@ At a terminal you are asked to approve it now. Elsewhere, approve it later:
 abhed plugin approve acme-review                   # shows it again and asks
 abhed plugin approve -sha256 5b0c… acme-review     # approves this exact content, no prompt
 ```
+
+When an agent or command lists no tools, the `tools` line says it gets all
+the session's tools. Every string in the manifest is printed as it is; a
+manifest holding a control character, an escape sequence or an invisible
+format character is refused when it is read, so nothing can redraw the lines
+above the prompt.
 
 The plugin loads from the next session. `abhed plugin list` shows each plugin
 and its state: `loaded`, `pending`, or `not loaded` with the reason, for
@@ -71,10 +82,24 @@ inside an agent's command. Plugins change only from your own terminal.
 A bundle is trusted in one of two ways, and nothing else:
 
 **A Sigstore signature from a publisher you trust.** The publisher signs the
-manifest with `cosign sign-blob --bundle abhed-plugin.json.sigstore.json
-abhed-plugin.json`. Abhed checks the signature offline against a Sigstore
-trusted root, which is a `trusted_root.json` file you or your organisation
-provide:
+manifest keylessly with cosign 3:
+
+```sh
+cosign sign-blob --yes --bundle abhed-plugin.json.sigstore.json abhed-plugin.json
+```
+
+This is the command Abhed's own release workflow runs (cosign v3.1.3). The tests
+check a bundle the cosign v3.1.4 release made the same way, against the
+public-good trusted root. With cosign 2.4 to 2.x, add `--new-bundle-format`;
+older cosign writes its legacy bundle, which is refused with a message saying
+so. Sigstore bundles 0.2 and 0.3 are read. The entry must come from a Rekor v1
+log and carry its signed entry timestamp, which is what makes an offline check
+possible. An entry from a Rekor v2 log has none, and is refused with a message
+saying so.
+
+Abhed checks the signature offline against a Sigstore trusted root, which is a
+`trusted_root.json` file you or your organisation provide. It is kept, not
+given per install, because each load checks the signature again:
 
 ```sh
 abhed plugin trusted-root ./trusted_root.json      # kept as ~/.abhed/plugin-trusted-root.json
@@ -85,11 +110,21 @@ abhed plugin publishers list
 
 The check is offline. The certificate must chain to the trusted root at the
 time the transparency log took the entry. The log's signed timestamp must
-verify, and the entry must be for this manifest and this signature. The
-signature must verify too. The signer is the certificate's identity (an email
-or a URI) and its OIDC issuer. An identity that ends in `*` matches any
-identity it starts with, such as a workflow at any tag. A signature that does
-not verify is refused; it is never treated as unsigned.
+verify, and the entry, a `hashedrekord` 0.0.1, must be for this manifest and
+this signature. The signature must verify too. Not checked: the certificate's
+CT SCTs, and the log's inclusion proof and checkpoint.
+
+The signer is the certificate's identity (an email or a URI) and its OIDC
+issuer. A URI identity may end in `*` right after a `/` or `@`, to match any
+identity it starts with, such as a workflow at any tag. An email identity is
+always named whole. A signature that does not verify is refused at install;
+it is never treated as unsigned.
+
+At every load the staged signature is verified again against the trusted root
+in force. The signer that counts, and that the record names, is the one that
+verifies then. What `~/.abhed/plugins.json` says about the signer is for you
+to read, and nothing trusts it. With no trusted root, or a signature that no
+longer verifies, the bundle counts as unsigned and loads only on a pin.
 
 **A SHA-256 pin**, for air-gapped sites. Check where the bundle came from,
 then pin its manifest's digest:
@@ -124,10 +159,23 @@ abhed plugin remove acme-review        # asks first; -yes to skip
 
 On every load, each approved plugin is hashed again against what you
 approved. A plugin whose files changed on disk does not load, and a warning
-says which file.
+says which file. The check runs when a session starts. Hook scripts, server
+programs and a skill's helper files are run from disk later. No sandboxed
+command can write `~/.abhed/plugins` on any tier, but a program running as you
+outside Abhed could change a file mid-session. The next session would refuse
+the plugin.
 
-Container and microVM sandboxes do not mount `~/.abhed/plugins`. A plugin hook
-or server that runs its own script needs the process or fence tier.
+Which sandboxes see the plugin folder:
+
+- macOS process tier and the Linux fence tier: commands can read and run
+  `~/.abhed/plugins`.
+- Linux process tier (bubblewrap) and the container and microVM tiers: the
+  folder is not mounted, as `~/.abhed/skills` is not. A plugin hook or server
+  that runs its own script needs the fence tier there. A command written as
+  is, such as `npx`, `uvx` or a binary on `PATH`, runs on every tier.
+
+A plugin does not load in `abhed serve` sessions. A server's sessions are
+other people's, and the plugins you approved are your own.
 
 ## Writing a plugin
 
@@ -137,7 +185,7 @@ acme-review/
   agents/reviewer.md
   skills/lint/SKILL.md
   skills/lint/run.sh
-  commands/review.md
+  commands/acme-check.md
   hooks/no-rm.sh
   docs/usage.md
   README.md
@@ -162,7 +210,7 @@ declared in the manifest, so the signature covers them:
   ],
   "mcp_servers": [
     {"name": "tickets", "url": "https://tickets.acme.example/mcp",
-     "headers_env": {"Authorization": "ACME_TICKETS_TOKEN"}}
+     "headers_env": {"Authorization": "ACME_TICKETS_BEARER"}}
   ],
   "files": [],
   "capabilities": {}
@@ -172,9 +220,23 @@ declared in the manifest, so the signature covers them:
 `abhed plugin pack DIR` fills in `files` with every file's SHA-256, and fills
 in any empty `capabilities` list with what the content uses. Those are the
 tools its agents and commands list, the hosts its hooks and URL servers
-reach, its hook events and its server names. A bundle whose content needs a
-capability the manifest does not request is refused. Then sign the manifest
-with cosign.
+reach, its hook events, its server names, and the environment variables its
+servers send as headers (`env`). A bundle whose content needs a capability the
+manifest does not request is refused. Then sign the manifest with cosign.
+
+A server's `headers_env` maps a header to an environment variable you set for
+that plugin. Some names are refused:
+
+- names that contain `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`,
+  `CREDENTIAL`, `PRIVATE`, `COOKIE` or `SESSION`;
+- names that start with `ABHED_`, `AWS_`, `GITHUB_`, `GH_`, `GOOGLE_`, `GCP_`,
+  `GCLOUD_`, `AZURE_`, `ANTHROPIC_`, `OPENAI_`, `CLAUDE_`, `GEMINI_`,
+  `MISTRAL_`, `COHERE_`, `GROQ_`, `HF_`, `HUGGING`, `OLLAMA_`, `VAULT_`,
+  `SSH_`, `GPG_`, `NPM_`, `DOCKER_` or `KUBE`.
+
+A plugin can therefore never send a credential you already keep for something
+else. An upgrade that adds a header or a variable lists it among the changes,
+and it waits for your approval like the rest.
 
 `${ABHED_PLUGIN_ROOT}` in a hook command or a server's command and arguments
 becomes the installed folder. Run scripts through an interpreter
@@ -205,16 +267,29 @@ file never set it: what they write there is set aside.
 |---|---|
 | `disabled` | nothing installs and nothing loads |
 | `require_signature` | a pin alone is refused |
-| `allowed_publishers`, `allowed_bundles` | when either is set, a bundle must be signed by a listed publisher or have a listed digest; your own publishers are then not consulted |
+| `allowed_publishers`, `allowed_bundles` | when either is set, a bundle must be signed by a listed publisher or have a listed digest |
 | `sources` | plugin indexes; when set, installs come only from them: by name, or a URL under one |
 | `org_source` | adds the org server this machine takes its signed policy from as the source `org` |
-| `trusted_root` | the Sigstore trusted root signatures are checked against; `-trusted-root` and yours are then not taken |
+| `trusted_root` | the Sigstore trusted root signatures are checked against, at install and at every load; yours is then not taken |
 
 The policy is applied again on every load, so a change by the organisation
 unloads a plugin that no longer passes. An org policy may set `disabled` and
 `require_signature` only to `true`, plus `allowed_publishers`,
 `allowed_bundles` and `org_source`. `sources` and `trusted_root` name a server
 or a file, so only the machine's managed file sets them.
+
+The machine's lists and the org policy's lists are separate layers, and a
+bundle must pass every layer that sets a list. If the machine allows
+publisher A and the org allows bundle X, a bundle must be signed by A *and*
+be X. Neither widens the other.
+
+Passing a list is enough to trust a bundle when it is the machine's list, or
+the list of an org policy whose keys the machine pins (`org_policy.keys`).
+An org whose keys are not pinned only narrows. The trust must then come from
+you, through a publisher you added or a pin. Your own publishers count only
+for bundles every list allows. The `org` source is trusted on the same terms:
+when the machine's file turns it on, or the org's keys are pinned. Otherwise
+a bundle from it needs a signature or a pin like any other.
 
 A source is a JSON index:
 
@@ -241,3 +316,7 @@ signer. Both map to OCSF Device Config State Change (5019) —
 [OCSF and logs](30-ocsf-and-logs.md).
 
 A bare run (`-bare`) loads no plugins.
+
+The package `plugin` (the reader, the verifier, the store and the index types)
+is public so that other programs can check bundles the same way. It is an
+experimental API until 2.0, and may change in a minor release.

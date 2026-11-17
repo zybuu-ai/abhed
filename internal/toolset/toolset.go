@@ -696,7 +696,7 @@ func LoopConfig(cfg config.Config, system string) agent.Config {
 	}
 	c.OffloadAt = cfg.Context.OffloadFraction()
 	c.MaxContinues = cfg.ContinuesAllowed()
-	for _, l := range cfg.LoadedPlugins {
+	for _, l := range cfg.LoadedPlugins() {
 		p := agent.PluginInForce{Name: l.Name, Version: l.Version, Digest: l.Digest, Basis: l.Basis}
 		if l.Signer != nil {
 			p.Signer = l.Signer.String()

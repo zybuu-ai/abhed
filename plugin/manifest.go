@@ -18,6 +18,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/zybuu-ai/abhed/internal/visible"
 )
 
 // ManifestName is the manifest's file name at a bundle's root.
@@ -83,6 +86,10 @@ type Capabilities struct {
 	Hooks []string `json:"hooks,omitempty"`
 	// MCPServers are the names of the servers it defines.
 	MCPServers []string `json:"mcp_servers,omitempty"`
+	// Env are the environment variables its servers send as headers. A name
+	// that holds or looks like a credential Abhed or the person already
+	// uses is refused: see SensitiveEnv.
+	Env []string `json:"env,omitempty"`
 }
 
 var (
@@ -91,6 +98,7 @@ var (
 	versionRE   = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]{1,40})?$`)
 	hexRE       = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	envNameRE   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
+	headerRE    = regexp.MustCompile(`^[A-Za-z0-9!#$%&'*+.^_|~-]{1,64}$`)
 	hookEvents  = []string{"tool_call", "permission_request", "user_prompt_submit", "stop", "tool_result", "tool_failure", "turn_end", "subagent_start", "subagent_end", "post_compact", "notification"}
 	maxManifest = 1 << 20
 )
@@ -113,7 +121,98 @@ func ParseManifest(data []byte) (*Manifest, error) {
 	return &m, m.validate()
 }
 
+// checkText refuses a string a terminal would not print as itself:
+// controls (an escape sequence could rewrite the approval prompt above it),
+// line separators and invisible format characters.
+func checkText(field, s string, max int) error {
+	if len(s) > max {
+		return fmt.Errorf("%s is over %d bytes", field, max)
+	}
+	if !utf8.ValidString(s) {
+		return fmt.Errorf("%s is not UTF-8", field)
+	}
+	for _, r := range s {
+		if visible.Hidden(r) {
+			return fmt.Errorf("%s holds a character that does not print as itself (U+%04X)", field, r)
+		}
+	}
+	return nil
+}
+
+// texts are every string the manifest carries, with where each is.
+func (m *Manifest) texts() []struct {
+	field, s string
+	max      int
+} {
+	type t = struct {
+		field, s string
+		max      int
+	}
+	out := []t{{"publisher", m.Publisher, 200}, {"description", m.Description, 500}, {"abhed", m.Abhed, 64}}
+	for _, f := range m.Files {
+		out = append(out, t{"files path", f.Path, 512})
+	}
+	for _, h := range m.Hooks {
+		out = append(out, t{"hook name", h.Name, 64}, t{"hook " + h.Name + " command", h.Command, 4096}, t{"hook " + h.Name + " url", h.URL, 2048})
+		for _, x := range h.Match {
+			out = append(out, t{"hook " + h.Name + " match", x, 512})
+		}
+	}
+	for _, sv := range m.MCPServers {
+		out = append(out, t{"mcp server name", sv.Name, 64}, t{"mcp server " + sv.Name + " command", sv.Command, 4096},
+			t{"mcp server " + sv.Name + " url", sv.URL, 2048}, t{"mcp server " + sv.Name + " digest", sv.Digest, 256})
+		for _, a := range sv.Args {
+			out = append(out, t{"mcp server " + sv.Name + " args", a, 4096})
+		}
+		for k, v := range sv.HeadersEnv {
+			out = append(out, t{"mcp server " + sv.Name + " headers_env", k, 128}, t{"mcp server " + sv.Name + " headers_env", v, 128})
+		}
+		for _, a := range sv.AllowTools {
+			out = append(out, t{"mcp server " + sv.Name + " allow_tools", a, 128})
+		}
+	}
+	c := m.Capabilities
+	for _, list := range [][]string{c.Tools, c.Egress, c.Hooks, c.MCPServers, c.Env} {
+		for _, x := range list {
+			out = append(out, t{"capabilities", x, 256})
+		}
+	}
+	return out
+}
+
+// sensitivePrefixes and sensitiveParts mark environment variables a plugin
+// never reads: Abhed's own, cloud and forge credentials, model providers'
+// keys, and anything named like a secret.
+var (
+	sensitivePrefixes = []string{"ABHED_", "AWS_", "GITHUB_", "GH_", "GOOGLE_", "GCP_", "GCLOUD_", "AZURE_", "ANTHROPIC_",
+		"OPENAI_", "CLAUDE_", "GEMINI_", "MISTRAL_", "COHERE_", "GROQ_", "HF_", "HUGGING", "OLLAMA_", "VAULT_", "SSH_", "GPG_", "NPM_", "DOCKER_", "KUBE"}
+	sensitiveParts = []string{"KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "PRIVATE", "COOKIE", "SESSION"}
+)
+
+// SensitiveEnv reports an environment variable a plugin may never send:
+// one named like a credential, or one of a family Abhed, a model provider,
+// a cloud or a forge keeps credentials in.
+func SensitiveEnv(name string) bool {
+	u := strings.ToUpper(name)
+	for _, p := range sensitivePrefixes {
+		if strings.HasPrefix(u, p) {
+			return true
+		}
+	}
+	for _, p := range sensitiveParts {
+		if strings.Contains(u, p) {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Manifest) validate() error {
+	for _, t := range m.texts() {
+		if err := checkText(t.field, t.s, t.max); err != nil {
+			return err
+		}
+	}
 	if m.Schema != 1 {
 		return fmt.Errorf("%s: schema %d is not one this build reads (1)", ManifestName, m.Schema)
 	}
@@ -123,7 +222,7 @@ func (m *Manifest) validate() error {
 	if !versionRE.MatchString(m.Version) {
 		return fmt.Errorf("version %q is not MAJOR.MINOR.PATCH", m.Version)
 	}
-	if strings.TrimSpace(m.Publisher) == "" || len(m.Publisher) > 200 {
+	if strings.TrimSpace(m.Publisher) == "" {
 		return errors.New("publisher is required, up to 200 characters")
 	}
 	if m.Abhed != "" && !versionRE.MatchString(strings.TrimPrefix(m.Abhed, "v")) {
@@ -183,8 +282,11 @@ func (m *Manifest) validate() error {
 			}
 		}
 		for k, v := range s.HeadersEnv {
-			if k == "" || !envNameRE.MatchString(v) {
-				return fmt.Errorf("mcp server %s: headers_env maps a header to an environment variable's name", s.Name)
+			if !headerRE.MatchString(k) || !envNameRE.MatchString(v) {
+				return fmt.Errorf("mcp server %s: headers_env maps a header name to an environment variable's name", s.Name)
+			}
+			if SensitiveEnv(v) {
+				return fmt.Errorf("mcp server %s: headers_env names %s, which is or looks like a credential Abhed, a model provider, a cloud or a forge uses; a plugin never sends one", s.Name, v)
 			}
 		}
 	}
@@ -270,4 +372,14 @@ func parseVersion(s string) ([3]int, bool) {
 		out[i] = n
 	}
 	return out, true
+}
+
+// ParseVersion reads MAJOR.MINOR.PATCH, with an optional pre-release or
+// build suffix, as a manifest's version is written.
+func ParseVersion(s string) ([3]int, error) {
+	if !versionRE.MatchString(strings.TrimPrefix(s, "v")) {
+		return [3]int{}, fmt.Errorf("%q is not MAJOR.MINOR.PATCH", s)
+	}
+	v, _ := parseVersion(s)
+	return v, nil
 }

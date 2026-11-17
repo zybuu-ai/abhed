@@ -441,7 +441,8 @@ func (j orgStrip) extra(p string, v any) string {
 	case "record.ship.enabled", "record.ship.max_backlog_mb":
 		return "" // sent only to the server this machine enrolled with
 	case "plugins.allowed_publishers", "plugins.allowed_bundles":
-		// Each only limits which bundles a person may install and approve.
+		// The org's lists are a layer of their own that every bundle must
+		// pass; without pinned keys they only narrow (PluginPolicy).
 		return ""
 	case "hooks.managed_only", "studio.disable_host_terminal", "plugins.disabled", "plugins.require_signature", "plugins.org_source":
 		if b, ok := v.(bool); ok && b {
@@ -845,6 +846,40 @@ func takeOrgLists(doc map[string]any) map[string]any {
 	return out
 }
 
+// takeOrgPlugins moves the org policy's plugins section out of doc into a
+// layer of its own, so the machine's managed file and the org each judge a
+// bundle, rather than one widening the other's list field by field.
+func takeOrgPlugins(cfg *Config, doc map[string]any, pinned bool, source string) error {
+	for k, v := range doc {
+		if foldKey(k) != foldKey("plugins") {
+			continue
+		}
+		delete(doc, k)
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		var p PluginsConfig
+		if err := json.Unmarshal(b, &p); err != nil {
+			return fmt.Errorf("%s: plugins: %w", source, err)
+		}
+		if err := p.validate(); err != nil {
+			return fmt.Errorf("%s: %w", source, err)
+		}
+		// The machine's file alone names sources and the trusted root;
+		// stripOrg has set the org's aside already.
+		p.Sources, p.TrustedRoot = nil, ""
+		cfg.orgPlugins = &orgPlugins{PluginsConfig: p, pinned: pinned}
+		if m, ok := v.(map[string]any); ok {
+			for key := range m {
+				cfg.OrgPolicy.Keys = append(cfg.OrgPolicy.Keys, "plugins."+key)
+			}
+			sort.Strings(cfg.OrgPolicy.Keys)
+		}
+	}
+	return nil
+}
+
 // lookupFold is doc's value under key, matched as the config decode does.
 func lookupFold(doc map[string]any, key string) any {
 	for k, v := range doc {
@@ -876,7 +911,8 @@ func noteOrgLists(cfg *Config, lists map[string]any, source string) error {
 // pickTightening keeps of doc only its deny and ask rules and allow lists.
 func pickTightening(doc map[string]any) map[string]any {
 	out := map[string]any{}
-	for _, kv := range [][2]string{{"permissions", "deny"}, {"permissions", "ask"}, {"model", "allowed"}, {"mcp", "allowed"}, {"mcp", "denied"}} {
+	for _, kv := range [][2]string{{"permissions", "deny"}, {"permissions", "ask"}, {"model", "allowed"}, {"mcp", "allowed"}, {"mcp", "denied"},
+		{"plugins", "disabled"}, {"plugins", "require_signature"}, {"plugins", "allowed_publishers"}, {"plugins", "allowed_bundles"}} {
 		sec, ok := lookupFold(doc, kv[0]).(map[string]any)
 		if !ok {
 			continue

@@ -84,8 +84,6 @@ type Config struct {
 	Hooks HooksConfig `json:"hooks,omitempty"`
 	// Plugins governs plugin bundles. Managed only.
 	Plugins PluginsConfig `json:"plugins,omitempty"`
-	// LoadedPlugins are the approved plugins loading added, in name order.
-	LoadedPlugins []plugin.Loaded `json:"-"`
 	// Studio governs what Abhed Studio may offer beside the agent.
 	Studio StudioConfig `json:"studio,omitempty"`
 	// Suggest governs the next-prompt suggestion shown after a turn.
@@ -166,6 +164,10 @@ type Config struct {
 	// mergingManaged is set while the managed document merges: only it
 	// replaces a simple hook of a name an earlier layer gave.
 	mergingManaged bool
+	// loadedPlugins are the approved plugins loading added; see LoadedPlugins.
+	loadedPlugins []plugin.Loaded
+	// orgPlugins is the org policy's plugins section, a layer of its own.
+	orgPlugins *orgPlugins
 	// ruleLayers names the layer each permission rule came from; see RuleLayer.
 	ruleLayers map[string]string
 	// allowLayers are each file's own model.allowed and mcp lists, applied
@@ -2252,6 +2254,9 @@ func (c Config) Validate() error {
 	}
 	if k := c.ControlPlane.Kubernetes; len(k) > 0 && !jsonObject(k) {
 		return errors.New("control_plane.kubernetes must be a JSON object of the Kubernetes driver's options")
+	}
+	if err := c.Plugins.validate(); err != nil {
+		return err
 	}
 	if err := c.validateHooks(); err != nil {
 		return err

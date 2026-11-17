@@ -82,6 +82,9 @@ func mergeManaged(cfg *Config) error {
 	var orgLists map[string]any
 	if org != nil {
 		orgLists = takeOrgLists(org)
+		if err := takeOrgPlugins(cfg, org, len(orgMachine(local).Keys) > 0, source); err != nil {
+			return err
+		}
 		if b, err := json.Marshal(org); err == nil {
 			mine := managedRuleSet(local)
 			cfg.orgRules = map[string]bool{}

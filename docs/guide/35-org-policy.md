@@ -164,9 +164,11 @@ later applies to the sessions started after it.
 go only to the server this machine enrolled with), `hooks.managed_only:
 true`, `studio.disable_host_terminal: true`, `model.allowed_loopback: false`,
 `plugins.disabled: true`, `plugins.require_signature: true`,
-`plugins.allowed_publishers`, `plugins.allowed_bundles` and
+`plugins.allowed_publishers` and `plugins.allowed_bundles` (a layer of their
+own that every bundle must pass as well as the machine's; they grant trust
+only when the machine pins the keys, and otherwise only narrow), and
 `plugins.org_source: true` (the server this machine enrolled with serves the
-plugin index; see [Plugins](41-plugins.md#policy)),
+plugin index, trusted only with pinned keys; see [Plugins](41-plugins.md#policy)),
 and `model.default` pinned to a provider the machine's managed file defines
 (never one the person configured with their own key). Under the org's `model.allowed`,
 endpoints are bound as under the managed file's, but only the managed file

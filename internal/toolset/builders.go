@@ -165,8 +165,9 @@ func LoadSkills(cfg config.Config, warn func(string, ...any)) (*skills.Registry,
 	for _, err := range errs {
 		warn("%v", err)
 	}
-	// Plugins' skills come after the installed ones and never take a name.
-	for _, l := range cfg.LoadedPlugins {
+	// Plugins' skills rank right after the person's own, as everywhere: they
+	// never take an installed name, and a workspace's never takes theirs.
+	for _, l := range cfg.LoadedPlugins() {
 		for _, ps := range l.Skills {
 			s, err := skills.FromContent(ps.Dir, ps.SkillMD, ps.Pipeline)
 			if err != nil {
@@ -212,7 +213,7 @@ func LoadSkills(cfg config.Config, warn func(string, ...any)) (*skills.Registry,
 			}
 			// An installed skill keeps its name: a repository's cannot stand in for it.
 			if !reg.AddNew(s) {
-				warn("skills: the workspace skill %s is not loaded: a skill the organisation or you installed has that name", config.Printable(s.Name))
+				warn("skills: the workspace skill %s is not loaded: a skill the organisation, you or a plugin you approved installed has that name", config.Printable(s.Name))
 			}
 		}
 	}
@@ -304,7 +305,7 @@ func LoadAgents(cfg config.Config, ws config.WorkspaceTrust, session []*agent.De
 	if ws.AgentsTrusted {
 		o.Workspace = ws.AgentFiles()
 	}
-	for _, l := range cfg.LoadedPlugins {
+	for _, l := range cfg.LoadedPlugins() {
 		for _, f := range l.Agents {
 			o.Plugins = append(o.Plugins, agentdefs.PluginFile{Plugin: l.Name, Path: f.Path, Data: f.Data})
 		}

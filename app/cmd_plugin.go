@@ -44,7 +44,7 @@ func stdPluginIO() pluginIO {
 
 const pluginUsage = `usage: abhed plugin list [-json]
        abhed plugin show NAME
-       abhed plugin install [-sha256 DIGEST] [-trusted-root FILE] PATH|URL|NAME[@VERSION]
+       abhed plugin install [-sha256 DIGEST] PATH|URL|NAME[@VERSION]
        abhed plugin approve [-sha256 DIGEST] NAME
        abhed plugin remove [-yes] NAME
        abhed plugin publishers list | add -issuer URL IDENTITY | remove IDENTITY
@@ -93,11 +93,10 @@ func pluginCmd(workspace string, args []string, trust config.TrustChoice, pio pl
 		fs := flag.NewFlagSet("plugin install", flag.ContinueOnError)
 		fs.SetOutput(pio.err)
 		pin := fs.String("sha256", "", "trust an unsigned bundle whose manifest has this SHA-256")
-		root := fs.String("trusted-root", "", "a Sigstore trusted_root.json to check the signature with, for this install")
 		if fs.Parse(rest) != nil || fs.NArg() != 1 {
 			return usage()
 		}
-		return fail0(pc.install(fs.Arg(0), strings.ToLower(*pin), *root), fail)
+		return fail0(pc.install(fs.Arg(0), strings.ToLower(*pin)), fail)
 	case "approve":
 		fs := flag.NewFlagSet("plugin approve", flag.ContinueOnError)
 		fs.SetOutput(pio.err)
@@ -137,26 +136,12 @@ type pluginCtx struct {
 }
 
 // trustedRootFile is the person's own copy of a trusted root.
-func (pc *pluginCtx) trustedRootFile() string {
-	return filepath.Join(filepath.Dir(pc.store.StateFile), "plugin-trusted-root.json")
-}
+func (pc *pluginCtx) trustedRootFile() string { return pc.store.TrustedRootFile() }
 
-// trustedRoot is the root a signature is checked against: the managed one,
-// or else this install's -trusted-root, or else the person's own.
-func (pc *pluginCtx) trustedRoot(flagRoot string) (*plugin.TrustedRoot, error) {
-	switch {
-	case pc.cfg.Plugins.TrustedRoot != "":
-		if flagRoot != "" {
-			return nil, errors.New("the managed configuration names the trusted root (plugins.trusted_root); -trusted-root is not taken")
-		}
-		return plugin.ReadTrustedRoot(pc.cfg.Plugins.TrustedRoot)
-	case flagRoot != "":
-		return plugin.ReadTrustedRoot(flagRoot)
-	}
-	if _, err := os.Stat(pc.trustedRootFile()); err == nil {
-		return plugin.ReadTrustedRoot(pc.trustedRootFile())
-	}
-	return nil, nil
+// trustedRoot is the root a signature is checked against, here and at
+// every load: the managed one, or else the person's own.
+func (pc *pluginCtx) trustedRoot() (*plugin.TrustedRoot, error) {
+	return pc.cfg.PluginTrustedRoot(pc.store)
 }
 
 // logChange puts a plugin change in ~/.abhed/config-changes.jsonl, which the
@@ -249,6 +234,10 @@ func (pc *pluginCtx) lookup(s plugin.Source, name, version string) (*plugin.Inde
 	var found *plugin.IndexEntry
 	for i, e := range idx.Plugins {
 		if e.Name != name || (version != "" && e.Version != version) {
+			continue
+		}
+		// A version that does not read is never taken for the newest.
+		if _, err := plugin.ParseVersion(e.Version); err != nil {
 			continue
 		}
 		if found == nil || plugin.AtLeast(e.Version, found.Version) {
@@ -358,7 +347,7 @@ func fetchWithProfile(ctx context.Context, raw string, limit int64) ([]byte, err
 	return body, nil
 }
 
-func (pc *pluginCtx) install(arg, pin, flagRoot string) error {
+func (pc *pluginCtx) install(arg, pin string) error {
 	if pc.cfg.Plugins.Disabled {
 		return plugin.ErrDisabled
 	}
@@ -373,12 +362,13 @@ func (pc *pluginCtx) install(arg, pin, flagRoot string) error {
 	name := b.Manifest.Name
 	ev := plugin.Evidence{Digest: b.Digest, Pin: pin, Source: f.source}
 	if b.Signature != nil {
-		root, err := pc.trustedRoot(flagRoot)
+		root, err := pc.trustedRoot()
 		if err != nil {
 			return err
 		}
 		if root == nil {
-			return errors.New("the bundle is signed, but no Sigstore trusted root is set to check it: pass -trusted-root FILE, or keep one with abhed plugin trusted-root FILE")
+			return errors.New("the bundle is signed, but no Sigstore trusted root is set to check it; keep one with abhed plugin trusted-root FILE " +
+				"(it is checked again at every load, so it is kept, not given per install)")
 		}
 		s, err := plugin.VerifySignature(root, b.ManifestBytes, b.Signature, time.Now())
 		if err != nil {
@@ -443,11 +433,11 @@ func (pc *pluginCtx) install(arg, pin, flagRoot string) error {
 func basisText(basis string, s *plugin.Signer) string {
 	switch basis {
 	case plugin.BasisSignature:
-		return "a Sigstore signature from " + s.String()
+		return "a Sigstore signature from " + config.Printable(s.String())
 	case plugin.BasisPin:
 		return "your -sha256 pin"
 	case plugin.BasisOrgPin:
-		return "the managed plugins.allowed_bundles"
+		return "a digest the managed configuration or a pinned org policy lists (plugins.allowed_bundles)"
 	case plugin.BasisSource:
 		return "the organisation's plugin source"
 	}
@@ -479,7 +469,15 @@ func (pc *pluginCtx) approve(name, digest string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := pc.cfg.PluginPolicy().Admit(e.Pending.Evidence(), st.Publishers); err != nil {
+	root, err := pc.trustedRoot()
+	if err != nil {
+		return err
+	}
+	ev, note := plugin.Judge(b, e.Pending, root, time.Now())
+	if _, err := pc.cfg.PluginPolicy().Admit(ev, st.Publishers); err != nil {
+		if note != "" {
+			err = fmt.Errorf("%w (%s)", err, note)
+		}
 		return fmt.Errorf("%s cannot be approved: %w", name, err)
 	}
 	for _, l := range plugin.Describe(b) {
@@ -574,7 +572,7 @@ func (pc *pluginCtx) list(asJSON bool) error {
 		return err
 	}
 	loaded := map[string]bool{}
-	for _, l := range pc.cfg.LoadedPlugins {
+	for _, l := range pc.cfg.LoadedPlugins() {
 		loaded[l.Name] = true
 	}
 	var rows []pluginRow
@@ -589,13 +587,21 @@ func (pc *pluginCtx) list(asJSON bool) error {
 			r.State = "loaded"
 		default:
 			r.State = "not loaded"
-			if _, err := pc.cfg.PluginPolicy().Admit(e.Approved.Evidence(), st.Publishers); err != nil {
+			if b, err := pc.store.Open(n, e.Approved); err != nil {
 				r.Why = err.Error()
-			} else if _, err := pc.store.Open(n, e.Approved); err != nil {
-				r.Why = err.Error()
+			} else {
+				root, _ := pc.trustedRoot()
+				ev, note := plugin.Judge(b, e.Approved, root, time.Now())
+				if _, err := pc.cfg.PluginPolicy().Admit(ev, st.Publishers); err != nil {
+					r.Why = err.Error()
+					if note != "" {
+						r.Why += " (" + note + ")"
+					}
+				}
 			}
 		}
 		r.Version, r.Basis, r.Digest, r.Location = cur.Version, cur.Basis, cur.Digest, pc.store.Path(n, cur)
+		// What the decisions file says; a load trusts only what it verifies again.
 		if cur.Signer != nil {
 			r.Signer = cur.Signer.String()
 		}
@@ -627,12 +633,12 @@ func (pc *pluginCtx) list(asJSON bool) error {
 		if r.Signer != "" {
 			by += ": " + r.Signer
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.Name, r.Version, state, by)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.Name, r.Version, state, config.Printable(by))
 	}
 	_ = tw.Flush()
 	for _, r := range rows {
 		if r.Why != "" {
-			fmt.Fprintf(pc.io.out, "%s: %s\n", r.Name, r.Why)
+			fmt.Fprintf(pc.io.out, "%s: %s\n", r.Name, config.Printable(r.Why))
 		}
 	}
 	return nil
@@ -713,11 +719,8 @@ func (pc *pluginCtx) publishers(args []string, usage func() int, fail func(error
 			return usage()
 		}
 		p := plugin.Publisher{Identity: fs.Arg(0), Issuer: *iss}
-		if u, err := url.Parse(p.Issuer); err != nil || u.Scheme != "https" || u.Host == "" {
-			return fail(errors.New("-issuer is the issuer's https URL"))
-		}
-		if p.Identity == "*" {
-			return fail(errors.New("an identity of * alone trusts anyone that issuer signs in"))
+		if err := p.Valid(); err != nil {
+			return fail(err)
 		}
 		return change(func(st *plugin.State) error {
 			for _, x := range st.Publishers {

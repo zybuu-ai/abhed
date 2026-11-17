@@ -2,11 +2,15 @@ package plugin
 
 import (
 	"fmt"
+	"maps"
 	"path"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/zybuu-ai/abhed/internal/visible"
 )
 
 // Loaded is one approved plugin's content, read and checked at load. The
@@ -51,7 +55,12 @@ func ServerName(plugin, server string) string { return plugin + "-" + server }
 // LoadAll reads every approved plugin that today's policy still admits.
 // Each one refused is a warning, never an error: one bad plugin must not
 // stop a session, and it never loads in part.
-func LoadAll(s *Store, p Policy, abhedVersion string) ([]Loaded, []string) {
+//
+// What is judged is read from the plugin's folder, not taken from the
+// decisions file: the digest is the manifest's, hashed now, and the signer
+// is the staged signature verified now against root. A signature that does
+// not verify, or root nil, leaves the bundle judged as unsigned.
+func LoadAll(s *Store, p Policy, abhedVersion string, root *TrustedRoot) ([]Loaded, []string) {
 	st, err := s.Read()
 	if err != nil {
 		return nil, []string{fmt.Sprintf("plugins: %v; none loaded", err)}
@@ -69,13 +78,17 @@ func LoadAll(s *Store, p Policy, abhedVersion string) ([]Loaded, []string) {
 		if e.Approved == nil {
 			continue
 		}
-		basis, err := p.Admit(e.Approved.Evidence(), st.Publishers)
+		b, err := s.Open(name, e.Approved)
 		if err != nil {
 			warns = append(warns, fmt.Sprintf("plugin %s is not loaded: %v", name, err))
 			continue
 		}
-		b, err := s.Open(name, e.Approved)
+		ev, note := Judge(b, e.Approved, root, time.Now())
+		basis, err := p.Admit(ev, st.Publishers)
 		if err != nil {
+			if note != "" {
+				err = fmt.Errorf("%w (%s)", err, note)
+			}
 			warns = append(warns, fmt.Sprintf("plugin %s is not loaded: %v", name, err))
 			continue
 		}
@@ -83,9 +96,29 @@ func LoadAll(s *Store, p Policy, abhedVersion string) ([]Loaded, []string) {
 			warns = append(warns, fmt.Sprintf("plugin %s is not loaded: it needs Abhed %s or later", name, b.Manifest.Abhed))
 			continue
 		}
-		out = append(out, toLoaded(b, s.Path(name, e.Approved), basis, e.Approved.Signer))
+		out = append(out, toLoaded(b, s.Path(name, e.Approved), basis, ev.Signer))
 	}
 	return out, warns
+}
+
+// Judge is the evidence a policy judges an installed bundle on: its digest
+// as hashed, its staged signature verified now (nil signer when it is
+// absent or does not verify, with note saying why), and the pin and source
+// the person's approval of exactly that digest recorded.
+func Judge(b *Bundle, inst *Install, root *TrustedRoot, now time.Time) (Evidence, string) {
+	ev := Evidence{Digest: b.Digest}
+	if inst != nil && inst.Digest == b.Digest {
+		ev.Pin, ev.Source = inst.Pin, inst.Source
+	}
+	note := ""
+	if b.Signature != nil {
+		if s, err := VerifySignature(root, b.ManifestBytes, b.Signature, now); err == nil {
+			ev.Signer = &s
+		} else {
+			note = "its signature was not taken: " + err.Error()
+		}
+	}
+	return ev, note
 }
 
 func toLoaded(b *Bundle, root, basis string, signer *Signer) Loaded {
@@ -166,11 +199,7 @@ func Describe(b *Bundle) []string {
 		none = false
 	}
 	for _, s := range m.MCPServers {
-		what := strings.TrimSpace(s.Command + " " + strings.Join(s.Args, " "))
-		if s.URL != "" {
-			what = s.URL
-		}
-		add("  mcp      %s: %s", ServerName(m.Name, s.Name), what)
+		add("  mcp      %s: %s", ServerName(m.Name, s.Name), serverWhat(s))
 		none = false
 	}
 	if len(c.Docs) > 0 {
@@ -184,15 +213,51 @@ func Describe(b *Bundle) []string {
 	for _, row := range []struct {
 		label string
 		v     []string
-	}{{"tools", caps.Tools}, {"egress", caps.Egress}, {"hooks", caps.Hooks}, {"mcp", caps.MCPServers}} {
+	}{{"tools", caps.Tools}, {"egress", caps.Egress}, {"hooks", caps.Hooks}, {"mcp", caps.MCPServers}, {"env", caps.Env}} {
 		v := "none"
 		if len(row.v) > 0 {
 			v = strings.Join(row.v, ", ")
 		}
+		if row.label == "tools" && b.InheritsTools() {
+			v = "all the session's (an agent or command lists no tools)"
+			if len(caps.Tools) > 0 {
+				v += "; listed: " + strings.Join(caps.Tools, ", ")
+			}
+		}
+		if row.label == "env" && len(row.v) > 0 {
+			v += " (sent as headers to its servers)"
+		}
 		add("  %-8s %s", row.label, v)
 	}
 	add("Its hooks only ever block; its servers and hooks stay under your deny rules, the sandbox and the egress policy.")
-	return out
+	return printable(out)
+}
+
+// serverWhat is what a server runs or reaches, with the headers it sends
+// from the environment.
+func serverWhat(s MCPServer) string {
+	what := strings.TrimSpace(s.Command + " " + strings.Join(s.Args, " "))
+	if s.URL != "" {
+		what = s.URL
+	}
+	var hs []string
+	for _, h := range slices.Sorted(maps.Keys(s.HeadersEnv)) {
+		hs = append(hs, h+" <- $"+s.HeadersEnv[h])
+	}
+	if len(hs) > 0 {
+		what += " (header " + strings.Join(hs, ", header ") + ")"
+	}
+	return what
+}
+
+// printable escapes, in every line, what a terminal would not print as
+// itself. A manifest that holds such a character is refused when read;
+// this is the second fence, for lines built from anything else.
+func printable(lines []string) []string {
+	for i, l := range lines {
+		lines[i] = visible.Text(l, false, true)
+	}
+	return lines
 }
 
 // Diff is what changes from old to new, one line each.
@@ -230,7 +295,7 @@ func Diff(old, new *Bundle) []string {
 		return fmt.Sprintf("hook %s on %s: %s%s", h.Name, strings.Join(h.Events, ","), h.Command, h.URL)
 	}
 	srvLine := func(s MCPServer) string {
-		return fmt.Sprintf("mcp %s: %s %s%s", s.Name, s.Command, strings.Join(s.Args, " "), s.URL)
+		return fmt.Sprintf("mcp %s: %s", s.Name, serverWhat(s))
 	}
 	diffLines(&out, mapLines(old.Manifest.Hooks, hookLine), mapLines(new.Manifest.Hooks, hookLine))
 	diffLines(&out, mapLines(old.Manifest.MCPServers, srvLine), mapLines(new.Manifest.MCPServers, srvLine))
@@ -238,7 +303,7 @@ func Diff(old, new *Bundle) []string {
 	for _, row := range []struct {
 		label string
 		o, n  []string
-	}{{"tools", oc.Tools, nc.Tools}, {"egress", oc.Egress, nc.Egress}, {"hooks", oc.Hooks, nc.Hooks}, {"mcp", oc.MCPServers, nc.MCPServers}} {
+	}{{"tools", oc.Tools, nc.Tools}, {"egress", oc.Egress, nc.Egress}, {"hooks", oc.Hooks, nc.Hooks}, {"mcp", oc.MCPServers, nc.MCPServers}, {"env", oc.Env, nc.Env}} {
 		for _, v := range row.n {
 			if !slices.Contains(row.o, v) {
 				add("  + requests %s %s", row.label, v)
@@ -253,7 +318,7 @@ func Diff(old, new *Bundle) []string {
 	if len(out) == 1 {
 		add("  no file, hook, server or request changed")
 	}
-	return out
+	return printable(out)
 }
 
 func fileMap(b *Bundle) map[string]string {
