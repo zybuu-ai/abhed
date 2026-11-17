@@ -18,7 +18,9 @@ import (
 	"github.com/zybuu-ai/abhed/internal/mcp/mcptest"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/skills"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/plugin"
 )
 
 // stubServers connects one stub MCP server per name, each with tools.
@@ -405,4 +407,60 @@ func TestAdderRefusesTakenNamesAndWireNames(t *testing.T) {
 	if !add(fakeMCP{"mcp__x__c", "new"}) || len(warned) != 2 || !strings.Contains(warned[1], "would reach the model provider as") {
 		t.Fatalf("warnings %q", warned)
 	}
+}
+
+// A plugin's skill is capped at 300 characters like any other, with a
+// warning naming the plugin.
+func TestPluginSkillDescriptionIsCapped(t *testing.T) {
+	reg := skills.NewRegistry()
+	var warned []string
+	md := "---\nname: wordy\ndescription: " + strings.Repeat("a", 900) + "\n---\n\nsteps\n"
+	addPluginSkills(reg, []plugin.Loaded{{Name: "acme", Root: t.TempDir(),
+		Skills: []plugin.LoadedSkill{{Name: "wordy", Dir: t.TempDir(), SkillMD: []byte(md)}}}},
+		func(f string, a ...any) { warned = append(warned, fmt.Sprintf(f, a...)) })
+	s, ok := reg.Get("wordy")
+	if !ok || len([]rune(s.Description)) != skills.MaxDescription {
+		t.Fatalf("loaded %v, description %d characters", ok, len(s.Description))
+	}
+	if len(warned) != 1 || !strings.Contains(warned[0], "the plugin acme's skill wordy") || !strings.Contains(warned[0], "longer than 300") {
+		t.Fatalf("warnings %q", warned)
+	}
+}
+
+// A server added at run time goes through the same checks and deferral as at
+// startup, and a removed tool leaves tool_search with it.
+func TestAddMCPToolsDefersAndChecks(t *testing.T) {
+	reg := withMCP(builtins(), stubServers(t, map[string][]mcptest.Tool{"a": mcptest.Tools("t", 50)}))
+	g := stubServers(t, map[string][]mcptest.Tool{"b": mcptest.Tools("u", 20)})
+	ts := g.Tools()
+	ts = append(ts, fakeMCP{"mcp__z__q.r", ""}, fakeMCP{model.WireName("mcp__z__q.r"), ""}, fakeMCP{"read", ""})
+	added, refused := AddMCPTools(reg, ts, func(string, ...any) {})
+	if len(added) != 21 || len(refused) != 2 || refused[1] != "read" {
+		t.Fatalf("added %d, refused %v", len(added), refused)
+	}
+	if offered(reg)["mcp__b__u3"] {
+		t.Fatal("a server added at run time is offered in full past the threshold")
+	}
+	search, _ := reg.Get("tool_search")
+	if res := search.Run(context.Background(), nil, json.RawMessage(`{"query":"mcp__b__u3","limit":1}`)); !strings.Contains(res.Content, "mcp__b__u3") {
+		t.Fatalf("search: %s", res.Content)
+	}
+	reg.Remove("mcp__a__t7")
+	AddMCPTools(reg, nil, func(string, ...any) {})
+	search, _ = reg.Get("tool_search")
+	if strings.Contains(search.Description(), "t7,") || strings.Contains(search.Run(context.Background(), nil, json.RawMessage(`{"query":"mcp__a__t7"}`)).Content, "mcp__a__t7\n") {
+		t.Fatal("a removed tool is still searched")
+	}
+	if _, isDeferred := mustGet(t, reg, "mcp__a__t1").(*deferredTool); !isDeferred {
+		t.Fatal("re-deferring wrapped a deferred tool again")
+	}
+}
+
+func mustGet(t *testing.T, reg *tools.Registry, name string) tools.Tool {
+	t.Helper()
+	tl, ok := reg.Get(name)
+	if !ok {
+		t.Fatalf("no %s", name)
+	}
+	return tl
 }

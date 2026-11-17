@@ -526,7 +526,8 @@ with their parameters, from the next step. A loaded tool is policed, approved an
 recorded like any other, and a tool the model never searched for can still
 only run through policy.
 
-What a session loads is its own: a search in one session, or one user's
+A server an administrator adds to a running `abhed serve` is checked and
+deferred the same way, from the next session. What a session loads is its own: a search in one session, or one user's
 session on a server, never loads or unloads a tool in another, and a
 subagent's loads stay its own. At most 100 tools stay loaded per session.
 Loading one more unloads the one loaded or called least recently, and

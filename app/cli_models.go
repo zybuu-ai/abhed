@@ -324,6 +324,8 @@ type fallbackAdapter struct {
 	build  func(name string) (model.Adapter, error)
 	record func(from, to, reason string)
 	gate   func(name string) error // the budget's: a model it refuses is not moved to
+	// limits are each model's configured max_tools, 0 for the default, built or not.
+	limits []int
 }
 
 func newFallbackAdapter(primaryName string, primary model.Adapter, chain []string, build func(string) (model.Adapter, error)) *fallbackAdapter {
@@ -364,15 +366,18 @@ func (f *fallbackAdapter) Current() string {
 func (f *fallbackAdapter) Name() string           { return f.current().Name() }
 func (f *fallbackAdapter) Profile() model.Profile { return f.current().Profile() }
 
-// ToolLimit is the smallest of the model answering and the fallbacks built
-// after it, so a move to one never meets a request it refuses.
+// ToolLimit is the smallest of the model answering and every fallback after
+// it, built or not, so a move never meets a request it refuses.
 func (f *fallbackAdapter) ToolLimit() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	n := model.ToolLimitOf(f.built[f.cur])
-	for _, a := range f.built[f.cur+1:] {
-		if a != nil {
-			n = min(n, model.ToolLimitOf(a))
+	for i := f.cur + 1; i < len(f.names); i++ {
+		switch {
+		case f.built[i] != nil:
+			n = min(n, model.ToolLimitOf(f.built[i]))
+		case i < len(f.limits):
+			n = min(n, model.ToolLimit(model.Profile{MaxTools: f.limits[i]}))
 		}
 	}
 	return n

@@ -2835,6 +2835,9 @@ func flushable(s string) bool {
 	return false
 }
 
+// wireName is model.WireName; a test puts in one that collides.
+var wireName = model.WireName
+
 // realToolName maps a call by a wire name the request did not carry (a
 // deferred tool's) to the one tool it names; an ambiguous one is left unknown.
 func (l *Loop) realToolName(c model.ToolCall) model.ToolCall {
@@ -2846,7 +2849,7 @@ func (l *Loop) realToolName(c model.ToolCall) model.ToolCall {
 	}
 	var match []string
 	for _, n := range l.Tools.Names() {
-		if n != c.Name && model.WireName(n) == c.Name {
+		if n != c.Name && wireName(n) == c.Name {
 			match = append(match, n)
 		}
 	}

@@ -692,7 +692,8 @@ All notable changes to Abhed are recorded here. The format follows
   stable wire name (up to 47 plain characters, the `mcp__<server>__` prefix
   kept whole where it fits, `_` and 16 hex digits of its SHA-256) and mapped
   back on the call. A tool whose name or wire name is already another's is
-  not registered, with a warning. Permission rules, approvals, hooks
+  not registered, with a warning, at startup and for a server added to a
+  running server alike. Permission rules, approvals, hooks
   and the record keep the real `mcp__<server>__<tool>` name. A remote tool's
   own name may now be up to 128 characters, as the MCP specification
   allows.

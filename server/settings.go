@@ -319,15 +319,18 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 		if len(errs) > 0 {
 			return
 		}
+		var fresh []tools.Tool
 		for id, t := range offered {
 			if n, _ := t.(mcpNamed); n != nil && n.ServerName() == req.Name && !have[id] {
-				// A name already taken keeps its tool; the answer says which were refused.
-				if reg.Add(t) {
-					added = append(added, t.Name())
-				} else {
-					refused = append(refused, t.Name())
-				}
+				fresh = append(fresh, t)
 			}
+		}
+		sort.Slice(fresh, func(i, j int) bool { return fresh[i].Name() < fresh[j].Name() })
+		// As at startup: a taken name or wire name keeps its tool, and the
+		// server's tools are deferred with the rest.
+		added, refused = toolset.AddMCPTools(reg, fresh, func(string, ...any) {})
+		if added == nil {
+			added = []string{}
 		}
 		sort.Strings(added)
 		sort.Strings(refused)

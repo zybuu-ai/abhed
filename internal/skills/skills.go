@@ -61,6 +61,8 @@ type Skill struct {
 	Workspace bool
 	// Plugin names the plugin the skill came with, "" for none.
 	Plugin string
+	// Cut says why the description was cut to MaxDescription, "" when it was not.
+	Cut string
 }
 
 // Registry holds the discovered skills.
@@ -407,6 +409,10 @@ func FromContent(dir string, skillMD, pipeline []byte) (*Skill, error) {
 	}
 	if strings.IndexFunc(s.Name, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0 {
 		return nil, fmt.Errorf("the name %q holds a character that does not print as itself", s.Name)
+	}
+	// Every source is capped here, whoever reads the skill; the caller warns.
+	if err := CapDescription(s); err != nil {
+		s.Cut = err.Error()
 	}
 	s.Dir = dir
 	if pipeline != nil {

@@ -56,3 +56,23 @@ func TestCallByWireNameRunsTheRealTool(t *testing.T) {
 		t.Fatal("the record does not name the tool by its real name")
 	}
 }
+
+type otherDotted struct{ dottedTool }
+
+func (otherDotted) Name() string { return "mcp__docs__search.posts" }
+
+// A wire name two registered tools share is left unknown, never guessed.
+func TestAmbiguousWireNameIsNotMapped(t *testing.T) {
+	old := wireName
+	wireName = func(string) string { return "mcp__docs__search_shared" }
+	t.Cleanup(func() { wireName = old })
+	ran := false
+	l := &Loop{Tools: tools.NewRegistry(dottedTool{&ran}, otherDotted{dottedTool{&ran}})}
+	if got := l.realToolName(model.ToolCall{Name: "mcp__docs__search_shared"}); got.Name != "mcp__docs__search_shared" {
+		t.Fatalf("an ambiguous wire name was mapped to %q", got.Name)
+	}
+	l.Tools = tools.NewRegistry(dottedTool{&ran})
+	if got := l.realToolName(model.ToolCall{Name: "mcp__docs__search_shared"}); got.Name != (dottedTool{}).Name() {
+		t.Fatalf("a single match was not mapped: %q", got.Name)
+	}
+}

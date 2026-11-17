@@ -251,3 +251,16 @@ func TestWireNameKeepsTheServerPrefix(t *testing.T) {
 		t.Fatalf("hash %q", h)
 	}
 }
+
+// An earlier call by a valid name that is now a renamed tool's wire name is
+// refused, not read as a call to that tool.
+func TestHistoryCallByAnotherToolsWireNameIsRefused(t *testing.T) {
+	dotted := "mcp__x__a.b"
+	_, _, err := toWire(Request{
+		Tools:    []ToolDef{{Name: dotted, InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		Messages: []Message{{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c", Name: WireName(dotted)}}}},
+	}, 0, "p")
+	if err == nil || !strings.Contains(err.Error(), "an earlier call") {
+		t.Fatalf("%v", err)
+	}
+}

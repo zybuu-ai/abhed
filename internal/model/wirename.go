@@ -124,11 +124,13 @@ func toWire(req Request, limit int, provider string) (Request, wireNames, error)
 		if len(m.ToolCalls) > 0 {
 			calls := make([]ToolCall, len(m.ToolCalls))
 			for j, c := range m.ToolCalls {
-				if w := WireName(c.Name); w != c.Name {
-					if other, held := taken[w]; held && other != c.Name {
-						return req, nil, fmt.Errorf("an earlier call to %q would reach the provider as %s, the name of the tool %q; rename one of them", c.Name, w, other)
-					}
-					taken[w] = c.Name
+				// Every call is checked, a valid name too: it must not read as another tool's wire name.
+				w := WireName(c.Name)
+				if other, held := taken[w]; held && other != c.Name {
+					return req, nil, fmt.Errorf("an earlier call to %q would reach the provider as %s, the name of the tool %q; rename one of them", c.Name, w, other)
+				}
+				taken[w] = c.Name
+				if w != c.Name {
 					names[w] = c.Name
 					c.Name = w
 				}

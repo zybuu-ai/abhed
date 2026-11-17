@@ -42,12 +42,18 @@ func DeferMCP(reg *tools.Registry, threshold int) bool {
 			mcp = append(mcp, t)
 		}
 	}
-	if len(mcp) <= threshold {
+	_, searching := reg.Get("tool_search")
+	if len(mcp) <= threshold && !searching {
 		return false
 	}
 	mcp = keepSmallServers(mcp)
 	search := &ToolSearch{}
 	for _, t := range mcp {
+		// Deferred already (a server added at run time defers again): kept as it is.
+		if d, ok := t.(*deferredTool); ok {
+			search.tools = append(search.tools, d)
+			continue
+		}
 		if !deferrable(t) {
 			continue // offered in full, so nothing it says of itself is lost
 		}
@@ -58,6 +64,21 @@ func DeferMCP(reg *tools.Registry, threshold int) bool {
 	search.index = nameIndex(search.tools, indexBudget)
 	reg.Replace(search)
 	return true
+}
+
+// AddMCPTools registers a server's tools added at run time as Build does:
+// through adder's name and wire-name checks, then deferred with the rest.
+func AddMCPTools(reg *tools.Registry, ts []tools.Tool, warn func(string, ...any)) (added, refused []string) {
+	add := adder(reg, warn)
+	for _, t := range ts {
+		if add(t) {
+			added = append(added, t.Name())
+		} else {
+			refused = append(refused, t.Name())
+		}
+	}
+	DeferMCP(reg, DeferThreshold)
+	return added, refused
 }
 
 // A server of at most smallServer tools stays offered in full, up to
