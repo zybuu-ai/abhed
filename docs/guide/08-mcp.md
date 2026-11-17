@@ -237,6 +237,42 @@ records the change log's new entries as `config.changed`, so an add, from
 Studio or a terminal, reaches a hash-chained record. Studio removes a
 server of your own with `_abhed/mcp/remove`, recorded as `mcp.status`.
 
+### Importing servers, commands and agents in Studio
+
+**Abhed: Import Settings from Another Editor…** also offers *MCP Servers,
+Commands and Agents from Other Agent Tools* when a folder is open. It reads,
+and never changes, the shapes other agent tools keep: the folder's
+`.mcp.json`; a JSON file in your home folder that lists `mcpServers`, with
+the servers it keeps for this folder under `projects`; and, in a dot-folder of
+the project or your home folder, an `mcp.json`, Markdown commands under
+`commands/` and agent definitions under `agents/`. Each is mapped to Abhed's
+shape or left out with why:
+
+- A command server keeps its command and arguments. Its environment
+  variables are passed by name, so the server gets your own value; a value
+  written in the file is never copied. A URL server keeps its URL; a header
+  is kept only when its whole value is `${VARIABLE}` (as `headers_env`), and
+  sign in with `abhed mcp login` otherwise. A server whose URL, arguments or
+  headers hold what looks like a credential, or that uses `${…}` expansion
+  Abhed does not do, is left out.
+- A command keeps `description`, `argument-hint` and `allowed-tools`, with
+  tool names mapped to Abhed's (a rule such as `Bash(git diff:*)` becomes
+  the `bash` tool, and the policy decides each call); another model and
+  other keys are left out. An agent keeps its name, description, tools,
+  disallowed tools, colour and a `plan` or `default` permission mode. A
+  command or agent none of whose tools has an Abhed equivalent is left out,
+  since no list would give it every tool.
+
+They land in the folder's `.abhed`, untrusted: servers in
+`.abhed/config.json`, commands in `.abhed/commands`, agents in
+`.abhed/agents`. Abhed starts a workspace's servers and loads its commands
+and agents only once you trust their exact content, so nothing imported
+runs until you review it in Studio's Health and Trust view (or `abhed
+trust`) and, for commands, `/commands trust` in an Abhed terminal. Changing
+`.abhed/config.json` sets the whole file aside until you trust it again. The
+modal, whose default is Don't Import, names everything left out and every
+change made on the way, never a value.
+
 For one run, `-mcp-config FILE` adds servers and `-strict-mcp-config` makes
 them the only ones; see [The command line](18-cli.md#settings-servers-and-roles-for-one-run).
 

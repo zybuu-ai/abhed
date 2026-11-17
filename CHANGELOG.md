@@ -132,6 +132,17 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Abhed Studio's settings import also takes another editor of the same
+  family found by its folder's layout (an AI editor built on it: settings,
+  keybindings and extension list, through the same filters), and other agent
+  tools' MCP servers, slash commands and agent definitions: a project's
+  `.mcp.json`, a home-folder JSON file listing `mcpServers` (with its
+  per-project servers), and a dot-folder's `mcp.json`, `commands/` and
+  `agents/`. Each is mapped to Abhed's shape or left out with why; they land
+  in the folder's `.abhed`, untrusted until reviewed and trusted, and no
+  value that could be a secret is copied (environment variables are passed
+  by name).
+
 - Abhed Studio signs in to a remote MCP server with OAuth.
   `abhed mcp login` takes `-confirm-fd N`: the yes is read from an inherited
   descriptor in place of a terminal, and the browser is left to the editor
