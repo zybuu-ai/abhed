@@ -3,6 +3,7 @@ package sandbox
 import (
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -12,7 +13,7 @@ import (
 func TestSeatbeltDeniesTheAccountsHomeWhenHomeIsMoved(t *testing.T) {
 	u, err := user.Current()
 	if err != nil || u.HomeDir == "" {
-		t.Fatalf("no account home: %v", err)
+		t.Skipf("this uid has no account home in the user database: %v", err)
 	}
 	real := filepath.Clean(u.HomeDir)
 	moved := t.TempDir()
@@ -39,3 +40,23 @@ func TestSeatbeltDeniesTheAccountsHomeWhenHomeIsMoved(t *testing.T) {
 }
 
 func quote(s string) string { return `"` + s + `"` }
+
+// The account-style home that holds a moved HOME is denied whatever the user
+// database says, so a lookup that fails or lies does not open it.
+func TestAccountHomeOf(t *testing.T) {
+	for in, want := range map[string]string{
+		"/Users/runner/.abhed-action.x": "/Users/runner",
+		"/Users/runner":                 "/Users/runner",
+		"/home/ci/work/h":               "/home/ci",
+		"/var/folders/x/T/h":            "/var/folders/x/T/h",
+		"/Users":                        "/Users",
+	} {
+		if got := accountHomeOf(in); got != want {
+			t.Errorf("accountHomeOf(%q) = %q, want %q", in, got, want)
+		}
+	}
+	t.Setenv("HOME", "/Users/someone-else/.abhed-action.test")
+	if got := homes(); !slices.Contains(got, "/Users/someone-else") {
+		t.Errorf("homes() = %v: the home holding a moved HOME is not denied", got)
+	}
+}

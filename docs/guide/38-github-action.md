@@ -69,7 +69,8 @@ ready to copy.
    `github-action`. That provider replaces any entry of the same name
    whole, so a policy cannot keep its own `base_url` beside your key; the
    key is not written there, only the name of the variable that holds it.
-   `policy-file` is a path in the repository, relative to it; an absolute
+   `policy-file` is a path in the repository, relative to its root
+   (wherever in it the workspace is); an absolute
    path, or one that leaves the repository, is refused. It is read with git
    alone, never from the checkout on disk: on a `pull_request` event at the
    pull request's base commit, otherwise at the checkout's own commit

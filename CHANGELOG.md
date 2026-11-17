@@ -523,8 +523,9 @@ All notable changes to Abhed are recorded here. The format follows
   `-bare`, the workspace's configuration untrusted, a JSON schema for the
   findings) and posts one review: `COMMENT`, or `REQUEST_CHANGES` at a
   severity you set, never `APPROVE`, with an inline comment on each finding
-  whose line is in the diff. Every `@` in the model's text is defused and
-  every `&`, `<` and `>` escaped. From a policy a review takes only deny and
+  whose line is in the diff. Every `@` in the model's text is defused, and
+  every `&`, `<` and `>` outside code escaped; code blocks and spans are
+  rebuilt with delimiters nothing inside can close. From a policy a review takes only deny and
   ask rules and limits; its model comes from the action's inputs alone. Only the posting step holds the token. On a release
   before 1.3.0, which lacks `-tools` and `-bare`, deny rules narrow the
   tools instead. On
@@ -546,9 +547,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 - On macOS, the process sandbox keeps the account's own home unreadable to
   commands when `HOME` names another folder, as well as `$HOME`: its state
-  folder and credential paths too. Moving `HOME` (as a CI run given a fresh
-  one does) no longer opens the real home's `~/.ssh` and the rest to the
-  agent's commands.
+  folder and credential paths too, and, whatever the user database says,
+  the `/Users/NAME` folder that holds `$HOME`. Moving `HOME` (as a CI run
+  given a fresh one does) no longer opens the real home's `~/.ssh` and the
+  rest to the agent's commands. A failed lookup of the account is said
+  once on stderr.
 
 - Providers of type `ollama` now send one request at a time unless
   `max_concurrent_requests` says more, matching Ollama's documented

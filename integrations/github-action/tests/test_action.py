@@ -171,6 +171,28 @@ class SettingsTest(Tmp):
             self.assertEqual(aa.main(["settings", "--out", out, "--workspace", repo, "--trusted-ref", head, "--policy", p]), 2, p)
             self.assertEqual(aa.main(["settings", "--out", out, "--workspace", repo, "--policy", p]), 2, p)
 
+    def test_a_workspace_in_a_subfolder_reads_from_the_repository_root(self):
+        repo = self.path("repo")
+        os.makedirs(os.path.join(repo, "sub", ".github"))
+        os.makedirs(os.path.join(repo, ".github"))
+        g = lambda *a: subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=t", "-c", "user.email=t@example.com", *a],
+                                      cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+        g("init", "-q")
+        self.write("repo/.github/p.json", '{"limits": {"max_turns": 4}}')
+        os.symlink("../../.github/p.json", os.path.join(repo, "sub", ".github", "p.json"))
+        self.write("repo/.github/q.json", '{"limits": {"max_turns": 5}}')
+        os.symlink("q.json", os.path.join(repo, ".github", "l.json"))
+        self.write("repo/sub/.github/l.json", '{"hooks": {}}')
+        g("add", "-A")
+        g("commit", "-qm", "base")
+        base = g("rev-parse", "HEAD")
+        out = self.path("s.json")
+        ws = os.path.join(repo, "sub")
+        # The path is from the repository's root, for the check and the read alike.
+        self.assertEqual(aa.main(["settings", "--out", out, "--workspace", ws, "--trusted-ref", base, "--policy", ".github/p.json"]), 0)
+        self.assertEqual(json.load(open(out)), {"limits": {"max_turns": 4}})
+        self.assertEqual(aa.main(["settings", "--out", out, "--workspace", ws, "--trusted-ref", base, "--policy", ".github/l.json"]), 2)
+
     def test_a_pull_request_event_takes_the_policy_from_its_base(self):
         repo, base = self.repo_with_policy()
         ev = self.write("event.json", json.dumps({"pull_request": {"base": {"sha": base}}}))
@@ -315,7 +337,7 @@ class ReviewTest(Tmp):
             t = aa.neutral(raw, 1000)
             self.assertNotIn("<", t, raw)
             self.assertNotIn(">", t, raw)
-            self.assertEqual(t.replace("@\u200d", "@").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&"), raw)
+            self.assertEqual(t.replace("@\u200d", "@").replace("&lt;", "<").replace("&gt;", ">").replace("&#96;", "`").replace("&#92;", "\\").replace("&amp;", "&"), raw)
         self.assertEqual(aa.neutral("&lt;b&gt;", 100), "&amp;lt;b&amp;gt;")
         self.assertEqual(aa.md_escape("x | @admin <b>y</b>"), "x \\| @\u200dadmin &lt;b&gt;y&lt;/b&gt;")
         # A review keeps the answer check and the note after any of them.
@@ -323,6 +345,34 @@ class ReviewTest(Tmp):
         self.assertNotIn("<!--", r["body"].replace(aa.MARKER, ""))
         self.assertNotIn("<!--", r["comments"][0]["body"])
         self.assertIn("never approves", r["body"])
+
+    def test_code_stays_readable_and_closed(self):
+        n = aa.neutral
+        # Inline code is shown as written, @ still defused.
+        self.assertEqual(n("use `a && b` and `<-ch` cc @admin <!-- x", 1000),
+                         "use `a && b` and `<-ch` cc @\u200dadmin &lt;!-- x")
+        self.assertEqual(n("see `x @admin`", 1000), "see `x @\u200dadmin`")
+        # A fenced block is rebuilt with a fence longer than anything in it.
+        self.assertEqual(n("x\n```go\nif a < b && c {}\n```\nafter <b>", 1000),
+                         "x\n```go\nif a < b && c {}\n```\nafter &lt;b&gt;")
+        self.assertEqual(n("```\nhas ```` inside <!--\n```\nafter <!--", 1000),
+                         "`````\nhas ```` inside <!--\n`````\nafter &lt;!--")
+        # An unclosed fence is closed, so what follows the field stays outside it.
+        out = n("text\n~~~\n<!-- never closed", 1000)
+        self.assertTrue(out.endswith("<!-- never closed\n```"), out)
+        # A stray backtick or backslash cannot pair with or escape a delimiter.
+        self.assertEqual(n("a ` b `<!--` c", 1000), "a `b`&lt;!--&#96; c")
+        self.assertEqual(n("\\`<!--` d", 1000), "&#92;`<!--` d")
+        self.assertEqual(n("cc `@admin", 1000), "cc &#96;@\u200dadmin")
+        # A span's content with backticks gets a longer delimiter; a newline in it a space.
+        self.assertEqual(aa.code_span("a`b\nc"), "``a`b c``")
+        self.assertEqual(aa.code_span("`x`"), "`` `x` ``")
+        # An info string keeps only what names a language.
+        self.assertEqual(n("```go <b>@x\nz\n```", 1000), "```gobx\nz\n```")
+        # Paths: one code span, never markup.
+        r = self.review([{"path": "a`@admin<b>.go", "line": 0, "severity": "nit", "title": "t `x` <b>", "body": "b"}])
+        self.assertIn("``a`@\u200dadmin<b>.go``", r["body"])
+        self.assertIn("t &#96;x&#96; &lt;b&gt;", r["body"])
 
     def test_the_422_fallback_path_is_neutral(self):
         res = dict(RESULT, structured_output={"summary": "s", "findings": [
@@ -349,8 +399,7 @@ class ReviewTest(Tmp):
             del os.environ["ABHED_REVIEW_TOKEN"]
         self.assertEqual(len(posts[0]["comments"]), 1)
         body = posts[1]["body"]
-        self.assertIn("a@\u200dadmin&lt;b&gt;.go", body)
-        self.assertNotIn("<b>", body)
+        self.assertIn("`a@\u200dadmin<b>.go`", body)
 
     def test_event_never_approves(self):
         crit = [{"path": "app.go", "line": 3, "severity": "critical", "title": "t", "body": "b"}]

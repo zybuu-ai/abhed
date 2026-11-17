@@ -75,11 +75,16 @@ and head commits, and both must be in the checkout.
    - A finding whose line is in the diff becomes an inline comment on that
      line of the new version; the others are listed in the review's body
      with their file and line. At most 50 inline comments.
-   - Text from the model is made safe to post, in every field and path:
-     every `&`, `<` and `>` is escaped, so no HTML renders, no comment or
-     tag among them, however it is nested; each `@` is followed by a
-     zero-width joiner, so no mention notifies anyone whatever surrounds it,
-     in code or not; and every field is bounded. Markdown
+   - Text from the model is made safe to post, in every field and path.
+     Outside code, every `&`, `<` and `>` is escaped, so no HTML renders, no
+     comment or tag among them however it is nested, and so are backticks
+     and backslashes, so nothing there can pair with or escape a code
+     delimiter. Code is kept readable: each fenced block and inline code
+     span is rebuilt with delimiters of the action's own, longer than any
+     run of backticks inside, so its content is shown as written and cannot
+     close it early; a fence left open is closed. A path is one code span.
+     Each `@`, in code or not, is followed by a zero-width joiner, so no
+     mention notifies anyone; and every field is bounded. Markdown
      itself is kept, so a finding can still be laid out to mislead (a
      link's text and target differ, say): read it as the model's text.
    - If GitHub refuses an inline line, the review is posted again with the
@@ -137,7 +142,7 @@ open it from a fork. Everything the agent reads is theirs.
 |---|---|
 | The pull request's code runs on the runner (a test, a build script, a git hook, a textconv driver) | Nothing is built or tested. The diff is taken with hooks, external diff and textconv off. The agent has `read`, `glob` and `grep` only, in `plan` mode: no `bash`, no writes, no network tools. |
 | The pull request's configuration loosens the run, or points the model key elsewhere | The workspace's `.abhed/config.json` is untrusted: only what tightens applies. `-bare` drops its memory files, extensions and skills. A `policy-file` is read with git from the base commit, never from the head or the disk, and one committed as a symbolic link is refused. A review takes only deny and ask rules and limits from any policy, and its model only from the action's inputs, so no setting can bind the key's variable to another host. |
-| Prompt injection: text in the diff tells the agent to approve, to post something, or to leak a secret | The review's event is chosen by the action from the findings' severities, never by the model, and is never `APPROVE`. The model's text is posted only as review text, with every `@` defused and every `&`, `<` and `>` escaped. The agent holds no token and cannot reach the network, so it has nothing to leak and no way to send it. Injection can still make a review wrong or noisy: it is advice, and the job never merges anything. |
+| Prompt injection: text in the diff tells the agent to approve, to post something, or to leak a secret | The review's event is chosen by the action from the findings' severities, never by the model, and is never `APPROVE`. The model's text is posted only as review text, with every `@` defused and every `&`, `<` and `>` outside code escaped. The agent holds no token and cannot reach the network, so it has nothing to leak and no way to send it. Injection can still make a review wrong or noisy: it is advice, and the job never merges anything. |
 | The job's token is used by the agent | The token is in the posting step's environment only. The agent runs under `env -i`, which drops every GitHub credential, and the action refuses a checkout that kept the token in `.git/config` (`persist-credentials: false`). |
 | The model key is taken | It is a secret, masked in logs, passed in one variable to Abhed only, never on a command line or in a file. A fork's `pull_request` run never has it. The agent has no command tool to read its environment. |
 | The workflow is changed by the pull request | On `pull_request` the workflow file comes from the pull request, so a pull request can change its own run, but that run has no secrets (fork) or comes from someone with write access already (same repository). `permissions:` limits the token to `contents: read` and `pull-requests: write`. |

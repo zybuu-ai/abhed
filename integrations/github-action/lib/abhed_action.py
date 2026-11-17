@@ -109,7 +109,9 @@ def git_blob(workspace: str, ref: str, rel: str) -> str:
     """A regular file as committed at ref, read with git alone: no textconv,
     no filter, no hook, and never the checkout on disk. A link is refused."""
     g = ["git", "-c", "core.hooksPath=/dev/null"]
-    ls = subprocess.run([*g, "ls-tree", "-z", ref, "--", rel], cwd=workspace, capture_output=True, text=True, errors="replace")
+    # --full-tree: rel is from the repository's root, as cat-file reads it,
+    # wherever in the repository the workspace is.
+    ls = subprocess.run([*g, "ls-tree", "-z", "--full-tree", ref, "--", rel], cwd=workspace, capture_output=True, text=True, errors="replace")
     entry = ls.stdout.split("\0", 1)[0]
     if ls.returncode != 0 or not entry:
         raise ValueError(f"{rel} is not committed at {ref[:12]} (and the checkout must be made with fetch-depth: 0)")
@@ -226,7 +228,7 @@ def set_output(name: str, value: str) -> None:
 
 def md_escape(s: str) -> str:
     """A value for a table cell of the step summary, which the run's own text reaches."""
-    return neutral(s, 2000).replace("|", "\\|").replace("\n", " ")
+    return neutral_plain(s, 2000).replace("|", "\\|").replace("\n", " ")
 
 
 def summary_markdown(r: Optional[Dict[str, Any]], code: int) -> str:
@@ -457,17 +459,116 @@ def commentable_lines(diff: str) -> Dict[str, Set[int]]:
 ZWJ = "\u200d"
 
 
-def neutral(text: str, limit: int) -> str:
-    """Text the model wrote, made safe to post in every field and path:
-    every &, < and > is escaped, so no HTML renders (no comment or tag can
-    hide what follows), and each @ is followed by a zero-width joiner, so no
-    mention notifies anyone whatever surrounds it. It is bounded before it
-    is escaped."""
+def _bound(text: str, limit: int) -> str:
     text = text.replace("\r", "")
     if len(text) > limit:
         text = text[: limit - 20] + "\n\n[cut for length]"
-    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return text
+
+
+def _defuse(text: str) -> str:
     return text.replace("@", "@" + ZWJ)
+
+
+def _plain(text: str) -> str:
+    """Text outside code, escaped so that nothing in it is markup that can
+    reach past it: &, < and > (so no HTML renders), the backtick (so it cannot
+    pair with a code span's delimiter), and the backslash (so it cannot escape
+    one); and each @ defused."""
+    for a, b in (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ("`", "&#96;"), ("\\", "&#92;")):
+        text = text.replace(a, b)
+    return _defuse(text)
+
+
+def neutral_plain(text: str, limit: int) -> str:
+    """Model text for a place that holds no code: a title, a table cell."""
+    return _plain(_bound(text, limit))
+
+
+def code_span(text: str) -> str:
+    """text as one inline code span: delimited by a run of backticks longer
+    than any inside it, on one line, each @ defused. Nothing inside renders."""
+    text = _defuse(text.replace("\r", "").replace("\n", " "))
+    longest = max((len(m) for m in re.findall(r"`+", text)), default=0)
+    tick = "`" * (longest + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") or text.startswith(" ") else ""
+    return f"{tick}{pad}{text}{pad}{tick}"
+
+
+def code_block(body: str, info: str = "") -> str:
+    """body as a fenced code block whose fence is longer than any run of
+    backticks in it, so nothing inside can close it; each @ defused."""
+    body = _defuse(body)
+    longest = max((len(m) for m in re.findall(r"`+", body)), default=0)
+    fence = "`" * max(3, longest + 1)
+    info = re.sub(r"[^A-Za-z0-9_+.-]", "", info)[:20]
+    return f"{fence}{info}\n{body}\n{fence}"
+
+
+FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def neutral(text: str, limit: int) -> str:
+    """Text the model wrote, made safe to post, its code kept readable.
+
+    Fenced code blocks and inline code spans are rebuilt with delimiters of
+    our own, longer than anything inside, so their content (shown as written,
+    @ defused) cannot close them early; an unclosed fence is closed. All
+    other text has &, <, >, backticks and backslashes escaped and each @
+    defused, so no HTML renders and no mention notifies anyone. It is
+    bounded first."""
+    text = _bound(text, limit)
+    out: List[str] = []
+    lines = text.split("\n")
+    para: List[str] = []
+
+    def flush() -> None:
+        if para:
+            out.append(_inline("\n".join(para)))
+            para.clear()
+
+    i = 0
+    while i < len(lines):
+        m = FENCE_OPEN.match(lines[i])
+        if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+            flush()
+            ch, n = m.group(1)[0], len(m.group(1))
+            close = re.compile(r"^ {0,3}" + re.escape(ch) + "{" + str(n) + r",}\s*$")
+            j = i + 1
+            while j < len(lines) and not close.match(lines[j]):
+                j += 1
+            out.append(code_block("\n".join(lines[i + 1:j]), m.group(2).strip()))
+            i = j + 1
+            continue
+        para.append(lines[i])
+        i += 1
+    flush()
+    return "\n".join(out)
+
+
+def _inline(text: str) -> str:
+    """Text with its inline code spans, as CommonMark pairs them: a run of n
+    backticks opens and the next run of exactly n closes; an unpaired run is
+    text. A blank line ends a paragraph, and with it any span."""
+    out: List[str] = []
+    for para in re.split(r"(\n[ \t]*\n)", text):
+        if not para.strip():
+            out.append(para)
+            continue
+        pos = 0
+        buf = ""
+        for m in re.finditer(r"`+", para):
+            if m.start() < pos:
+                continue
+            n = len(m.group(0))
+            close = re.compile(r"(?<!`)`{" + str(n) + r"}(?!`)")
+            c = close.search(para, m.end())
+            if not c:
+                continue
+            buf += _plain(para[pos:m.start()]) + code_span(para[m.end():c.start()].strip(" ") or " ")
+            pos = c.end()
+        out.append(buf + _plain(para[pos:]))
+    return "".join(out)
 
 
 MARKER = "<!-- abhed-review -->"
@@ -486,7 +587,7 @@ def build_review(structured: Any, verdict: Optional[Dict[str, Any]], diff: str, 
     for f in findings:
         sev = str(f.get("severity", "minor"))
         sev = sev if sev in rank else "minor"
-        title = neutral(str(f.get("title", "")).strip(), 200)
+        title = neutral_plain(str(f.get("title", "")).strip(), 200).replace("\n", " ")
         body = neutral(str(f.get("body", "")).strip(), 4000)
         path = str(f.get("path", "")).lstrip("/")
         try:
@@ -497,7 +598,7 @@ def build_review(structured: Any, verdict: Optional[Dict[str, Any]], diff: str, 
         if path in lines and ln in lines[path] and len(comments) < 50:
             comments.append({"path": path, "line": ln, "side": "RIGHT", "body": text})
         else:
-            where = f"`{neutral(path, 300)}`" + (f" line {ln}" if ln > 0 else "")
+            where = code_span(_bound(path, 300)) + (f" line {ln}" if ln > 0 else "")
             loose.append(f"- {where}: **{sev}: {title}**. {body}")
     counts = {s: sum(1 for f in findings if f.get("severity") == s) for s in SEVERITIES}
     parts = [MARKER, "### Abhed review", "", neutral(str(structured.get("summary", "")).strip(), 4000), ""]
@@ -559,7 +660,7 @@ def cmd_review_post(a: argparse.Namespace) -> int:
     status, text = post_review(a.api, a.repo, a.pr, payload, token)
     if status == 422 and payload["comments"]:
         # A line GitHub will not take: post the findings in the body instead.
-        moved = [f"- `{neutral(c['path'], 300)}` line {c['line']}: {c['body']}" for c in payload["comments"]]
+        moved = [f"- {code_span(_bound(c['path'], 300))} line {c['line']}: {c['body']}" for c in payload["comments"]]
         payload["body"] += "\n\nFindings GitHub would not place on a line:\n\n" + "\n".join(moved)
         payload["comments"] = []
         status, text = post_review(a.api, a.repo, a.pr, payload, token)

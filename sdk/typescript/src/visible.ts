@@ -7,8 +7,10 @@
 // port of the engine's own escaper (internal/visible), checked against the
 // engine's output for a shared set of cases (sdk/testdata/visible.json); the
 // one difference is that a lone surrogate is shown as ⟨U+D800⟩ where the
-// engine would see invalid UTF-8. An approval's args_hidden is the engine's
-// own verdict and the authoritative one.
+// engine would see invalid UTF-8. Character classes come from Node's ICU,
+// so a format character newer than its Unicode version goes unmarked where
+// the engine marks it. An approval's args_hidden is the engine's own verdict
+// and the authoritative one.
 
 const CF = /^\p{Cf}$/u;
 const ZS = /^\p{Zs}$/u;

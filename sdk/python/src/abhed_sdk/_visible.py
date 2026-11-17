@@ -7,8 +7,10 @@ each as a marked escape (``⟨U+202E⟩``, ``⟨\\e⟩``, ``⟨80 spaces⟩``) a
 nothing. It is a port of the engine's own escaper (``internal/visible``),
 checked against the engine's output for a shared set of cases
 (``sdk/testdata/visible.json``); the one difference is that a Python string
-holds no invalid UTF-8 for it to mark. The ``args_hidden`` field of an
-approval is the engine's own verdict and the authoritative one.
+holds no invalid UTF-8 for it to mark. Character classes come from this
+Python's ``unicodedata``, so a format character newer than its Unicode
+version goes unmarked where the engine marks it. The ``args_hidden`` field
+of an approval is the engine's own verdict and the authoritative one.
 """
 
 from __future__ import annotations

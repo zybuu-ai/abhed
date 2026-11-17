@@ -366,7 +366,9 @@ workspace and a few shared folders, not only the workspace:
   for what they fetch. Commands read in home only the workspace, `read_only_paths`, the
   toolchains, the caches and the files git, editors and shells read (see
   [security posture](../trust/security-posture.md)). Home here is both
-  `$HOME` and the account's own home when `HOME` names another folder;
+  `$HOME` and the account's own home when `HOME` names another folder (from
+  the user database, and, whatever that says, the `/Users/NAME` or
+  `/home/NAME` folder that holds `$HOME`);
   `"readable_home": true` lets them read the rest of home but the credential
   paths again, and `read_only_paths` names a folder they need. `"shared_caches": true` lets commands write the real
   folders again, shared with the rest of your machine, where a command can

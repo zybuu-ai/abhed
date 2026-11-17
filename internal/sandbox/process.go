@@ -1646,18 +1646,49 @@ func ancestorsWithin(paths, roots []string) []string {
 
 // homes are the folders whose contents commands may not read: $HOME, and
 // the account's own home when HOME names another folder, as a CI run given a
-// fresh HOME does. Moving HOME never opens the real one.
+// fresh HOME does. Moving HOME never opens the real one. The account's home
+// comes from the user database; failing closed, an account-style folder
+// that holds $HOME (/Users/NAME, /home/NAME) is denied too, whatever the
+// database says, and a lookup that fails while HOME is moved is said once.
 func homes() []string {
 	var out []string
-	if h, err := os.UserHomeDir(); err == nil && h != "" {
-		out = append(out, filepath.Clean(h))
-	}
-	if u, err := user.Current(); err == nil && u.HomeDir != "" && filepath.IsAbs(u.HomeDir) {
-		if h := filepath.Clean(u.HomeDir); !slices.Contains(out, h) && h != "/" {
+	add := func(h string) {
+		if h == "" || !filepath.IsAbs(h) {
+			return
+		}
+		if h = filepath.Clean(h); h != "/" && !slices.Contains(out, h) {
 			out = append(out, h)
 		}
 	}
+	home, err := os.UserHomeDir()
+	if err == nil {
+		add(home)
+	}
+	u, uerr := user.Current()
+	if uerr == nil {
+		add(u.HomeDir)
+	}
+	if err == nil {
+		add(accountHomeOf(home))
+	}
+	if uerr != nil && err == nil && accountHomeOf(home) == filepath.Clean(home) {
+		homeLookupWarn.Do(func() {
+			fmt.Fprintf(os.Stderr, "abhed: the account's home could not be looked up (%v); commands are kept out of %s only\n", uerr, home)
+		})
+	}
 	return out
+}
+
+var homeLookupWarn sync.Once
+
+// accountHomeOf is the account-style home that holds p (/Users/NAME or
+// /home/NAME and anything below them), or p itself.
+func accountHomeOf(p string) string {
+	parts := strings.Split(filepath.Clean(p), string(filepath.Separator))
+	if len(parts) >= 3 && parts[0] == "" && (parts[1] == "Users" || parts[1] == "home") && parts[2] != "" {
+		return filepath.Join("/", parts[1], parts[2])
+	}
+	return filepath.Clean(p)
 }
 
 func homeToolchains(home string) []string {

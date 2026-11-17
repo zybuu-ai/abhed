@@ -119,9 +119,12 @@ the engine's own escaper and tested against its answers for a shared set of
 cases (`sdk/testdata/visible.json`, written by the engine's
 `TestSDKVisibleCases`), but the approval's own `args_hidden` field is the
 engine's verdict and the one to rely on: consider refusing outright when it
-is set. The ports can differ where Unicode's tables do (a character newer
-than one side's), and TypeScript marks a lone surrogate, which the engine
-never sends.
+is set. The ports read Unicode's character classes from the runtime
+(Python's `unicodedata`, Node's ICU), not from the engine's Go tables, so
+they can differ where the tables do: a format character assigned after the
+runtime's Unicode version (U+13439 to U+1343F, from Unicode 15, on Python
+3.9's Unicode 13, say) goes unmarked by the port while the engine marks it.
+TypeScript also marks a lone surrogate, which the engine never sends.
 
 ## Verdicts and errors
 
