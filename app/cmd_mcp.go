@@ -552,8 +552,13 @@ func logConfigChange(by, key string, s config.MCPServerConfig, file string) erro
 const maxConfigChangeLog = 4 << 20
 
 func appendConfigChange(c configChange, s config.MCPServerConfig) error {
-	c.Time = time.Now().UTC()
 	c.Kind, c.SHA256 = mcpEntrySum(s)
+	return writeConfigChange(c)
+}
+
+// writeConfigChange appends c, as it is, to the change log beside c.File.
+func writeConfigChange(c configChange) error {
+	c.Time = time.Now().UTC()
 	line, err := json.Marshal(c)
 	if err != nil {
 		return err

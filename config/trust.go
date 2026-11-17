@@ -1048,6 +1048,7 @@ var workspaceRules = map[string]fieldRule{
 	"org_policy":          {nil, "only the managed configuration says where the org policy comes from"},
 	"hooks.run":           {nil, "a hook is a command or an endpoint that sees each event it takes"},
 	"hooks":               {nil, "only the managed configuration sets it"},
+	"plugins":             {nil, "only the managed configuration sets it"},
 	"studio":              {nil, "only the managed configuration sets it"},
 	"suggest.enabled":     {onlyFalse(func(c *Config) *bool { return &c.Suggest.Enabled }), "only false"},
 	"plan.runbooks":       {onlyFalse(func(c *Config) *bool { return &c.Plan.Runbooks }), "only false"},

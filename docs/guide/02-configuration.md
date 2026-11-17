@@ -49,6 +49,7 @@ configuration](#trusting-the-workspace-configuration).
 | `agents` | where subagent definitions are loaded from, or `disabled` — [Agent definitions](17-agent-definitions.md) |
 | `subagents` | what a background task's result does while the session is idle — [Parallel subagents](14-parallel-subagents.md#background-tasks) |
 | `extensions` | processes that can intercept — [Extensions](07-extensions.md) |
+| `plugins` | which plugin bundles may be installed and loaded: `disabled`, `require_signature`, `allowed_publishers`, `allowed_bundles`, `sources`, `org_source`, `trusted_root` — managed only, [Plugins](41-plugins.md#policy) |
 | `mcp` | Model Context Protocol servers — [MCP](08-mcp.md); `allowed` and `denied`: which servers may ever start — [Allowed models and MCP servers](#allowed-models-and-mcp-servers) |
 | `custom_providers` | providers added without a rebuild |
 | `network` | `upstream_proxy`: a corporate HTTP proxy all of Abhed's connections, and the allowlisted commands' traffic, go out through, with a CA bundle, credentials by secret name, a `no_proxy` list and `resolve_via_proxy` (off); never from a workspace, and the managed file can force it — [Network policy](21-network-policy.md#a-corporate-upstream-proxy) |

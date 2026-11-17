@@ -73,7 +73,7 @@ func newApp(opts ...Option) *App {
 // WithVersion sets the version the binary reports. The linker sets it on
 // the main package, so the main package passes it here.
 func WithVersion(v string) Option {
-	return func(a *App) { a.version = v; productVersion.Store(v) }
+	return func(a *App) { a.version = v; productVersion.Store(v); config.SetVersion(v) }
 }
 
 // WithEdition names the edition, for the version line and for the message
@@ -219,6 +219,7 @@ var subcommands = []subcommand{
 	{name: "egress-proxy", about: "serve the egress allowlist on its own, for a sandbox's egress pod (-listen, -config)"},
 	{name: "admin", about: "change the managed configuration, as root: web-search on|off"},
 	{name: "mcp", about: "MCP servers in your own configuration: add, list, remove", trust: true},
+	{name: "plugin", about: "signed plugin bundles of agents, skills, commands, hooks and MCP servers: install, approve, list, remove", trust: true},
 	{name: "record", about: "the local record: list, show, verify, export, prune", trust: true},
 	{name: "logs", about: "the record as a log: shorthand, OCSF or its own lines, -f to follow, -cursor to resume", trust: true},
 	{name: "sessions", about: "list recorded sessions, latest first: record list (-all, -n N, -json)", trust: true},

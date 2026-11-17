@@ -483,6 +483,8 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return adminCmd(rest[1:], os.Stdout, os.Stderr)
 	case "mcp":
 		return mcpCmd(workspace, rest[1:], a.trust, stdMCPIO())
+	case "plugin":
+		return pluginCmd(workspace, rest[1:], a.trust, stdPluginIO())
 	case "index":
 		return buildIndexCmd(workspace, a.trust)
 	case "eval":
