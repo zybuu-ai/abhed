@@ -463,6 +463,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	events := store.Subscribe(sessionID)
 	done := make(chan struct{})
 	hints := newDenialHints(pol, appCfg, registry)
+	hints.runbook = o.runbook != nil
 	go func() {
 		defer close(done)
 		for ev := range events {

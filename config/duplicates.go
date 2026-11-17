@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+
+	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
 // DuplicateKey is a key written more than once in one object of a
@@ -123,6 +125,20 @@ func (c Config) Warnings() []string {
 	}
 	for _, u := range c.Unknown {
 		out = append(out, u.String())
+	}
+	if !c.SSHReadContents() {
+		for _, e := range c.SSH.ReadCommands {
+			switch {
+			case policy.DoubleStarReadsContents(e, ""):
+				out = append(out, fmt.Sprintf("ssh.read_commands entry %q uses ** with a program that prints files, "+
+					"which could name any file the account can read; it runs only calls that print none until "+
+					"ssh.read_contents is true. Name the files, or a folder (\"/var/log/app/*\")", e))
+			case policy.WildcardReadsContents(e):
+				out = append(out, fmt.Sprintf("ssh.read_commands entry %q lets a program that prints files name any "+
+					"one file the account can read, such as /etc/shadow, without asking; name the files, or a "+
+					"folder (\"/var/log/app/*\")", e))
+			}
+		}
 	}
 	return out
 }
