@@ -629,3 +629,58 @@ func TestReadCommandDoubleStarIsWholeArguments(t *testing.T) {
 		}
 	}
 }
+
+// getent's shadow databases hold password hashes: a wildcard entry reaches
+// them only under ssh.read_contents.
+func TestReadCommandGetentShadowNeedsReadContents(t *testing.T) {
+	for _, contents := range []bool{false, true} {
+		e := New(ModeDefault)
+		e.ReadCommandsContents = contents
+		if err := e.AllowRemoteReads("getent *", "getent **"); err != nil {
+			t.Fatal(err)
+		}
+		for cmd, off := range map[string]Decision{
+			"getent shadow":       Ask,
+			"getent gshadow root": Ask,
+			"getent passwd":       Allow,
+			"getent group adm":    Allow,
+		} {
+			want := off
+			if contents {
+				want = Allow
+			}
+			if got := e.Evaluate("ssh", true, remoteCall("app1", cmd)); got.Decision != want {
+				t.Errorf("read_contents %v, %q: %s (%s), want %s", contents, cmd, got.Decision, got.Reason, want)
+			}
+		}
+	}
+}
+
+// A glob in a path part that starts with . can match .. in some shells, so
+// such an entry is refused at load.
+func TestReadCommandDotGlobRefused(t *testing.T) {
+	for _, p := range []string{"ls -l /var/log/.*", "cat /var/log/.?*/x", "tail -n 50 /var/log/.[.]/x", "cat .*"} {
+		if _, err := ParseRemoteRead(p); err == nil || !strings.Contains(err.Error(), "starts with .") {
+			t.Errorf("%q: %v", p, err)
+		}
+	}
+	for _, p := range []string{"cat /var/log/app/*", "ls ./*.log", "tail -n 50 /var/log/*.log"} {
+		if _, err := ParseRemoteRead(p); err != nil {
+			t.Errorf("%q: %v", p, err)
+		}
+	}
+}
+
+// The warning covers a wildcard that can name any one file for a program
+// that prints files, not one after a folder, a grep pattern or a value.
+func TestWildcardReadsContents(t *testing.T) {
+	for entry, want := range map[string]bool{
+		"cat **": true, "cat -- *": true, "head -n 5 *": true, "getent *": true, "cat *": true,
+		"cat /var/log/app/*": false, "tail -n * /var/log/app/app.log": false,
+		"grep -i * /var/log/app/app.log": false, "grep -i x *": true, "ls *": false, "df **": false,
+	} {
+		if got := WildcardReadsContents(entry); got != want {
+			t.Errorf("%q: %v, want %v", entry, got, want)
+		}
+	}
+}

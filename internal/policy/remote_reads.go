@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -46,6 +47,17 @@ func ParseRemoteRead(p string) (Rule, error) {
 	// The program is named literally: a wildcard there would make any program a read.
 	if program := strings.Fields(s)[0]; strings.ContainsAny(program, "*?$") || isAssignment(program) {
 		return Rule{}, fmt.Errorf("ssh.read_commands: %q must start with the program it runs, written out (such as \"df -h\")", p)
+	}
+	// A glob in a segment that starts with . can match .. in shells that do
+	// not skip it (bash before 5.2, dash), so the entry's own call could
+	// leave the folder it names.
+	for _, w := range strings.Fields(s)[1:] {
+		for _, seg := range strings.Split(w, "/") {
+			if strings.HasPrefix(seg, ".") && strings.ContainsAny(seg, "*?[") {
+				return Rule{}, fmt.Errorf("ssh.read_commands: %q has a wildcard in a path part that starts with . (%s), "+
+					"which some shells expand to ..; name the files instead", p, seg)
+			}
+		}
 	}
 	name := rawProgram(s)
 	spec, known := knownReads[name]
@@ -125,7 +137,8 @@ func (e *Engine) remoteReadRule(rr remoteRead) string {
 		if !strings.ContainsAny(r.glob, "*?") {
 			return r.raw
 		}
-		if plain && wildcardReadOK(text) && wordsMatch(r.glob, text) && (e.ReadCommandsContents || !DoubleStarReadsContents(r.glob, text)) {
+		if plain && wildcardReadOK(text) && wordsMatch(r.glob, text) &&
+			(e.ReadCommandsContents || !DoubleStarReadsContents(r.glob, text) && !readsSecretDatabase(text)) {
 			return r.raw
 		}
 	}
@@ -156,6 +169,65 @@ func DoubleStarReadsContents(entry, text string) bool {
 		}
 	}
 	return printsContents(rawProgram(entry), args)
+}
+
+// readsSecretDatabase reports a getent call of a database that holds
+// password hashes, which a wildcard entry runs only under ssh.read_contents.
+func readsSecretDatabase(text string) bool {
+	words := callWords(text)
+	if len(words) == 0 || rawProgram(text) != "getent" {
+		return false
+	}
+	for _, w := range words[1:] {
+		if secretDatabase(w.val) {
+			return true
+		}
+	}
+	return false
+}
+
+// WildcardReadsContents reports an entry whose wildcard can name any file,
+// or a getent database, for a program that prints them: a word that is **
+// alone, or an operand wildcard with no folder written before it
+// ("cat -- *", "head -n 5 *", "getent *"), not one after a folder
+// ("/var/log/app/*") or one that stands for grep's pattern or an option's
+// value. Without ssh.read_contents such an entry is worth a warning.
+func WildcardReadsContents(entry string) bool {
+	if DoubleStarReadsContents(entry, "") {
+		return true
+	}
+	words := callWords(entry)
+	if len(words) < 2 {
+		return false
+	}
+	name := rawProgram(entry)
+	var literal []string
+	for _, w := range words[1:] {
+		if !strings.ContainsAny(w.val, "*?") {
+			literal = append(literal, w.val)
+		}
+	}
+	if !printsContents(name, literal) && name != "getent" {
+		return false
+	}
+	value := entryValueSlots(words)
+	patternFirst := (name == "grep" || name == "egrep" || name == "fgrep" || name == "rg") &&
+		!slices.ContainsFunc(literal, func(w string) bool { return w == "-e" || w == "--regexp" || w == "-f" || w == "--file" })
+	operands := 0
+	for i, w := range words[1:] {
+		i++
+		if strings.HasPrefix(w.val, "-") && w.val != "-" && !strings.ContainsAny(w.val, "*?") || value[i] {
+			continue
+		}
+		operands++
+		if patternFirst && operands == 1 {
+			continue
+		}
+		if k := strings.IndexAny(w.val, "*?"); k >= 0 && !strings.Contains(w.val[:k], "/") {
+			return true
+		}
+	}
+	return false
 }
 
 // callWord is one word of a command: as written, as the program gets it

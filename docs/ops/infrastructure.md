@@ -477,15 +477,21 @@ What a wildcard matches is the argument the program gets, so:
   Where it stands for an option's value (`tail -n *`, `journalctl -u *`), the
   program takes the next word as the value, so that is unchanged.
 - No wildcard stands for a `..` segment the entry does not write, so
-  `cat /var/log/*` does not match `cat /var/log/../../etc/shadow`. This is a
-  rule about the text, not where a path leads: a symbolic link under an
-  allowed folder (`/var/log/x` pointing at `/etc`) still reaches its target.
+  `cat /var/log/*` does not match `cat /var/log/../../etc/shadow`. An entry
+  with a wildcard in a path part that starts with `.` (`/var/log/.*`,
+  `.?*`, `.[.]`) is refused at load, since bash before 5.2 and dash expand
+  such a glob to `..`. This is a rule about the text, not where a path
+  leads: a symbolic link under an allowed folder (`/var/log/x` pointing at
+  `/etc`) still reaches its target.
 - `**` with a program that prints files (`cat`, `grep`, `head`, `tail`, `rg`,
   `sort`, `journalctl`, a checksum, `systemctl status` with its log, …) could
   name any file the account can read, which is what `ssh.read_contents`
   decides. Without it, such an entry runs only calls that print no file
-  (`systemctl status -n 0 nginx`), and `abhed doctor` and editors warn of the
-  entry. Name the files instead, one `*` per argument.
+  (`systemctl status -n 0 nginx`), and `getent` with a wildcard never reaches
+  the `shadow` or `gshadow` database. A single `*` with no folder written
+  before it reaches any one file (`head -n 5 *` runs `head -n 5 /etc/shadow`),
+  so `abhed doctor` and editors warn of that entry too, and of a `**` one.
+  Name the files, or a folder: `cat /var/log/app/*`.
 
 A call whose command is one simple command matching an entry is a read: plan
 mode allows it, so a plan can start by inspecting the fleet, and no mode asks

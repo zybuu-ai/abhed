@@ -25,7 +25,12 @@ All notable changes to Abhed are recorded here. The format follows
   still reaches its target. A word that is `**` alone stands for one or
   more whole arguments, each judged as a read form, and with a program that
   prints files it matches only calls that print none unless
-  `ssh.read_contents` is set; `abhed doctor` warns of such an entry.
+  `ssh.read_contents` is set. Nor does a wildcard entry reach `getent
+  shadow` or `gshadow` without it. An entry with a wildcard in a path part
+  that starts with `.` (`/var/log/.*`), which some shells expand to `..`, is
+  refused at load. `abhed doctor` warns of an entry whose wildcard can name
+  any file for a program that prints files (`cat **`, `head -n 5 *`,
+  `getent *`); name the files, or a folder (`/var/log/app/*`).
   Affected: every release with wildcard `ssh.read_commands` entries, on any
   host, `ssh_connect`'s included. Exact entries, permission rules and the
   read-only classifier are unchanged.
@@ -104,7 +109,8 @@ All notable changes to Abhed are recorded here. The format follows
   argument. An entry that relied on `*` spanning several words, such as
   `journalctl *` for `journalctl -u app -n 50`, no longer matches such a
   call, which asks instead. Rewrite it with one wildcard per argument
-  (`journalctl -u * -n *`), or as exact entries. `**` as a word of its own
+  (`journalctl -u * -n *`), or as exact entries. An entry with a wildcard in
+  a path part that starts with `.` (`ls -l /var/log/.*`) no longer loads. `**` as a word of its own
   keeps any read form of a program that prints no file (`df **`); for one
   that does (`cat`, `grep`, `journalctl`, …) it needs `ssh.read_contents`. A
   call whose word holds a glob, brace, `~` or `$` the remote shell would

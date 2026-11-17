@@ -196,9 +196,14 @@ func TestSSHMaxTimeoutBounds(t *testing.T) {
 func TestDoubleStarContentEntryWarns(t *testing.T) {
 	c := Default()
 	c.SSH.Enabled = true
-	c.SSH.ReadCommands = []string{"cat **", "ls **", "tail -n * /var/log/app/app.log"}
+	c.SSH.ReadCommands = []string{"cat **", "ls **", "tail -n * /var/log/app/app.log", "head -n 5 *", "getent *", "cat /var/log/app/*"}
 	w := strings.Join(c.Warnings(), "\n")
-	if !strings.Contains(w, `"cat **"`) || strings.Contains(w, `"ls **"`) || strings.Contains(w, "tail -n") {
+	for _, e := range []string{`"cat **"`, `"head -n 5 *"`, `"getent *"`} {
+		if !strings.Contains(w, e) {
+			t.Errorf("no warning for %s: %s", e, w)
+		}
+	}
+	if strings.Contains(w, `"ls **"`) || strings.Contains(w, "tail -n") || strings.Contains(w, `"cat /var/log/app/*"`) {
 		t.Fatalf("warnings: %s", w)
 	}
 	c.SSH.ReadContents = true
