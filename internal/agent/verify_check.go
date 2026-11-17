@@ -889,7 +889,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 	}
 	// "Following the changes": some change of this session is needed.
 	if f.afterChange {
-		if ix.changedAny() {
+		if ix.changedWork() {
 			findings = append(findings, finding{out: matched, what: "a change of this session", call: true, kind: "change"})
 		} else {
 			findings = append(findings, finding{out: missing, why: "it refers to changes, and this session made none"})
@@ -1799,6 +1799,36 @@ func (ix *recordIndex) changedAny() bool {
 	for _, m := range ix.mutations {
 		if !m.person && !m.failed {
 			return true
+		}
+	}
+	return false
+}
+
+// changedWork reports a change of the agent's that succeeded and whose
+// effect the checks read: a write or an edit, or a shell line read as known
+// writers, or whose files are known and in the workspace. Another tool's
+// call (a cluster, an issue tracker) is no change of the work.
+func (ix *recordIndex) changedWork() bool {
+	ws := ""
+	if ix.workDir != "" {
+		ws = filepath.Clean(ix.workDir) + "/"
+	}
+	for _, m := range ix.mutations {
+		if m.person || m.failed {
+			continue
+		}
+		switch m.tool {
+		case "write", "edit":
+			return true
+		case "bash":
+			if m.writer {
+				return true
+			}
+			for _, t := range m.targets {
+				if m.known && ws != "" && strings.HasPrefix(filepath.Clean(t)+"/", ws) {
+					return true
+				}
+			}
 		}
 	}
 	return false

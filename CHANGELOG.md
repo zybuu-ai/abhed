@@ -577,11 +577,12 @@ All notable changes to Abhed are recorded here. The format follows
   ("This correctly handles multiple whitespace…") where the record shows
   only that the tests pass, and the first also cites two call ids the
   record never held. The false-claim corpus gains the two sessions'
-  statements (14 controls, 2 planted, 8 neutral), 87 more planted cases
-  (47 of them changes said of another tool's call), 20 controls and 8
+  statements (14 controls, 2 planted, 8 neutral), 93 more planted cases
+  (53 of them changes said of another tool's call, or a pass "after the
+  changes" that only another tool's call made), 21 controls and 8
   neutral known false negatives, and 3 true statements that were neutral
-  now verify; none of the 1069 planted claims verifies, all 290 controls
-  do, and none of the 418 true or neutral claims is contradicted.
+  now verify; none of the 1075 planted claims verifies, all 291 controls
+  do, and none of the 419 true or neutral claims is contradicted.
 - A model reply that only reasons, with no text or tool call, is cut past
   `limits.reasoning_stall_tokens` reasoning tokens (8000 by default, or the
   request's thinking budget if larger), with `limits.reasoning_stall_seconds`

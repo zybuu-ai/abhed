@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -476,12 +477,28 @@ func TestAnswerTool(t *testing.T) {
 	reason, err := l.Run(context.Background(), "how many replicas?")
 	// The pods claim cites a result that counts 5 pods: contradicted, and
 	// label mode spends its one revision on it.
+	// On a failure, say what t1 returned and how the answer was judged: a
+	// flake is then explainable from the log.
+	explain := func() string {
+		var t1 []string
+		evs, _ := store.Events("sess1")
+		for _, o := range payloads[Observation](evs, EvObservation) {
+			if o.CallID == "t1" {
+				exit := "none"
+				if o.ExitCode != nil {
+					exit = fmt.Sprint(*o.ExitCode)
+				}
+				t1 = append(t1, fmt.Sprintf("exit=%s error=%v unknown=%v content=%q", exit, o.IsError, o.OutcomeUnknown, o.Content))
+			}
+		}
+		return fmt.Sprintf("t1: %v; verdicts: %+v", t1, answerVerdicts(store))
+	}
 	if err != nil || reason != TermCompleted || len(ad.gotRequests) != 3 {
-		t.Fatalf("%s %v %d", reason, err, len(ad.gotRequests))
+		t.Fatalf("%s %v %d; %s", reason, err, len(ad.gotRequests), explain())
 	}
 	vs := answerVerdicts(store)
 	if len(vs) < 1 || vs[0].Source != "answer_tool" || vs[0].Verified != 1 || vs[0].Contradicted != 1 {
-		t.Fatalf("verdict: %+v", vs)
+		t.Fatalf("verdict: %s", explain())
 	}
 	msgs := l.Messages()
 	found := false

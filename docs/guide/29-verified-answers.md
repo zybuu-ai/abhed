@@ -654,7 +654,10 @@ counts (`12 tests`, `replicas: 3`). Then:
   covered (the same test module, package or names, or more); with no
   failing run before it, a whole run or one of the file's folder. An
   unrelated module passing shows no fix. "After the changes" or "following
-  the fix" needs the session to have changed something.
+  the fix" needs the session to have changed its work: a `write`, an
+  `edit`, or a shell command read as writing files, or whose files are
+  known and in the workspace. A call of another tool (a cluster scale, an
+  issue created) is not such a change.
 - **A change made by another tool is not read from its call.** "web in
   demo was scaled to 2", "I deleted the web deployment" and the like stay
   unverified even when a call of the agent's own (`k8s_apply`, an MCP

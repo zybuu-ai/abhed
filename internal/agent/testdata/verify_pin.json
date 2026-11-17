@@ -6854,6 +6854,41 @@
       "name": "a delete said done in another custom namespace",
       "kind": "planted",
       "hash": "a7b80a18ae250722"
+    },
+    {
+      "name": "tests said to pass following my changes, only a cluster scale before the run",
+      "kind": "planted",
+      "hash": "0e69f2eae8394f45"
+    },
+    {
+      "name": "tests said to pass after the fix, only a cluster scale before the run",
+      "kind": "planted",
+      "hash": "762d8385c43751b3"
+    },
+    {
+      "name": "tests said to pass with these changes, only a cluster scale before the run",
+      "kind": "planted",
+      "hash": "c4fee82a380d7833"
+    },
+    {
+      "name": "tests said to pass following my changes, only an issue created before the run",
+      "kind": "planted",
+      "hash": "ec2947a2266c27d3"
+    },
+    {
+      "name": "tests said to pass after the fix, only an issue created before the run",
+      "kind": "planted",
+      "hash": "f9484955a0770707"
+    },
+    {
+      "name": "tests said to pass with these changes, only an issue created before the run",
+      "kind": "planted",
+      "hash": "16cf7942c6e6048d"
+    },
+    {
+      "name": "tests said to pass following my changes, an edit before the run",
+      "kind": "control",
+      "hash": "6ee9622ec0822781"
     }
   ],
   "strict": [

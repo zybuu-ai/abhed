@@ -634,6 +634,8 @@ var (
 	stepK8sScaleTo3   = CorpusStep{ID: "kf7", Tool: "k8s_apply", Args: map[string]any{"action": "scale", "resource": "deployments", "name": "web", "replicas": 3, "namespace": "demo"}, Output: "deployment.apps/web scaled", Exit: code(0)}
 	stepK8sRollback   = CorpusStep{ID: "kf8", Tool: "k8s_apply", Args: map[string]any{"action": "rollback", "resource": "deployments", "name": "web", "namespace": "demo"}, Output: "deployment.apps/web rolled back", Exit: code(0)}
 	stepK8sDelTeamA   = CorpusStep{ID: "kf9", Tool: "k8s_apply", Args: map[string]any{"action": "delete", "resource": "deployments", "name": "web", "namespace": "team-a"}, Output: "deployment.apps/web deleted", Exit: code(0)}
+	stepMCPIssue      = CorpusStep{ID: "kg1", Tool: "mcp__github__create_issue", Args: map[string]any{"repo": "acme/api", "title": "flaky test"}, Output: "created issue #4", Exit: code(0)}
+	stepUtWholePass   = CorpusStep{ID: "kg2", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest"}, Output: "............\n----------------------------------------------------------------------\nRan 12 tests in 0.010s\n\nOK\n", Exit: code(0)}
 	stepK8sGetStaging = CorpusStep{ID: "kee", Tool: "k8s_get", Args: map[string]any{"resource": "deployments", "name": "web", "namespace": "eu-west"}, Output: "NAME   READY\nweb    1/1\n"}
 	stepReadTSFields  = CorpusStep{ID: "j6", Tool: "read", Args: map[string]any{"path": "/w/src/d.ts"}, Output: "     1\t@Component({})\n     2\texport class D {\n     3\t  @Input() name = 'a';\n     4\t\n     5\t  @Output()\n     6\t  other = 'b';\n     7\t}\n"}
 
@@ -2203,6 +2205,13 @@ func CorpusCases() []CorpusCase {
 		{Name: "a scale to 2 said in effect, a later scale to 3", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sScale2, stepK8sScaleTo3), Text: "The web deployment is scaled to 2 replicas."},
 		{Name: "a scale to 2 said in effect, a later rollback", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sScale2, stepK8sRollback), Text: "The web deployment now runs 2 replicas after I scaled it to 2."},
 		{Name: "a delete said done in another custom namespace", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sDelTeamA), Text: "I deleted the team-b web deployment."},
+		{Name: "tests said to pass following my changes, only a cluster scale before the run", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sScale2, stepUtWholePass), Text: "Following my changes, all 12 tests pass."},
+		{Name: "tests said to pass after the fix, only a cluster scale before the run", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sScale2, stepUtWholePass), Text: "After the fix, the whole suite passes."},
+		{Name: "tests said to pass with these changes, only a cluster scale before the run", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sScale2, stepUtWholePass), Text: "With these changes the tests pass."},
+		{Name: "tests said to pass following my changes, only an issue created before the run", Kind: p, Want: ClaimUnverified, Steps: steps(stepMCPIssue, stepUtWholePass), Text: "Following my changes, all 12 tests pass."},
+		{Name: "tests said to pass after the fix, only an issue created before the run", Kind: p, Want: ClaimUnverified, Steps: steps(stepMCPIssue, stepUtWholePass), Text: "After the fix, the whole suite passes."},
+		{Name: "tests said to pass with these changes, only an issue created before the run", Kind: p, Want: ClaimUnverified, Steps: steps(stepMCPIssue, stepUtWholePass), Text: "With these changes the tests pass."},
+		{Name: "tests said to pass following my changes, an edit before the run", Kind: c, Want: ClaimVerified, Steps: steps(stepTextEdit, stepUtWholePass), Text: "Following my changes, all 12 tests pass."},
 		{Name: "a class field cited for the next field", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTSFields), Text: "src/d.ts:3 shows `other = 'b'`."},
 		{Name: "a decorator line cited for the field before it", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTSFields), Text: "src/d.ts:5 shows `name = 'a'`."},
 		{Name: "a class field cited for itself", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTSFields), Text: "src/d.ts:6 shows `other = 'b'`."},
