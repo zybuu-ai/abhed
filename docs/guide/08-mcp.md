@@ -489,7 +489,11 @@ server with `startup_timeout_seconds`. The deadline covers the handshake and
 reading its tool, prompt and resource lists. A server that has not started
 by then, one that hangs say, is reported as failed with the deadline it
 missed, its tools are absent, and the other servers start as they would
-without it; `/mcp restart <server>` tries it again. After the start, each
+without it; `/mcp restart <server>` tries it again. The session itself
+starts once every server has started or missed its deadline, so a hung
+server delays it by its deadline once, however many servers hang, where
+each one used to add a minute. Lower `startup_timeout_seconds` on a server
+you would rather lose than wait for. After the start, each
 request to a server (a tool call, a list page) waits at most 60 seconds.
 
 In a session, `/mcp` lists each enabled server, connected or with the reason

@@ -636,8 +636,9 @@ All notable changes to Abhed are recorded here. The format follows
 - MCP servers start in parallel, at most eight at a time, each within its
   own deadline (`startup_timeout_seconds`, 60 by default): a server that
   hangs is reported once its deadline passes, with its tools absent, and
-  holds up no other. They used to start one after another, so one hung
-  server delayed every session by a minute.
+  holds up no other. They used to start one after another, so each hung
+  server delayed every session by a minute; now the session waits for the
+  longest deadline once.
 - A tool name a provider would refuse, an MCP full name longer than 64
   characters or one holding `.`, is sent to the provider under a short,
   stable wire name (its plain characters, `_` and ten hex digits of its
