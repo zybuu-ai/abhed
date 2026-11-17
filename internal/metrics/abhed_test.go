@@ -195,6 +195,8 @@ var uncounted = []string{
 	"turns.extended", "hook.continued", "config.changed",
 	// A wait for a model slot is kept on its model.call, as queue_ms.
 	"model.waiting",
+	// Which plugins a session loaded is a setting, as memory.loaded is.
+	"plugin.loaded",
 }
 
 func TestEveryEventTypeIsPlaced(t *testing.T) {
