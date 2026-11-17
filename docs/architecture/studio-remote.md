@@ -57,13 +57,20 @@ run -d --name abhed-devc-<12 hex of the folder's SHA-256> --init
     [--network none]                      abhed.devContainer.network: none
     -v <folder>:<folder>                  the folder, read-write, at the same path
     -v <Studio's copy>:/opt/abhed/bin/abhed:ro
-    --mount type=volume,src=abhed-devc-<12 hex>-home,dst=/opt/abhed/home
+    -v abhed-devc-<12 hex>-home:/opt/abhed/home:U,nocopy
+                                          the engine's home, never filled from the image;
+                                          podman gives it to the image's user (docker: nocopy,
+                                          and the engine runs as root inside)
+    --mount type=tmpfs,dst=/etc/abhed,ro=true,notmpcopyup
+                                          the image's managed policy hidden (docker: --tmpfs /etc/abhed:ro)
     -w <folder> --entrypoint tail -- <image> -f /dev/null
 ```
 
-5. refuses, and removes the container, when the image has `/etc/abhed`;
-6. inspects the container and records the image it was made from (its id,
+5. inspects the container and records the image it was made from (its id,
    and its registry digest when it has one), shown to the person.
+
+No program of the image's is run for any of this: the mask, the home's
+owner and the inspection are the runtime's own work.
 
 **Running.** The window's choice is kept in Studio's workspace storage on
 this computer, never in a file of the folder: a repository cannot point
@@ -71,12 +78,15 @@ Studio at a container. Before every start of the engine Studio re-hashes its
 copy and inspects the container, refusing it when the image is not the one
 recorded, when anything but Studio's copy is mounted at the engine's path or
 that mount is writable, when the folder or the home volume is not where it
-was put, when there is any other mount, or when Studio did not make it. Then
+was put or the home may be filled from the image, when `/etc/abhed` is not
+masked read-only, when there is any other mount, or when Studio did not make
+it. Then
 it runs `exec -i -w <folder> --env HOME=/opt/abhed/home --env
 XDG_CONFIG_HOME=/opt/abhed/home/.config [--env ABHED_X= for each ABHED_*
-the image sets] <name> /opt/abhed/bin/abhed acp`: the engine's home is
-Studio's volume, never the image's `~/.abhed`, and the image's ABHED_*
-variables are blanked. Only `acp` is passed. Nothing else changes for ACP.
+the image sets] --env ABHED_IMAGE_BWRAP=1 <name> /opt/abhed/bin/abhed acp`:
+the engine's home is Studio's volume, never the image's `~/.abhed`, the
+image's ABHED_* variables are blanked, and the engine is told its bubblewrap
+is the image's, which its process tier then names. Only `acp` is passed. Nothing else changes for ACP.
 
 **Leaving.** *Reopen Folder Locally* restarts the engine on the laptop and
 keeps the container (and remembers its image, so a reopen still checks it).
@@ -87,9 +97,9 @@ home volume, which deletes the record kept in it.
 
 | Question | Answer |
 |---|---|
-| Who enforces policy? | The engine inside the container, with the configuration it reads: its own home on Studio's volume (empty until the person sets it, in an Abhed terminal), and the folder's `.abhed` under the same workspace trust. The image's `~/.abhed` is not read, its ABHED_* variables are blanked, and an image with `/etc/abhed` is refused. Studio enforces nothing new; it chose where the engine runs and what configuration it can read. |
-| Which sandbox? | The engine's tiers, as available inside the container. The container is an outer boundary of its own, not a tier: an image without bubblewrap (or a container without user namespaces) gives the engine no process tier, and `sandbox.min_tier` (process by default) then refuses the session rather than fall to `none`; verified with a slim Debian image. Only the person can lower it, in the engine's configuration on Studio's volume. |
-| What can the image do? | It is code chosen by whoever wrote `devcontainer.json`, and it runs with the folder mounted read-write: it can change any file in it, including `.git`, whose hooks and settings take effect when git runs on the laptop. It cannot change the engine (a read-only copy, re-hashed at every start) or its configuration home (Studio's volume; the image could still write there while it runs, since it shares the container, so a person who distrusts the image should not run it). |
+| Who enforces policy? | The engine inside the container, with the configuration it reads: its own home on Studio's volume (empty until the person sets it, in an Abhed terminal), and the folder's `.abhed` under the same workspace trust. The image's `~/.abhed` is not read (the home volume is never filled from it), its ABHED_* variables are blanked, and its `/etc/abhed` is hidden under an empty read-only mount. No program of the image's runs for Studio. Studio enforces nothing new; it chose where the engine runs and what configuration it can read. |
+| Which sandbox? | The engine's tiers, as available inside the container, using the image's own bubblewrap: an image can ship one that does not isolate, so the process tier inside is only as strong as the image, and the engine names it "process (image-supplied bubblewrap)" in doctor and Studio's Health view. An image without bubblewrap (or a container without user namespaces) gives no process tier, and `sandbox.min_tier` (process by default) then refuses the session rather than fall to `none`; verified with a slim Debian image. Only the person can lower it, in the engine's configuration on Studio's volume; an image that runs its own processes in the container could still write there, so a person who distrusts the image should not run it. |
+| What can the image do? | It is code chosen by whoever wrote `devcontainer.json`, and it runs with the folder mounted read-write: it can change any file in it, including `.git`, whose hooks and settings take effect when git runs on the laptop. It cannot change the engine (a read-only copy, re-hashed at every start), cannot pre-fill the engine's home or supply a managed policy, and no program of it is run by Studio. While it runs it shares the container with the engine: it could write the engine's home and supply a weak bubblewrap, which is why an untrusted image should not be run. |
 | Where does the record live? | On the engine's home volume. It goes with *Remove Dev Container*. Shipping (`record.ship`) works from inside as anywhere. The laptop's record does not see the container's sessions. |
 | How do credentials travel? | They do not, by default. No environment variable, SSH agent socket, home folder, `~/.abhed`, secret store, container-runtime socket or credential helper is passed or mounted. The engine reads model keys and secrets from its own store on the volume, which the person fills there (`abhed secret set` in an Abhed terminal). Forwarding is not offered in 1.3.0. |
 | What does the container reach? | The folder (read-write), Studio's copy of the engine (read-only) and the home volume. With the default network it reaches the internet and the laptop's own services through the runtime's host gateway (`host.containers.internal`, `host.docker.internal`); `abhed.devContainer.network: none` gives it no network at all. The engine's egress rules apply to what the agent does, not to the image's own processes. |
@@ -111,18 +121,23 @@ uses:
   handshake asks for the key types known_hosts records for the host, as
   OpenSSH does, so a host recorded under one type is not refused for
   offering another first;
-- it signs in with `abhed.ssh.identityFile` or the person's SSH agent, which
-  is used to sign in and never forwarded. Nothing is forwarded: no agent, no
-  X11, no ports, and no environment variable is sent;
-- one remote command runs, through the account's shell: it checks the engine
-  at the pinned path (`abhed.ssh.enginePath`) is a regular file, not a link,
-  whose SHA-256 is `abhed.ssh.engineSha256`, refusing with exit 97
-  otherwise; then `cd FOLDER` and `exec ENGINE acp`. ACP is carried on
-  `ssh-acp`'s stdio, so Studio's ACP client is unchanged. With
-  `abhed.ssh.uploadEngine` (a local build with the pinned hash) the build is
-  first copied to `~/.abhed/bin/abhed-<16 hex>` on the host, under the
-  engine's own state folder, checked there and put in place, then checked
-  again at every start.
+- it signs in with `abhed.ssh.identityFile` alone when it is set (only that
+  key is offered), else with the person's SSH agent, which offers the host
+  every key it holds, so the host learns all their public keys; the consent
+  says which. The agent is never forwarded. Nothing is forwarded: no agent,
+  no X11, no ports, and no environment variable is sent;
+- one remote step, through the account's shell, runs the engine: the home
+  folder must not be a link and must be owned by the account or root and
+  writable by neither group nor others; `~/.abhed` and `~/.abhed/bin` are
+  made 0700 and checked the same way; the engine is copied (from the pinned
+  path `abhed.ssh.enginePath`, or earlier from an upload of
+  `abhed.ssh.uploadEngine`) into `~/.abhed/bin/abhed-<16 hex>` beside its
+  place, with noclobber and a `.part` link refused, its SHA-256 checked
+  against `abhed.ssh.engineSha256`, made 500 and put in place; then that
+  file, checked again (not a link, owner, mode, hash), is exec'd as `acp` in
+  the folder. What is checked is what runs, from a folder no other account
+  can write. A refusal exits 97 and prints the path as data. ACP is carried
+  on `ssh-acp`'s stdio, so Studio's ACP client is unchanged.
 
 **Files.** The folder opens as `abhed-ssh://user@host:port/path`. Studio
 registers a file system provider for that scheme whose every operation is
@@ -135,21 +150,39 @@ an ACP request to the engine on the host, in the window's session there
   so the write rules, the syntax check and the record apply (by: user); only
   text is written over it;
 - `delete`, `rename`, `mkdir`: through the delete and write rules, refusals
-  recorded;
+  recorded. Delete and rename act on the entry named (a link, never its
+  target). A folder rename judges delete, write and read for every entry
+  inside it, so a file the rules keep is not moved away. A delete is
+  recorded as the person's `manual.edit`;
 - `search` and `files`: text search and quick open, walked by the engine
   over readable files (no `.git`, state or `node_modules`), Go regular
   expressions, bounded;
-- `watch`: the engine polls the watched tree's sizes and times every 1.5 s
-  and notifies `_abhed/fs/changed`; at most 64 watches and 20,000 entries
-  each;
-- `git`: the SCM view's read-only status and HEAD contents, run by the
-  engine with hooks, fsmonitor, pager and external diff turned off. Studio
-  shows the changed files and a diff with HEAD; staging and committing are
-  left to the Abhed terminal.
+- `watch`: the engine polls the watched tree's sizes and times every 1.5 s,
+  less often for a large tree (in proportion above 2,000 entries, at most
+  every 30 s), and notifies `_abhed/fs/changed`; at most 64 watches and
+  20,000 entries each;
+- `git`: the SCM view's read-only status and HEAD contents, run in the
+  session's sandbox as the agent's git is (refused with no sandbox), with
+  every `GIT_*` variable unset, submodules ignored, no transport, and hooks,
+  fsmonitor, pager and external diff turned off, so a filter a repository
+  defines runs, if at all, inside the sandbox. `.git/modules`,
+  `.git/config.worktree` and `.git/info/attributes` are protected from the
+  agent like `.git/config`. Studio shows the changed files and a diff with
+  HEAD; staging and committing are left to the Abhed terminal.
 
-Only an authority the person chose in *Reopen Folder on SSH Host* (kept in
-Studio's application storage on this computer) is served or connected to,
-so a workspace file or link naming another host connects nowhere.
+Only a host and folder the person chose in *Reopen Folder on SSH Host*
+(kept in Studio's application storage on this computer) is served or
+connected to, so a workspace file or link naming another host or folder
+connects nowhere. Add Server and Sign In are not offered: they would change
+the laptop's configuration.
+
+**Paths the engine reports.** In an SSH window every path the engine names
+(tool cards, the Review view, inline edits, test results, Health and
+Trust's Open File, Export) is mapped to `abhed-ssh:` when it is under the
+folder and refused otherwise: no file on the laptop is read, copied or
+opened for a host path. Export says the file is on the host. A chat
+attachment is sent only for a file of the window's folder, as the host's
+path; a file on the laptop is never sent to the host's engine.
 
 ### Threat model
 
@@ -160,7 +193,8 @@ so a workspace file or link naming another host connects nowhere.
 | Where does the record live? | On the host, under the engine's `~/.abhed`. The laptop's record does not see those sessions. |
 | How do credentials travel? | The laptop signs in to the host with the person's key or agent; neither is forwarded, and no environment variable is sent. The engine on the host reads model keys and secrets from its own store there. |
 | Who is the host? | Only one whose key is already in known_hosts; an unknown or changed key is refused before anything is sent. |
-| Which engine runs? | Only a binary with the pinned SHA-256, checked on the host at every start (a check, then an exec, by the account's own shell: the account can change its own files between them). |
+| Which engine runs? | Only a binary with the pinned SHA-256, copied into `~/.abhed/bin` (0700, owned by the account), checked there and exec'd from there in the same step; the home folder and the engine folders must be the account's own and writable by no other user. The account itself (or root) can still change its own files. |
+| What does the host learn of the person? | The account name, the engine build (public), and, when the SSH agent signs in, every public key the agent holds; `abhed.ssh.identityFile` offers one key only. |
 | What still runs on the laptop? | The editor, its extensions, the host terminal and host tasks. Language servers, completions, next edits, debugging, the Run and Review views and Studio's local git extension do not work on an SSH folder; the Abhed terminal and the agent run on the host. |
 
 ## What is left

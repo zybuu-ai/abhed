@@ -141,9 +141,17 @@ All notable changes to Abhed are recorded here. The format follows
   search, a polling watch and a read-only SCM view come from that engine
   through the new `_abhed/fs/*` methods (feature `fs`), so its read, write
   and delete rules hold for the person's file operations and saves are
-  recorded on the host. The engine's SSH client now asks for the host key
+  recorded on the host; delete and rename act on the entry named (a link,
+  never its target), and a folder rename is judged for every entry in it.
+  The SCM view's git runs in the session's sandbox with every `GIT_*`
+  unset and submodules ignored. The engine runs from a copy in the
+  account's private `~/.abhed/bin`, checked (owner, mode, links, hash) and
+  exec'd in one step. In an SSH window every path the engine reports is
+  mapped to the host's folder or refused, and no laptop file is sent to
+  the host's engine. The engine's SSH client now asks for the host key
   types known_hosts records, and says a changed key apart from an unknown
-  one.
+  one. `.git/modules`, `config.worktree` and `info/attributes` are
+  protected from the agent like `.git/config`.
 
 - Abhed Studio can run a trusted folder's engine in a dev container:
   **Abhed: Reopen Folder in Dev Container…** runs the image
@@ -151,7 +159,11 @@ All notable changes to Abhed are recorded here. The format follows
   read-only copy of a pinned Linux engine, and a fresh volume as the
   engine's home, and starts `abhed acp` inside through the runtime's `exec`
   with that home and the image's ABHED_* variables blanked. The image's
-  `~/.abhed` is not read and an image with `/etc/abhed` is refused. Before
+  `~/.abhed` is not read (the volume is never filled from the image), its
+  `/etc/abhed` is hidden under an empty read-only mount, and no program of
+  the image's is run for Studio. The sandbox inside uses the image's own
+  bubblewrap, so it is only as strong as the image, and the process tier
+  says so ("image-supplied bubblewrap", `ABHED_IMAGE_BWRAP`). Before
   every start Studio re-hashes its copy and inspects the container, refusing
   another image, engine mount, folder mount or home. The image is code with
   the folder (and `.git`) writable, and the default network reaches the
