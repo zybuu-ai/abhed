@@ -30,7 +30,11 @@ abhed bg cancel ID
 ```
 
 - `start` snapshots the repository you run it in, or the one `-C DIR`
-  names, written before or after `start`; the other commands take no `-C`.
+  names, written before `start` or after it but before the prompt; the
+  other commands take no `-C`. `start`'s flags come before the prompt:
+  from its first word on, every word is the prompt's, so in
+  `abhed bg start -y run make -C /tmp` the job is asked to run
+  `make -C /tmp` and the snapshot is of the folder you are in.
 - `start` sends the prompt and, if given, a name (`-name`, a label for
   `list`), a mode and a provider.
   Who the job runs as is your sign-in, and its sandbox, secrets and network
@@ -79,11 +83,14 @@ abhed bg cancel ID
   jobs or sessions, and the record keeps it as the answer's granted scope
   (`action.approved`), with each later call it covered noted as answered by
   that scope. An ask rule or a destructive command offers no rule, and a
-  rule the record would redact is not offered; a workspace that needs other
-  approvers refuses `a`: attach says so and asks about this call alone
-  (`y`/`N`), and when the workspace refuses your answer to it too (you may
-  only refuse your own request there), it says so and keeps following
-  while the ask waits for the workspace's approvers. Without a terminal it only says what
+  rule the record would redact is not offered. Where the workspace needs
+  other approvers you may only refuse your own request: an approval (`y` or
+  `a`) is refused, and attach says why and asks
+  `[n = refuse, Enter = leave it]`; left, the ask waits for the workspace's
+  approvers while attach keeps following. Any other refusal, such as your
+  access having been removed, ends attach with its reason. If the record
+  ends with a reply streamed but never finished, its fragments are shown
+  joined. Without a terminal it only says what
   waits and until when. Ctrl-C leaves, at the question too; the job runs
   on. It exits 0 only for a job that ended done; its last line says why it
   did not, with the budget stop's words when the budget stopped it.

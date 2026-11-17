@@ -32,9 +32,11 @@ type fakeServer struct {
 	noBG bool
 	// events, when set, is the job's record.
 	events []bgjob.Event
-	// fourEyes refuses "always" as a workspace that needs other approvers
-	// does; ownApproval refuses the owner's approval too.
-	fourEyes, ownApproval bool
+	// fourEyes answers as the team gate does where a workspace needs other
+	// approvers: the owner's approval, "always" or not, is refused first, and
+	// only a refusal is taken. revoked refuses every answer as a removed
+	// owner's is.
+	fourEyes, revoked bool
 }
 
 func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -79,12 +81,12 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var a map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&a)
 		f.answers = append(f.answers, a)
-		if f.fourEyes && a["scope"] != nil {
-			http.Error(w, `{"error":"answer refused: \"always allow\" would skip four-eyes approval for later calls; approve this call only"}`, http.StatusForbidden)
+		if f.revoked {
+			http.Error(w, `{"error":"your access to this deployment was revoked"}`, http.StatusForbidden)
 			return
 		}
-		if f.ownApproval && a["approved"] == true {
-			http.Error(w, `{"error":"answer refused: workspace w1 needs 1 other approver(s) for bash; you may only refuse your own request"}`, http.StatusForbidden)
+		if f.fourEyes && a["approved"] == true {
+			http.Error(w, `{"error":"this answer is refused: workspace w1 needs 1 other approver(s) for bash; you may only refuse your own request"}`, http.StatusForbidden)
 			return
 		}
 		f.job.Waiting = nil
@@ -358,6 +360,13 @@ func TestRecordShowsWholeMessagesNotFragments(t *testing.T) {
 	if strings.Count(res.out, "agent.delta") != 2 {
 		t.Fatalf("-o json lost the fragments: %s", res.out)
 	}
+	// Cut off mid-reply: no whole message follows, so the fragments are shown joined.
+	r.srv.events = r.srv.events[:5]
+	res = r.run("", false, "", "logs", "bg_1")
+	if !strings.Contains(res.out, "agent.delta (streamed, no whole message followed)\n  Fixed chunk_text.\n") ||
+		strings.Contains(res.out, "agent.reasoning.delta") {
+		t.Fatalf("the unfinished reply:\n%s", res.out)
+	}
 }
 
 // "a" allows the call and, for this job alone, the rule the ask offers: the
@@ -408,42 +417,65 @@ func TestBudgetReasonInTableOutput(t *testing.T) {
 	}
 }
 
-// Under four-eyes the server refuses "always": attach says so and asks
-// about this call alone, and a refusal of that too leaves the ask waiting
-// for the workspace's approvers rather than ending attach.
-func TestAlwaysRefusedUnderFourEyes(t *testing.T) {
-	waiting := func(r *rig) {
+// Under four-eyes the owner may only refuse: an approval, "always" or not,
+// is refused, and attach offers what is left, to refuse or to leave the ask
+// to the workspace's approvers, never another approval sure to fail.
+func TestOwnerUnderFourEyesMayRefuseOrWait(t *testing.T) {
+	for _, first := range []string{"a", "y"} {
+		r := newRig(t)
+		r.srv.fourEyes = true
 		r.srv.job.Waiting = &bgjob.Approval{JobID: "bg_1", SessionID: "sess_1", RequestID: "req_9", Tool: "bash",
 			Scope: "bash(make test)", Deadline: time.Now().Add(time.Hour)}
+		res := r.run(first+"\nn\n", true, "", "attach", "bg_1")
+		if res.code != ExitOK || !strings.Contains(res.err, "you may only refuse your own request") ||
+			!strings.Contains(res.err, "[n = refuse, Enter = leave it]") || !strings.Contains(res.err, "denied") ||
+			strings.Contains(res.err, "Allow it? [y/N] ") {
+			t.Fatalf("%s: attach: %+v", first, res)
+		}
+		if len(r.srv.answers) != 2 || r.srv.answers[1]["approved"] != false || r.srv.answers[1]["scope"] != nil {
+			t.Fatalf("%s: answered %v", first, r.srv.answers)
+		}
 	}
+	// Enter leaves it: attach keeps following while the ask waits.
 	r := newRig(t)
 	r.srv.fourEyes = true
-	waiting(r)
-	res := r.run("a\ny\n", true, "", "attach", "bg_1")
-	if res.code != ExitOK || !strings.Contains(res.err, "always for this job was refused") ||
-		!strings.Contains(res.err, "four-eyes") || !strings.Contains(res.err, "Answer this call only. Allow it? [y/N]") ||
-		!strings.Contains(res.err, "allowed\n") {
-		t.Fatalf("attach: %+v", res)
-	}
-	if len(r.srv.answers) != 2 || r.srv.answers[1]["approved"] != true || r.srv.answers[1]["scope"] != nil {
-		t.Fatalf("answered %v", r.srv.answers)
-	}
-
-	r = newRig(t)
-	r.srv.fourEyes, r.srv.ownApproval = true, true
-	waiting(r)
+	r.srv.job.Waiting = &bgjob.Approval{JobID: "bg_1", SessionID: "sess_1", RequestID: "req_9", Tool: "bash"}
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	var out, errOut bytes.Buffer
-	code := Main(Env{Ctx: ctx, ProfilesPath: r.profiles, In: strings.NewReader("a\ny\n"), Out: &out, Err: &errOut,
+	code := Main(Env{Ctx: ctx, ProfilesPath: r.profiles, In: strings.NewReader("y\n\n"), Out: &out, Err: &errOut,
 		Interactive: true, Poll: 5 * time.Millisecond}, []string{"attach", "bg_1"})
-	if code != ExitOK || !strings.Contains(errOut.String(), "you may only refuse your own request (403); the ask still waits") ||
+	if code != ExitOK || !strings.Contains(errOut.String(), "left waiting for the workspace's approvers") ||
 		!strings.Contains(errOut.String(), "detached; job bg_1 runs on") {
 		t.Fatalf("attach: %d %q", code, errOut.String())
 	}
 	r.srv.mu.Lock()
 	defer r.srv.mu.Unlock()
-	if len(r.srv.answers) != 2 || r.srv.job.State != bgjob.StateRunning {
+	if len(r.srv.answers) != 1 || r.srv.job.State != bgjob.StateRunning {
 		t.Fatalf("answered %v, state %s", r.srv.answers, r.srv.job.State)
+	}
+}
+
+// Any other 403, such as a removed owner's, ends attach with its reason.
+func TestOtherRefusalEndsAttach(t *testing.T) {
+	r := newRig(t)
+	r.srv.revoked = true
+	r.srv.job.Waiting = &bgjob.Approval{JobID: "bg_1", SessionID: "sess_1", RequestID: "req_9", Tool: "bash", Scope: "bash(x)"}
+	res := r.run("a\n", true, "", "attach", "bg_1")
+	if res.code != ExitAuth || !strings.Contains(res.err, "revoked") || strings.Contains(res.err, "Refuse it") {
+		t.Fatalf("attach: %+v", res)
+	}
+}
+
+// Flags come before the prompt: from its first word on, "-C" and "-y" are
+// the prompt's text, sent as typed.
+func TestStartPromptKeepsFlagLikeWords(t *testing.T) {
+	r := newRig(t)
+	res := r.run("", false, "", "start", "-no-snapshot", "run", "make", "-C", "/tmp", "-y")
+	if res.code != ExitOK || len(r.srv.started) != 1 || r.srv.started[0].Prompt != "run make -C /tmp -y" {
+		t.Fatalf("start: %+v %+v", res, r.srv.started)
+	}
+	if !StartTakesValue("name") || !StartTakesValue("server") || StartTakesValue("y") || StartTakesValue("nope") {
+		t.Fatal("StartTakesValue")
 	}
 }

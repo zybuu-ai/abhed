@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/auth"
+	"github.com/zybuu-ai/abhed/bgjob"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -207,6 +208,13 @@ func TestPendingAsks(t *testing.T) {
 	live.Loop.Recorder.Redact = nil
 	if asks := r.srv.PendingAsks(func(string, string) bool { return true }); string(asks[0].Args) != `{"withheld":true}` {
 		t.Fatalf("arguments without a redactor: %s", asks[0].Args)
+	}
+}
+
+// A client tells the gate's refusal from any other 403 by its words.
+func TestAnswerRefusedIsWhatClientsRead(t *testing.T) {
+	if !strings.HasPrefix(ErrAnswerRefused.Error(), bgjob.AnswerRefused) {
+		t.Fatalf("%q no longer begins with %q", ErrAnswerRefused, bgjob.AnswerRefused)
 	}
 }
 
