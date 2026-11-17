@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/fips140"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -218,7 +219,10 @@ func knownAlgorithms(cb ssh.HostKeyCallback, addr string) []string {
 	if err := cb(addr, &net.TCPAddr{IP: net.IPv4zero, Port: p}, probe); !errors.As(err, &keyErr) || len(keyErr.Want) == 0 {
 		return nil
 	}
-	all := append(ssh.SupportedAlgorithms().HostKeys, ssh.InsecureAlgorithms().HostKeys...)
+	// An insecure algorithm (ssh-rsa's SHA-1, ssh-dss) is offered only for a
+	// key of that type on file, and never in FIPS mode, as the library does.
+	all := ssh.SupportedAlgorithms().HostKeys
+	insecure := ssh.InsecureAlgorithms().HostKeys
 	var first []string
 	for _, k := range keyErr.Want {
 		algos := []string{k.Key.Type()}
@@ -226,7 +230,8 @@ func knownAlgorithms(cb ssh.HostKeyCallback, addr string) []string {
 			algos = []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}
 		}
 		for _, a := range algos {
-			if slices.Contains(all, a) && !slices.Contains(first, a) {
+			known := slices.Contains(all, a) || slices.Contains(insecure, a) && !fips140.Enabled()
+			if known && !slices.Contains(first, a) {
 				first = append(first, a)
 			}
 		}

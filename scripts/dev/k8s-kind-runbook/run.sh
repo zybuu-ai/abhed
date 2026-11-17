@@ -9,13 +9,17 @@
 # Needs kind, kubectl, node, Go, and docker or podman (KIND_EXPERIMENTAL_PROVIDER=podman
 # is set when only podman is found). The cluster gets a unique name and its
 # own kubeconfig in WORKDIR: no existing kube context is read or changed, and
-# the cluster is deleted on exit, pass or fail. KEEP_CLUSTER=1 keeps it.
+# the cluster is deleted on exit, pass, fail or signal. KEEP_CLUSTER=1 keeps it.
+# A work folder the script made itself is removed after a pass.
 # KIND_NODE_IMAGE picks the node image (kind's default otherwise);
 # WORKLOAD_IMAGE (alpine:3.20) is loaded into the cluster from the local
 # engine, so the pod needs no registry.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
+# A work folder this script made is removed after a pass; one you name is kept.
+own_work=""
+if [ -z "${1:-}" ]; then own_work=1; fi
 WORK="${1:-$(mktemp -d)}"
 mkdir -p "$WORK"
 WORK="$(cd "$WORK" && pwd)"
@@ -48,6 +52,9 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+# A signal runs the same cleanup, then exits, so the cluster never outlives it.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 k() { kubectl --kubeconfig "$KCFG" --context "$CTX" "$@"; }
 
@@ -120,5 +127,13 @@ check "the unlisted change was refused as not in the plan, with no flag offered"
     const r = JSON.parse(require(\"fs\").readFileSync(0, \"utf8\"));
     const d = (r.permission_denials || []).filter(x => x.tool === \"k8s_apply\");
     process.exit(d.length === 1 && /not in the approved plan/.test(d[0].reason) && !d[0].flag ? 0 : 1);" 2>/dev/null'
-echo "work folder: $WORK (result.json, abhed.err, model.log)"
+if [ "$fail" = 0 ] && [ -n "$own_work" ] && [ -z "${KEEP_CLUSTER:-}" ]; then
+  # The cluster goes first, as the trap would, then the folder holding its kubeconfig.
+  cleanup
+  trap - EXIT
+  rm -rf "$WORK"
+  echo "passed; work folder removed"
+else
+  echo "work folder: $WORK (result.json, abhed.err, model.log)"
+fi
 exit "$fail"

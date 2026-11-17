@@ -122,45 +122,201 @@ func (e *Engine) remoteReadRule(rr remoteRead) string {
 		if !r.pattern.MatchString(text) {
 			continue
 		}
-		if !strings.ContainsAny(r.glob, "*?") || plain && wildcardReadOK(text) && wordsMatch(r.glob, text) {
+		if !strings.ContainsAny(r.glob, "*?") {
+			return r.raw
+		}
+		if plain && wildcardReadOK(text) && wordsMatch(r.glob, text) && (e.ReadCommandsContents || !DoubleStarReadsContents(r.glob, text)) {
 			return r.raw
 		}
 	}
 	return ""
 }
 
+// DoubleStarReadsContents reports an entry with a word that is ** alone
+// whose call, text, prints the contents of files; text "" asks of the
+// entry itself. Such an entry could name any file the account can read,
+// the reach of ssh.read_contents, so it matches such a call only where
+// that is set.
+func DoubleStarReadsContents(entry, text string) bool {
+	words := callWords(entry)
+	double := false
+	for _, w := range words {
+		double = double || w.raw == "**"
+	}
+	if !double {
+		return false
+	}
+	if text != "" {
+		words = callWords(text)
+	}
+	args := make([]string, 0, len(words))
+	for _, w := range words[1:] {
+		if w.raw != "**" {
+			args = append(args, w.val)
+		}
+	}
+	return printsContents(rawProgram(entry), args)
+}
+
+// callWord is one word of a command: as written, as the program gets it
+// once quotes are taken off, and whether the shell could expand it (an
+// unquoted *, ?, [, brace or ~, or a $ outside single quotes).
+type callWord struct {
+	raw, val string
+	expands  bool
+}
+
+// callWords splits s as a POSIX shell does, quotes and backslashes taken
+// off, saying of each word whether the shell could expand it.
+func callWords(s string) []callWord {
+	var out []callWord
+	var raw, val strings.Builder
+	in, expands := false, false
+	var quote byte
+	flush := func() {
+		if in {
+			out = append(out, callWord{raw: raw.String(), val: val.String(), expands: expands})
+		}
+		raw.Reset()
+		val.Reset()
+		in, expands = false, false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote == '\'':
+			raw.WriteByte(c)
+			if c == '\'' {
+				quote = 0
+			} else {
+				val.WriteByte(c)
+			}
+		case quote == '"':
+			raw.WriteByte(c)
+			switch {
+			case c == '"':
+				quote = 0
+			case c == '\\' && i+1 < len(s):
+				i++
+				raw.WriteByte(s[i])
+				val.WriteByte(s[i])
+			default:
+				expands = expands || c == '$' || c == '`'
+				val.WriteByte(c)
+			}
+		case c == ' ' || c == '\t':
+			flush()
+		case c == '\'' || c == '"':
+			raw.WriteByte(c)
+			quote, in = c, true
+		case c == '\\' && i+1 < len(s):
+			raw.WriteByte(c)
+			i++
+			raw.WriteByte(s[i])
+			val.WriteByte(s[i])
+			in = true
+		default:
+			if strings.IndexByte("*?[{}~$`", c) >= 0 {
+				expands = true
+			}
+			raw.WriteByte(c)
+			val.WriteByte(c)
+			in = true
+		}
+	}
+	flush()
+	return out
+}
+
 // wordsMatch reports a call whose words match a wildcard entry's in order.
+//
 // A * or ? stands within one argument, so "tail -n * /var/log/app/app.log"
-// cannot also name /etc/shadow; a word that is ** alone stands for one or
-// more whole arguments, each still judged as a read form. No wildcard
-// stands for a .. segment the entry does not write, so "cat /var/log/*"
-// does not reach /var/log/../../etc/shadow.
+// cannot also name /etc/shadow, and a word that is ** alone stands for one
+// or more whole arguments, each still judged as a read form. A word a
+// wildcard matches is taken as the program gets it, so it may hold nothing
+// the remote shell would expand (a glob, a brace, ~ or $), unless it is
+// the entry's own word as written; and none may hold a .. segment the
+// entry does not write. Where a * stands for an operand, not an option's
+// value, it never matches an option (a word starting with -) before a --:
+// getopt would read one there as an option.
 func wordsMatch(glob, text string) bool {
-	want, _, _ := shellWords(glob)
-	got, _, _ := shellWords(text)
+	want, got := callWords(glob), callWords(text)
+	if len(want) == 0 || len(got) == 0 {
+		return false
+	}
+	valueSlot := entryValueSlots(want)
+	ended := make([]bool, len(got)+1) // ended[j]: a -- comes before got[j]
+	for j, w := range got {
+		ended[j+1] = ended[j] || w.val == "--"
+	}
+	ok := func(w callWord) bool { return !w.expands && !dotDot(w.val) }
 	var match func(i, j int) bool
 	match = func(i, j int) bool {
 		if i == len(want) {
 			return j == len(got)
 		}
-		if want[i] == "**" {
+		if want[i].val == "**" && want[i].raw == "**" {
 			for k := j + 1; k <= len(got); k++ {
-				if !dotDot(got[k-1]) && match(i+1, k) {
+				if !ok(got[k-1]) {
+					return false
+				}
+				if match(i+1, k) {
 					return true
 				}
 			}
 			return false
 		}
-		return j < len(got) && wordMatches(want[i], got[j]) && match(i+1, j+1)
+		if j >= len(got) {
+			return false
+		}
+		w, g := want[i], got[j]
+		if !strings.ContainsAny(w.val, "*?") {
+			return w.val == g.val && (!g.expands || g.raw == w.raw) && match(i+1, j+1)
+		}
+		if g.raw != w.raw {
+			if !ok(g) || !wordMatches(w.val, g.val) {
+				return false
+			}
+			if !valueSlot[i] && !ended[j] && strings.HasPrefix(g.val, "-") {
+				return false
+			}
+		}
+		return match(i+1, j+1)
 	}
 	return match(0, 0)
 }
 
+// entryValueSlots marks the words of an entry that are an option's value:
+// the word after an option of its program's read form that takes one.
+func entryValueSlots(words []callWord) map[int]bool {
+	out := map[int]bool{}
+	spec, known := knownReads[tools.CommandName(path.Base(words[0].val))]
+	if !known {
+		return out
+	}
+	op, from := spec.opts, 1
+	if spec.verbs != nil && len(words) > 1 {
+		if vo, ok := spec.verbs[words[1].val]; ok {
+			op, from = vo, 2
+		}
+	}
+	for i := from; i < len(words)-1; i++ {
+		w := words[i].val
+		if w == "--" {
+			break
+		}
+		if spec.oneDash && strings.HasPrefix(w, "--") {
+			w = w[1:]
+		}
+		if strings.HasPrefix(w, "-") && op.values[w] {
+			out[i+1] = true
+		}
+	}
+	return out
+}
+
 // wordMatches reports one argument matching one word of an entry.
 func wordMatches(w, arg string) bool {
-	if !strings.ContainsAny(w, "*?") {
-		return w == arg
-	}
 	if dotDot(arg) && !dotDot(w) {
 		return false
 	}

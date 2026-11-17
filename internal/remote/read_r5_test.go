@@ -46,13 +46,15 @@ func TestSSHReadEveryFormRefusesUnlistedOptions(t *testing.T) {
 // read; one after a path is; ps takes only its listed BSD options.
 func TestSSHReadGlobsAndOperands(t *testing.T) {
 	e := readsEngine(t, policy.ModePlan, "ls **", "cat **", "ps **", "dpkg-query -W **", "rpm **")
+	// A glob the remote shell would expand is not a word the entry's wildcard
+	// can be checked against, so it asks.
 	for _, cmd := range []string{"ls *", "ls -l *.conf", "cat -- *", "cat '-'*", "ps eww", "ps auxe", "rpm -qa --qf '%(id)'",
-		"rpm -qa --qf '%{NAME:expand}'"} {
+		"rpm -qa --qf '%{NAME:expand}'", "ls -l /etc/nginx/*.conf", "cat /var/log/*.log"} {
 		if res := e.Evaluate("ssh", true, sshCall("web1", cmd)); res.Decision != policy.Deny {
 			t.Errorf("%q ran in plan mode: %+v", cmd, res)
 		}
 	}
-	for _, cmd := range []string{"ls -l /etc/nginx/*.conf", "cat /var/log/*.log", "ps aux", "ps -ef",
+	for _, cmd := range []string{"ls -l /etc/nginx/x.conf", "cat /var/log/x.log", "ps aux", "ps -ef",
 		"dpkg-query -W -f '${Package} ${Version} ' nginx", "rpm -qa --qf '%{NAME}-%{VERSION} '"} {
 		if res := e.Evaluate("ssh", true, sshCall("web1", cmd)); res.Decision != policy.Allow {
 			t.Errorf("%q, a read, was refused: %+v", cmd, res)

@@ -578,6 +578,22 @@ func TestReadCommandWildcardIsOneArgument(t *testing.T) {
 		"cat /var/log/../../etc/shadow":                 Ask,
 		"grep -i x /etc/passwd /var/log/app/app.log":    Ask,
 		"tail -n /var/log/app/app.log":                  Ask,
+		// A word the remote shell expands is not the word the entry matched.
+		"cat /var/log/.[.]/.[.]/etc/shadow":    Ask,
+		"cat /var/log/.?/.?/etc/shadow":        Ask,
+		"cat /var/log/{app,..}/x":              Ask,
+		"cat /var/log/~root":                   Ask,
+		"cat /var/log/$HOME":                   Ask,
+		"grep -i /etc/s* /var/log/app/app.log": Ask,
+		"grep -i 'a*' /var/log/app/app.log":    Allow,
+		// An operand slot never takes an option; a value slot is as before.
+		"grep -i --file=/etc/shadow /var/log/app/app.log": Ask,
+		"grep -i -f/etc/shadow /var/log/app/app.log":      Ask,
+		"grep -i -r /var/log/app/app.log":                 Ask,
+		"grep -i -- -r /var/log/app/app.log":              Ask,
+		"tail -n +5 /var/log/app/app.log":                 Allow,
+		// The entry's own glob, as written, is the operator's.
+		"cat /var/log/*": Allow,
 	} {
 		if got := e.Evaluate("ssh", true, remoteCall("app1", cmd)); got.Decision != want {
 			t.Errorf("%q: %s (%s), want %s", cmd, got.Decision, got.Reason, want)
@@ -589,7 +605,8 @@ func TestReadCommandWildcardIsOneArgument(t *testing.T) {
 // judged as a read form; it loads only where * would.
 func TestReadCommandDoubleStarIsWholeArguments(t *testing.T) {
 	e := New(ModeDefault)
-	if err := e.AllowRemoteReads("systemctl status **", "cat **"); err != nil {
+	e.ReadCommandsContents = true
+	if err := e.AllowRemoteReads("systemctl status **", "cat **", "tail **"); err != nil {
 		t.Fatal(err)
 	}
 	for cmd, want := range map[string]Decision{
@@ -598,6 +615,9 @@ func TestReadCommandDoubleStarIsWholeArguments(t *testing.T) {
 		"systemctl stop nginx":                 Ask,
 		"cat /etc/os-release /etc/hostname":    Allow,
 		"cat /var/log/../../etc/shadow":        Ask,
+		"tail .[.]":                            Ask,
+		"cat .?/.?":                            Ask,
+		"cat /etc/os-release /etc/s*":          Ask,
 	} {
 		if got := e.Evaluate("ssh", true, remoteCall("app1", cmd)); got.Decision != want {
 			t.Errorf("%q: %s (%s), want %s", cmd, got.Decision, got.Reason, want)

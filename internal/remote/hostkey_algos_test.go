@@ -12,10 +12,12 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // multiKeyServer is startSSHServer's server with an ed25519, an ecdsa and an
@@ -156,5 +158,28 @@ func TestSSHCommandLine(t *testing.T) {
 	}
 	if got := knownHostsName("db.example:22"); got != "db.example" {
 		t.Errorf("known_hosts name %q", got)
+	}
+}
+
+// The offered list puts the known types first and adds an insecure one
+// (ssh-rsa's SHA-1, ssh-dss) only for a key of that type on file.
+func TestKnownAlgorithmsOrderAndInsecure(t *testing.T) {
+	addr, keys := multiKeyServer(t, "pw")
+	for typ, wantInsecure := range map[string]bool{ssh.KeyAlgoED25519: false, ssh.KeyAlgoRSA: true} {
+		cb, err := knownhosts.New(knownHostsWith(t, addr, keys[typ]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := knownAlgorithms(cb, addr)
+		if len(got) == 0 {
+			t.Fatalf("%s: no list", typ)
+		}
+		first := typ
+		if typ == ssh.KeyAlgoRSA {
+			first = ssh.KeyAlgoRSASHA512
+		}
+		if got[0] != first || slices.Contains(got, ssh.InsecureKeyAlgoDSA) || slices.Contains(got, ssh.KeyAlgoRSA) != wantInsecure {
+			t.Errorf("%s: %v", typ, got)
+		}
 	}
 }

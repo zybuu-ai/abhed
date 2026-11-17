@@ -526,6 +526,10 @@ type Engine struct {
 	// it are read unasked.
 	RemoteContents bool
 
+	// ReadCommandsContents is ssh.read_contents for ssh.read_commands: an
+	// entry with ** matches a call that prints files only where it is set.
+	ReadCommandsContents bool
+
 	// GitExtensions are git subcommands outside git itself, such as lfs, the
 	// person opted in to (permissions.git_extensions): the destructive step
 	// does not take them as an alias or extension it cannot read. Deny and

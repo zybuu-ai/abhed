@@ -460,11 +460,32 @@ word in its place. So `tail -n * /var/log/app/app.log` matches
 `tail -n 100 /etc/shadow /var/log/app/app.log`, and `grep -i * …` matches
 one pattern, quoted or not (`grep -i 'pool exhausted' …`). A word that is
 `**` alone stands for one or more whole arguments, each still checked as a
-read form: `systemctl status **` matches `systemctl status nginx --no-pager -l`.
-For a content reader such an entry reads any file the account can, so keep
-`**` to metadata programs. No wildcard stands for a `..` segment the entry
-does not write, so `cat /var/log/*` does not match
-`cat /var/log/../../etc/shadow`.
+read form: `systemctl status **` matches `systemctl status -n 0 nginx`.
+
+What a wildcard matches is the argument the program gets, so:
+
+- A word the wildcard matches may hold nothing the remote shell would
+  expand: no unquoted `*`, `?`, `[`, brace or `~`, and no `$` outside single
+  quotes. `cat /var/log/.[.]/.[.]/etc/shadow` and
+  `grep -i /etc/s* /var/log/app/app.log` ask. Only the entry's own word,
+  written exactly as in the entry, may hold a glob: under `cat /var/log/*`,
+  the call `cat /var/log/*` is the operator's own.
+- Where `*` stands for an operand, it never matches an option (a word
+  starting with `-`) unless a `--` comes before it, since getopt reads an
+  option wherever it stands: under `grep -i * /var/log/app/app.log`,
+  `grep -i -r /var/log/app/app.log` and `grep -i --file=/etc/shadow …` ask.
+  Where it stands for an option's value (`tail -n *`, `journalctl -u *`), the
+  program takes the next word as the value, so that is unchanged.
+- No wildcard stands for a `..` segment the entry does not write, so
+  `cat /var/log/*` does not match `cat /var/log/../../etc/shadow`. This is a
+  rule about the text, not where a path leads: a symbolic link under an
+  allowed folder (`/var/log/x` pointing at `/etc`) still reaches its target.
+- `**` with a program that prints files (`cat`, `grep`, `head`, `tail`, `rg`,
+  `sort`, `journalctl`, a checksum, `systemctl status` with its log, …) could
+  name any file the account can read, which is what `ssh.read_contents`
+  decides. Without it, such an entry runs only calls that print no file
+  (`systemctl status -n 0 nginx`), and `abhed doctor` and editors warn of the
+  entry. Name the files instead, one `*` per argument.
 
 A call whose command is one simple command matching an entry is a read: plan
 mode allows it, so a plan can start by inspecting the fleet, and no mode asks
@@ -525,7 +546,9 @@ since programs as plain as `lspci` have options that write (`-O`) or reach
 the network (`-q`). A call with a `$` outside single quotes is not a read,
 nor is one with an unquoted `*`, `?` or `[` at the start of a word or in a
 word that starts with `-`, since the host's shell could expand it into an
-option: write the glob after a path (`/etc/nginx/*.conf`, `./*.log`). A value
+option. A glob anywhere else in a word the entry's wildcard matches asks too,
+as above; a glob the entry itself writes (`ls -l /etc/nginx/*.conf`) runs
+when the call writes it the same way. A value
 in single quotes may hold `$` and braces only for `dpkg-query -f` and
 `rpm --queryformat`, which take a format. A call with a backslash inside
 single quotes is not a read: POSIX shells keep it as written and fish reads

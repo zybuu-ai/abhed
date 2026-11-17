@@ -8,20 +8,27 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
-- A wildcard entry in `ssh.read_commands` approved more than it named. `*`
-  matched any text, spaces included, so `tail -n * /var/log/app/app.log`
+- A wildcard entry in `ssh.read_commands` approved more than it named.
+  `*` matched any text, spaces included, so `tail -n * /var/log/app/app.log`
   also ran `tail -n 100 /etc/shadow /var/log/app/app.log` without asking,
-  and `cat /var/log/*` ran `cat /var/log/../../etc/shadow`. Each word was
-  still checked as a read form of the program, but a content reader reads
-  every file a call names. A `*` or `?` now stands within one argument: an
-  entry matches only a call with the same number of arguments, each
-  matching the entry's word in its place. A word that is `**` alone stands
-  for one or more whole arguments, for entries such as
-  `systemctl status **` that mean any read form. No wildcard stands for a
-  `..` segment the entry does not write. Affected: every release with
-  wildcard `ssh.read_commands` entries, on any host, `ssh_connect`'s
-  included. Exact entries, permission rules and the read-only classifier
-  are unchanged.
+  and `cat /var/log/*` ran `cat /var/log/../../etc/shadow`. A `*` or `?` now
+  stands within one argument: an entry matches only a call with the same
+  number of arguments, each matching the entry's word in its place. A word
+  a wildcard matches may hold nothing the remote shell would expand (an
+  unquoted glob, brace or `~`, or a `$`), so `cat /var/log/.[.]/.[.]/etc/shadow`
+  and `grep -i /etc/s* …` ask; only the entry's own word, written as in the
+  entry, may hold its glob. A `*` standing for an operand never matches an
+  option before a `--`, so `grep -i --file=/etc/shadow …` and `grep -i -r …`
+  ask under `grep -i * …`; one standing for an option's value is
+  unchanged. No wildcard stands for a `..` segment the entry does not write;
+  this is a rule about the text, and a symbolic link under an allowed folder
+  still reaches its target. A word that is `**` alone stands for one or
+  more whole arguments, each judged as a read form, and with a program that
+  prints files it matches only calls that print none unless
+  `ssh.read_contents` is set; `abhed doctor` warns of such an entry.
+  Affected: every release with wildcard `ssh.read_commands` entries, on any
+  host, `ssh_connect`'s included. Exact entries, permission rules and the
+  read-only classifier are unchanged.
 - Abhed Studio's debug setup could overwrite a file outside the workspace.
   When a person chose to run a workspace's commands in a container, Abhed
   raised `sandbox.min_tier` in `.abhed/config.json` by writing a fixed
@@ -97,8 +104,11 @@ All notable changes to Abhed are recorded here. The format follows
   argument. An entry that relied on `*` spanning several words, such as
   `journalctl *` for `journalctl -u app -n 50`, no longer matches such a
   call, which asks instead. Rewrite it with one wildcard per argument
-  (`journalctl -u * -n *`), as exact entries, or, to keep any read form of
-  the program, with `**` as its own word (`journalctl **`).
+  (`journalctl -u * -n *`), or as exact entries. `**` as a word of its own
+  keeps any read form of a program that prints no file (`df **`); for one
+  that does (`cat`, `grep`, `journalctl`, …) it needs `ssh.read_contents`. A
+  call whose word holds a glob, brace, `~` or `$` the remote shell would
+  expand, other than the entry's own word as written, now asks.
 - Secret names beginning `MCP_OAUTH_` are now kept for Abhed's own MCP
   logins: `abhed secret set` and `abhed secret rm` refuse them (the server's
   secrets API answers 400), and a command or tool is never given one by
@@ -571,7 +581,8 @@ All notable changes to Abhed are recorded here. The format follows
   not for `ssh_connect`. It is now answered before any approval, in plan
   mode too, that the host is ready for the `ssh` tool, and nothing is
   connected; `-p` names no flag for it. The `ssh` tool's description lists the declared hosts as
-  ready with no connect needed, and `ssh_connect`'s says it is not for them.
+  ready with no connect needed, and `ssh_connect`'s says it is not for them;
+  a declared host that did not load is named as such, never as ready.
 - A log read on a declared host (`tail`, `grep`, `cat`, …) without
   `ssh.read_contents` was refused as "ssh can make changes". The reason now
   says the program prints the contents of files, which runs unasked only
@@ -583,8 +594,9 @@ All notable changes to Abhed are recorded here. The format follows
   one key type for it, as `ssh` itself writes it. The client offered the
   library's own order of host key types (ecdsa before ed25519), so a server
   with several keys showed one not on file. It now offers the types on file
-  for that host first, as OpenSSH does. Verification is unchanged: only a
-  key on file is accepted. A key of a known type that does not match is now
+  for that host first, as OpenSSH does, and offers ssh-rsa's SHA-1 form or
+  ssh-dss only for a key of that type on file, never in FIPS mode.
+  Verification is unchanged: only a key on file is accepted. A key of a known type that does not match is now
   reported as a mismatch, with no advice to accept it, and the advice to
   record a key is a command ssh accepts (`ssh -p 12222 root@127.0.0.1`, not
   `ssh root@127.0.0.1:12222`). A host in `ssh.hosts` is no longer told to

@@ -36,7 +36,15 @@ func TestConnectHostsBoundSSHConnect(t *testing.T) {
 func TestConnectDeclaredHostIsReady(t *testing.T) {
 	reg, _ := NewRegistry([]HostConfig{{Name: "app1", Addr: "127.0.0.1:9", User: "root"}})
 	tool := ConnectTool{R: reg, Declared: []string{"app1", "db1"}}
-	for _, args := range []string{`{"addr":"app1"}`, `{"addr":"db1"}`, `{"addr":"app1","name":"app1"}`} {
+	// db1 did not load: it is never called ready.
+	if err := tool.Precheck(nil, json.RawMessage(`{"addr":"db1"}`)); err == nil || strings.Contains(err.Error(), "ready") ||
+		!strings.Contains(err.Error(), "did not load") {
+		t.Errorf("unloaded host: %v", err)
+	}
+	if d := tool.Description(); !strings.Contains(d, "not loaded") || !strings.Contains(d, "db1") {
+		t.Errorf("description does not set db1 apart: %s", d)
+	}
+	for _, args := range []string{`{"addr":"app1"}`, `{"addr":"app1","name":"app1"}`} {
 		err := tool.Precheck(nil, json.RawMessage(args))
 		if err == nil || !strings.Contains(err.Error(), "it is ready") || !strings.Contains(err.Error(), "ssh tool") {
 			t.Errorf("%s: %v", args, err)

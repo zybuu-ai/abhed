@@ -9,9 +9,12 @@ import (
 	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
+// readsEngine has ssh.read_contents on, so a ** entry is judged by its read
+// forms alone; TestSSHReadDoubleStarNeedsReadContents checks it off.
 func readsEngine(t *testing.T, mode policy.Mode, reads ...string) *policy.Engine {
 	t.Helper()
 	e := policy.New(mode)
+	e.ReadCommandsContents = true
 	if err := e.AllowRemoteReads(reads...); err != nil {
 		t.Fatal(err)
 	}
@@ -213,5 +216,25 @@ func TestSSHTimeoutIsCapped(t *testing.T) {
 		if got := (Tool{MaxTimeout: c.max}).timeout(c.ask); got != c.want {
 			t.Errorf("max %v, asked %ds: %v, want %v", c.max, c.ask, got, c.want)
 		}
+	}
+}
+
+// Without ssh.read_contents, a ** entry runs only calls that print no file:
+// cat ** would otherwise read any file the account can.
+func TestSSHReadDoubleStarNeedsReadContents(t *testing.T) {
+	e := readsEngine(t, policy.ModePlan, "cat **", "systemctl status **", "ls **")
+	e.ReadCommandsContents = false
+	for cmd, want := range map[string]policy.Decision{
+		"cat /etc/os-release":         policy.Deny,
+		"systemctl status nginx":      policy.Deny,
+		"systemctl status -n 0 nginx": policy.Allow,
+		"ls -la /var/log":             policy.Allow,
+	} {
+		if res := e.Evaluate("ssh", true, sshCall("web1", cmd)); res.Decision != want {
+			t.Errorf("%q: %+v, want %s", cmd, res, want)
+		}
+	}
+	if !policy.DoubleStarReadsContents("cat **", "") || policy.DoubleStarReadsContents("ls **", "") || policy.DoubleStarReadsContents("cat *", "") {
+		t.Error("DoubleStarReadsContents misjudges an entry")
 	}
 }

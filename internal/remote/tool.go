@@ -580,9 +580,21 @@ func (ConnectTool) SecretArgs() []string { return []string{"password_secret"} }
 
 func (t ConnectTool) Description() string {
 	declared := ""
-	if names := t.declaredNames(); len(names) > 0 {
-		declared = "Not for a host the operator declared (" + strings.Join(names, ", ") +
+	var ready, broken []string
+	for _, n := range t.declaredNames() {
+		if t.loaded(n) {
+			ready = append(ready, n)
+		} else {
+			broken = append(broken, n)
+		}
+	}
+	if len(ready) > 0 {
+		declared = "Not for a host the operator declared (" + strings.Join(ready, ", ") +
 			"): those are ready, so run commands on them with the `ssh` tool directly. "
+	}
+	if len(broken) > 0 {
+		declared += "Declared in ssh.hosts but not loaded, so unusable until the user fixes the entry: " +
+			strings.Join(broken, ", ") + ". "
 	}
 	return declared + "Register a remote machine for SSH, for this session only. Use when the user " +
 		"gives an address and a key path, or a password they stored with " +
@@ -593,6 +605,15 @@ func (t ConnectTool) Description() string {
 		"Do NOT use `ssh` through bash: the sandbox denies reads of key material, and a " +
 		"connection made inside a bash call does not survive to the next one. " +
 		"After this succeeds, run commands with the `ssh` tool."
+}
+
+// loaded reports a declared host that loaded, and so is ready for ssh.
+func (t ConnectTool) loaded(name string) bool {
+	if t.R == nil {
+		return false
+	}
+	_, ok := t.R.get(name)
+	return ok
 }
 
 // declaredNames are the operator's host names, loaded or not, sorted.
@@ -659,6 +680,10 @@ func (t ConnectTool) declaredName(a connectArgs) string {
 	switch {
 	case taken == "":
 		return ""
+	case a.Addr == taken && (a.Name == "" || a.Name == taken) && !t.loaded(taken):
+		return fmt.Sprintf("%s is declared in ssh.hosts but did not load (an entry needs a name, an addr "+
+			"and a user), so it cannot be used, and ssh_connect may not take its name. Ask the user to "+
+			"check its ssh.hosts entry. Nothing was connected.", taken)
 	case a.Addr == taken && (a.Name == "" || a.Name == taken):
 		// The model named the host, not a machine: it is already there.
 		return fmt.Sprintf("%s is a host the operator declared, and it is ready: run commands "+

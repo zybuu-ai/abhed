@@ -190,3 +190,19 @@ func TestSSHMaxTimeoutBounds(t *testing.T) {
 		}
 	}
 }
+
+// A ** entry for a program that prints files is warned of where
+// ssh.read_contents is off, since it then runs only calls that print none.
+func TestDoubleStarContentEntryWarns(t *testing.T) {
+	c := Default()
+	c.SSH.Enabled = true
+	c.SSH.ReadCommands = []string{"cat **", "ls **", "tail -n * /var/log/app/app.log"}
+	w := strings.Join(c.Warnings(), "\n")
+	if !strings.Contains(w, `"cat **"`) || strings.Contains(w, `"ls **"`) || strings.Contains(w, "tail -n") {
+		t.Fatalf("warnings: %s", w)
+	}
+	c.SSH.ReadContents = true
+	if w := strings.Join(c.Warnings(), "\n"); strings.Contains(w, "cat **") {
+		t.Fatalf("warned with read_contents on: %s", w)
+	}
+}
