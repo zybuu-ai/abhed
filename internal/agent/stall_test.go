@@ -268,3 +268,44 @@ func TestSecondCutReplyEndsStalled(t *testing.T) {
 		t.Fatalf("detail %q", end.Detail)
 	}
 }
+
+// shortCall is a thinker whose provider's call timeout is short.
+type shortCall struct {
+	*thinker
+	call time.Duration
+}
+
+func (c shortCall) CallTimeout() time.Duration { return c.call }
+
+// The backstop stays under half the call's cap, so a slow reasoning reply is
+// cut and asked again rather than ended by the cap as an error.
+func TestBackstopStaysUnderTheCallCap(t *testing.T) {
+	l, store, th := stallLoop(t, "runaway", "done")
+	l.Adapter = shortCall{thinker: th, call: 100 * time.Millisecond}
+	l.Config.ReasoningStall = time.Minute
+	reason, _ := l.Run(context.Background(), "go")
+	if reason != TermCompleted || len(th.reqs) != 2 {
+		t.Fatalf("ended %s after %d calls", reason, len(th.reqs))
+	}
+	if c := modelCalls(t, store); !strings.Contains(c[0].Error, "reasoned for 50ms") {
+		t.Fatalf("the cut call %+v", c[0])
+	}
+}
+
+// A model that streams its reasoning (a think switch, no hidden reasoning)
+// cut with no dollar cap is charged what came back, not its output bound.
+func TestCutLocalModelIsChargedWhatCameBack(t *testing.T) {
+	l, _ := costHarness(t, "local-model", nil)
+	local := counted{namedAdapter: named("local-model", 100000), n: 1000}
+	if l.Budget.CutAtBound(local) {
+		t.Fatal("a local model with no cap is charged at its bound")
+	}
+	u, _ := EstimateUsage(local, model.Request{MaxTokens: 8192}, model.Usage{}, CallEnd{Produced: 400, Cancelled: true}, l.Budget.CutAtBound(local))
+	if u.OutputTokens != 100 {
+		t.Fatalf("charged %d out, want what came back (100)", u.OutputTokens)
+	}
+	l.Budget.MaxUSD = 1
+	if !l.Budget.CutAtBound(local) {
+		t.Fatal("under a dollar cap a cut call is charged at its bound")
+	}
+}

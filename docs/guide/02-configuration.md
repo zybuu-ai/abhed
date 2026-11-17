@@ -180,8 +180,10 @@ limit](04-permissions.md#turn-limit).
 `reasoning_stall_tokens` (8000 by default) cuts a model reply that has only
 reasoned, with no text or tool call, past that many reasoning tokens
 (counted at about four characters a token), instead of holding it to the
-call's ten-minute cap. `reasoning_stall_seconds` (600 by default) is a time
-backstop for the same. Neither cuts a reply whose reasoning is still within
+call's ten-minute cap. `reasoning_stall_seconds` (300 by default) is a time
+backstop for the same, held to half the provider's `call_timeout_seconds`
+so that it, not the call's cap, ends a slow reasoning reply and the turn
+can ask again. Neither cuts a reply whose reasoning is still within
 the request's own thinking budget (`thinking_budget`), which raises the token
 bound to it. Values under 1000 tokens or 30 seconds are raised to those
 floors, so a repository's configuration cannot cut every thinking reply. A
@@ -194,7 +196,9 @@ set a Gemini reply rarely reaches the bound and is held by the call's
 timeouts instead.
 
 A cut reply is charged as any cut call is (see below), and the turn asks once
-more, with thinking off (no effort, and no thinking budget sent) and a nudge
+more, with thinking off (no effort, and no thinking budget sent; for
+Ollama, whose `/v1` endpoint ignores `think`, `reasoning_effort: "none"` as
+well) and a nudge
 to answer or make the one tool call it needs. If an answer arrives just as
 the cut comes, it is kept; a text answer cut part way is kept and the model
 asked to finish it (`-p` returns the two parts as one answer), and a second

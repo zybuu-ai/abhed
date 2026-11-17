@@ -98,11 +98,35 @@ func openAIStyle(defaultURL string, sampling Sampling) Factory {
 		}
 		a.PromptCache = cache
 		a.ParallelToolCalls = s.Get("parallel_tool_calls") == "true"
+		a.EffortOff, err = effortOff(s, base)
+		if err != nil {
+			return nil, err
+		}
 		if len(s.ReasoningTags) == 2 {
 			a.ReasoningTags = [2]string{s.ReasoningTags[0], s.ReasoningTags[1]}
 		}
 		return a, nil
 	}
+}
+
+// effortOff says whether thinking off is also sent as reasoning_effort
+// "none": for Ollama (its type, or its port on an openai-compatible entry),
+// or as extra.think_off ("reasoning_effort", or "think" for the field alone).
+func effortOff(s Spec, base string) (bool, error) {
+	switch v := s.Get("think_off"); v {
+	case "reasoning_effort":
+		return true, nil
+	case "think":
+		return false, nil
+	case "":
+	default:
+		return false, fmt.Errorf("provider %q: extra.think_off must be reasoning_effort or think, not %q", s.Type, v)
+	}
+	if s.Type == "ollama" {
+		return true, nil
+	}
+	u, err := url.Parse(base)
+	return err == nil && u.Port() == "11434", nil
 }
 
 // parallelCalls is f for a server known to take "parallel_tool_calls": it is

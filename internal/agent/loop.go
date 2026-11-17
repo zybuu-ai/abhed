@@ -281,7 +281,7 @@ const ContinueCutReply = "Your reply was cut off before it finished. Continue it
 // cap. The floors keep a lower layer from cutting every thinking reply.
 const (
 	DefaultReasoningStallTokens = 8000
-	DefaultReasoningStall       = 10 * time.Minute
+	DefaultReasoningStall       = 5 * time.Minute
 )
 
 // The floors of the reasoning bounds, vars so tests can lower them.
@@ -1536,6 +1536,10 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	if stallTokens <= 0 {
 		stallTokens = DefaultReasoningStallTokens
 	}
+	// The backstop stays well under the call's own cap, half of it, or the
+	// cap ends a slow reasoning reply as an error before the backstop can
+	// cut and retry it; the floors still hold.
+	stallAfter = min(stallAfter, model.CallTimeoutOf(l.Adapter)/2)
 	stallAfter, stallTokens = max(stallAfter, minReasoningStall), max(stallTokens, minReasoningStallTokens)
 	// Never cut within the thinking the request itself allows.
 	budget := model.ThinkingBudget(l.Adapter, req)

@@ -302,10 +302,11 @@ func EstimateUsage(a model.Adapter, req model.Request, u model.Usage, end CallEn
 }
 
 // CutAtBound reports whether a cut call to a is charged at its output bound:
-// under a dollar limit, or for a model whose reasoning is billed unseen.
+// under a dollar limit, or for a model whose reasoning is billed unseen
+// (ReasoningTokens). A server that takes a think switch streams its
+// reasoning, which is counted in what came back.
 func (b *Budget) CutAtBound(a model.Adapter) bool {
-	p := a.Profile()
-	return b.USDLimited() || p.ReasoningTokens || p.Sampling.Think
+	return b.USDLimited() || a.Profile().ReasoningTokens
 }
 
 // usd is a dollar cap as a person reads it: cents, or every digit below a

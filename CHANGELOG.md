@@ -686,7 +686,8 @@ All notable changes to Abhed are recorded here. The format follows
 - A model reply that only reasons, with no text or tool call, is cut past
   `limits.reasoning_stall_tokens` reasoning tokens (8000 by default, or the
   request's thinking budget if larger), with `limits.reasoning_stall_seconds`
-  (600) as a time backstop, instead of being held to the ten-minute call cap
+  (300, held to half the provider's call timeout) as a time backstop,
+  instead of being held to the ten-minute call cap
   and failing the run with no answer. Floors of 1000 tokens and 30 seconds
   apply. The cut call is charged as any cut call is; an answer that arrives
   as the cut comes is kept; otherwise the turn asks once more with thinking
@@ -700,6 +701,17 @@ All notable changes to Abhed are recorded here. The format follows
   suggestion and commit-message calls, which ask with thinking off, thought
   anyway (on Anthropic, a budget with thinking off made an invalid request),
   and a provider set to `think: false` with a budget still thought.
+- "Thinking off" now reaches Ollama. Its OpenAI-compatible `/v1` endpoint
+  ignores `think: false` and turns thinking off only for
+  `reasoning_effort: "none"`, which is now sent with it for type `ollama`
+  and an `openai-compatible` entry on port 11434; `extra.think_off`
+  (`reasoning_effort` or `think`) sets it for any other server. The
+  reasoning-stall retry, the critic, the next-prompt suggestion and the
+  commit message ask with thinking off.
+- A cancelled or cut call is no longer charged its whole output bound just
+  because the server takes a `think` switch: that bound applies under a
+  dollar cap, or for a model whose reasoning is billed unseen. A local model
+  that streams its reasoning is charged what came back.
 - Asking for work "in parallel" started no parallel subagents. The model read
   it as a request to make the project's code concurrent, or did the parts one
   after another: neither subagent tool said what such a request means. `tasks`

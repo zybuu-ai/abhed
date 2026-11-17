@@ -2,6 +2,7 @@ package app
 
 import (
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -38,5 +39,19 @@ func TestRunAnswerJoinsAContinuedReply(t *testing.T) {
 	}
 	if got := runAnswer(msgs[:2], nil, "s", 0); got != "The answer is" {
 		t.Fatalf("an uncontinued reply %q", got)
+	}
+}
+
+// The provider's call timeout is seen through the session's wrappers, so the
+// reasoning backstop is held under it.
+func TestCallTimeoutThroughTheSessionAdapter(t *testing.T) {
+	p := config.ProviderConfig{Type: "ollama", Model: "gemma4:26b", BaseURL: "http://127.0.0.1:1/v1", CallTimeoutSeconds: 120}
+	var a model.Adapter = gatedAdapter{Adapter: buildAdapter(p), probe: newEndpointProbe(p)}
+	if got := model.CallTimeoutOf(a); got != 120*time.Second {
+		t.Fatalf("through gatedAdapter %s", got)
+	}
+	f := newFallbackAdapter("a", a, []string{"b"}, func(string) (model.Adapter, error) { return &fakeAdapter{name: "B"}, nil })
+	if got := model.CallTimeoutOf(f); got != 120*time.Second {
+		t.Fatalf("through fallbackAdapter %s", got)
 	}
 }
