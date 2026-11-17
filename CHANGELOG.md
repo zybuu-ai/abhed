@@ -199,6 +199,10 @@ All notable changes to Abhed are recorded here. The format follows
   - **Policy.** The managed configuration and the signed org policy each set an
     allow list, and a bundle must pass both. An org whose keys the machine does
     not pin only narrows.
+    A trusted source's word at install is kept as the approval of that exact
+    digest. Turning a source off later does not unload a plugin installed from
+    it; the allow lists and `disabled` do. Install and approve refuse a bundle
+    that would not load.
   - **Where plugins never load:** `abhed serve` sessions and `-bare` runs.
   - **Record.** Changes reach the record as `config.changed`, and each session
     records `plugin.loaded` (OCSF 5019).
@@ -217,8 +221,9 @@ All notable changes to Abhed are recorded here. The format follows
   - New constants: `OrgSourceName` and `OrgPluginIndex`.
   - `LoadedPlugins`, `PluginPolicy` and `PluginRoots` return types from
     package `plugin`, so they are experimental with it.
-  - The `plugin` package embeds a snapshot of the public-good Sigstore trusted
-    root (`PublicGoodRoot`).
+  - The `plugin` package embeds a dated snapshot of the public-good Sigstore
+    trusted root (`PublicGoodRoot`, `PublicGoodRootSnapshot`). Loading and
+    `abhed plugin list` warn once the snapshot is more than a year old.
 - `abhed bg start` sends a snapshot of the repository it runs in, so a
   background job works on your code: the tracked files as they are in the
   working tree, without anything your read rules withhold, anything named

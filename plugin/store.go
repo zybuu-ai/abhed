@@ -58,8 +58,11 @@ type Install struct {
 	Basis     string `json:"basis"`
 	// Signer is who signed, as verified at install, for the person to read.
 	// Nothing trusts it: a load verifies the staged signature again.
-	Signer    *Signer   `json:"signer,omitempty"`
-	Pin       string    `json:"pin,omitempty"`
+	Signer *Signer `json:"signer,omitempty"`
+	Pin    string  `json:"pin,omitempty"`
+	// SourcePin is the digest a trusted source's index vouched for at
+	// install: the person's approval came through that source.
+	SourcePin string    `json:"source_pin,omitempty"`
 	Source    string    `json:"source,omitempty"`
 	From      string    `json:"from,omitempty"`
 	Installed time.Time `json:"installed_at"`

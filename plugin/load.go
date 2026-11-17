@@ -122,6 +122,9 @@ func Judge(b *Bundle, inst *Install, roots Roots, now time.Time) (Evidence, stri
 	if inst != nil && inst.Digest == b.Digest && inst.Pin == b.Digest {
 		ev.Pin = inst.Pin
 	}
+	if inst != nil && inst.Digest == b.Digest && inst.SourcePin == b.Digest {
+		ev.SourcePin = inst.SourcePin
+	}
 	if b.Signature == nil {
 		return ev, ""
 	}

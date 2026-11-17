@@ -185,6 +185,20 @@ var publicGood = sync.OnceValue(func() *TrustedRoot {
 	return r
 })
 
+// PublicGoodRootSnapshot is when the built-in public-good root was taken.
+var PublicGoodRootSnapshot = time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC)
+
+// PublicGoodRootStaleAfter is how old the built-in root may be before
+// loading says so.
+const PublicGoodRootStaleAfter = 365 * 24 * time.Hour
+
+// PublicGoodRootStale reports a built-in root older than
+// PublicGoodRootStaleAfter at now: Sigstore may have rotated or revoked a
+// key since, and only an Abhed upgrade or a managed trusted root brings that.
+func PublicGoodRootStale(now time.Time) bool {
+	return now.Sub(PublicGoodRootSnapshot) > PublicGoodRootStaleAfter
+}
+
 // PublicGoodRoot is the public-good Sigstore instance's trusted root as this
 // build carries it (a snapshot of sigstore/root-signing's
 // targets/trusted_root.json). A bundle signed after a key rotation it does
@@ -238,13 +252,10 @@ func ParseTrustedRoot(data []byte) (*TrustedRoot, error) {
 			return nil, fmt.Errorf("trusted root: log %d: %w", i, err)
 		}
 		// A Rekor v1 log's id is the SHA-256 of its key, which is what binds
-		// an entry to the key its SET is checked with. Only such logs are
-		// verified here; another kind (a Rekor v2 log's checkpoint key) is
-		// left out, and an ECDSA log whose id is not its key's is refused.
+		// an entry to the key its SET is checked with. A log whose id is not
+		// its key's (a Rekor v2 log's checkpoint key, say) is left out, so
+		// an entry naming it is refused.
 		if sum := sha256.Sum256(der); !bytes.Equal(sum[:], id) {
-			if _, ecdsaKey := key.(*ecdsa.PublicKey); ecdsaKey {
-				return nil, fmt.Errorf("trusted root: log %d: its keyId is not the SHA-256 of its key", i)
-			}
 			continue
 		}
 		out.tlogs = append(out.tlogs, trustedLog{keyID: id, key: key, start: start, end: end})

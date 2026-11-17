@@ -166,10 +166,21 @@ from the person's own publishers or pin, which count only within every
 layer. `require_signature`
 refuses pins. When any source is set, installs come only from a source: a
 name is looked up in each index, the archive must sit under the source, and
-its digest must be the one the index lists. That is the trust basis
-`org-source` while a trusted source stays configured: one the machine's file
-names, or the org server when the org's keys are pinned. Policy is applied again at every load, so a later org change unloads a
-plugin that no longer passes. A workspace has no way to enable a plugin:
+its digest must be the one the index lists. When the source is trusted (one
+the machine's file names, or the org server when the org's keys are pinned),
+that is the trust basis `org-source`. It is kept as the approval of exactly
+that digest through the source (`source_pin`). That approval stands at every
+later load, under `require_signature` too as long as the signature verifies
+against the org root. Loads never ask the source again. Turning `org_source`
+off, removing a source, or removing a bundle from an index therefore does not
+unload an installed plugin; the allow lists and `disabled` do. Install and
+approve judge a bundle from what is kept, exactly as a load will, and refuse
+one that would not load. Policy is applied again at every load, so a later
+org change to the lists unloads a plugin that no longer passes.
+
+The built-in public-good root is a dated snapshot. Past a year, loading and
+`abhed plugin list` say so. Rotations and revocations reach a build only
+through an upgrade or a managed `plugins.trusted_root`. A workspace has no way to enable a plugin:
 installs and approvals live in the person's own state, and the policy is
 managed.
 

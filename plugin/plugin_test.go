@@ -299,6 +299,11 @@ func TestPolicyAdmit(t *testing.T) {
 		{"source no longer listed", plugin.Policy{}, plugin.Evidence{Digest: d, Source: "acme"}, nil, ""},
 		{"source, but a managed publisher list", plugin.Policy{Sources: src, Lists: []plugin.AllowList{managedPubs}}, plugin.Evidence{Digest: d, Source: "acme"}, nil, ""},
 		{"signed by a stranger, from a trusted source", plugin.Policy{Sources: src}, plugin.Evidence{Digest: d, Signer: other, Source: "acme"}, nil, plugin.BasisSource},
+		// What a trusted source vouched for at install, kept for that digest.
+		{"source approval, signed, require_signature", plugin.Policy{RequireSignature: true}, plugin.Evidence{Digest: d, Signer: other, SourcePin: d}, nil, plugin.BasisSource},
+		{"source approval, unsigned, require_signature", plugin.Policy{RequireSignature: true}, plugin.Evidence{Digest: d, SourcePin: d}, nil, ""},
+		{"source approval of another digest", plugin.Policy{}, plugin.Evidence{Digest: d, SourcePin: x}, nil, ""},
+		{"source approval, a managed list it fails", plugin.Policy{Lists: []plugin.AllowList{managedPubs}}, plugin.Evidence{Digest: d, Signer: other, SourcePin: d}, nil, ""},
 	}
 	for _, c := range cases {
 		basis, err := c.p.Admit(c.e, c.mine)
@@ -627,14 +632,18 @@ func TestCertificateIdentityStrict(t *testing.T) {
 	}
 }
 
-// A trusted root whose ECDSA log keyId is not its key's hash is refused.
+// A log whose keyId is not its key's hash is left out of a trusted root.
 func TestTrustedRootKeyIDBound(t *testing.T) {
 	var r map[string]any
 	_ = json.Unmarshal(plugintest.NewSigstore().TrustedRoot(), &r)
 	r["tlogs"].([]any)[0].(map[string]any)["logId"] = map[string]any{"keyId": base64.StdEncoding.EncodeToString(make([]byte, 32))}
 	b, _ := json.Marshal(r)
-	if _, err := plugin.ParseTrustedRoot(b); err == nil || !strings.Contains(err.Error(), "keyId") {
+	// The log is left out; with no other, the root names no log at all.
+	if _, err := plugin.ParseTrustedRoot(b); err == nil || !strings.Contains(err.Error(), "transparency log") {
 		t.Fatalf("a mismatched keyId was taken: %v", err)
+	}
+	if !plugin.PublicGoodRootStale(plugin.PublicGoodRootSnapshot.Add(400*24*time.Hour)) || plugin.PublicGoodRootStale(plugin.PublicGoodRootSnapshot.Add(24*time.Hour)) {
+		t.Fatal("staleness of the built-in root")
 	}
 	// The public-good root, with its Rekor v2 log left out, parses.
 	if plugin.PublicGoodRoot() == nil {

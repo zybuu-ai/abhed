@@ -484,16 +484,17 @@ func TestPluginInstallFromSource(t *testing.T) {
 	}
 	e.run("approve", "-sha256", digest, acmeName)
 	// What the index vouched for at install is kept as the approval of that
-	// digest: a load trusts it as a pin and never asks the source again.
-	if cfg := e.load(); len(cfg.LoadedPlugins()) != 1 || cfg.LoadedPlugins()[0].Basis != plugin.BasisPin {
-		t.Fatal("a source's plugin did not load as approved by its digest")
+	// digest: a load trusts it and never asks the source again.
+	if cfg := e.load(); len(cfg.LoadedPlugins()) != 1 || cfg.LoadedPlugins()[0].Basis != plugin.BasisSource {
+		t.Fatal("a source's plugin did not load as approved through its source")
 	}
-	// Editing the decisions file to claim a source changes nothing.
+	// The source name in the decisions file is not trust; only the
+	// approval of that digest is.
 	state := filepath.Join(e.home, ".abhed", "plugins.json")
 	b, _ := os.ReadFile(state)
-	_ = os.WriteFile(state, []byte(strings.ReplaceAll(string(b), `"pin": "`+digest+`"`, `"pin": ""`)), 0o600)
+	_ = os.WriteFile(state, []byte(strings.ReplaceAll(string(b), `"source_pin": "`+digest+`"`, `"source_pin": ""`)), 0o600)
 	if cfg := e.load(); len(cfg.LoadedPlugins()) != 0 {
-		t.Fatal("a source recorded in the decisions file was taken as trust")
+		t.Fatal("a source name in the decisions file was taken as trust")
 	}
 	// A source serving another bundle than it lists is refused.
 	e.setManaged(`{"plugins":{"sources":[{"name":"acme","url":"https://abhed.acme.example/v1/plugins/index"}]}}`)
@@ -656,5 +657,63 @@ func TestPluginInstallRefusesEscapes(t *testing.T) {
 	code, out := e.run("install", "-sha256", plugin.Digest([]byte(m)), dir)
 	if code == 0 || !strings.Contains(out, "does not print as itself") || strings.ContainsRune(out, 0x1b) {
 		t.Fatalf("install: %d %q", code, out)
+	}
+}
+
+// The Team setup: a trusted source and require_signature. A signed bundle
+// installed from the source by name, signed by a publisher the person never
+// added, approves without a prompt and loads in a later session.
+func TestPluginSourceUnderRequireSignature(t *testing.T) {
+	e := newPluginEnv(t)
+	dir, digest := e.signedBundle(pluginSpec())
+	index := `{"plugins":[{"name":"acme-review","version":"1.0.0","url":"bundles/a.tgz","sha256":"` + digest + `"}]}`
+	served := map[string][]byte{
+		"https://abhed.acme.example/v1/plugins/index":         []byte(index),
+		"https://abhed.acme.example/v1/plugins/bundles/a.tgz": plugintest.Archive(dir),
+	}
+	var out bytes.Buffer
+	run := func(args ...string) int {
+		out.Reset()
+		return pluginCmd(e.ws, args, config.TrustRefused, pluginIO{in: strings.NewReader(""), out: &out, err: &out,
+			fetch: func(_ context.Context, raw string, _ int64) ([]byte, error) {
+				if b, ok := served[raw]; ok {
+					return b, nil
+				}
+				return nil, errors.New("404")
+			}})
+	}
+	e.setManaged(`{"plugins":{"require_signature":true,"trusted_root":` + strconv.Quote(e.root) +
+		`,"sources":[{"name":"acme","url":"https://abhed.acme.example/v1/plugins/index"}]}}`)
+	if code := run("install", "acme-review"); code != 0 {
+		t.Fatalf("install: %s", out.String())
+	}
+	if code := run("approve", "-sha256", digest, acmeName); code != 0 {
+		t.Fatalf("approve: %s", out.String())
+	}
+	cfg := e.load()
+	if len(cfg.LoadedPlugins()) != 1 || cfg.LoadedPlugins()[0].Basis != plugin.BasisSource || cfg.LoadedPlugins()[0].Signer == nil {
+		t.Fatalf("not loaded from the source's approval: %+v", cfg.LoadedPlugins())
+	}
+	// Turning the source off does not unload it: only the lists or disabled do.
+	e.setManaged(`{"plugins":{"require_signature":true,"trusted_root":` + strconv.Quote(e.root) + `}}`)
+	if len(e.load().LoadedPlugins()) != 1 {
+		t.Fatal("removing the source unloaded a plugin installed from it")
+	}
+	e.setManaged(`{"plugins":{"require_signature":true,"trusted_root":` + strconv.Quote(e.root) +
+		`,"allowed_publishers":[{"identity":"boss@acme.example","issuer":"` + plIssuer + `"}]}}`)
+	if len(e.load().LoadedPlugins()) != 0 {
+		t.Fatal("a managed list did not unload it")
+	}
+	// Under require_signature an unsigned bundle never installs from a source.
+	e.setManaged(`{"plugins":{"require_signature":true,"trusted_root":` + strconv.Quote(e.root) +
+		`,"sources":[{"name":"acme","url":"https://abhed.acme.example/v1/plugins/index"}]}}`)
+	run("remove", "-yes", acmeName)
+	spec := pluginSpec()
+	spec.Version = "2.0.0"
+	udir, ud := e.unsignedBundle(spec)
+	served["https://abhed.acme.example/v1/plugins/index"] = []byte(`{"plugins":[{"name":"acme-review","version":"2.0.0","url":"bundles/u.tgz","sha256":"` + ud + `"}]}`)
+	served["https://abhed.acme.example/v1/plugins/bundles/u.tgz"] = plugintest.Archive(udir)
+	if code := run("install", "acme-review"); code == 0 {
+		t.Fatalf("an unsigned bundle installed under require_signature: %s", out.String())
 	}
 }

@@ -112,9 +112,14 @@ against decides what it counts for:
   counts for your own publishers alone.
 
 Roots are kept, not given per install, because each load checks the
-signature again. A bundle signed after a public-good key rotation that this
-build does not know about needs a newer Abhed, or a root given in the
-configuration.
+signature again.
+
+The built-in root is a snapshot, taken on the date `abhed plugin list` shows
+once it is more than a year old; loading warns then too. Sigstore rotates its
+keys. A bundle signed under a key this snapshot does not know fails to
+verify. A key Sigstore later revokes stays trusted by this build. Either
+change reaches you only through an Abhed upgrade, or through a managed
+`plugins.trusted_root` your organisation keeps current.
 
 ```sh
 abhed plugin trusted-root ./trusted_root.json      # kept as ~/.abhed/plugin-trusted-root.json
@@ -318,10 +323,19 @@ lists, which still narrow, but they never grant.
 
 The `org` source is trusted on the same terms: when the machine's file turns
 it on, or the org's keys are pinned. Otherwise a bundle from it needs a
-signature or a pin like any other. When a trusted source's index vouches for
-a digest at install, that is recorded as your approval of exactly that digest.
-A load treats it as a pin, and never asks the source again or takes a source
-from `plugins.json`.
+signature or a pin like any other.
+
+When a trusted source's index vouches for a digest at install, that is
+recorded as your approval of exactly that digest through the source (basis
+`org-source`). It stands at every later load, even under
+`require_signature`, as long as the bundle's signature verifies against the
+org root. A load never asks the source again, and never takes a source name
+from `plugins.json`. So turning `org_source` off, removing a source, or
+removing the bundle from the index does not unload a plugin already installed
+from it. Only the allow lists or `disabled` do that.
+
+Install judges the bundle as every later load will, from what it keeps, and
+refuses one that would not load. Approval does the same.
 
 A source is a JSON index:
 

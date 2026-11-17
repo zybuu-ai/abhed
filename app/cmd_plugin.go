@@ -389,10 +389,17 @@ func (pc *pluginCtx) install(arg, pin string) error {
 		pc.logChange("plugin install", name, "", b.Digest, err.Error())
 		return fmt.Errorf("%s was not installed: %w", name, err)
 	}
+	sourcePin := ""
 	if basis == plugin.BasisSource {
 		// What the index vouched for is kept as the approval of exactly
 		// this digest; a load never asks the source, or the state, again.
-		pin = b.Digest
+		sourcePin = b.Digest
+	}
+	// Judge it as every later load will, from what is kept: an install that
+	// would not load is refused here, not reported as installed.
+	if _, _, err := pc.cfg.PluginPolicy().Decide(pc.keptEvidence(b, pin, sourcePin, roots), st.Publishers); err != nil {
+		pc.logChange("plugin install", name, "", b.Digest, "it would not load: "+err.Error())
+		return fmt.Errorf("%s was not installed: it would not load once installed: %w", name, err)
 	}
 	if !plugin.AtLeast(runningVersion(), b.Manifest.Abhed) {
 		return fmt.Errorf("%s %s needs Abhed %s or later", name, b.Manifest.Version, b.Manifest.Abhed)
@@ -413,7 +420,7 @@ func (pc *pluginCtx) install(arg, pin string) error {
 		}
 		by = "plugin upgrade"
 	}
-	inst, err := pc.store.Stage(st, b, plugin.Install{Basis: basis, Signer: signer, Pin: pin, Source: f.source, From: f.from})
+	inst, err := pc.store.Stage(st, b, plugin.Install{Basis: basis, Signer: signer, Pin: pin, SourcePin: sourcePin, Source: f.source, From: f.from})
 	if err != nil {
 		return err
 	}
@@ -499,7 +506,32 @@ func (pc *pluginCtx) approve(name, digest string) error {
 	return pc.approveLocked(st, name, digest)
 }
 
+// keptEvidence is the evidence a later load judges b on, from what an
+// install keeps.
+func (pc *pluginCtx) keptEvidence(b *plugin.Bundle, pin, sourcePin string, roots plugin.Roots) plugin.Evidence {
+	ev, _ := plugin.Judge(b, &plugin.Install{Digest: b.Digest, Pin: pin, SourcePin: sourcePin}, roots, time.Now())
+	return ev
+}
+
 func (pc *pluginCtx) approveLocked(st *plugin.State, name, digest string) error {
+	// Judged as a load will judge it: approving what would not load is refused.
+	if e := st.Plugins[name]; e != nil && e.Pending != nil {
+		b, err := pc.store.Open(name, e.Pending)
+		if err != nil {
+			return err
+		}
+		roots, err := pc.roots()
+		if err != nil {
+			return err
+		}
+		ev, note := plugin.Judge(b, e.Pending, roots, time.Now())
+		if _, _, err := pc.cfg.PluginPolicy().Decide(ev, st.Publishers); err != nil {
+			if note != "" {
+				err = fmt.Errorf("%w (%s)", err, note)
+			}
+			return fmt.Errorf("%s cannot be approved: it would not load: %w", name, err)
+		}
+	}
 	old, now, err := pc.store.Approve(st, name, digest)
 	if err != nil {
 		return err
@@ -624,6 +656,10 @@ func (pc *pluginCtx) list(asJSON bool) error {
 	if len(rows) == 0 {
 		fmt.Fprintln(pc.io.out, "No plugins installed.")
 		return nil
+	}
+	if roots, err := pc.roots(); err == nil && roots.Org == plugin.PublicGoodRoot() && plugin.PublicGoodRootStale(time.Now()) {
+		fmt.Fprintf(pc.io.out, "Note: the built-in Sigstore public-good root is from %s. A key Sigstore rotated or revoked since reaches this build only by an Abhed upgrade or a managed plugins.trusted_root.\n",
+			plugin.PublicGoodRootSnapshot.Format("2006-01-02"))
 	}
 	tw := tabwriter.NewWriter(pc.io.out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tVERSION\tSTATE\tTRUSTED BY")

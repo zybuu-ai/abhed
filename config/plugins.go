@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/zybuu-ai/abhed/plugin"
 )
@@ -177,6 +178,11 @@ func applyPlugins(cfg *Config, w warnSink) {
 		w.emit("plugin\x00"+m, m)
 	}
 	loaded, warns := plugin.LoadAll(s, cfg.PluginPolicy(), runningVersion(), roots)
+	if len(loaded) > 0 && roots.Org == plugin.PublicGoodRoot() && plugin.PublicGoodRootStale(time.Now()) {
+		m := fmt.Sprintf("plugins: the built-in Sigstore public-good root is from %s; a key Sigstore has rotated or revoked since reaches this build only by an Abhed upgrade or a managed plugins.trusted_root",
+			plugin.PublicGoodRootSnapshot.Format("2006-01-02"))
+		w.emit("plugin\x00stale-root", m)
+	}
 	for _, m := range warns {
 		w.emit("plugin\x00"+m, m)
 	}

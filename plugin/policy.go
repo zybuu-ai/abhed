@@ -73,6 +73,10 @@ type Evidence struct {
 	PersonSigner *Signer
 	// Pin is the digest the person approved by, "" for none.
 	Pin string
+	// SourcePin is the digest a trusted source's index vouched for when the
+	// person installed it from there, "" for none. Unlike Pin it stands
+	// under require_signature, as long as Signer is verified too.
+	SourcePin string
 	// Source names the source whose index listed Digest, "" for none.
 	Source string
 }
@@ -125,6 +129,8 @@ func (p Policy) Decide(e Evidence, mine []Publisher) (string, *Signer, error) {
 		return BasisSignature, person, nil
 	case p.fromSource(e):
 		return BasisSource, nil, nil
+	case e.SourcePin != "" && e.SourcePin == e.Digest && (e.Signer != nil || !p.RequireSignature):
+		return BasisSource, e.Signer, nil
 	case e.Pin != "" && e.Pin == e.Digest && !p.RequireSignature:
 		return BasisPin, nil, nil
 	case e.Pin != "" && e.Pin != e.Digest:
