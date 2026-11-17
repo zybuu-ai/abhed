@@ -251,3 +251,34 @@ func Archive(dir string) []byte {
 	_ = gz.Close()
 	return buf.Bytes()
 }
+
+// InMemory packs spec as a gzipped tar without touching the disk, and
+// returns it with its manifest's digest.
+func InMemory(spec Spec) (archive []byte, digest string) {
+	if spec.Version == "" {
+		spec.Version = "1.0.0"
+	}
+	if spec.Publisher == "" {
+		spec.Publisher = "Test Publisher"
+	}
+	files := map[string][]byte{}
+	for p, c := range spec.Files {
+		files[p] = []byte(c)
+	}
+	m := plugin.Manifest{Schema: 1, Name: spec.Name, Version: spec.Version, Publisher: spec.Publisher, Abhed: spec.Abhed,
+		Hooks: spec.Hooks, MCPServers: spec.MCPServers}
+	data := must(plugin.Pack(m, files))
+	files[plugin.ManifestName] = data
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, p := range sortedKeys(files) {
+		if err := tw.WriteHeader(&tar.Header{Name: spec.Name + "/" + p, Mode: 0o644, Size: int64(len(files[p])), Typeflag: tar.TypeReg}); err != nil {
+			panic(err)
+		}
+		_, _ = tw.Write(files[p])
+	}
+	_ = tw.Close()
+	_ = gz.Close()
+	return buf.Bytes(), plugin.Digest(data)
+}
