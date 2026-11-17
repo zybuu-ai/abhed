@@ -138,9 +138,11 @@ with the latest one:
   `local_only` is: a loopback address, `localhost`, or a local server type
   at its default endpoint. A proxy on this machine that forwards to a model
   elsewhere counts as local, so its model is warmed through it (still with
-  no code). Once you have clicked or typed in the window, opening a
-  workspace file opens the editor session (with the engine running) and
-  warms the model then, before your first keystroke; editors restored at
+  no code). Once you have clicked or typed in the window, a workspace file
+  in front opens the editor session and warms the model before your first
+  keystroke, starting the engine first if it is not running; coming back
+  to the window warms it again (within the two-minute bound), so a model
+  unloaded meanwhile is loaded before you type. Editors restored at
   start-up, untouched, warm nothing and start nothing.
 - **Completions first.** A local server often answers one request at a
   time. A completion waiting for the server goes ahead of next-edit calls
