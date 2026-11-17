@@ -138,8 +138,13 @@ func TestHeadlessUsesTheRememberedSignIn(t *testing.T) {
 	if strings.Contains(h.Stderr(), "guest") {
 		t.Fatalf("a signed-in run noted guest: %q", h.Stderr())
 	}
-	if r := h.Record(); len(r.Events) == 0 {
+	r := h.Record()
+	if len(r.Events) == 0 {
 		t.Fatal("the account's run kept no record")
+	}
+	// session.started says whose session it was.
+	if r.Events[0].Type != "session.started" || !strings.Contains(string(r.Events[0].Payload), `"principal":{"kind":"account","owner":"device:tester"}`) {
+		t.Fatalf("session.started: %s", r.Events[0].Payload)
 	}
 }
 

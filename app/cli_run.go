@@ -636,7 +636,7 @@ func skipPermissions(cfg config.Config, f *cliFlags, confirm func(config.Config)
 // -dangerously-skip-permissions.
 func startPayload(cfg config.Config, f *cliFlags, headless bool, model string) map[string]any {
 	return map[string]any{"surface": "cli", "headless": headless, "provider": cfg.Model.Default, "model": model,
-		"mode": cfg.StartMode(), "bypass_confirmed": f.skipPerms}
+		"mode": cfg.StartMode(), "bypass_confirmed": f.skipPerms, "principal": principalStart()}
 }
 
 // confirmBypass asks, on a terminal, before -dangerously-skip-permissions

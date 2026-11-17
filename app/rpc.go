@@ -220,7 +220,7 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 					emit(rpcResponse{Type: "event", Event: &ev})
 				},
 			}
-			na, err := abhed.New(embedded.With(ctx, embedded.Settings{Surface: "rpc"}), opts)
+			na, err := abhed.New(embedded.With(ctx, embedded.Settings{Surface: "rpc", Principal: principalStart()}), opts)
 			made = na
 			cur = q.sess
 			mu.Lock()

@@ -339,3 +339,18 @@ func serverStillAdmits(s *identity.Store, p identity.Principal) error {
 	}
 	return nil
 }
+
+// principalStart is who is working, as session.started records it, so the
+// record, its OCSF copy and the org server each say whose session it was:
+// a guest's included.
+func principalStart() map[string]any {
+	p := currentPrincipal()
+	out := map[string]any{"kind": string(p.Kind)}
+	if owner := cliUser(); owner != "" {
+		out["owner"] = owner
+	}
+	if guestByDefault() {
+		out["by_default"] = true
+	}
+	return out
+}

@@ -111,6 +111,13 @@ guest uses the machine's configuration and defaults, never an account's
 own allow rules, trust decisions, grants or secrets. Files the agent
 changes in your workspace are the work itself, and stay.
 
+Every session's `session.started` says who was working: `principal`, with
+its `kind` (`account`, `server`, `guest` or `legacy`) and `owner`
+(`device:<username>`, or `guest`), and `by_default` when no one chose it.
+Where the managed configuration writes the record's OCSF copy
+(`record.ocsf`), a guest's sessions are written there too, as the
+organisation's, though nothing of them is kept in the guest's folder.
+
 ## Runs that cannot ask
 
 `abhed -p`, `abhed rpc`, `abhed acp`, CI and scripts never wait for an
