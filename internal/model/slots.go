@@ -50,6 +50,10 @@ func endpointKey(baseURL, model string) string {
 		return strings.TrimRight(strings.ToLower(baseURL), "/") + "\x00" + model
 	}
 	host := strings.ToLower(u.Hostname())
+	if host == "localhost" || host == "::1" || host == "127.0.0.1" {
+		// One machine's loopback, however it is written.
+		host = "127.0.0.1"
+	}
 	port := u.Port()
 	if (u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443") {
 		port = ""
@@ -184,8 +188,20 @@ func (p *slotPool) release() {
 	p.inUse--
 }
 
+// Waiting is how many requests wait for a slot of a model on a server, for
+// a surface that shows the queue (and for tests).
+func Waiting(baseURL, model string) int {
+	poolsMu.Lock()
+	p := pools[endpointKey(baseURL, model)]
+	poolsMu.Unlock()
+	return p.waiting()
+}
+
 // waiting is how many requests wait for a slot, for tests.
 func (p *slotPool) waiting() int {
+	if p == nil {
+		return 0
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.waiters)

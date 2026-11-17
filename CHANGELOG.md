@@ -547,8 +547,9 @@ All notable changes to Abhed are recorded here. The format follows
   is now never empty: a newline at the end of a file. A suggestion that
   opens as an English sentence where code is written (not in a comment, a
   docstring, a string, or a prose or configuration language) is dropped,
-  with `dropped` saying why, and Studio does not show one that would leave
-  the file parsing worse than it does.
+  with `dropped` saying why; text inside a string that spans lines (a Go raw
+  string, a template literal, a Rust raw string, a heredoc) is kept. Studio
+  does not show one that would leave the file parsing worse than it does.
 - Next-edit calls starved ghost text on a model server that answers one
   request at a time: 17 next-edit calls wrote 12,708 tokens in one session,
   and completions shown in 2.6 s by the engine reached the editor after 4.6

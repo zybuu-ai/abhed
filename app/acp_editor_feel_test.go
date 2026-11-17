@@ -373,7 +373,14 @@ func TestStudioNextEditQueuedAndCancelledIsNotCharged(t *testing.T) {
 	}
 	// Queued behind the holder, then cancelled: nothing went, nothing is charged.
 	queued := r.open()
-	sum := charged(queued, func() { time.Sleep(300 * time.Millisecond) })
+	sum := charged(queued, func() {
+		for deadline := time.Now().Add(10 * time.Second); model.Waiting(m.URL+"/v1", "qwen2.5-coder") == 0; {
+			if time.Now().After(deadline) {
+				t.Fatal("the next edit never queued for the slot")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	})
 	if sum["tokens_in"] != float64(0) || sum["tokens_out"] != float64(0) || sum["estimated"] != nil || sum["cost_usd"] != nil {
 		t.Fatalf("a call that never went was charged: %v", sum)
 	}

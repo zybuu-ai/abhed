@@ -1714,10 +1714,14 @@ _abhed/complete/warm { sessionId } → { warmed: boolean, ms?: number, recent?: 
   in six words or more ("None if x is None else x" is code), unless the
   cursor is in a comment, a docstring or a string, or the language is
   written in sentences (Markdown, plain text, YAML and the like). A string
-  that spans lines counts: a Go raw string or JavaScript template (an odd
-  count of backticks before the cursor), a Rust raw string left open, a Ruby
-  or shell heredoc whose closing line has not come, or a Python triple
-  quote; where this is unsure, the text is kept. Studio also parses the
+  that spans lines counts, each in the languages that have it: in Go,
+  JavaScript and TypeScript an odd count of backticks before the cursor
+  (escaped ones aside); in Rust a raw string (`r"`, `r#"`, `br#"`) left
+  open; in Ruby, shell, Perl and PHP a heredoc whose closing line has not
+  come; in any language an open triple quote. With no language named, every
+  rule applies. The counts are rough: a stray backtick in a Go comment, say,
+  keeps the prose filter quiet for the rest of the file, where Studio's
+  parse check below still applies. Studio also parses the
   document with the suggestion inserted, where it has the language's
   grammar and the document is at most 256 KB (larger ones are left to the
   engine's filter), and drops one whose own text holds a syntax error or

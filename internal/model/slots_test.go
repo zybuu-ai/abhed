@@ -271,3 +271,17 @@ func TestCompletionsGoFirstForASlot(t *testing.T) {
 		t.Fatalf("served %s", got)
 	}
 }
+
+// One machine's loopback is one server however it is written, so providers
+// named by localhost and by 127.0.0.1 share a pool (architect review r3).
+func TestLoopbackSpellingsShareAPool(t *testing.T) {
+	want := endpointKey("http://127.0.0.1:11434/v1", "m")
+	for _, u := range []string{"http://localhost:11434/v1", "http://LOCALHOST:11434/v1/", "http://[::1]:11434/v1"} {
+		if got := endpointKey(u, "m"); got != want {
+			t.Errorf("%s: %q, want %q", u, got, want)
+		}
+	}
+	if ServerKey("http://localhost:11434/v1") != ServerKey("http://127.0.0.1:11434/v1") {
+		t.Error("ServerKey keeps the loopback spellings apart")
+	}
+}

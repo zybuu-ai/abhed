@@ -273,7 +273,7 @@ var proseLanguages = map[string]bool{"markdown": true, "plaintext": true, "latex
 
 // inWords reports a cursor inside a comment, a docstring or a string, where
 // a sentence belongs: prefix is the text before it.
-func inWords(prefix string) bool {
+func inWords(prefix, language string) bool {
 	line := prefix[strings.LastIndexByte(prefix, '\n')+1:]
 	code := strings.TrimLeft(line, " \t")
 	for _, c := range []string{"#", "//", "--", "/*", "*", "<!--", ";", "%"} {
@@ -290,10 +290,15 @@ func inWords(prefix string) bool {
 	if open := strings.LastIndex(prefix, "/*"); open >= 0 && open > strings.LastIndex(prefix, "*/") {
 		return true
 	}
-	// Strings that span lines: a Go raw string or a JavaScript template (an
-	// odd count of backticks), a Rust raw string, a Ruby or shell heredoc.
-	// Counted roughly: where unsure the text is taken, not dropped.
-	if strings.Count(prefix, "`")%2 == 1 || openRawString(prefix) || openHeredoc(prefix) {
+	// Strings that span lines, each only in the languages that have it (or a
+	// language not named): a Go raw string or a JavaScript template (an odd
+	// count of backticks, escaped ones aside), a Rust raw string, a Ruby,
+	// shell, Perl or PHP heredoc. So "1<<bits" in Go or C is no heredoc.
+	lang := strings.ToLower(language)
+	all := lang == ""
+	if (all || backtickLanguages[lang]) && strings.Count(strings.ReplaceAll(prefix, "\\`", ""), "`")%2 == 1 ||
+		(all || lang == "rust") && openRawString(prefix) ||
+		(all || heredocLanguages[lang]) && openHeredoc(prefix) {
 		return true
 	}
 	// An open string on the cursor's line.
@@ -302,8 +307,14 @@ func inWords(prefix string) bool {
 		strings.Count(stripped, "'")%2 == 1
 }
 
+// The languages each string that spans lines is read in.
 var (
-	rawStringOpen = regexp.MustCompile(`\br(#*)"`)
+	backtickLanguages = map[string]bool{"go": true, "javascript": true, "typescript": true, "javascriptreact": true, "typescriptreact": true}
+	heredocLanguages  = map[string]bool{"ruby": true, "shellscript": true, "shell": true, "bash": true, "sh": true, "zsh": true, "perl": true, "php": true}
+)
+
+var (
+	rawStringOpen = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])b?r(#*)"`)
 	heredocOpen   = regexp.MustCompile(`<<[~-]?(['"]?)([A-Za-z_][A-Za-z0-9_]*)['"]?`)
 )
 
@@ -342,7 +353,7 @@ func openHeredoc(prefix string) bool {
 // sentence: a chat answer, not code. In a comment, a docstring, a string or a
 // language written in sentences it is taken as it is.
 func ReadsAsProse(text, prefix, language string) bool {
-	if proseLanguages[strings.ToLower(language)] || inWords(prefix) {
+	if proseLanguages[strings.ToLower(language)] || inWords(prefix, language) {
 		return false
 	}
 	for _, l := range strings.Split(text, "\n") {

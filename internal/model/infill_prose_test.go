@@ -116,6 +116,16 @@ func TestReadsAsProse(t *testing.T) {
 		{"Thanks for signing up, we'll be in touch", "body = <<~TEXT\n", "ruby", false},
 		{"Thanks for signing up, we'll be in touch", "cat <<EOF\nline\n", "shellscript", false},
 		{"It looks like you're writing a script.", "doc = \"\"\"\nUsage:\n", "python", false},
+		// Architect review r3: an escaped backtick inside an open template, and a Rust byte raw string.
+		{"Dear user, your account is ready and we're happy", "const t = `a \\` b\n", "typescript", false},
+		{"Welcome to the app, we hope you like it", "let s = br#\"\n", "rust", false},
+		// Each construct only where the language has it: a shift in Go or C, a backtick in Python, is no string.
+		{"It looks like you're working on a Go program.", "x := 1<<bits\n", "go", true},
+		{"It looks like you're working on a C program.", "int x = 1<<bits;\n", "c", true},
+		{"It looks like you're working on a Python script.", "# run `make\nx = 1\n", "python", true},
+		{"It looks like you're working on a Go program.", "s := \"r\"\n", "go", true},
+		// A language not named: every rule applies, and the text is kept.
+		{"Thanks for signing up, we'll be in touch", "body = <<~TEXT\n", "", false},
 		// Closed again before the cursor: code once more, and prose dropped.
 		{"It looks like you're working on a Go program.", "msg := `hi`\n", "go", true},
 		{"It looks like you're working on a Rust program.", "let s = r#\"hi\"#;\n", "rust", true},
