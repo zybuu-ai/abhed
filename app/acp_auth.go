@@ -121,10 +121,10 @@ func (c *acpConn) authenticate(msg rpcMessage) {
 		c.reply(msg.ID, nil, badParams("authenticate", err))
 		return
 	}
-	c.sessMu.Lock()
-	opened := len(c.sessions) > 0
-	c.sessMu.Unlock()
-	if opened || c.rec != nil || c.recErr != nil {
+	// One authenticate at a time, and none once anything has worked as someone.
+	c.identMu.Lock()
+	defer c.identMu.Unlock()
+	if c.identStarted {
 		c.reply(msg.ID, nil, refusal(errRefused, "who is working is fixed once a session has opened; restart the engine to change it"))
 		return
 	}

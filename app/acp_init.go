@@ -77,6 +77,9 @@ func (c *acpConn) managed() bool {
 }
 
 func (c *acpConn) initialize(msg rpcMessage) {
+	// authenticate rewrites the record fields this reads.
+	c.identMu.Lock()
+	defer c.identMu.Unlock()
 	caps := map[string]any{
 		"loadSession":        c.durable(),
 		"promptCapabilities": map[string]any{"image": false, "audio": false, "embeddedContext": true},

@@ -2,7 +2,9 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/identity"
@@ -140,5 +142,60 @@ func TestACPIdentityOwnerAndSignOut(t *testing.T) {
 	cl.ok("_abhed/auth/signout", map[string]any{}, nil)
 	if _, ok, _ := s.Remembered(nil); ok {
 		t.Error("still remembered after signout")
+	}
+}
+
+// authenticate and session/new sent together: either the switch is refused,
+// or the session opens as the person signed in, never as the one before.
+func TestACPAuthenticateRacesSessionNew(t *testing.T) {
+	for i := 0; i < 5; i++ {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			signInTest(t)
+			old := identity.BcryptCost
+			identity.BcryptCost = 8 // slow enough to leave a window
+			t.Cleanup(func() { identity.BcryptCost = old })
+			acpModelsEnv(t, `{}`)
+			s, _ := identity.Open()
+			if _, _, err := s.Create("a1", "correct horse", "", ""); err != nil {
+				t.Fatal(err)
+			}
+			if code := enterPrincipalForClient(signInFlags{}, &strings.Builder{}); code != 0 {
+				t.Fatal(code)
+			}
+			ws := t.TempDir()
+			cl := newStudioClient(t, ws, true)
+			initAuth(t, cl)
+			var auth, sess rpcMessage
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				auth = cl.call("authenticate", map[string]any{"methodId": "abhed.account",
+					"_meta": map[string]any{acpMetaKey: map[string]any{"username": "a1", "password": "correct horse"}}})
+			}()
+			go func() {
+				defer wg.Done()
+				sess = cl.call("session/new", map[string]any{"cwd": ws, "mcpServers": []any{}})
+			}()
+			wg.Wait()
+			if sess.Error != nil {
+				t.Fatalf("session/new: %+v", sess.Error)
+			}
+			cl.conn.identMu.Lock()
+			recUser := cl.conn.recUser
+			cl.conn.identMu.Unlock()
+			switch {
+			case auth.Error == nil:
+				if recUser != "device:a1" || currentPrincipal().Kind != identity.Account {
+					t.Fatalf("signed in, but the session works as %q (%v)", recUser, currentPrincipal().Kind)
+				}
+			case strings.Contains(auth.Error.Message, "fixed once a session has opened"):
+				if currentPrincipal().Kind != identity.Guest {
+					t.Fatalf("refused, but the principal moved to %v", currentPrincipal().Kind)
+				}
+			default:
+				t.Fatalf("authenticate: %+v", auth.Error)
+			}
+		})
 	}
 }

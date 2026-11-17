@@ -366,6 +366,13 @@ type acpConn struct {
 	recDir             string
 	recUser, recTenant string
 
+	// identMu orders who is working against everything that works as them:
+	// authenticate holds it from its check through the switch, and every other
+	// method but initialize takes it once to mark the connection started, after
+	// which who is working is fixed. initialize reads the record fields under it.
+	identMu      sync.Mutex
+	identStarted bool
+
 	sessMu   sync.Mutex
 	sessions map[string]*acpSession
 	// pending are the agent→client requests waiting for an answer, by id.
@@ -835,10 +842,19 @@ func (c *acpConn) request(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errNoMethod, "method not found: %s", msg.Method))
 		return
 	}
-	if err := pendingSignIn(); err != nil && !acpBeforeSignIn[msg.Method] {
-		c.reply(msg.ID, nil, &rpcError{Code: errRefused, Message: "Authentication required: " + err.Error(),
-			Data: map[string]any{"authRequired": true}})
-		return
+	if !acpBeforeSignIn[msg.Method] {
+		// Waits for an authenticate in progress, so this works as whoever it settles on.
+		c.identMu.Lock()
+		err := pendingSignIn()
+		if err == nil {
+			c.identStarted = true
+		}
+		c.identMu.Unlock()
+		if err != nil {
+			c.reply(msg.ID, nil, &rpcError{Code: errRefused, Message: "Authentication required: " + err.Error(),
+				Data: map[string]any{"authRequired": true}})
+			return
+		}
 	}
 	h(c, msg)
 }
