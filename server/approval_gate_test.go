@@ -210,6 +210,40 @@ func TestPendingAsks(t *testing.T) {
 	}
 }
 
+// A pending ask carries the rule "always allow" may remember, as offered,
+// so a client can send it back; one the record would redact is not offered.
+func TestPendingAskOffersItsScope(t *testing.T) {
+	r := newAskGateRig(t, false)
+	if w := r.send("alice", "/v1/sessions", `{"workbench":true}`); w.Code != http.StatusAccepted {
+		t.Fatalf("create: %d %s", w.Code, w.Body)
+	}
+	live := r.srv.anyLive(t)
+	live.Loop.Recorder.Redact = redactWord{"s3cret"}
+	ask := func(rid, scope string) chan turnResult {
+		c := make(chan turnResult, 1)
+		go func() {
+			ok, err := live.Approve(agent.WithRequestID(context.Background(), rid), "bash", json.RawMessage(`{"command":"make test"}`),
+				policy.Result{Decision: policy.Ask, Step: "default", Reason: "running a command", Scope: scope})
+			c <- turnResult{ok, err}
+		}()
+		<-waitAsked(live, rid).ready
+		return c
+	}
+	all := func(string, string) bool { return true }
+	c := ask("ev-1", "bash(make test)")
+	if asks := r.srv.PendingAsks(all); len(asks) != 1 || asks[0].Scope != "bash(make test)" {
+		t.Fatalf("asks %+v", asks)
+	}
+	_ = r.send("alice", "/v1/sessions/"+live.ID+"/approve", `{"approved":false,"request_id":"ev-1"}`)
+	<-c
+	c = ask("ev-2", "bash(echo s3cret)")
+	if asks := r.srv.PendingAsks(all); len(asks) != 1 || asks[0].Scope != "" {
+		t.Fatalf("a scope the record withholds was offered: %+v", asks)
+	}
+	_ = r.send("alice", "/v1/sessions/"+live.ID+"/approve", `{"approved":false,"request_id":"ev-2"}`)
+	<-c
+}
+
 type redactWord struct{ word string }
 
 func (r redactWord) Redact(b []byte) []byte {

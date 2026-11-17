@@ -30,6 +30,8 @@ type fakeServer struct {
 	snapshots [][]byte
 	// noBG answers every /v1/bg path as a server without jobs does.
 	noBG bool
+	// events, when set, is the job's record.
+	events []bgjob.Event
 }
 
 func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -77,6 +79,8 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.job.Waiting = nil
 		f.job.State = bgjob.StateDone
 		reply(map[string]bool{"ok": true})
+	case r.Method == "GET" && r.URL.Path == "/v1/sessions/"+f.job.SessionID+"/replay" && f.events != nil:
+		reply(f.events)
 	case r.Method == "GET" && r.URL.Path == "/v1/sessions/"+f.job.SessionID+"/replay":
 		reply([]bgjob.Event{{Seq: 1, Type: "user.message", Payload: json.RawMessage(`{"text":"hi \u001b[31mred"}`), CreatedAt: time.Now()}})
 	case r.Method == "GET" && r.URL.Path == "/v1/sessions/"+f.job.SessionID+"/changes":
@@ -310,3 +314,85 @@ type syncBuf struct {
 
 func (s *syncBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.b.Write(p) }
 func (s *syncBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
+
+func ev(seq int64, typ, payload string) bgjob.Event {
+	return bgjob.Event{Seq: seq, Type: typ, Payload: json.RawMessage(payload), CreatedAt: time.Now()}
+}
+
+// The table shows a reply whole, once, not a line per streamed fragment;
+// -o json keeps every event.
+func TestRecordShowsWholeMessagesNotFragments(t *testing.T) {
+	r := newRig(t)
+	r.srv.events = []bgjob.Event{
+		ev(1, "agent.reasoning.delta", `{"text":"The tests","seq":1}`),
+		ev(2, "agent.reasoning.delta", `{"text":" failed","seq":2}`),
+		ev(3, "agent.reasoning", `{"text":"The tests failed."}`),
+		ev(4, "agent.delta", `{"text":"Fixed ","seq":1}`),
+		ev(5, "agent.delta", `{"text":"chunk_text.","seq":2}`),
+		ev(6, "agent.message", `{"text":"Fixed chunk_text.\nAll 6 tests pass.\u001b[2J"}`),
+	}
+	res := r.run("", false, "", "logs", "bg_1")
+	if res.code != ExitOK || strings.Contains(res.out, ".delta") || strings.Contains(res.out, "\x1b") {
+		t.Fatalf("logs: %q", res.out)
+	}
+	if !strings.Contains(res.out, "agent.message\n  Fixed chunk_text.\n  All 6 tests pass.") || strings.Count(res.out, "Fixed") != 1 {
+		t.Fatalf("the reply is not shown whole, once:\n%s", res.out)
+	}
+	r.srv.job.State = bgjob.StateDone
+	res = r.run("", false, "", "attach", "bg_1")
+	if res.code != ExitOK || strings.Contains(res.out, ".delta") || !strings.Contains(res.out, "  All 6 tests pass.") {
+		t.Fatalf("attach: %q", res.out)
+	}
+	res = r.run("", false, "", "logs", "-o", "json", "bg_1")
+	if strings.Count(res.out, "agent.delta") != 2 {
+		t.Fatalf("-o json lost the fragments: %s", res.out)
+	}
+}
+
+// "a" allows the call and, for this job alone, the rule the ask offers: the
+// answer carries that scope back to the job's session. Where the ask offers
+// none, "a" is a no like any other answer but y.
+func TestAttachAlwaysForThisJob(t *testing.T) {
+	r := newRig(t)
+	r.srv.job.Waiting = &bgjob.Approval{JobID: "bg_1", SessionID: "sess_1", RequestID: "req_9", Tool: "bash",
+		Reason: "running a command", Scope: "bash(python3 -m unittest tests.test_text)", Deadline: time.Now().Add(time.Hour)}
+	res := r.run("a\n", true, "", "attach", "bg_1")
+	if res.code != ExitOK || !strings.Contains(res.err, "a = always for this job: bash(python3 -m unittest tests.test_text)") ||
+		!strings.Contains(res.err, "Allow it? [y/N/a]") || !strings.Contains(res.err, "allowed, and always for this job") {
+		t.Fatalf("attach: %+v", res)
+	}
+	if len(r.srv.answers) != 1 || r.srv.answers[0]["approved"] != true || r.srv.answers[0]["request_id"] != "req_9" ||
+		r.srv.answers[0]["scope"] != "bash(python3 -m unittest tests.test_text)" {
+		t.Fatalf("answered %v", r.srv.answers)
+	}
+	r = newRig(t)
+	r.srv.job.Waiting = &bgjob.Approval{JobID: "bg_1", SessionID: "sess_1", RequestID: "req_9", Tool: "bash"}
+	res = r.run("a\n", true, "", "attach", "bg_1")
+	if res.code != ExitOK || strings.Contains(res.err, "always") || !strings.Contains(res.err, "Allow it? [y/N] ") {
+		t.Fatalf("attach without a scope: %+v", res)
+	}
+	if len(r.srv.answers) != 1 || r.srv.answers[0]["approved"] != false || r.srv.answers[0]["scope"] != nil {
+		t.Fatalf("answered %v", r.srv.answers)
+	}
+}
+
+// Why a job stopped on its budget is in the table, not only in -o json: in
+// list, in the record's line and in attach's last line.
+func TestBudgetReasonInTableOutput(t *testing.T) {
+	r := newRig(t)
+	r.srv.job.State, r.srv.job.Reason, r.srv.job.Error = bgjob.StateFailed, "max_budget", "the session ended: max_budget"
+	msg := "stopped: your daily budget (user bob, 26,278 of 20,000 tokens) is spent"
+	r.srv.events = []bgjob.Event{
+		ev(1, "budget.stopped", `{"reason":"allowance","scope":"user bob, daily","message":"`+msg+`"}`),
+		ev(2, "session.ended", `{"reason":"max_budget","detail":"the daily budget"}`),
+	}
+	res := r.run("", false, "", "list")
+	if !strings.Contains(res.out, "failed (max_budget)") {
+		t.Fatalf("list: %q", res.out)
+	}
+	res = r.run("", false, "", "attach", "bg_1")
+	if res.code != ExitFailed || !strings.Contains(res.out, "budget.stopped         "+msg) ||
+		!strings.Contains(res.out, "max_budget: the daily budget") || !strings.Contains(res.err, "max_budget ("+msg+")") {
+		t.Fatalf("attach: %+v", res)
+	}
+}

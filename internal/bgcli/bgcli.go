@@ -88,7 +88,8 @@ func Usage(w io.Writer) {
 
 Background jobs on an Abhed server: an agent that runs as you, in its own
 sandbox under the server's policy, and keeps going after this command exits.
-What it asks waits for you: abhed bg attach answers it, and an ask left
+What it asks waits for you: abhed bg attach answers it (y, n, or a to
+always allow for that job alone the rule the ask offers), and an ask left
 unanswered past the server's timeout stops the job with nothing approved.
 Every command takes -profile NAME or -server URL (default: the current
 profile) and -o table|json.`)
@@ -387,8 +388,12 @@ func (r *runner) list(args []string) error {
 	fmt.Fprintln(tw, "ID\tSTATE\tSTARTED\tNAME")
 	for _, j := range jobs {
 		state := string(j.State)
-		if j.Waiting != nil {
+		switch {
+		case j.Waiting != nil:
 			state += " (" + short(j.Waiting.Tool, 20) + ")"
+		case j.State.Final() && j.State != bgjob.StateDone && j.Reason != "":
+			// Why it ended, as -o json has it: max_budget, owner_revoked…
+			state += " (" + short(j.Reason, 30) + ")"
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", line(j.ID), line(state), j.Created.Local().Format("Jan 2 15:04"), short(j.Name, 60))
 	}
@@ -452,18 +457,46 @@ func (r *runner) logs(args []string) error {
 	return nil
 }
 
-// printEvent writes one event as a line: its type and what it says.
+// streamed are the fragments of a reply or of reasoning as they arrive. The
+// whole text follows in agent.message or agent.reasoning, so the table
+// shows that once instead of a line per fragment; -o json keeps them.
+var streamed = map[string]bool{"agent.delta": true, "agent.reasoning.delta": true}
+
+// printEvent writes one event as a line: its type and what it says. A
+// reply is shown whole, below its line, as the command line shows it.
 func (r *runner) printEvent(e bgjob.Event) {
+	if streamed[e.Type] {
+		return
+	}
 	var p map[string]any
 	_ = json.Unmarshal(e.Payload, &p)
-	say := ""
-	for _, k := range []string{"text", "command", "tool", "reason", "error"} {
-		if s, ok := p[k].(string); ok && s != "" {
-			say = s
-			break
+	at := e.CreatedAt.Local().Format("15:04:05")
+	if text, _ := p["text"].(string); e.Type == "agent.message" && strings.TrimSpace(text) != "" {
+		fmt.Fprintf(r.Out, "%s  %s\n", at, line(e.Type))
+		for _, l := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+			fmt.Fprintf(r.Out, "  %s\n", visible.Text(l, false, true))
+		}
+		return
+	}
+	fmt.Fprintf(r.Out, "%s  %-22s %s\n", at, line(e.Type), short(eventSays(p), 160))
+}
+
+// eventSays is what an event says in a word or a line: a budget stop's
+// message rather than its kind, and a run's end with its detail.
+func eventSays(p map[string]any) string {
+	str := func(k string) string { s, _ := p[k].(string); return s }
+	for _, k := range []string{"text", "message", "command", "tool"} {
+		if s := str(k); s != "" {
+			return s
 		}
 	}
-	fmt.Fprintf(r.Out, "%s  %-22s %s\n", e.CreatedAt.Local().Format("15:04:05"), line(e.Type), short(say, 120))
+	if s := str("reason"); s != "" {
+		if d := str("detail"); d != "" {
+			return s + ": " + d
+		}
+		return s
+	}
+	return str("error")
 }
 
 func (r *runner) cancel(args []string) error {
@@ -504,6 +537,8 @@ func (r *runner) follow(id string) error {
 	interactive := r.Interactive && r.In != nil
 	seen := int64(-1)
 	asked := ""
+	// stopped is what the job's last budget stop said, for its last line.
+	stopped := ""
 	detached := func() error {
 		// Leaving does not stop the job; it runs on.
 		fmt.Fprintf(r.Err, "abhed: detached; job %s runs on (abhed bg attach %s)\n", line(id), line(id))
@@ -528,6 +563,11 @@ func (r *runner) follow(id string) error {
 			for _, e := range evs {
 				if e.Seq > seen {
 					seen = e.Seq
+					if e.Type == "budget.stopped" {
+						var p map[string]any
+						_ = json.Unmarshal(e.Payload, &p)
+						stopped = eventSays(p)
+					}
 					if r.out == "json" {
 						_ = json.NewEncoder(r.Out).Encode(e)
 					} else {
@@ -540,6 +580,9 @@ func (r *runner) follow(id string) error {
 			msg := string(j.State)
 			if j.Error != "" {
 				msg += ": " + j.Error
+			}
+			if j.State != bgjob.StateDone && stopped != "" {
+				msg += " (" + stopped + ")"
 			}
 			fmt.Fprintf(r.Err, "abhed: job %s %s\n", line(j.ID), line(msg))
 			if j.State != bgjob.StateDone {
@@ -590,7 +633,13 @@ func (r *runner) ask(interactive bool, w bgjob.Approval) error {
 	for _, l := range argLines(w.Args) {
 		fmt.Fprintf(r.Err, "  %s\n", l)
 	}
-	fmt.Fprint(r.Err, "Allow it? [y/N] ")
+	if w.Scope != "" {
+		// Remembered on this job's session only, never for the person's other jobs.
+		fmt.Fprintf(r.Err, "  a = always for this job: %s\n", short(w.Scope, 200))
+		fmt.Fprint(r.Err, "Allow it? [y/N/a] ")
+	} else {
+		fmt.Fprint(r.Err, "Allow it? [y/N] ")
+	}
 	ans, err := r.readLine()
 	if r.Ctx.Err() != nil {
 		fmt.Fprintln(r.Err)
@@ -599,16 +648,26 @@ func (r *runner) ask(interactive bool, w bgjob.Approval) error {
 	if err != nil {
 		ans = "" // no answer is a no
 	}
-	ok := strings.TrimSpace(ans) == "y" || strings.TrimSpace(ans) == "Y"
-	if err := r.cl.Answer(r.Ctx, w, ok); err != nil {
+	a := strings.TrimSpace(ans)
+	always := w.Scope != "" && (a == "a" || a == "A")
+	ok := always || a == "y" || a == "Y"
+	if always {
+		err = r.cl.AnswerAlways(r.Ctx, w)
+	} else {
+		err = r.cl.Answer(r.Ctx, w, ok)
+	}
+	if err != nil {
 		if r.Ctx.Err() != nil {
 			return errDetached
 		}
 		return err
 	}
-	if ok {
+	switch {
+	case always:
+		fmt.Fprintf(r.Err, "allowed, and always for this job: %s\n", short(w.Scope, 200))
+	case ok:
 		fmt.Fprintln(r.Err, "allowed")
-	} else {
+	default:
 		fmt.Fprintln(r.Err, "denied")
 	}
 	return nil

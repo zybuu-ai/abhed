@@ -182,6 +182,16 @@ func (c *Client) Answer(ctx context.Context, a Approval, approved bool) error {
 	return c.do(ctx, http.MethodPost, "/v1/sessions/"+url.PathEscape(a.SessionID)+"/approve", body, nil)
 }
 
+// AnswerAlways allows an ask and, for the rest of its job, every later call
+// the ask's scope covers: the scope is remembered on the job's session only.
+func (c *Client) AnswerAlways(ctx context.Context, a Approval) error {
+	if a.Scope == "" {
+		return errors.New("this ask offers no rule to always allow; answer it once")
+	}
+	body := map[string]any{"approved": true, "request_id": a.RequestID, "scope": a.Scope}
+	return c.do(ctx, http.MethodPost, "/v1/sessions/"+url.PathEscape(a.SessionID)+"/approve", body, nil)
+}
+
 // Event is one event of a job's record.
 type Event struct {
 	ID        string          `json:"id"`

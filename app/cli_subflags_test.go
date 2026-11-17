@@ -61,6 +61,10 @@ func TestHoistGlobalFlags(t *testing.T) {
 		{args: []string{"pki", "init", "-C", "/ws"}, err: "-C does not apply to pki"},
 		{args: []string{"secret", "list", "-model", "x"}, err: "-model does not apply to secret"},
 		{args: []string{"admin", "web-search", "on", "-C", "/ws"}, err: "-C does not apply to admin"},
+		// bg start's -name and -mode are its own, as its help lists them.
+		{args: []string{"bg", "start", "-name", "nightly", "-mode", "plan", "-y", "fix it"},
+			left: "bg start -name nightly -mode plan -y fix it"},
+		{args: []string{"bg", "start", "-model", "x", "fix it"}, err: "-model does not apply to bg"},
 	} {
 		var f cliFlags
 		fs := newFlagSet(&f)

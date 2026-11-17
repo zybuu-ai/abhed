@@ -24,6 +24,7 @@ var subOwnFlags = map[string][]string{
 	"user":     {"name"},
 	"pki":      {"name"},
 	"sandbox":  {"name", "c"},
+	"bg":       {"name", "mode"},
 }
 
 // noWorkspace are the subcommands that never read the workspace, so -C

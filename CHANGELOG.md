@@ -539,6 +539,19 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- `abhed bg` rough edges. `bg start -name N` and `-mode M` were refused with
+  "-name does not apply to bg" although `bg -h` lists them; both are now
+  the job's. `bg logs` and `bg attach` show the agent's reply whole, below
+  its line, instead of a line per streamed fragment of the reply and its
+  reasoning (`-o json` still has every event). When an ask offers a rule to
+  remember, attach shows it and asks `Allow it? [y/N/a]`: `a` allows the
+  call and, on that job's session only, every later call the rule covers,
+  recorded as the answer's granted scope. `GET /v1/bg/jobs/{id}` carries it
+  as `waiting.scope` (`PendingAsk.Scope` for an edition's job list), and a
+  rule the record would redact is not offered. Why a job stopped is now in
+  the table too: `list` shows `failed (max_budget)`, a budget stop's line
+  shows its message rather than its kind, a run's end its detail, and
+  attach's last line the budget's words.
 - A model reply that only reasons, with no text or tool call, is cut past
   `limits.reasoning_stall_tokens` reasoning tokens (8000 by default, or the
   request's thinking budget if larger), with `limits.reasoning_stall_seconds`
