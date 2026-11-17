@@ -38,7 +38,10 @@ func TestStudioFS(t *testing.T) {
 	}
 
 	var dir struct {
-		Entries []struct{ Name string; Type int } `json:"entries"`
+		Entries []struct {
+			Name string
+			Type int
+		} `json:"entries"`
 	}
 	r.cl.ok("_abhed/fs/readDir", p("path", ws), &dir)
 	var names []string
