@@ -259,7 +259,8 @@ func TestStudioNextEditRename(t *testing.T) {
 	}
 	r.cl.call("session/close", map[string]any{"sessionId": id})
 	sum, _ := r.recorded(id, agent.EvNextEditSummary)
-	if len(sum) != 1 || sum[0]["local"] != float64(3) || sum[0]["local_dropped"] != float64(1) || sum[0]["requests"] != float64(1) {
+	// A rename finished from the file and shown counts as served, as any suggestion does (real-model rerun, 17 Nov).
+	if served, _ := sum[0]["served"].(float64); len(sum) != 1 || sum[0]["local"] != float64(3) || sum[0]["local_dropped"] != float64(1) || sum[0]["requests"] != float64(1) || served < 3 {
 		t.Fatalf("next_edit.summary %v", sum)
 	}
 }

@@ -147,7 +147,7 @@ func TestOtherDecisionEventsAreCounted(t *testing.T) {
 	m.Observe(ev(agent.EvConfigRefused, map[string]any{}))
 	m.Observe(ev(agent.EvConfigNarrowed, map[string]any{}))
 	m.Observe(ev(agent.EvCompletionSummary, agent.CompletionSummary{Requests: 10, Served: 6, Failed: 1, Cancelled: 2, Refused: 3, Superseded: 4}))
-	m.Observe(ev(agent.EvNextEditSummary, agent.CompletionSummary{Requests: 3, Served: 2, TokensIn: 50, Local: 4, LocalDropped: 1}))
+	m.Observe(ev(agent.EvNextEditSummary, agent.CompletionSummary{Requests: 3, Served: 6, TokensIn: 50, Local: 4, LocalDropped: 1}))
 	m.Observe(ev(agent.EvCommitMessage, agent.CommitMessage{Outcome: "served"}))
 	m.Observe(ev(agent.EvCommitMessage, agent.CommitMessage{Outcome: "made up"}))
 	for name, ok := range map[string]bool{

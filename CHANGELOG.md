@@ -664,6 +664,17 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Quitting Studio while an editor model call ran lost the session's
+  `completion.summary`, `next_edit.summary` and `session.ended`: a stop
+  signal while Studio's input was still open let the exit go after 250 ms,
+  and with the input closed the engine waited up to 30 s for the call
+  before closing the sessions. Editor model calls in flight are now
+  cancelled when the input ends or a stop signal comes, and on a signal
+  every session is closed, with its summaries and end recorded, within 3 s.
+- `next_edit.summary` counted a rename finished from the file as `local`
+  but not as `served`, so a session whose only next edit was such a rename
+  showed `served: 0`. It now counts in both; the metrics keep `served`
+  (from the model) and `local` apart.
 - `abhed -p -mode acceptEdits` was refused ("unknown -mode"), although
   `-permission-mode acceptEdits` was taken. `-mode` now takes
   `acceptEdits` and `bypassPermissions` (and their snake_case forms) as

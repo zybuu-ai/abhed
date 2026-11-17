@@ -480,9 +480,15 @@ func (c *acpConn) run(in io.Reader) error {
 	go func() {
 		select {
 		case <-c.root().Done():
+			// Stopped: the editor's model calls end now, as a prompt does, so
+			// nothing in flight holds the exit.
+			c.cancelEditorCalls()
 			select {
 			case <-served:
 			case <-time.After(stdinGrace):
+				// Stdin is still open: the sessions are closed here, their
+				// summaries and ends recorded, within signalCloseWait.
+				c.closeAllWithin(signalCloseWait)
 				release()
 			}
 		case <-served:
@@ -490,8 +496,14 @@ func (c *acpConn) run(in io.Reader) error {
 	}()
 	err := c.serve(in)
 	close(served)
-	if !c.drain(drainWait) {
-		fmt.Fprintln(os.Stderr, "abhed: acp: stdin closed and some requests were still unanswered after "+drainWait.String())
+	// Nobody is left to read an editor suggestion: those in flight end.
+	c.cancelEditorCalls()
+	wait := drainWait
+	if c.root().Err() != nil {
+		wait = signalCloseWait // stopped: what is still running was cancelled
+	}
+	if !c.drain(wait) {
+		fmt.Fprintln(os.Stderr, "abhed: acp: stdin closed and some requests were still unanswered after "+wait.String())
 	}
 	c.closeAll()
 	release()
@@ -501,6 +513,39 @@ func (c *acpConn) run(in io.Reader) error {
 // stdinGrace is how long a stop signal that comes while stdin is open waits
 // for stdin to end, so the sessions are closed before the exit.
 const stdinGrace = 250 * time.Millisecond
+
+// signalCloseWait bounds the close of every session on a stop signal: what
+// it records (each session's summaries and end) is written, then the exit.
+const signalCloseWait = 3 * time.Second
+
+// closeAllWithin closes every session, waiting at most wait for it.
+func (c *acpConn) closeAllWithin(wait time.Duration) {
+	done := make(chan struct{})
+	go func() { c.closeAll(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(wait):
+		fmt.Fprintln(os.Stderr, "abhed: acp: the sessions were not all closed within "+wait.String())
+	}
+}
+
+// cancelEditorCalls ends every editor model call in flight (completions,
+// next edits): their counts stay for the summary as cancelled.
+func (c *acpConn) cancelEditorCalls() {
+	c.compMu.Lock()
+	all := make([]*acpCompleter, 0, len(c.comps))
+	for _, k := range c.comps {
+		all = append(all, k)
+	}
+	c.compMu.Unlock()
+	for _, k := range all {
+		k.mu.Lock()
+		if k.cancel != nil {
+			k.cancel()
+		}
+		k.mu.Unlock()
+	}
+}
 
 // serve answers the requests on in until it ends, then says the input is
 // gone; the replies to requests still running follow (see drain).
