@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,7 +133,7 @@ func resolvePrincipal(sf signInFlags, interactive bool, in *os.File, errOut io.W
 		return 0, err
 	}
 	if out.Principal.Kind == identity.Server {
-		verified, err := serverStillAdmits(s, out.Principal)
+		verified, err := serverStillAdmits(s, rules, out.Principal)
 		switch {
 		case errors.Is(err, errNoServerCredential) && rules.SignIn == "":
 			// Not a sign-in at all: forgotten, and the start goes on as if there
@@ -324,22 +323,31 @@ var migrationWait = 30 * time.Second
 // offline machine starts on what it remembers.
 var serverCheckWait = 3 * time.Second
 
-// errNoServerCredential is a remembered server sign-in that holds nothing to
-// sign in with: no profile, or no token.
+// errNoServerCredential is a remembered server sign-in that is no sign-in:
+// nothing to sign in with, or a token the server refused.
 var errNoServerCredential = errors.New("no credential")
 
+// noCredential is a RequiredError that is also errNoServerCredential; it
+// prints as the RequiredError alone.
+type noCredential struct{ *identity.RequiredError }
+
+func (e noCredential) Is(target error) bool { return target == errNoServerCredential }
+func (e noCredential) Unwrap() error        { return e.RequiredError }
+
 // serverStillAdmits asks a remembered server sign-in's server whether it
-// still admits the person, and reports whether it could ask. Holding no
-// credential is not a sign-in: it fails closed, forgotten. When the
-// organisation has removed the person's access, or the server refuses the
-// token, the remembered sign-in ends too, and the person's data on this
-// machine is kept, not deleted. Only a server that cannot be reached is let
-// through (the machine may be offline), unverified.
-func serverStillAdmits(s *identity.Store, p identity.Principal) (verified bool, err error) {
+// still admits the person, and reports whether it could ask.
+//
+// A sign-in ends only for an answer that says so: the organisation removed
+// the person's access, or the server refused the token (401 or 403, after
+// the refresh Do already tries), or there is nothing to sign in with. Any
+// other answer (5xx, 429, anything unexpected) or no answer at all is the
+// server being unavailable: the sign-in stays and the run goes on
+// unverified, but under sign_in "server" only while the stored token is
+// still within its life. The person's data on this machine is always kept.
+func serverStillAdmits(s *identity.Store, rules identity.Rules, p identity.Principal) (verified bool, err error) {
 	gone := func(why string) (bool, error) {
-		_ = s.Forget()
-		return false, fmt.Errorf("%w: %w", errNoServerCredential, &identity.RequiredError{Why: why,
-			Next: "run abhed login " + p.Entry.URL + " in a terminal"})
+		_, _ = s.ForgetIf(p.Entry.ID)
+		return false, noCredential{&identity.RequiredError{Why: why, Next: "run abhed login " + p.Entry.URL + " in a terminal"}}
 	}
 	reg, err := profiles.Load(filepath.Join(p.Root, "profiles.json"))
 	if err != nil {
@@ -357,18 +365,23 @@ func serverStillAdmits(s *identity.Store, p identity.Principal) (verified bool, 
 	defer cancel()
 	_, err = profiles.Whoami(ctx, c, prof)
 	var removed *profiles.AccessRemovedError
-	var transport *url.Error
+	var refused *profiles.RefusedError
 	switch {
 	case err == nil:
 		return true, nil
 	case errors.As(err, &removed):
-		_ = s.Forget()
+		_, _ = s.ForgetIf(p.Entry.ID)
 		return false, &identity.RequiredError{Why: "your organisation removed your access to " + p.Entry.URL +
 			"; signing in again will not restore it, so ask its Abhed administrator (your data on this machine is kept)"}
-	case errors.As(err, &transport) || errors.Is(err, context.DeadlineExceeded):
-		return false, nil
+	case errors.As(err, &refused) && refused.TokenRefused():
+		return gone("the server " + p.Entry.URL + " no longer takes this sign-in (" + refused.Text + ")")
 	}
-	return gone("the server " + p.Entry.URL + " no longer takes this sign-in (" + err.Error() + ")")
+	// Unavailable: kept, unverified.
+	if rules.SignIn == config.SignInServer && !prof.SignedIn(time.Now()) {
+		return false, &identity.RequiredError{Why: "the sign-in to " + p.Entry.URL + " has expired and the server cannot be reached to renew it",
+			Next: "run abhed login " + p.Entry.URL + " in a terminal once it can be reached"}
+	}
+	return false, nil
 }
 
 // principalStart is who is working, as session.started records it, so the

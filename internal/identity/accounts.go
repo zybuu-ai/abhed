@@ -708,6 +708,18 @@ func (s *Store) Forget() error {
 	return nil
 }
 
+// ForgetIf ends the remembered sign-in only when it is id's: a process
+// signs out who it works as, never someone another process signed in since.
+// It reports whether it did.
+func (s *Store) ForgetIf(id string) (bool, error) {
+	var r remembered
+	ok, err := readJSON(s.rememberedFile(), &r)
+	if err != nil || !ok || r.ID != id {
+		return false, err
+	}
+	return true, s.Forget()
+}
+
 // SignOutEverywhere ends every remembered sign-in of the account.
 func (s *Store) SignOutEverywhere(id string) error {
 	return s.change(func(f *accountsFile) error {

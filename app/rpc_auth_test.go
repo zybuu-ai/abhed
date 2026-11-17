@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -182,10 +183,9 @@ func TestServerSignInWithoutCredentialFailsClosed(t *testing.T) {
 		profile *profiles.Profile // nil: no profiles file
 		name    string
 	}{
-		"no profiles file":      {"https://abhed.corp", nil, "org"},
-		"no such profile":       {"https://abhed.corp", &profiles.Profile{URL: "https://abhed.corp", Token: "abhcli_x"}, "other"},
-		"empty token":           {"https://abhed.corp", &profiles.Profile{URL: "https://abhed.corp"}, "org"},
-		"the server refuses it": {refusing.URL, &profiles.Profile{URL: refusing.URL, Token: "abhcli_x"}, "org"},
+		"no profiles file": {"https://abhed.corp", nil, "org"},
+		"no such profile":  {"https://abhed.corp", &profiles.Profile{URL: "https://abhed.corp", Token: "abhcli_x"}, "other"},
+		"empty token":      {"https://abhed.corp", &profiles.Profile{URL: "https://abhed.corp"}, "org"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			signInTest(t)
@@ -298,5 +298,69 @@ func TestEachGuestIsItsOwnOwner(t *testing.T) {
 	second := cliUser()
 	if !strings.HasPrefix(first, "guest:") || first == second || isMe(first) {
 		t.Fatalf("guest owners %q and %q", first, second)
+	}
+}
+
+// The server's answer at start decides: 401 or 403 end the sign-in; 5xx, 429
+// and anything else are the server unavailable, and the run goes on
+// unverified while the token is within its life, with no "no credential"
+// text in what the person reads.
+func TestServerAnswersAtStart(t *testing.T) {
+	for _, c := range []struct {
+		status  int
+		forgets bool
+	}{{401, true}, {403, true}, {429, false}, {500, false}, {502, false}, {503, false}, {418, false}} {
+		t.Run(fmt.Sprint(c.status), func(t *testing.T) {
+			signInTest(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(c.status)
+				_, _ = w.Write([]byte(`{"error":"x"}`))
+			}))
+			defer srv.Close()
+			withManaged(t, `{"auth":{"client":{"sign_in":"server","server":"`+srv.URL+`"}}}`)
+			s, _ := identity.Open()
+			e, _ := s.AddServer(srv.URL, "pat", "", "org")
+			root, _ := s.Root(e)
+			prof := &profiles.Profile{URL: srv.URL, Token: "abhcli_x", ExpiresAt: time.Now().Add(time.Hour)}
+			_ = profiles.Save(filepath.Join(root, "profiles.json"), &profiles.File{Profiles: map[string]*profiles.Profile{"org": prof}, Current: "org"})
+			_ = s.Remember(e.ID)
+			var errOut strings.Builder
+			code := enterPrincipal(signInFlags{}, false, os.Stdin, &errOut)
+			_, still, _ := s.Remembered(nil)
+			if c.forgets {
+				if code != identity.ExitSignInRequired || still {
+					t.Fatalf("exit %d, remembered %v", code, still)
+				}
+				if strings.Contains(errOut.String(), "no credential") {
+					t.Errorf("the sentinel leaked: %q", errOut.String())
+				}
+				return
+			}
+			if code != 0 || !still || !currentPrincipal().Unverified {
+				t.Fatalf("exit %d, remembered %v, principal %+v: %s", code, still, currentPrincipal(), errOut.String())
+			}
+		})
+	}
+}
+
+// An unavailable server lets a required sign-in through only while its
+// token is within its life.
+func TestUnavailableServerWithAnExpiredToken(t *testing.T) {
+	signInTest(t)
+	withManaged(t, `{"auth":{"client":{"sign_in":"server","server":"http://127.0.0.1:1"}}}`)
+	old := serverCheckWait
+	serverCheckWait = 200 * time.Millisecond
+	t.Cleanup(func() { serverCheckWait = old })
+	s, _ := identity.Open()
+	e, _ := s.AddServer("http://127.0.0.1:1", "pat", "", "org")
+	root, _ := s.Root(e)
+	prof := &profiles.Profile{URL: "http://127.0.0.1:1", Token: "abhcli_x", ExpiresAt: time.Now().Add(-time.Hour)}
+	_ = profiles.Save(filepath.Join(root, "profiles.json"), &profiles.File{Profiles: map[string]*profiles.Profile{"org": prof}, Current: "org"})
+	_ = s.Remember(e.ID)
+	if code := enterPrincipal(signInFlags{}, false, os.Stdin, io.Discard); code != identity.ExitSignInRequired {
+		t.Fatalf("exit %d", code)
+	}
+	if _, still, _ := s.Remembered(nil); !still {
+		t.Error("an unreachable server ended the sign-in")
 	}
 }
