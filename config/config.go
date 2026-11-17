@@ -1967,6 +1967,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		warnDuplicates(w, cfg.Duplicates)
 		warnSetAside(w, cfg.SetAside)
 		warnNotYetInEffect(w, cfg)
+		warnReadOnlyHint(w, cfg)
 		warnNeverAllows(w, cfg.Permissions.Allow)
 		warnRuleFindings(w, cfg.RuleFindings())
 	} else {

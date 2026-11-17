@@ -925,3 +925,13 @@ func (c Config) ReadOnlyHintTrusted(s MCPServerConfig) bool {
 	m, ok := c.managedMCP[s.Name]
 	return ok && m.TrustReadOnlyHint && reflect.DeepEqual(m, s)
 }
+
+// warnReadOnlyHint says, once per server, that trust_read_only_hint set
+// anywhere but the managed file's own entry is ignored.
+func warnReadOnlyHint(w warnSink, c Config) {
+	for _, s := range c.MCP.Servers {
+		if s.TrustReadOnlyHint && !c.ReadOnlyHintTrusted(s) {
+			w.emit("readonlyhint\x00"+s.Name, fmt.Sprintf("MCP server %s sets trust_read_only_hint, which is ignored: only the managed configuration's own entry for a server can opt it in, so its tools still ask", Printable(s.Name)))
+		}
+	}
+}

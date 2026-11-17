@@ -132,8 +132,9 @@ All notable changes to Abhed are recorded here. The format follows
 - `abhed -p "task"` with piped stdin now waits `-stdin-wait` (1.5 s) for
   the input to start; 1.2.9 waited for it however long it took. Input that
   starts in time is attached as before. A pipe still idle is ignored with a
-  note. Input that starts later stops the run with the new exit code 9 and
-  no answer: "input arrived on stdin after 1.5s; rerun with - to wait for
+  note. Input that starts later stops the run with the new exit code 9,
+  and its result line carries no answer (text output keeps what had already
+  streamed): "input arrived on stdin after 1.5s; rerun with - to wait for
   it, or -stdin-wait <dur>". A script piping a slow producer (a cold `go
   test ./... 2>&1 | abhed -p …`) should pass `-` or a longer `-stdin-wait`.
 
@@ -848,7 +849,7 @@ All notable changes to Abhed are recorded here. The format follows
   abhed -p "review"` is unchanged; a pipe still idle is ignored with one
   note on stderr ("stdin left open with no input; ignored. Pass - to wait
   for it, or -no-stdin to silence this"). Input that starts after the wait
-  stops the run with exit code 9 and no answer (see Upgrading). A lone `-`
+  stops the run with exit code 9 (see Upgrading). A lone `-`
   waits for stdin to end however late its input starts.
 
 ### Go API

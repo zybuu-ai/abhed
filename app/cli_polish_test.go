@@ -702,3 +702,57 @@ func TestDisplayIsClipped(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// A stop signal stands over input that comes on stdin after it: Ctrl-C
+// then late input exits 130, not 9.
+func TestSignalWinsOverLateStdin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("signals")
+	}
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(3 * time.Second):
+		}
+	}))
+	defer slow.Close()
+	ws := bgWorkspace(t, slow.URL, "")
+	began := time.Now()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close(); _ = w.Close() }()
+	cmd := mainHelper([]string{"-C", ws, "-p", "why does it fail", "-stdin-wait", "200ms", "-output-format", "json"})
+	cmd.Stdin = r
+	var out, errOut bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errOut
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	time.Sleep(1500 * time.Millisecond)
+	_ = cmd.Process.Signal(os.Interrupt) // our own child, by its handle
+	time.Sleep(100 * time.Millisecond)
+	_, _ = w.WriteString("late\n")
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatalf("did not stop\n%s", errOut.String())
+	}
+	if code := cmd.ProcessState.ExitCode(); code != 130 {
+		t.Fatalf("exit %d\n%s\n%s", code, out.String(), errOut.String())
+	}
+	t.Logf("stopped after %s", time.Since(began))
+}
+
+// The exit-code help lists every code a run ends with.
+func TestExitCodesHelpIsComplete(t *testing.T) {
+	for _, code := range []string{"0 done", "1 error", "2 bad", "3 budget", "4 a hook", "5 model", "6 shut", "7 the run's", "8 unverified", "9 stdin", "130 ", "143 "} {
+		if !strings.Contains(strings.Join(strings.Fields(exitCodesHelp), " "), code) {
+			t.Errorf("the help lacks %q", code)
+		}
+	}
+}

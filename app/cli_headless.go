@@ -802,9 +802,17 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		default:
 		}
 	}
+	// A stop signal stands: the person stopped the run before, or whatever,
+	// the input came.
+	if _, stopped := stopCode(ctx); stopped {
+		late = false
+	}
 	if late {
 		code, err = exitLateStdin, errors.New(lateStdinMessage(o.stdinWait))
 		reason = "stdin_late"
+		// No structured result, in any format; text output may already hold
+		// part of the answer, printed as it streamed.
+		structured = nil
 	}
 
 	u := loop.Usage()
@@ -816,8 +824,6 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		answer := ""
 		if !late {
 			answer = agent.WithheldText(rec.Redact, runAnswer(loop.Messages(), store, sessionID, resumedAfter))
-		} else {
-			structured = nil
 		}
 		res := resultLine{Type: "result", Subtype: string(reason), IsError: code != 0,
 			Result: answer, Structured: structured,

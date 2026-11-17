@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -46,5 +47,37 @@ func TestReadOnlyHintTrusted(t *testing.T) {
 	noManagedHere := Config{}
 	if noManagedHere.ReadOnlyHintTrusted(MCPServerConfig{Name: "docs", URL: "https://docs.corp.example/mcp", Enabled: true, TrustReadOnlyHint: true}) {
 		t.Error("a server counted as the operator's with no managed file")
+	}
+}
+
+// A trust_read_only_hint a person sets is ignored, and said so.
+func TestReadOnlyHintOutsideTheManagedFileWarns(t *testing.T) {
+	withManaged(t, `{"permissions":{"deny":["bash(curl*)"]}}`)
+	home := os.Getenv("HOME")
+	if err := os.MkdirAll(filepath.Join(home, ".abhed"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".abhed", "config.json"),
+		[]byte(`{"mcp":{"servers":[{"name":"mine","url":"https://mine.example/mcp","enabled":true,"trust_read_only_hint":true}]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var said []string
+	cfg, err := LoadWith(t.TempDir(), LoadOptions{Warn: func(s string) { said = append(said, s) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, s := range said {
+		if strings.Contains(s, "MCP server mine sets trust_read_only_hint, which is ignored") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("warnings %q", said)
+	}
+	for _, s := range cfg.MCP.Servers {
+		if cfg.ReadOnlyHintTrusted(s) {
+			t.Fatal("a person's opt-in was believed")
+		}
 	}
 }

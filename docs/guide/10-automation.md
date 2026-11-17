@@ -25,8 +25,9 @@ pipe left open with nothing written to it, as some CI steps and drivers
 leave stdin, is ignored after the wait, with one note on stderr: "stdin
 left open with no input; ignored. Pass - to wait for it, or -no-stdin to
 silence this". Input is never left out silently: if it starts after the
-wait, while the run is going or by its end, the run stops with no answer
-and exit code `9`: "input arrived on stdin after 1.5s; rerun with - to wait
+wait, while the run is going or by its end, the run stops with exit code
+`9`, and its result line carries no answer or structured result (in text
+output, what had already streamed stays printed): "input arrived on stdin after 1.5s; rerun with - to wait
 for it, or -stdin-wait <dur>". A producer slow to start, such as `go test
 ./... 2>&1 | abhed -p "why does it fail"` on a cold build, wants `-` or a
 longer `-stdin-wait`. A lone `-` reads stdin to its end however late its input
@@ -219,10 +220,13 @@ which includes `-p` in a script; `-mode bypass` is the explicit spelling.
 | `0` | completed |
 | `1` | error: the model or a tool failed, or no structured answer was delivered; or the session's record could not take `session.started` or the `config.refused` and `config.narrowed` events; or, under the fence, closing it failed: a `.abhed` was found in the workspace or it could not be listed, or its cgroup or temp folder could not be removed |
 | `2` | bad invocation, or the turn limit |
-| `3` | token budget |
+| `3` | budget: tokens, dollars, or a budget already spent |
+| `4` | a hook ended the run (its reply's `continue` was false); a call policy refuses does not end the run |
 | `5` | model retries exhausted |
+| `6` | shut down: the process was told to stop working, as a server does when it drains |
+| `7` | the run's own time limit passed |
 | `8` | unverified: with `-verify strict` or a completion contract, the answer or the contract could not be verified after one revision turn ([Verified answers](29-verified-answers.md)) |
-| `9` | stdin input came after the wait (`-stdin-wait`, with a task given): the run stopped, with no answer; rerun with `-` to wait for it |
+| `9` | stdin input came after the wait (`-stdin-wait`, with a task given): the run stopped; the result line carries no answer or structured result, though text output may already hold part of an answer printed as it streamed; rerun with `-` to wait for it. A stop signal that came first keeps its own code |
 | `130` | interrupted (SIGINT) |
 | `143` | terminated (SIGTERM); a hang-up is `129` |
 
