@@ -704,14 +704,17 @@ All notable changes to Abhed are recorded here. The format follows
 - "Thinking off" now reaches Ollama. Its OpenAI-compatible `/v1` endpoint
   ignores `think: false` and turns thinking off only for
   `reasoning_effort: "none"`, which is now sent with it for type `ollama`
-  and an `openai-compatible` entry on port 11434; `extra.think_off`
+  and an `openai-compatible` entry on the loopback port 11434; `extra.think_off`
   (`reasoning_effort` or `think`) sets it for any other server. The
   reasoning-stall retry, the critic, the next-prompt suggestion and the
   commit message ask with thinking off.
-- A cancelled or cut call is no longer charged its whole output bound just
-  because the server takes a `think` switch: that bound applies under a
-  dollar cap, or for a model whose reasoning is billed unseen. A local model
-  that streams its reasoning is charged what came back.
+- A cancelled or cut call to a local server known to stream its reasoning
+  (Ollama and llama.cpp, or vLLM, TGI or SGLang on a loopback address) is
+  charged what came back rather than its whole output bound, unless a dollar
+  cap is set. Every other server with a `think` switch, which may front a
+  model that reasons out of sight, keeps the bound, and the official OpenAI
+  API's o-series and gpt-5 models now get it too, since their reasoning is
+  billed unseen.
 - Asking for work "in parallel" started no parallel subagents. The model read
   it as a request to make the project's code concurrent, or did the parts one
   after another: neither subagent tool said what such a request means. `tasks`

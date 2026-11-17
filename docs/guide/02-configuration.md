@@ -182,6 +182,7 @@ reasoned, with no text or tool call, past that many reasoning tokens
 (counted at about four characters a token), instead of holding it to the
 call's ten-minute cap. `reasoning_stall_seconds` (300 by default) is a time
 backstop for the same, held to half the provider's `call_timeout_seconds`
+(which wins over the 30-second floor)
 so that it, not the call's cap, ends a slow reasoning reply and the turn
 can ask again. Neither cuts a reply whose reasoning is still within
 the request's own thinking budget (`thinking_budget`), which raises the token
@@ -246,7 +247,10 @@ raised is marked `estimated` on the call:
   back.
 - A cut call (cancelled, timed out, or ended by an error once its stream
   opened) is charged at least its prompt and what came back. Under a dollar
-  cap, or for a model that reasons out of sight, it is charged at the most
+  cap, or for a model that may reason out of sight (the official OpenAI
+  API's o-series and gpt-5, or any server with a `think` switch other than
+  a local one known to stream its reasoning: Ollama, llama.cpp, or vLLM,
+  TGI or SGLang on a loopback address), it is charged at the most
   the request allowed: the provider took the request and worked, and bills
   what it produced whether or not it arrived, so interrupting a run, or a
   connection that drops, does not save money under a cap.

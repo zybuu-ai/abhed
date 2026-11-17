@@ -1539,8 +1539,10 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	// The backstop stays well under the call's own cap, half of it, or the
 	// cap ends a slow reasoning reply as an error before the backstop can
 	// cut and retry it; the floors still hold.
-	stallAfter = min(stallAfter, model.CallTimeoutOf(l.Adapter)/2)
+	// Half the cap wins over the floor, so a short call timeout still leaves
+	// the backstop room to cut and retry.
 	stallAfter, stallTokens = max(stallAfter, minReasoningStall), max(stallTokens, minReasoningStallTokens)
+	stallAfter = min(stallAfter, model.CallTimeoutOf(l.Adapter)/2)
 	// Never cut within the thinking the request itself allows.
 	budget := model.ThinkingBudget(l.Adapter, req)
 	stallTokens = max(stallTokens, budget)

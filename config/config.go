@@ -1762,7 +1762,7 @@ type LimitsConfig struct {
 	// text or tool call, past this many reasoning tokens (or its thinking
 	// budget, if larger); ReasoningStallSeconds past this long, as a backstop.
 	// Zero is 8000 and 300; below 1000 and 30 the floors apply, and the
-	// seconds are held to half the provider's call timeout.
+	// seconds are held to half the provider's call timeout, which wins over the floor.
 	ReasoningStallTokens  int  `json:"reasoning_stall_tokens,omitempty"`
 	ReasoningStallSeconds int  `json:"reasoning_stall_seconds,omitempty"`
 	MaxSubagents          int  `json:"max_subagents"`

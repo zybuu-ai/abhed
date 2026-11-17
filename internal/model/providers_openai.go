@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -88,6 +89,9 @@ func openAIStyle(defaultURL string, sampling Sampling) Factory {
 				key = os.Getenv("OPENAI_API_KEY")
 			}
 		}
+		profile.StreamsReasoning = streamsReasoning(s.Type, base)
+		// The official API's reasoning models bill reasoning they never stream.
+		profile.ReasoningTokens = s.Type == "openai" && hiddenReasoning(s.Model)
 		a := NewOpenAICompatible(base, key, s.Model, profile)
 		a.Defaults = s.Params
 		a.Think = s.Params.Think
@@ -109,9 +113,43 @@ func openAIStyle(defaultURL string, sampling Sampling) Factory {
 	}
 }
 
+// streamsReasoning is a local server known to stream reasoning: Ollama and
+// llama.cpp anywhere, and vLLM, TGI or SGLang on a loopback address. A
+// generic or hosted entry may front a model that reasons out of sight.
+func streamsReasoning(typ, base string) bool {
+	switch typ {
+	case "ollama", "llamacpp":
+		return true
+	case "vllm", "tgi", "sglang":
+		return loopback(base)
+	}
+	return false
+}
+
+// hiddenReasoning is an OpenAI reasoning model: the o-series and gpt-5 on.
+func hiddenReasoning(model string) bool {
+	m := strings.ToLower(model)
+	return len(m) > 1 && m[0] == 'o' && m[1] >= '1' && m[1] <= '9' || strings.HasPrefix(m, "gpt-5") || strings.HasPrefix(m, "gpt-6")
+}
+
+// loopback reports a base URL on this machine's loopback address.
+func loopback(base string) bool {
+	u, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	h := u.Hostname()
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
+}
+
 // effortOff says whether thinking off is also sent as reasoning_effort
-// "none": for Ollama (its type, or its port on an openai-compatible entry),
-// or as extra.think_off ("reasoning_effort", or "think" for the field alone).
+// "none": for Ollama (its type, or an openai-compatible entry on Ollama's
+// loopback port 11434), or as extra.think_off ("reasoning_effort", or
+// "think" for the field alone), which a remote Ollama needs.
 func effortOff(s Spec, base string) (bool, error) {
 	switch v := s.Get("think_off"); v {
 	case "reasoning_effort":
@@ -126,7 +164,7 @@ func effortOff(s Spec, base string) (bool, error) {
 		return true, nil
 	}
 	u, err := url.Parse(base)
-	return err == nil && u.Port() == "11434", nil
+	return err == nil && s.Type == "openai-compatible" && u.Port() == "11434" && loopback(base), nil
 }
 
 // parallelCalls is f for a server known to take "parallel_tool_calls": it is

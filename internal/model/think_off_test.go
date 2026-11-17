@@ -71,9 +71,22 @@ func TestThinkingOffSendsReasoningEffortNone(t *testing.T) {
 			}
 		})
 	}
-	// An openai-compatible entry on Ollama's port is Ollama (judged by address only; nothing is contacted).
-	if on, err := effortOff(Spec{Type: "openai-compatible"}, "http://127.0.0.1:11434/v1"); err != nil || !on {
-		t.Fatalf("Ollama's port: %v %v", on, err)
+	// An openai-compatible entry on Ollama's loopback port is Ollama, judged
+	// by address only (nothing is contacted); another host or type is not.
+	for base, typ := range map[string]string{"http://127.0.0.1:11434/v1": "openai-compatible", "http://localhost:11434/v1": "openai-compatible"} {
+		if on, err := effortOff(Spec{Type: typ}, base); err != nil || !on {
+			t.Fatalf("%s %s: %v %v", typ, base, on, err)
+		}
+	}
+	for _, c := range []struct{ typ, base string }{
+		{"openai-compatible", "https://gateway.example.com:11434/v1"},
+		{"vllm", "http://gpu:11434/v1"},
+		{"vllm", "http://127.0.0.1:11434/v1"},
+		{"openai-compatible", "http://127.0.0.1:11435/v1"},
+	} {
+		if on, _ := effortOff(Spec{Type: c.typ}, c.base); on {
+			t.Fatalf("%s %s sends reasoning_effort none", c.typ, c.base)
+		}
 	}
 	if _, err := New(Spec{Type: "ollama", Model: "m", Extra: map[string]string{"think_off": "maybe"}}); err == nil {
 		t.Fatal("an unknown think_off must be refused")
@@ -92,5 +105,32 @@ func TestThinkingOnSendsNoEffortToOllama(t *testing.T) {
 	}
 	if got := bodies(); got[0]["reasoning_effort"] != nil {
 		t.Fatalf("sent %v", got[0]["reasoning_effort"])
+	}
+}
+
+// Only a local server known to stream reasoning is marked so; the official
+// API's reasoning models are marked as reasoning out of sight.
+func TestReasoningVisibilityProfiles(t *testing.T) {
+	for _, c := range []struct {
+		typ, base, model string
+		streams, hidden  bool
+	}{
+		{"ollama", "", "gemma4:26b", true, false},
+		{"llamacpp", "", "m", true, false},
+		{"vllm", "http://127.0.0.1:8000/v1", "m", true, false},
+		{"vllm", "https://gpu.example.com/v1", "m", false, false},
+		{"openai-compatible", "http://127.0.0.1:4000/v1", "m", false, false},
+		{"together", "", "m", false, false},
+		{"openai", "", "gpt-5-mini", false, true},
+		{"openai", "", "o3", false, true},
+		{"openai", "", "gpt-4o", false, false},
+	} {
+		a, err := New(Spec{Type: c.typ, BaseURL: c.base, Model: c.model, APIKey: "k", NoAmbientKey: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p := a.Profile(); p.StreamsReasoning != c.streams || p.ReasoningTokens != c.hidden {
+			t.Errorf("%s %s %s: streams %v hidden %v", c.typ, c.base, c.model, p.StreamsReasoning, p.ReasoningTokens)
+		}
 	}
 }
