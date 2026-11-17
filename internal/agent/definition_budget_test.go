@@ -23,6 +23,9 @@ func manyAgents(n int) *Definitions {
 func TestAgentListingIsBudgeted(t *testing.T) {
 	d := manyAgents(100)
 	task := Task{Agents: d}
+	if n := len(d.listing()); n > ListingBudget {
+		t.Fatalf("the agent listing is %d bytes", n)
+	}
 	desc := task.Description()
 	if len(desc) > ListingBudget+1200 {
 		t.Fatalf("the task description is %d bytes for 104 types", len(desc))

@@ -9,22 +9,18 @@ import (
 	"strings"
 )
 
-// validWireName is a tool name every provider accepts. Policy, the record and
-// approvals keep a tool's real name; only what crosses to the provider is
-// this.
+// validWireName is a tool name every provider accepts; only the request to
+// the provider carries it, never policy or the record.
 var validWireName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
-// wireHashLen is how many hex digits of the name's hash a wire name keeps.
-const wireHashLen = 10
+// wireHashLen is how many hex digits (64 bits) of the name's hash a wire name keeps.
+const wireHashLen = 16
 
 // ValidWireName reports whether name can be sent to a provider as it is.
 func ValidWireName(name string) bool { return validWireName.MatchString(name) }
 
-// WireName is the name a tool is offered to a provider under: the name itself
-// when every provider accepts it, otherwise a deterministic short form, its
-// plain characters up to 53 bytes, "_", and ten hex digits of its SHA-256.
-// The same name always gives the same wire name, so the request prefix stays
-// cacheable across turns.
+// WireName is name when every provider accepts it, else its plain characters
+// up to 47 (mcp__<server>__ kept whole when it fits), "_" and 16 hex of its SHA-256.
 func WireName(name string) string {
 	if ValidWireName(name) {
 		return name
@@ -42,9 +38,8 @@ func WireName(name string) string {
 	return plain + "_" + hex.EncodeToString(sum[:])[:wireHashLen]
 }
 
-// DefaultMaxTools is how many tools a request offers a provider when its
-// profile names no limit: the OpenAI-compatible limit, and a safe one for the
-// others.
+// DefaultMaxTools is the tool limit of a profile that names none: the
+// OpenAI-compatible limit.
 const DefaultMaxTools = 128
 
 // ToolLimit is the most tools one request to p may offer.
@@ -53,6 +48,18 @@ func ToolLimit(p Profile) int {
 		return p.MaxTools
 	}
 	return DefaultMaxTools
+}
+
+// ToolLimiter is a wrapping adapter that knows the limit of the provider
+// that will serve its next request.
+type ToolLimiter interface{ ToolLimit() int }
+
+// ToolLimitOf is the tool limit of the provider a sends its next request to.
+func ToolLimitOf(a Adapter) int {
+	if l, ok := a.(ToolLimiter); ok {
+		return l.ToolLimit()
+	}
+	return ToolLimit(a.Profile())
 }
 
 // ErrTooManyTools is a request that offers more tools than its provider takes.
@@ -70,10 +77,8 @@ func (w wireNames) real(name string) string {
 	return name
 }
 
-// toWire is req as a provider sees it: each tool name, in the tool list and
-// in the calls of earlier turns, as WireName gives it. It refuses a request
-// offering more than limit tools, naming the cause rather than letting the
-// provider answer 400. The map takes a call's wire name back to the tool's.
+// toWire renames req's tools and earlier calls by WireName, refusing more
+// than limit tools or two names on one wire name; the map undoes it.
 func toWire(req Request, limit int, provider string) (Request, wireNames, error) {
 	if limit > 0 && len(req.Tools) > limit {
 		return req, nil, fmt.Errorf("%w: this request offers %d tools and %s takes at most %d. "+
@@ -120,9 +125,11 @@ func toWire(req Request, limit int, provider string) (Request, wireNames, error)
 			calls := make([]ToolCall, len(m.ToolCalls))
 			for j, c := range m.ToolCalls {
 				if w := WireName(c.Name); w != c.Name {
-					if _, held := taken[w]; !held {
-						names[w] = c.Name
+					if other, held := taken[w]; held && other != c.Name {
+						return req, nil, fmt.Errorf("an earlier call to %q would reach the provider as %s, the name of the tool %q; rename one of them", c.Name, w, other)
 					}
+					taken[w] = c.Name
+					names[w] = c.Name
 					c.Name = w
 				}
 				calls[j] = c
@@ -134,8 +141,7 @@ func toWire(req Request, limit int, provider string) (Request, wireNames, error)
 	return out, names, nil
 }
 
-// fromWire relays a provider's stream with each tool call's name put back to
-// the tool's real name. With nothing to map it is in itself.
+// fromWire relays a provider's stream with each call's real tool name.
 func fromWire(in <-chan Chunk, names wireNames) <-chan Chunk {
 	if len(names) == 0 {
 		return in

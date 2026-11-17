@@ -526,10 +526,12 @@ with their parameters, from the next step. A loaded tool is policed, approved an
 recorded like any other, and a tool the model never searched for can still
 only run through policy.
 
-At most 100 tools stay loaded. Loading one more unloads the one loaded or
-called least recently, and `tool_search` says how many it unloaded; a search
-loads one again. A request also never offers the provider more tools than it
-takes (`max_tools`, 128 by default; see
+What a session loads is its own: a search in one session, or one user's
+session on a server, never loads or unloads a tool in another, and a
+subagent's loads stay its own. At most 100 tools stay loaded per session.
+Loading one more unloads the one loaded or called least recently, and
+`tool_search` says how many it unloaded; a search loads one again. A request also never offers the provider more tools than it
+takes (`max_tools`, 128 by default, of the provider serving the request; see
 [Configuration](02-configuration.md)): past that, the loop unloads loaded
 tools, least recently used first, before it sends. A built-in tool, an
 extension's, and an MCP tool offered in full are never unloaded, so when they
@@ -543,12 +545,16 @@ a provider's 400.
 Providers accept a tool name of letters, digits, `_` and `-`, up to 64
 characters. `mcp__<server>__<tool>` can be longer, and a tool's own name may
 hold `.`. Such a name is sent to the provider under a short wire name: its
-plain characters, up to 53, then `_` and ten hex digits of the full name's
-SHA-256, so `mcp__docs__search.pages` goes as
+plain characters, up to 47 (so `mcp__<server>__` stays whole for a server
+name of up to 40 characters), then `_` and 16 hex digits (64 bits) of the
+full name's SHA-256, so `mcp__docs__search.pages` goes as
 `mcp__docs__search_pages_` followed by its hash. The wire name is the same in
 every request, so the prompt prefix stays cacheable, and a call by it is
 mapped back to the real name before anything else sees it. `tool_search`
-gives the wire name beside the real one.
+gives the wire name beside the real one. A tool whose name or wire name is
+already another tool's is not registered, with a warning, so a wire name
+always stands for one tool; a request that would still carry two names on
+one wire name is refused before it is sent.
 
 Only the request to the provider carries the wire name. Permission rules,
 approval cards, `always allow`, hooks and the record all use the real
@@ -569,7 +575,7 @@ matches it however it travelled.
 | Starting a server | 60 s (`startup_timeout_seconds`), 8 servers at once | reported as failed, its tools absent |
 | One request to a server | 60 s | the call fails with a timeout |
 | MCP tools offered in full | 40 across the servers, then `tool_search`; servers of 3 tools or fewer, 12 tools in all, stay in full | deferred |
-| Tools loaded by `tool_search` | 100 | least recently used unloaded |
+| Tools loaded by `tool_search` | 100 per session | least recently used unloaded |
 | Tools in one request | the provider's `max_tools`, 128 by default | loaded tools unloaded, then refused with a clear error |
 
 Skills and agent types have budgets of their own in the prompt; see

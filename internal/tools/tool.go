@@ -14,12 +14,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 )
 
 // Tool is one callable capability exposed to the model.
@@ -204,13 +201,10 @@ func NewRegistry(ts ...Tool) *Registry {
 	return r
 }
 
-// Add registers t and reports whether it did. A name already registered is
-// refused, with a warning, and the first tool keeps it: which of two tools a
-// name runs, and which a policy rule naming it reaches, must not depend on
-// the order they were added in. Replace is for a deliberate swap.
+// Add registers t and reports whether it did: a name already registered is
+// refused and the first tool keeps it; the caller warns. Replace swaps.
 func (r *Registry) Add(t Tool) bool {
 	if _, dup := r.tools[t.Name()]; dup {
-		warnDuplicate(t.Name())
 		return false
 	}
 	r.order = append(r.order, t.Name())
@@ -218,9 +212,8 @@ func (r *Registry) Add(t Tool) bool {
 	return true
 }
 
-// Replace registers t in place of the tool of its name, keeping that tool's
-// place in the order, or adds it when there is none: a built-in bound to a
-// session, a tool wrapped to defer it.
+// Replace puts t in place of the tool of its name, keeping its place, or
+// adds it: a deliberate swap, such as a session's bound bash.
 func (r *Registry) Replace(t Tool) {
 	if _, dup := r.tools[t.Name()]; !dup {
 		r.order = append(r.order, t.Name())
@@ -228,15 +221,31 @@ func (r *Registry) Replace(t Tool) {
 	r.tools[t.Name()] = t
 }
 
-// WarnOut receives the warning for a tool refused for a name already taken.
-var WarnOut io.Writer = os.Stderr
+// Cloner is a tool with per-session state, such as a deferred tool's
+// loaded flag: each registry derived from another gets its own copy.
+type Cloner interface {
+	CloneTool() Tool
+}
 
-var warnOutMu sync.Mutex
+// Rebinder is a tool that refers to others of its registry, such as
+// tool_search to the tools it loads: a derived registry rebinds it to its own.
+type Rebinder interface {
+	Rebind(r *Registry) Tool
+}
 
-func warnDuplicate(name string) {
-	warnOutMu.Lock()
-	defer warnOutMu.Unlock()
-	fmt.Fprintf(WarnOut, "abhed: warning: a second tool named %q is not registered: the first one keeps the name\n", name)
+// own gives r its own copy of every Cloner, then rebinds every Rebinder to them.
+func (r *Registry) own() *Registry {
+	for _, n := range r.order {
+		if c, ok := r.tools[n].(Cloner); ok {
+			r.tools[n] = c.CloneTool()
+		}
+	}
+	for _, n := range r.order {
+		if b, ok := r.tools[n].(Rebinder); ok {
+			r.tools[n] = b.Rebind(r)
+		}
+	}
+	return r
 }
 
 func (r *Registry) Get(name string) (Tool, bool) {
@@ -280,7 +289,7 @@ func (r *Registry) Clone() *Registry {
 		out.tools[k] = v
 	}
 	copy(out.order, r.order)
-	return out
+	return out.own()
 }
 
 // Remove drops a tool. Used when an MCP server is disconnected, whose tools
@@ -309,7 +318,7 @@ func (r *Registry) Subset(names ...string) *Registry {
 			sub.Add(t)
 		}
 	}
-	return sub
+	return sub.own()
 }
 
 // SubsetStrict returns a registry limited to the tools names match, in this
@@ -339,7 +348,7 @@ func (r *Registry) SubsetStrict(names []string) (*Registry, []string) {
 			sub.Add(r.tools[n])
 		}
 	}
-	return sub, missing
+	return sub.own(), missing
 }
 
 // Without returns a copy of the registry without the tools names match. A
@@ -361,7 +370,7 @@ func (r *Registry) Without(names []string) *Registry {
 			out.Add(r.tools[n])
 		}
 	}
-	return out
+	return out.own()
 }
 
 // match finds the tools one written name stands for.
@@ -428,9 +437,8 @@ type Unloadable interface {
 	Unload()
 }
 
-// UnloadLeastUsed unloads up to n loaded tools, least recently used first,
-// and returns how many it unloaded. Only Unloadable tools are touched: a
-// built-in is never dropped.
+// UnloadLeastUsed unloads up to n loaded Unloadable tools, least recently
+// used first, and says how many; a built-in is never one.
 func (r *Registry) UnloadLeastUsed(n int) int {
 	var loaded []Unloadable
 	for _, name := range r.order {

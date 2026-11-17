@@ -60,15 +60,13 @@ type ServerConfig struct {
 	// server a person or a workspace added is the server's own word about
 	// itself and is ignored.
 	ReadOnlyHints bool `json:"-"`
-	// StartupTimeout bounds the server's start: the handshake and its tool,
-	// prompt and resource lists. Zero is DefaultStartupTimeout. A server not
-	// started by then is reported as failed and its tools are absent.
+	// StartupTimeout bounds the start, handshake and lists; zero is
+	// DefaultStartupTimeout. Past it the server fails and its tools are absent.
 	StartupTimeout time.Duration `json:"-"`
 }
 
-// Startup bounds: servers start at once, at most ConnectWorkers at a time,
-// each within its StartupTimeout, so one that hangs costs its own deadline
-// and holds up no other.
+// Startup bounds: ConnectWorkers servers start at once, each within its
+// StartupTimeout, so a hung one holds up no other.
 const (
 	DefaultConnectWorkers = 8
 	DefaultStartupTimeout = 60 * time.Second

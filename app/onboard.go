@@ -326,6 +326,9 @@ type gatedAdapter struct {
 // budget is seen.
 func (g gatedAdapter) SamplingDefaults() model.Params { return model.SamplingDefaultsOf(g.Adapter) }
 
+// ToolLimit is the wrapped adapter's.
+func (g gatedAdapter) ToolLimit() int { return model.ToolLimitOf(g.Adapter) }
+
 func (g gatedAdapter) Complete(ctx context.Context, req model.Request) (<-chan model.Chunk, error) {
 	if err := g.probe.check(ctx); err != nil {
 		return nil, err

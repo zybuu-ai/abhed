@@ -22,10 +22,8 @@ const DeferThreshold = 40
 // indexBudget bounds the name index in tool_search's description, in bytes.
 const indexBudget = 2560
 
-// MaxLoaded is how many tools tool_search keeps loaded at once. Loading one
-// more unloads the least recently loaded or called; the model searches again
-// for one it needs back. With the provider's tool limit (model.ToolLimit),
-// which the loop also keeps to, it bounds what a long session offers.
+// MaxLoaded is how many tools tool_search keeps loaded in a session; one
+// more unloads the least recently loaded or called.
 const MaxLoaded = 100
 
 // useClock orders loads and calls of deferred tools, for unloading the least
@@ -188,6 +186,15 @@ func (d *deferredTool) load() {
 	d.loaded.Store(true)
 }
 
+// CloneTool is the tool for a derived registry, a session's: its load state
+// starts as this one's and is its own from then on.
+func (d *deferredTool) CloneTool() tools.Tool {
+	c := &deferredTool{Tool: d.Tool}
+	c.loaded.Store(d.loaded.Load())
+	c.used.Store(d.used.Load())
+	return c
+}
+
 // Unload takes the tool back out of the offered set; it stays registered,
 // callable and policed, and a search loads it again.
 func (d *deferredTool) Unload() { d.loaded.Store(false) }
@@ -206,7 +213,7 @@ func (d *deferredTool) Run(ctx context.Context, sess *tools.Session, args json.R
 // SecretWithholder, ModeScoped, FixedArgs) or that rebuilds the tool (StoreBound) cannot be forwarded.
 func deferrable(t tools.Tool) bool {
 	switch t.(type) {
-	case tools.SecretArgs, tools.SecretPaths, tools.SecretWithholder, tools.ModeScoped, tools.FixedArgs, tools.StoreBound, tools.PlanPrechecker:
+	case tools.SecretArgs, tools.SecretPaths, tools.SecretWithholder, tools.ModeScoped, tools.FixedArgs, tools.StoreBound, tools.PlanPrechecker, tools.Cloner, tools.Rebinder:
 		return false
 	}
 	return true
@@ -293,6 +300,23 @@ func (d *deferredTool) RemoteName() string {
 type ToolSearch struct {
 	tools []*deferredTool
 	index string // server and tool names, fixed so the prefix stays cacheable
+}
+
+// Rebind is tool_search over r's own copies of its tools, so a search in one
+// session loads nothing in another's.
+func (s *ToolSearch) Rebind(r *tools.Registry) tools.Tool {
+	out := &ToolSearch{index: s.index}
+	for _, d := range s.tools {
+		if t, ok := r.Get(d.Name()); ok {
+			if own, ok := t.(*deferredTool); ok {
+				out.tools = append(out.tools, own)
+			}
+		}
+	}
+	if len(out.tools) != len(s.tools) {
+		out.index = nameIndex(out.tools, indexBudget)
+	}
+	return out
 }
 
 func (*ToolSearch) Name() string  { return "tool_search" }

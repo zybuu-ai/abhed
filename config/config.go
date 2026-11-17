@@ -870,9 +870,8 @@ type ProviderConfig struct {
 	// and no bound for other types. OpenAI-compatible types only.
 	MaxConcurrentRequests int `json:"max_concurrent_requests,omitempty"`
 
-	// MaxTools is the most tools one request to this provider offers; 0 is
-	// 128, the OpenAI-compatible limit. Searched-for MCP tools are unloaded,
-	// least recently used first, to stay under it.
+	// MaxTools caps the tools one request offers; 0 is 128. Loaded MCP tools
+	// are unloaded, least recently used first, to stay under it.
 	MaxTools int `json:"max_tools,omitempty"`
 
 	// Extra passes provider-specific settings through without this struct
@@ -1627,9 +1626,8 @@ type MCPServerConfig struct {
 	// HostFiles runs a stdio server with the host's files rather than
 	// confined to its own home and the workspace on the process tier.
 	HostFiles bool `json:"host_files,omitempty"`
-	// StartupTimeoutSeconds bounds the server's start, its handshake and
-	// lists; 0 is 60. A server not started by then is reported and its tools
-	// are absent; the others are not held up.
+	// StartupTimeoutSeconds bounds the server's start; 0 is 60. Past it the
+	// server is reported and its tools are absent.
 	StartupTimeoutSeconds int `json:"startup_timeout_seconds,omitempty"`
 	// OAuth configures `abhed mcp login` for a URL server; a server needs it
 	// only for a client registered ahead of time or particular scopes.

@@ -39,7 +39,7 @@ func TestOverrideIsReported(t *testing.T) {
 func TestListingIsBudgeted(t *testing.T) {
 	reg := manySkills(t, 300)
 	listing := reg.Listing()
-	if len(listing) > ListingBudget+200 {
+	if len(listing) > ListingBudget {
 		t.Fatalf("listing is %d bytes for 300 skills", len(listing))
 	}
 	if !strings.Contains(listing, "more; call `skill` with a word") {

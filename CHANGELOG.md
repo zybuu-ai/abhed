@@ -641,15 +641,19 @@ All notable changes to Abhed are recorded here. The format follows
   longest deadline once.
 - A tool name a provider would refuse, an MCP full name longer than 64
   characters or one holding `.`, is sent to the provider under a short,
-  stable wire name (its plain characters, `_` and ten hex digits of its
-  SHA-256) and mapped back on the call. Permission rules, approvals, hooks
+  stable wire name (up to 47 plain characters, the `mcp__<server>__` prefix
+  kept whole where it fits, `_` and 16 hex digits of its SHA-256) and mapped
+  back on the call. A tool whose name or wire name is already another's is
+  not registered, with a warning. Permission rules, approvals, hooks
   and the record keep the real `mcp__<server>__<tool>` name. A remote tool's
   own name may now be up to 128 characters, as the MCP specification
   allows.
-- `tool_search` keeps at most 100 tools loaded, unloading the least recently
-  loaded or called; the loop also unloads them, least recently used first,
-  to keep each request within the provider's `max_tools`. Built-in tools are
-  never unloaded.
+- `tool_search` keeps at most 100 tools loaded per session, unloading the
+  least recently loaded or called; the loop also unloads them, least
+  recently used first, to keep each request within the `max_tools` of the
+  provider serving it. Built-in tools are never unloaded. What a session
+  loads is its own: before, one session's search loaded the tool in every
+  session sharing the tool set, other users' on a server included.
 - New provider setting `max_tools`, and MCP server setting
   `startup_timeout_seconds`.
 - The skill listing, the `skill` tool's list of names, and the agent types

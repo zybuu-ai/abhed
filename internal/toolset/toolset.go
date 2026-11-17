@@ -183,15 +183,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		Skills:      skills.NewRegistry(),
 		Agents:      agent.BuiltinDefinitions(),
 	}
-	// A name already taken is refused, the first tool keeping it: an
-	// extension or integration cannot take a built-in's or a server's tool.
-	add := func(t tools.Tool) bool {
-		if _, dup := s.Registry.Get(t.Name()); dup {
-			warn("tool %s is not registered: a tool of that name is already registered and keeps it", config.Printable(t.Name()))
-			return false
-		}
-		return s.Registry.Add(t)
-	}
+	add := adder(s.Registry, warn)
 	if tc != nil && !tc.Off {
 		add(toolchain.Tool{S: tc})
 	}
@@ -302,6 +294,28 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 	}
 	warnCaseOnly(cfg, s.Registry.Names(), warn)
 	return s
+}
+
+// adder registers a tool unless its name or its wire name (model.WireName)
+// is taken; then it warns and the first tool keeps it.
+func adder(reg *tools.Registry, warn func(string, ...any)) func(tools.Tool) bool {
+	wires := map[string]string{}
+	for _, n := range reg.Names() {
+		wires[model.WireName(n)] = n
+	}
+	return func(t tools.Tool) bool {
+		if _, dup := reg.Get(t.Name()); dup {
+			warn("tool %s is not registered: a tool of that name is already registered and keeps it", config.Printable(t.Name()))
+			return false
+		}
+		w := model.WireName(t.Name())
+		if other, clash := wires[w]; clash {
+			warn("tool %s is not registered: it would reach the model provider as %s, as the tool %s does", config.Printable(t.Name()), w, config.Printable(other))
+			return false
+		}
+		wires[w] = t.Name()
+		return reg.Add(t)
+	}
 }
 
 // warnCaseOnly warns of each CaseOnlyRules finding once per process: a server

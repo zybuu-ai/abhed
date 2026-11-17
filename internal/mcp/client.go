@@ -203,11 +203,8 @@ func (c *Client) refreshTools(ctx context.Context) error {
 	return nil
 }
 
-// listPages reads a paginated list, handing each page's result to add, which
-// returns the next cursor and whether it holds all it will take. It follows
-// the cursor until there is none or add is full, reading at most maxPages
-// pages, and reports whether pages were left unread. A cursor seen before
-// ends the list: a server repeating one would otherwise be read to the cap.
+// listPages follows a list's cursor through add, at most maxPages pages,
+// stopping at a repeated cursor; cut reports pages left unread.
 func (c *Client) listPages(ctx context.Context, method string, maxPages int,
 	add func(raw json.RawMessage) (next string, full bool, err error)) (cut bool, err error) {
 	cursor := ""
@@ -238,11 +235,8 @@ func (c *Client) listPages(ctx context.Context, method string, maxPages int,
 	}
 }
 
-// validToolName is what a remote tool's name must look like to be offered,
-// the same rule tool_search lists names by: the name reaches prompts, the
-// approval card and "always allow" scopes. Up to 128 characters, as the MCP
-// specification allows: a full name a provider would refuse (over 64, or
-// holding ".") is sent to it under a short wire name (model.WireName).
+// validToolName is a remote tool name that is offered: up to 128 characters,
+// as MCP allows; one a provider refuses travels under model.WireName.
 var validToolName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 
 // MaxToolName is the longest remote tool name offered.
@@ -813,10 +807,8 @@ func (t *StdioTransport) Send(_ context.Context, payload []byte) error {
 	return nil
 }
 
-// MaxStdioLine bounds one JSON-RPC message a stdio server writes: a line
-// longer than this ends the connection with ErrLineTooLong rather than being
-// held in memory without end. A tool's result is cut to 30,000 characters
-// anyway; this bounds what is read to get there.
+// MaxStdioLine bounds one message on a stdio server's stdout; a longer
+// line ends the connection with ErrLineTooLong.
 const MaxStdioLine = 16 << 20
 
 // ErrLineTooLong is a stdio server that wrote a line past MaxStdioLine.

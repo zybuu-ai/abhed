@@ -11,9 +11,8 @@
 // the agent decides the skill applies. Putting every body in the prompt would
 // be simpler and quietly ruinous: twenty skills of a thousand tokens each is
 // 20k tokens paid on every request of every session, whether or not any of
-// them is relevant. The listing costs the name and the description, up to
-// 300 characters, per skill, within ListingBudget in all, and the body is
-// paid only when used.
+// them is relevant. The listing is names and descriptions within
+// ListingBudget; the body is paid only when used.
 //
 // Skills are also the most direct route for untrusted instructions to reach
 // the model, since a skill body IS instructions by construction. So Load
@@ -98,9 +97,16 @@ func Load(roots []string) (*Registry, []error) {
 // characters, as an agent definition's is; a longer one is cut, with a warning.
 const MaxDescription = 300
 
-// ListingBudget bounds the skill listing in the system prompt, and the names
-// the skill tool lists, in bytes. Past it the rest are counted, not listed,
-// and the skill tool still loads them by name or finds them by a word.
+// tailRoom is what the "and N more" line needs, kept free while items remain after i.
+func tailRoom(i, n int) int {
+	if i < n-1 {
+		return 120
+	}
+	return 0
+}
+
+// ListingBudget bounds the skill listing and the skill tool's names, in
+// bytes; the rest are counted, and still load by name or a word.
 const ListingBudget = 8 << 10
 
 // CapDescription cuts s's description to MaxDescription characters and
@@ -182,7 +188,7 @@ func (r *Registry) Listing() string {
 			from = " (from this workspace)"
 		}
 		line := fmt.Sprintf("- `%s`%s — %s\n", s.Name, from, s.Description)
-		if b.Len()+len(line) > ListingBudget {
+		if b.Len()+len(line)+tailRoom(i, len(all)) > ListingBudget {
 			fmt.Fprintf(&b, "- and %d more; call `skill` with a word from the name or the task to search them\n", len(all)-i)
 			break
 		}
@@ -197,7 +203,7 @@ func (r *Registry) NamesWithin(budget int) (string, int) {
 	names := r.Names()
 	var b strings.Builder
 	for i, n := range names {
-		if b.Len()+len(n)+2 > budget {
+		if b.Len()+len(n)+2+tailRoom(i, len(names)) > budget {
 			return b.String(), len(names) - i
 		}
 		if i > 0 {

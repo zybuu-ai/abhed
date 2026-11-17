@@ -295,7 +295,7 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 	// can share one. A tool of this server it no longer offers, or one left
 	// out for its name, is taken out; another server's, perhaps mid-restart,
 	// is left alone. This server's new tools are added.
-	added := []string{}
+	added, refused := []string{}, []string{}
 	s.state.swapTools(func(reg *tools.Registry) {
 		offered := map[string]tools.Tool{}
 		for _, t := range gw.Tools() {
@@ -321,11 +321,16 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 		}
 		for id, t := range offered {
 			if n, _ := t.(mcpNamed); n != nil && n.ServerName() == req.Name && !have[id] {
-				reg.Add(t)
-				added = append(added, t.Name())
+				// A name already taken keeps its tool; the answer says which were refused.
+				if reg.Add(t) {
+					added = append(added, t.Name())
+				} else {
+					refused = append(refused, t.Name())
+				}
 			}
 		}
 		sort.Strings(added)
+		sort.Strings(refused)
 	})
 	if len(errs) > 0 {
 		if errors.Is(errs[0], mcp.ErrNotAdmitted) {
@@ -338,11 +343,14 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.adminAudit(r, "mcp.added", req.Name, mcpAuditDetail(req, added))
-	WriteJSON(w, http.StatusOK, map[string]any{
-		"name":  req.Name,
-		"tools": added,
-	})
+	detail := mcpAuditDetail(req, added)
+	resp := map[string]any{"name": req.Name, "tools": added}
+	if len(refused) > 0 {
+		detail["refused"], resp["refused"] = refused, refused
+		resp["warnings"] = []string{fmt.Sprintf("%d tool(s) not registered: a tool of the same name is already registered and keeps it", len(refused))}
+	}
+	s.adminAudit(r, "mcp.added", req.Name, detail)
+	WriteJSON(w, http.StatusOK, resp)
 }
 
 // mcpNamed is a tool that knows its MCP server and its name there.

@@ -1,10 +1,8 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 )
 
@@ -20,23 +18,15 @@ func (n describedTool) Run(context.Context, *Session, json.RawMessage) Result {
 	return Result{Content: n.desc}
 }
 
-// A second tool of a name already registered is refused with a warning, and
-// the first keeps the name; Replace is the deliberate swap.
+// A second tool of a name already registered is refused, and the first keeps
+// the name; Replace is the deliberate swap.
 func TestAddRefusesADuplicateName(t *testing.T) {
-	var warned bytes.Buffer
-	old := WarnOut
-	WarnOut = &warned
-	t.Cleanup(func() { WarnOut = old })
-
 	r := NewRegistry(describedTool{"mcp__gh__issue", "the server's"})
 	if r.Add(describedTool{"mcp__gh__issue", "an extension's"}) {
 		t.Fatal("a duplicate name was registered")
 	}
 	if got, _ := r.Get("mcp__gh__issue"); got.Description() != "the server's" {
 		t.Fatalf("the first tool lost its name to %q", got.Description())
-	}
-	if !strings.Contains(warned.String(), `a second tool named "mcp__gh__issue" is not registered`) {
-		t.Fatalf("no warning: %q", warned.String())
 	}
 	if len(r.Names()) != 1 {
 		t.Fatalf("names %v", r.Names())

@@ -2828,9 +2828,8 @@ func flushable(s string) bool {
 	return false
 }
 
-// realToolName is c named by its tool's real name when the model called it
-// by a wire name (model.WireName) the request did not carry, such as a
-// deferred tool's: policy, approval and the record see the real name.
+// realToolName maps a call by a wire name the request did not carry (a
+// deferred tool's) to the one tool it names; an ambiguous one is left unknown.
 func (l *Loop) realToolName(c model.ToolCall) model.ToolCall {
 	if l.Tools == nil || !model.ValidWireName(c.Name) {
 		return c
@@ -2838,11 +2837,14 @@ func (l *Loop) realToolName(c model.ToolCall) model.ToolCall {
 	if _, ok := l.Tools.Get(c.Name); ok {
 		return c
 	}
+	var match []string
 	for _, n := range l.Tools.Names() {
 		if n != c.Name && model.WireName(n) == c.Name {
-			c.Name = n
-			break
+			match = append(match, n)
 		}
+	}
+	if len(match) == 1 {
+		c.Name = match[0]
 	}
 	return c
 }

@@ -344,3 +344,65 @@ func TestLoopKeepsTheRequestWithinTheProviderLimit(t *testing.T) {
 		t.Fatal("the most recently loaded tool was unloaded")
 	}
 }
+
+// Load state is a session's own: each session's registry is a clone, and a
+// search or an unload in one leaves another's offer as it was.
+func TestLoadStateIsPerSession(t *testing.T) {
+	servers := map[string][]mcptest.Tool{}
+	for i := range 3 {
+		servers[fmt.Sprintf("s%d", i)] = mcptest.Tools("t", 20)
+	}
+	base := withMCP(builtins(), stubServers(t, servers))
+	a, b := base.Clone(), base.Clone()
+	search := func(r *tools.Registry, q string) {
+		t.Helper()
+		s, _ := r.Get("tool_search")
+		if res := s.Run(context.Background(), nil, json.RawMessage(`{"query":"`+q+`","limit":1}`)); res.IsError {
+			t.Fatal(res.Content)
+		}
+	}
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(2)
+		go func() { defer wg.Done(); search(a, fmt.Sprintf("mcp__s0__t%d", i)) }()
+		go func() { defer wg.Done(); search(b, fmt.Sprintf("mcp__s1__t%d", i)) }()
+	}
+	wg.Wait()
+	for name, r := range map[string]*tools.Registry{"a": a, "b": b} {
+		for n := range offered(r) {
+			if strings.HasPrefix(n, "mcp__") && !strings.HasPrefix(n, map[string]string{"a": "mcp__s0__", "b": "mcp__s1__"}[name]) {
+				t.Fatalf("session %s offers %s, which another session loaded", name, n)
+			}
+		}
+	}
+	if offered(base)["mcp__s0__t0"] {
+		t.Fatal("a session's search loaded the tool in the shared registry")
+	}
+	before := len(offered(b))
+	if n := a.UnloadLeastUsed(100); n != 20 {
+		t.Fatalf("unloaded %d in a", n)
+	}
+	if len(offered(b)) != before {
+		t.Fatal("unloading in one session unloaded tools in another")
+	}
+	// A subagent's subset is its own too.
+	sub := a.Without([]string{"bash"})
+	search(sub, "mcp__s2__t3")
+	if offered(a)["mcp__s2__t3"] {
+		t.Fatal("a subagent's search loaded the tool in its parent")
+	}
+}
+
+// A tool whose name, or whose wire name, another tool already has is not
+// registered, with a warning, and the first keeps it.
+func TestAdderRefusesTakenNamesAndWireNames(t *testing.T) {
+	reg := tools.NewRegistry(tools.Read{}, fakeMCP{"mcp__x__a.b", "dotted"})
+	var warned []string
+	add := adder(reg, func(f string, a ...any) { warned = append(warned, fmt.Sprintf(f, a...)) })
+	if add(fakeMCP{"read", "an extension's"}) || add(fakeMCP{model.WireName("mcp__x__a.b"), "its twin"}) {
+		t.Fatal("a taken name was registered")
+	}
+	if !add(fakeMCP{"mcp__x__c", "new"}) || len(warned) != 2 || !strings.Contains(warned[1], "would reach the model provider as") {
+		t.Fatalf("warnings %q", warned)
+	}
+}

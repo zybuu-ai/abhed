@@ -113,11 +113,10 @@ func (l *Loop) offered(t tools.Tool) bool {
 // offeredDefs are the definitions of the tools offered in the current mode.
 func (l *Loop) offeredDefs() []model.ToolDef {
 	out := l.offeredDefsOnce()
-	// Past the provider's limit, searched-for tools are unloaded, least
-	// recently used first; a built-in never is. What still exceeds it is
-	// refused by the adapter, naming the cause.
+	// Past the serving provider's limit, loaded tools go, least recently used
+	// first; built-ins never do, and the adapter refuses what still exceeds it.
 	if l.Adapter != nil && l.Tools != nil {
-		if over := len(out) - model.ToolLimit(l.Adapter.Profile()); over > 0 && l.Tools.UnloadLeastUsed(over) > 0 {
+		if over := len(out) - model.ToolLimitOf(l.Adapter); over > 0 && l.Tools.UnloadLeastUsed(over) > 0 {
 			out = l.offeredDefsOnce()
 		}
 	}

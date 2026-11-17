@@ -164,7 +164,7 @@ func TestScaleIntegrations(t *testing.T) {
 	if loaded > MaxLoaded {
 		t.Fatalf("%d tools loaded", loaded)
 	}
-	if len(listing) > skills.ListingBudget+256 || len(skillTool.Description()) > skills.ListingBudget+512 {
+	if len(listing) > skills.ListingBudget || len(skillTool.Description()) > skills.ListingBudget+512 {
 		t.Fatalf("skill listing %d, skill tool %d bytes", len(listing), len(skillTool.Description()))
 	}
 	if len(task.Description()) > agent.ListingBudget+1024 || len(task.Schema()) > agent.ListingBudget+2048 {

@@ -220,3 +220,34 @@ func TestMaxToolsFromSpec(t *testing.T) {
 		t.Fatal("a negative max_tools was taken")
 	}
 }
+
+// Two tools that would reach the provider under one name are refused, in the
+// tool list and in an earlier turn's call, rather than one standing for both.
+func TestAmbiguousWireNamesAreRefused(t *testing.T) {
+	dotted := "mcp__x__a.b"
+	twin := WireName(dotted)
+	schema := json.RawMessage(`{"type":"object"}`)
+	_, _, err := toWire(Request{Tools: []ToolDef{{Name: dotted, InputSchema: schema}, {Name: twin, InputSchema: schema}}}, 0, "p")
+	if err == nil || !strings.Contains(err.Error(), "would reach the provider under one name") {
+		t.Fatalf("tool list: %v", err)
+	}
+	_, _, err = toWire(Request{
+		Tools:    []ToolDef{{Name: twin, InputSchema: schema}},
+		Messages: []Message{{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c", Name: dotted}}}},
+	}, 0, "p")
+	if err == nil || !strings.Contains(err.Error(), "an earlier call") {
+		t.Fatalf("history: %v", err)
+	}
+}
+
+// A long name keeps its server prefix whole and 64 bits of hash.
+func TestWireNameKeepsTheServerPrefix(t *testing.T) {
+	name := "mcp__a_server_named_at_length__" + strings.Repeat("tool.", 20)
+	w := WireName(name)
+	if !strings.HasPrefix(w, "mcp__a_server_named_at_length__") || len(w) > 64 {
+		t.Fatalf("%q", w)
+	}
+	if h := w[strings.LastIndex(w, "_")+1:]; len(h) != 16 {
+		t.Fatalf("hash %q", h)
+	}
+}

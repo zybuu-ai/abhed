@@ -182,10 +182,17 @@ func (d *Definitions) worktreeNote() string {
 	return ""
 }
 
-// ListingBudget bounds the agent types the task tool lists, and the
-// agent_type enum, in bytes. Past it the rest are counted, not listed; a
-// task names any of them, and an unknown name lists those matching it.
+// ListingBudget bounds the task tool's type listing and agent_type enum, in
+// bytes; the rest are counted, and still run by name.
 const ListingBudget = 8 << 10
+
+// tailRoom is what the "and N more" line needs, kept free while items remain after i.
+func tailRoom(i, n int) int {
+	if i < n-1 {
+		return 120
+	}
+	return 0
+}
 
 func (d *Definitions) listing() string {
 	var b strings.Builder
@@ -193,7 +200,7 @@ func (d *Definitions) listing() string {
 	for i, name := range names {
 		def, _ := d.Get(name)
 		line := "\n- " + name + " — " + def.Description
-		if b.Len()+len(line) > ListingBudget {
+		if b.Len()+len(line)+tailRoom(i, len(names)) > ListingBudget {
 			fmt.Fprintf(&b, "\n- and %d more; give agent_type a word from the type or the task to search them", len(names)-i)
 			break
 		}

@@ -1,10 +1,5 @@
-// Package mcptest runs stub MCP servers over stdio for tests: the test binary
-// itself, started again with a marker argument, so no interpreter or network
-// is needed. A package's TestMain calls Serve first.
-//
-// A stub answers tools/call with what it was called with, as JSON:
-// {"server": <its name>, "tool": <the tool>, "args": <the arguments as sent>},
-// so a test can check a call reached the right server unchanged.
+// Package mcptest runs stub stdio MCP servers for tests: the test binary run
+// again (TestMain calls Serve), each call echoed as {"server","tool","args"}.
 package mcptest
 
 import (

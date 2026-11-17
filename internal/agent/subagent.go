@@ -324,7 +324,7 @@ func unknownType(d *Definitions, what, name string) tools.Result {
 	var b strings.Builder
 	shown := 0
 	for _, n := range names {
-		if b.Len()+len(n)+2 > ListingBudget {
+		if b.Len()+len(n)+2+tailRoom(shown, len(names)) > ListingBudget {
 			break
 		}
 		if shown > 0 {

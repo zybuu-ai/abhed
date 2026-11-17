@@ -21,7 +21,7 @@ func TestDeferredToolAccountsForEveryOptionalInterface(t *testing.T) {
 	forwarded := map[string]bool{"Tool": true, "Hidden": true, "CallMutator": true, "Prechecker": true, "ContextPrechecker": true, "Unplanner": true, "ArgResolver": true, "ContextArgResolver": true, "Targeter": true, "FileArgs": true,
 		// Unloadable is deferredTool's own: it is what tool_search loads and unloads.
 		"Unloadable": true}
-	notDeferred := map[string]bool{"SecretArgs": true, "SecretPaths": true, "SecretWithholder": true, "ModeScoped": true, "FixedArgs": true, "StoreBound": true, "PlanPrechecker": true}
+	notDeferred := map[string]bool{"SecretArgs": true, "SecretPaths": true, "SecretWithholder": true, "ModeScoped": true, "FixedArgs": true, "StoreBound": true, "PlanPrechecker": true, "Cloner": true, "Rebinder": true}
 	// Subjector is found by tool name in a registry, never on the tool value;
 	// ScopedRewinder is a session's scoped value, not a tool.
 	notATools := map[string]bool{"Asker": true, "ShellHost": true, "Subjector": true, "ScopedRewinder": true}
