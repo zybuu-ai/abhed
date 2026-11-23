@@ -24,6 +24,16 @@ type whoChoice struct {
 // chooseWho is the start's question, before anything else: sign in, create
 // an account, sign in to a server, or guest, as the rules allow.
 func chooseWho(s *identity.Store, rules identity.Rules, p *prompter) (identity.Principal, error) {
+	return chooseWhoAs(s, rules, p, "")
+}
+
+// chooseWhoAs is chooseWho; with want set (-account, ABHED_ACCOUNT, as
+// Studio runs a window's command) it offers only signing in as that account,
+// so no other sign-in, account or move of earlier data happens first.
+func chooseWhoAs(s *identity.Store, rules identity.Rules, p *prompter, want string) (identity.Principal, error) {
+	if want != "" {
+		return signInAsOnly(s, rules, p, want)
+	}
 	list, err := s.List()
 	if err != nil {
 		return identity.Principal{}, err
@@ -312,3 +322,27 @@ func (p pendingServerSignIn) file(s *identity.Store, rules identity.Rules) (iden
 
 // legacyUser is who the record wrote sessions as before sign-in.
 func legacyUser() string { return legacyCLIUser() }
+
+// signInAsOnly is the one choice when an account was asked for: sign in as
+// it, or nothing.
+func signInAsOnly(s *identity.Store, rules identity.Rules, p *prompter, want string) (identity.Principal, error) {
+	list, err := s.List()
+	if err != nil {
+		return identity.Principal{}, err
+	}
+	for _, e := range list {
+		switch {
+		case e.Kind == identity.KindAccount && rules.SignIn != config.SignInServer && strings.EqualFold(e.Username, want):
+			fmt.Fprintf(p.out, "\nThis was asked for as %s. Sign in as %s to go on.\n", e.Username, e.Username)
+			got, err := signInAccount(s, p, e.Username)
+			if err != nil {
+				return identity.Principal{}, err
+			}
+			return s.Principal(got), nil
+		case e.Kind == identity.KindServer && rules.Admits(e) == nil && isSelected(s.Principal(e), want):
+			fmt.Fprintf(p.out, "\nThis was asked for as %s. Sign in to %s to go on.\n", want, e.Display())
+			return serverSignIn(s, p, e.URL, rules)
+		}
+	}
+	return identity.Principal{}, &identity.RequiredError{Why: fmt.Sprintf("there is no account %q on this machine", want), Next: "abhed account list shows them"}
+}

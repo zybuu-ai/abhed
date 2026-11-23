@@ -419,3 +419,102 @@ func TestAccountDropsTheSecretsFileVariable(t *testing.T) {
 		t.Fatalf("secrets file %q account %q", os.Getenv(secrets.EnvFile), os.Getenv(EnvAccount))
 	}
 }
+
+// windowAccounts makes b1 and a1 (passwords differ) with no one remembered,
+// and a stdin of lines.
+func windowAccounts(t *testing.T, lines string) (*identity.Store, *os.File) {
+	t.Helper()
+	signInTest(t)
+	if code, _, e := runAccount(t, "b1 password one\nb1 password one\n", "create", "b1"); code != 0 {
+		t.Fatal(e)
+	}
+	if code, _, e := runAccount(t, "a1 password two\na1 password two\n", "create", "a1"); code != 0 {
+		t.Fatal(e)
+	}
+	s, _ := identity.Open()
+	if err := s.Forget(); err != nil {
+		t.Fatal(err)
+	}
+	endGuest()
+	in := filepath.Join(t.TempDir(), "stdin")
+	if err := os.WriteFile(in, []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	return s, f
+}
+
+func neverA1(t *testing.T, s *identity.Store) {
+	t.Helper()
+	if p := currentPrincipal(); p.Kind == identity.Account && p.Entry.Username == "a1" {
+		t.Fatal("a1 is the working principal")
+	}
+	if rem, ok, _ := s.Remembered(nil); ok && rem.Username == "a1" {
+		t.Fatal("a1 is remembered")
+	}
+}
+
+// Asked as b1 at a terminal, the only choice is signing in as b1: a1's
+// password, answered there, signs no one in.
+func TestAskedAsB1OffersOnlyB1(t *testing.T) {
+	s, in := windowAccounts(t, "a1 password two\na1 password two\na1 password two\n")
+	var errOut bytes.Buffer
+	_, err := resolvePrincipal(signInFlags{account: "b1"}, true, in, &errOut)
+	if err == nil {
+		t.Fatalf("a wrong password for b1 signed someone in: %s", errOut.String())
+	}
+	if strings.Contains(errOut.String(), "Create") || strings.Contains(errOut.String(), "Guest") {
+		t.Fatalf("other choices were offered: %s", errOut.String())
+	}
+	neverA1(t, s)
+}
+
+// Whoever signs in when b1 was asked for, a1 included, is refused and never
+// becomes the principal.
+func TestAskedAsB1RefusesA1(t *testing.T) {
+	s, in := windowAccounts(t, "")
+	old := askWho
+	t.Cleanup(func() { askWho = old })
+	askWho = func(s *identity.Store, _ identity.Rules, _ *prompter, _ string) (identity.Principal, error) {
+		list, _ := s.List()
+		for _, e := range list {
+			if e.Username == "a1" {
+				return s.Principal(e), nil
+			}
+		}
+		return identity.Principal{}, errors.New("no a1")
+	}
+	var errOut bytes.Buffer
+	_, err := resolvePrincipal(signInFlags{account: "b1"}, true, in, &errOut)
+	if err == nil || !strings.Contains(err.Error(), "asked for as b1") {
+		t.Fatalf("a1 was taken for b1: %v", err)
+	}
+	neverA1(t, s)
+}
+
+// A window from before sign-in may not keep a model or key for whoever has
+// signed in since; as before sign-in it still may.
+func TestLegacyWindowRefusedOnceSignedIn(t *testing.T) {
+	s, _ := windowAccounts(t, "")
+	t.Setenv(EnvExpectLegacy, "1")
+	if err := guestSubcommand([]string{"models", "add", "anthropic", "x"}); err != nil {
+		t.Fatalf("refused before sign-in: %v", err)
+	}
+	list, _ := s.List()
+	if err := usePrincipal(s.Principal(list[0])); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(endGuest)
+	for _, args := range [][]string{{"models", "add", "anthropic", "x"}, {"provider", "login", "anthropic"}} {
+		if err := guestSubcommand(args); err == nil || !strings.Contains(err.Error(), "before sign-in") {
+			t.Errorf("%v: %v", args, err)
+		}
+	}
+	if err := guestSubcommand([]string{"models", "list"}); err != nil {
+		t.Errorf("a read was refused: %v", err)
+	}
+}

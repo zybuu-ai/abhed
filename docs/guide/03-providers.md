@@ -143,7 +143,8 @@ file asks for.
 
 A provider finds its key in this order:
 
-1. `api_key` written in the configuration (or `ABHED_API_KEY`), which is best avoided;
+1. `api_key` written in the configuration (or `ABHED_API_KEY`), which is best avoided:
+   a key written in `~/.abhed/config.json` is shared by every Abhed account on this Mac;
 2. the environment variable `api_key_env` names, when it is set;
 3. the stored key `api_key_secret` names, else the one named by `api_key_env`;
 4. with neither named, a hosted type at its own endpoint uses its type's
@@ -195,7 +196,10 @@ the previous file kept as `config.json.bak`, its mode kept, and every other
 key in it left as it was. They never write the workspace's file or the
 managed one, and refuse a model the managed configuration defines or a
 `model.allowed` list refuses. Each change is logged to
-`~/.abhed/config-changes.jsonl`, and applies to new sessions. Inside an
+`~/.abhed/config-changes.jsonl`, and applies to new sessions. The models are this Mac's: `~/.abhed/config.json`
+is shared by every Abhed account on it, so a model one account adds, removes
+or makes the default changes it for all of them. Keys are not shared: each
+account stores its own under the same name. Inside an
 agent's command they are refused. Studio's model picker offers **Add
 Model…** and **Set as Default**, which run the same commands.
 

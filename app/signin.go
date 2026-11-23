@@ -50,6 +50,9 @@ var unresolvedIsLegacy = false
 const (
 	EnvGuest   = "ABHED_GUEST"
 	EnvAccount = "ABHED_ACCOUNT"
+	// EnvExpectLegacy is set by a window that began before sign-in: its
+	// commands that keep state are refused once anyone is signed in.
+	EnvExpectLegacy = "ABHED_EXPECT_LEGACY"
 )
 
 // personCommands are the subcommands that read or write a person's state, and
@@ -157,12 +160,13 @@ func resolvePrincipal(sf signInFlags, interactive bool, in *os.File, errOut io.W
 		p, out.Ask, out.Note = identity.Principal{Kind: identity.Legacy}, false, ""
 	}
 	if out.Ask {
-		if p, err = chooseWho(s, rules, newPrompter(in, errOut)); err != nil {
+		want := sf.request(interactive, rules).Account
+		if p, err = askWho(s, rules, newPrompter(in, errOut), want); err != nil {
 			return 0, err
 		}
 		// Asked for one account (as Studio asks for its window's): anyone else
 		// signing in here is refused, never worked as.
-		if want := sf.request(interactive, rules).Account; want != "" && !isSelected(p, want) {
+		if want != "" && !isSelected(p, want) {
 			return 0, &identity.RequiredError{Why: "this was asked for as " + want + ", and another account signed in",
 				Next: "sign in as " + want + ", or run it from that account's window"}
 		}
@@ -179,6 +183,9 @@ func resolvePrincipal(sf signInFlags, interactive bool, in *os.File, errOut io.W
 	}
 	return 0, nil
 }
+
+// askWho asks who is working; a variable so a test can answer as anyone.
+var askWho = chooseWhoAs
 
 // guestByDefault reports whether this process is guest only because no one
 // is signed in, not because anyone chose it.
@@ -401,6 +408,16 @@ func guestSubcommand(rest []string) error {
 	}
 	if what == "" {
 		return nil
+	}
+	// A Studio window that began before sign-in, now that someone signed in on
+	// this Mac, would act for that account: it is refused until reopened.
+	if os.Getenv(EnvExpectLegacy) == "1" && currentPrincipal().Kind != identity.Legacy {
+		who := currentPrincipal().Display()
+		if who == "" {
+			who = "someone else"
+		}
+		return fmt.Errorf("%s was asked for by a window that started before sign-in, and this machine now works as %s; "+
+			"reopen the window to go on", what, who)
 	}
 	return guestRefusal(what)
 }

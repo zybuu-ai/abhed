@@ -339,7 +339,9 @@ All notable changes to Abhed are recorded here. The format follows
   `~/.abhed/config.json`, atomically, with a `config.json.bak` backup and the
   file's mode and other keys kept; never the workspace or managed file. A
   hosted default is confirmed first; a guest may not add, remove or choose a
-  model. Studio's model picker gains Add Model…, Set as Default and Add API
+  model. The models are this Mac's configuration, shared by every account on
+  it; an `api_key` written there is too, while stored keys are each
+  account's. Studio's model picker gains Add Model…, Set as Default and Add API
   Key…, which tell a guest to sign in instead.
 - `model.ollama.auto_start` (`false`: Ollama is never started without a click,
   and "always start" is not offered) and `model.ollama.idle_stop_minutes`.
