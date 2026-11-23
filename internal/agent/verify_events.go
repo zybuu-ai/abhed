@@ -34,7 +34,7 @@ var (
 	// notPastEd are words in -ed that are no past form.
 	notPastEd = wordSet(`need feed speed seed bleed breed proceed succeed exceed embed shed bed red hundred sacred
 		kindred naked wicked rugged ragged beloved indeed weed reed steed greed creed deed heed shred sled wed bred
-		fled led fed`)
+		fled led fed advanced detailed experienced sophisticated dedicated`)
 	// staticPhrases are participles that describe code as it stands, not an
 	// event: the short allowlist the guide names.
 	staticPhrases = regexp.MustCompile(`\b(?:is|are|be|being)\s+(?:defined|declared|called|named|used|based|typed|exported|embedded|ordered|sorted|keyed|scoped|bounded|nested|shared|required|expected|allowed|supported|meant|known)\b|\b(?:so-called|built-in|well-known|hard-coded|zero-based)\b`)
@@ -46,7 +46,7 @@ var (
 	// verb of change (added, removed, changed, updated, fixed, created …),
 	// and none is in the past: "was initialized" stays an event.
 	describesCodeRe = regexp.MustCompile(`\b(?:is|are|be|being)\s+(?:\w+ly\s+|then\s+|also\s+|first\s+|later\s+|only\s+)?` + dataFlowParticiples + `\b` +
-		`|\b(?:returned|produced|yielded|raised|emitted|provided|consumed|passed|retrieved|fetched)\s+(?:by|from)\b|\bpassed\s+(?:to|into|along|through|on to|down to|back to)\b` +
+		`|\b(?:returned|produced|yielded|raised|emitted|provided|consumed|passed|retrieved|fetched)\s+(?:by|from)\b|\bpass(?:ed|ing)\s+(?:to|into|along|through|on to|down to|back to|in|as an? \w+|as (?:the|its|a) \w+)\b|\bpassing\s+the\s+(?:\w+\s+){0,3}?\w+\s+(?:to|into|from)\b` +
 		`|\b(?:the|a|an|its|their|each|every|this|that|these|those)\s+` + qualifyingParticiples + `\s`)
 	// dataFlowParticiples say how values move through code and how it is
 	// wired; none says a piece of work is finished (merged, processed,
@@ -81,6 +81,14 @@ func wordSet(s string) map[string]bool {
 	}
 	return m
 }
+
+// resultedInRe is a run's outcome said with its count.
+var resultedInRe = regexp.MustCompile(`\b(?:resulted|ended|finished|exited)\s+(?:in|with)(?:\s+(?:\d|a\s|an\s|no\s|ok\b|success)|\s*[.,;!]?\s*$)`)
+
+// afterChangeRe refers to the session's change as a time: "following the
+// changes", "after the fix". It is judged apart: a change must have been
+// made.
+var afterChangeRe = regexp.MustCompile(`\b(?:after|following|with|since)\s+(?:the|my|these|those|our|this|that)\s+(?:changes?|fix(?:es)?|edits?|updates?)\b`)
 
 // setUpRe is "set up" said as a state.
 var setUpRe = regexp.MustCompile(`\b(?:is|are|was|were|been|being)\s+(?:\w+ly\s+|now\s+|all\s+)?set\s+up\b`)
@@ -124,6 +132,10 @@ func eventWords(text string) []string {
 	t = countOutcomeRe.ReplaceAllString(t, " ")
 	t = staticPhrases.ReplaceAllString(t, " ")
 	t = describesCodeRe.ReplaceAllString(t, " ")
+	t = afterChangeRe.ReplaceAllString(t, " ")
+	// "the run resulted in 5 failures": what a run showed, which the count
+	// is compared with.
+	t = resultedInRe.ReplaceAllString(t, " ")
 	t = qualifyingLabel(t)
 	t = outputSaysRe.ReplaceAllString(t, " ")
 	t = searchFoundRe.ReplaceAllString(t, " ")
@@ -366,7 +378,7 @@ func mutatingCmd(cmd string) bool {
 func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText) {
 	var tokens []string
 	for _, t := range f.tokens {
-		if !f.toolNamed[normText(t)] {
+		if !f.toolNamed[normText(t)] && !nameNotCode(f, t) {
 			tokens = append(tokens, t)
 		}
 	}
@@ -1003,4 +1015,16 @@ func squeezeCode(s string) string {
 // isOperator is punctuation other than a bracket or a quote.
 func isOperator(c byte) bool {
 	return !isAlnum(c) && c != ' ' && !strings.ContainsRune("()[]{}\"'`", rune(c))
+}
+
+// nameNotCode reports a code span of a change claim that names no code put
+// in or taken out: the file itself, or a test module the tests ran from.
+func nameNotCode(f facts, t string) bool {
+	nt := normText(t)
+	for _, p := range f.paths {
+		if normText(p) == nt || normText(rawPath(p)) == nt {
+			return true
+		}
+	}
+	return testModule(t) != ""
 }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -468,12 +469,12 @@ func TestStudioStopThenInputClosedWaitsForOneClose(t *testing.T) {
 	// record would hold it; any other close goes straight through.
 	var closes atomic.Int32
 	entered, gate := make(chan struct{}), make(chan struct{})
-	c.beforeShut = func() {
+	holdClose(t, c, func() {
 		if closes.Add(1) == 1 {
 			close(entered)
 			<-gate
 		}
-	}
+	})
 	c.useRecord(ws, "")
 	ran := make(chan struct{})
 	r := &studioRig{t: t, ws: ws, home: os.Getenv("HOME"), model: sm}
@@ -549,6 +550,72 @@ func TestStudioCloseCountsTheCallInFlight(t *testing.T) {
 	sum, _ := r.recorded(id, agent.EvNextEditSummary)
 	if len(sum) != 1 || sum[0]["requests"] != float64(1) || sum[0]["cancelled"] != float64(1) {
 		t.Fatalf("next_edit.summary %v", sum)
+	}
+	_ = inW.Close()
+	select {
+	case <-ran:
+	case <-time.After(5 * time.Second):
+		t.Fatal("run never returned")
+	}
+}
+
+// A session closed with a commit message call in flight records that call
+// (commit_message and its model.call) before the session's end: the close
+// waits for it as for completions.
+func TestStudioCloseRecordsTheCommitCallInFlight(t *testing.T) {
+	m := newEditorModel(t, "x", feelWindow)
+	m.hold("chat")
+	sm := newScriptModel(t)
+	acpModelsEnv(t, `{"model":{"default":"m","completion":"coder","providers":{"m":`+stubProvider(sm.URL, "m-1")+
+		`,"coder":{"type":"openai-compatible","base_url":"`+m.URL+`/v1","model":"qwen2.5-coder"}}}}`)
+	ws := t.TempDir()
+	if real, err := filepath.EvalSymlinks(ws); err == nil {
+		ws = real
+	}
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	c := &acpConn{out: outW, version: "test", build: acpBuild{Version: "1.2.3", Edition: "ce", Commit: "abc"}, base: ws,
+		sessions: map[string]*acpSession{}, pending: map[int64]chan rpcMessage{}}
+	c.useRecord(ws, "")
+	ran := make(chan struct{})
+	r := &studioRig{t: t, ws: ws, home: os.Getenv("HOME"), model: sm}
+	r.cl = startStudioClient(t, c, inW, outR, func() { _ = c.run(inR); close(ran) })
+	r.cl.ok("initialize", map[string]any{"protocolVersion": 1}, nil)
+	noHold(t)
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", ws, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	r.write("area.go", "package geo\n\nfunc Area(w, h int) int { return w * h }\n")
+	git("add", "area.go")
+	id := r.open()
+	from := r.cl.mark()
+	send(r, "c1", "_abhed/commitMessage", map[string]any{"sessionId": id})
+	// The diff is read with git first, which a loaded machine can make slow.
+	for arrived := false; !arrived; {
+		select {
+		case k := <-m.arrived:
+			arrived = k == "chat"
+		case <-time.After(30 * time.Second):
+			r.cl.mu.Lock()
+			seen := fmt.Sprint(r.cl.seen[from:])
+			r.cl.mu.Unlock()
+			t.Fatalf("no commit model call arrived; Studio saw %s", seen)
+		}
+	}
+	c.closeOnce(0)
+	var order []agent.EventType
+	for _, ev := range r.events(id) {
+		if ev.Type == agent.EvCommitMessage || ev.Type == agent.EvSessionEnded {
+			order = append(order, ev.Type)
+		}
+	}
+	if len(order) != 2 || order[0] != agent.EvCommitMessage || order[1] != agent.EvSessionEnded {
+		t.Fatalf("recorded %v; want commit_message then session.ended", order)
 	}
 	_ = inW.Close()
 	select {
