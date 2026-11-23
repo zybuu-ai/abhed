@@ -78,7 +78,7 @@ func (c *acpConn) networkRefused(s *acpSession, ev abhed.Event) {
 		return
 	}
 	var o agent.Observation
-	if json.Unmarshal(ev.Payload, &o) != nil || o.Tool != "bash" || !strings.Contains(o.Content, "call "+toolset.NetworkToolName) {
+	if json.Unmarshal(ev.Payload, &o) != nil || o.Tool != "bash" || !strings.Contains(o.Content, toolset.NetworkOfferText) {
 		return
 	}
 	s.mu.Lock()

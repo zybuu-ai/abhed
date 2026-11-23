@@ -53,7 +53,7 @@ type keptWorkspace struct {
 	Grants []keptGrant `json:"grants"`
 	// ListenAgreedAt is when the person let commands listen on loopback here.
 	ListenAgreedAt *time.Time `json:"listen_agreed_at,omitempty"`
-	// Network is what the person opened to commands here (network_access).
+	// Network is what the person opened to commands here (Studio, or /network).
 	Network *keptNetworkGrant `json:"network,omitempty"`
 }
 

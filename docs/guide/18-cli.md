@@ -195,6 +195,7 @@ provider is refused under a managed `model.default`, as `/model` is.
 | `/copy` | put the last reply on the clipboard through the terminal (OSC 52); `cli.copy: false` turns it off — [The terminal](20-terminal.md#the-title-notifications-and-the-clipboard) |
 | `/config` | each setting and where it comes from: managed, a file, or the default |
 | `/config set KEY VALUE` | set `model.default`, `permissions.mode`, `sandbox.allow_network`, `sandbox.tier`, `limits.max_turns`, `tools.syntax_check` or `statusline.command` in your own `~/.abhed/config.json`, for the next session |
+| `/network [workspace \| host NAME \| once [NAME]]` | what commands can reach; open the network to them for this workspace, one host, or this session, asked first. Not where the managed configuration holds the network |
 | `/config apply` | offer this session the models added to your own file since it started; nothing else of the file applies to it. When the file changes, the session says so after the task: a change applies to new sessions |
 
 `/config set` refuses a setting the managed configuration makes, and asks

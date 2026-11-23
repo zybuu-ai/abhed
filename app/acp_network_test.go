@@ -27,7 +27,7 @@ func TestStudioNetworkOffer(t *testing.T) {
 	r.model.mu.Lock()
 	first := r.model.bodies[0]
 	r.model.mu.Unlock()
-	if !strings.Contains(first, "Session facts from Abhed") || !strings.Contains(first, "Network: off") {
+	if !strings.Contains(first, "Session: True now") || !strings.Contains(first, "Network: off") {
 		t.Fatalf("the first request has no session facts: %.400s", first)
 	}
 

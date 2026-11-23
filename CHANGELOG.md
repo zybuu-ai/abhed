@@ -183,19 +183,20 @@ All notable changes to Abhed are recorded here. The format follows
   workspace file still cannot set it. `abhed doctor` says why the tier was
   chosen, what the container image lacks, and how to choose another.
 - The network on the person's word, without a config edit. Where it is off
-  and the managed file does not hold it, the agent's `network_access` tool
-  asks through the ordinary approval, and Studio offers it when a command
-  fails for the network (`_abhed/sandbox/network_refused`,
-  `_abhed/sandbox/network`): any host for the workspace, one host, or this
-  chat alone. Commands reach it through the session's egress proxy, so deny
+  and the managed file does not hold it, the person opens it: Studio offers
+  it when an agent's command fails for the network
+  (`_abhed/sandbox/network_refused`, `_abhed/sandbox/network`), and
+  `/network` does it at the terminal, each asked first: any host for the
+  workspace, one host, or this chat alone. The agent cannot open it. Commands reach it through the session's egress proxy, so deny
   rules still win and ssh and ping still fail. Workspace and host choices are
   kept with the workspace's kept approvals and revoked there. Default-deny
   stays the default.
-- The session tells the model, with the first message, what it can do from
+- The session tells the model, from the first message, what it can do from
   its real state: the tier, the network, that git remote operations are not
   brokered, the clusters configured and the tools the image lacks, and asks it
-  not to find these by trial or dispute them with the person. Told again when
-  they change, after a compaction and on a resume.
+  not to find these by trial or dispute them with the person. It is the
+  system prompt's last section, read again each turn, never part of a
+  message; recorded as `session.facts` when it changes.
 - Settings changed while chats are open are said: Studio gets
   `_abhed/config/changed` (applies to new chats) and can give an open chat
   the models added and the new default (`_abhed/config/apply`, recorded

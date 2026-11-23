@@ -600,11 +600,13 @@ image lacks, and how to choose another within the minimum.
 
 Commands have no network by default, and that stays the default. Where the
 network is off and the managed file does not set `sandbox.allow_network`,
-`sandbox.network` or `egress`, you can open it without editing a file: when a
-command fails for the network, or before one needs it, the agent calls
-`network_access` and you are asked through the ordinary approval, and Studio
-offers the same choices itself (Allow Network for This Workspace, Only a Host,
-This Chat Only).
+`sandbox.network` or `egress`, you can open it without editing a file. Only
+you can: the agent is told the network is off and that you can open it, and
+says what needs it. When one of its commands fails for the network, Studio
+offers Allow Network for This Workspace, Only a Host and This Chat Only, each
+asked first; at the terminal, `/network workspace`, `/network host <name>` or
+`/network once [name]` does the same, and `/network` alone says what commands
+can reach.
 
 - **This workspace:** any host, over http and https.
 - **One host:** that host, over http and https.
@@ -622,14 +624,16 @@ is used. A tier that cannot hold the proxy (a container tier on a VM without
 
 ### What the session tells the model
 
-With the first message you send, the model is told what this session can do,
+From the first message you send, the model is told what this session can do,
 from its real state: the tier, the network (off, open, an allowlist, or what
 you opened), that git remote operations (fetch, pull, push, clone) are not
 brokered and need the network, the Kubernetes clusters configured, and the
 tools the container image lacks. It is asked not to find these limits by
-trial, nor to dispute them with you. It is told again when they change (after
-you open the network), after a compaction and on a resume; subagents are not.
-It is part of your message in the record.
+trial, nor to dispute them with you. It is the system prompt's last section,
+read again each turn, so a change (opening the network) reaches the next
+request; it is never part of a message, so a rewind, fork or compaction neither
+carries nor loses it. Subagents are not told. The record has it as
+`session.facts`, each time it changes.
 
 ### The container tier's image
 

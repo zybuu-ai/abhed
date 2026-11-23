@@ -85,7 +85,7 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 		return sandbox.Policy{}, err
 	}
 	// Where the network is off and the person may open it, commands get a
-	// proxy that refuses everything until they do (network_access).
+	// proxy that refuses everything until they do (Studio, or /network).
 	if p.Egress == nil && p.OptionalEgress == nil && !p.AllowNetwork && !managedNetwork(cfg) {
 		pol, err := egress.Compile(egress.Config{})
 		if err != nil {

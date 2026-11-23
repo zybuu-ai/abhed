@@ -370,12 +370,13 @@ type Loop struct {
 	// script: a note asking the model to ask the person is left out there.
 	Unattended bool
 	// SessionNote, when set, states what this session can do (its tier,
-	// network, git, clusters, missing tools). It goes with the first
-	// message the person sends, and again with a later one when it has
-	// changed, such as after the network was opened.
+	// network, git, clusters, missing tools). It is the system prompt's
+	// last section from the first message on, read again each turn, so a
+	// change (the network opened) reaches the model; it is never part of a
+	// message, so no rewind, fork or compaction carries or loses it.
 	SessionNote func() string
-	// lastNote is the session note the model was last given.
-	lastNote string
+	// facts is the session note as the model is given it now.
+	facts string
 	// Suggest, when set, offers a next prompt after a completed run.
 	Suggest *Suggester
 	// sug is the suggestion call running after the last run ended; sugMu
@@ -938,7 +939,8 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	if typed == "" {
 		typed = typedFrom(ctx)
 	}
-	said := Message{Text: text, ClientID: m.ClientID, SecretsWithheld: withheld, Note: joinNotes(l.sessionNote(), l.parallelNote(typed))}
+	l.refreshFacts()
+	said := Message{Text: text, ClientID: m.ClientID, SecretsWithheld: withheld, Note: l.parallelNote(typed)}
 	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, said); err != nil {
 		return TermError, err
 	}
@@ -1362,7 +1364,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	}
 	l.justCompacted = false
 	// Counted as sent: a tool of another mode is not in the request.
-	should, used, err := check(l.Config.SystemPrompt, l.messages, l.offeredDefs())
+	should, used, err := check(l.system(), l.messages, l.offeredDefs())
 	if err != nil || !should {
 		return err
 	}
@@ -1370,7 +1372,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	// Started is recorded only once there is something to summarise; every
 	// return after it records a completion (the caller records errors).
 	begun := false
-	compacted, info, err := l.Compactor.CompactWith(l.metered(l.withCaller(ctx)), "auto", l.Config.SystemPrompt, l.messages, used, func() {
+	compacted, info, err := l.Compactor.CompactWith(l.metered(l.withCaller(ctx)), "auto", l.system(), l.messages, used, func() {
 		begun = true
 		l.record(EvCompactStarted, ActorSystem, Compaction{BeforeTokens: used, Trigger: "auto"})
 	})
@@ -1385,7 +1387,6 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	}
 
 	l.messages = compacted
-	l.lastNote = "" // the session facts went with what was summarised: given again with the next message
 	l.usage.Compactions++
 	l.justCompacted = true
 	l.forgetAnswers()
@@ -1414,9 +1415,9 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 		return Compaction{}, fmt.Errorf("compaction is not configured")
 	}
 	used, _ := l.Adapter.CountTokens(model.Request{
-		System: l.Config.SystemPrompt, Messages: l.messages,
+		System: l.system(), Messages: l.messages,
 	})
-	compacted, info, err := l.Compactor.Compact(l.metered(l.withCaller(ctx)), "manual", l.Config.SystemPrompt, l.messages, used)
+	compacted, info, err := l.Compactor.Compact(l.metered(l.withCaller(ctx)), "manual", l.system(), l.messages, used)
 	if err != nil {
 		return Compaction{}, err
 	}
@@ -1425,7 +1426,6 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 		return Compaction{}, ErrNothingToCompact
 	}
 	l.messages = compacted
-	l.lastNote = "" // the session facts went with what was summarised: given again with the next message
 	l.usage.Compactions++
 	l.forgetAnswers()
 	l.SubdirMemory.forget()
@@ -1490,7 +1490,6 @@ func (l *Loop) SetHistory(msgs []model.Message, turns int) {
 	l.runMu.Lock()
 	defer l.runMu.Unlock()
 	l.messages = append([]model.Message(nil), msgs...)
-	l.lastNote = "" // a history set again is given the session facts with its next message
 	l.forgetSaid()
 	l.UnbindPlan() // a runbook binds the conversation that approved it, not one rebuilt from a record
 	if turns > l.turns {
@@ -1529,8 +1528,9 @@ func LastEnd(events []Event) (SessionEnded, bool) {
 // turn runs one round trip: model output plus any tool executions.
 func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	l.promptFolderMemory()
+	l.refreshFacts()
 	req := model.Request{
-		System:      l.Config.SystemPrompt,
+		System:      l.system(),
 		Messages:    l.messages,
 		Tools:       l.offeredDefs(),
 		MaxTokens:   l.Config.MaxTokens,
@@ -2800,7 +2800,7 @@ func (l *Loop) contextSize() (used, window int) {
 	}
 	window = l.Adapter.Profile().ContextWindow
 	n, err := l.Adapter.CountTokens(model.Request{
-		System:   l.Config.SystemPrompt,
+		System:   l.system(),
 		Messages: l.messages,
 		Tools:    l.offeredDefs(),
 	})

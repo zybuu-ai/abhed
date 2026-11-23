@@ -26,8 +26,13 @@ func offSandbox(t *testing.T) sandbox.Sandbox {
 
 func runNetwork(t *testing.T, n *Network, args string) (string, bool) {
 	t.Helper()
-	r := NetworkTool{N: n}.Run(context.Background(), nil, json.RawMessage(args))
-	return r.Content, r.IsError
+	var a struct{ Scope, Host string }
+	_ = json.Unmarshal([]byte(args), &a)
+	out, err := n.Open(a.Scope, a.Host, true)
+	if err != nil {
+		return err.Error(), true
+	}
+	return out, false
 }
 
 // The person opens the network for the workspace, one host, or this chat;
@@ -67,7 +72,7 @@ func TestNetworkToolGrants(t *testing.T) {
 			t.Errorf("taken: %s", bad)
 		}
 	}
-	if !strings.Contains(n.State(), "which the user opened") {
+	if !strings.Contains(n.State(), "opened by the user") {
 		t.Fatalf("state: %s", n.State())
 	}
 }
@@ -107,7 +112,7 @@ func TestKeptNetworkApplied(t *testing.T) {
 	if n.policy().DecideHost(egress.Request{Host: "registry.npmjs.org", Port: 443, Tunnel: true}).Decision != egress.Allow {
 		t.Fatal("the kept host is not open")
 	}
-	if !strings.Contains(b.NetworkNote, NetworkToolName) {
+	if !strings.Contains(b.NetworkNote, NetworkOfferText) {
 		t.Fatalf("note: %q", b.NetworkNote)
 	}
 }
@@ -118,33 +123,33 @@ func TestSessionNote(t *testing.T) {
 	cfg.K8s.Clusters = []config.K8sClusterConfig{{Name: "lab", Server: "https://lab.example"}}
 	n := NewNetwork(cfg, offSandbox(t))
 	note := SessionNote(cfg, n.sb, n)
-	for _, want := range []string{"process tier", "Network: off", NetworkToolName, "not brokered", "Kubernetes clusters: lab", "dispute them"} {
+	for _, want := range []string{"Sandbox: process", "Network: off, only the user can open it", "not brokered", "Clusters: lab", "dispute"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("note lacks %q:\n%s", want, note)
 		}
 	}
 	_ = n.policy().GrantHosts("network", []string{"github.com"})
-	if note := SessionNote(cfg, n.sb, n); !strings.Contains(note, "except hosts the user opened") || !strings.Contains(note, "github.com") {
+	if note := SessionNote(cfg, n.sb, n); !strings.Contains(note, "off except") || !strings.Contains(note, "github.com") {
 		t.Fatalf("after a grant:\n%s", note)
 	}
 	// Managed network: said, and how it cannot be opened.
 	m := config.Default()
 	m.ManagedKeys = []string{"egress"}
 	mn := NewNetwork(m, offSandbox(t))
-	if note := SessionNote(m, mn.sb, mn); !strings.Contains(note, "cannot be opened here: the managed configuration") || strings.Contains(note, "call "+NetworkToolName) {
+	if note := SessionNote(m, mn.sb, mn); !strings.Contains(note, "cannot be opened: the managed configuration") || strings.Contains(note, "only the user can open it") {
 		t.Fatalf("managed:\n%s", note)
 	}
 	// A container on the default image lacks the basic tools.
 	t.Setenv("ABHED_SANDBOX_IMAGE", "")
 	sandbox.SetConfiguredImage("")
 	c := sandbox.NewContainer(sandbox.Policy{Workspace: t.TempDir()})
-	if note := SessionNote(cfg, c, NewNetwork(cfg, c)); !strings.Contains(note, "container tier") || !strings.Contains(note, "Not in the image: git, curl") {
+	if note := SessionNote(cfg, c, NewNetwork(cfg, c)); !strings.Contains(note, "Sandbox: container") || !strings.Contains(note, "Not in image: git, curl") {
 		t.Fatalf("container:\n%s", note)
 	}
 	open := config.Default()
 	open.Sandbox.AllowNetwork = true
 	on := NewNetwork(open, offSandbox(t))
-	if note := SessionNote(open, on.sb, on); !strings.Contains(note, "Network: on: commands can reach any host.") {
+	if note := SessionNote(open, on.sb, on); !strings.Contains(note, "Network: on.") {
 		t.Fatalf("open:\n%s", note)
 	}
 }

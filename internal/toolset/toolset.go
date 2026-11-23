@@ -196,9 +196,6 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 	if tc != nil && !tc.Off {
 		s.Registry.Add(toolchain.Tool{S: tc})
 	}
-	if ok, _ := NetworkOfferable(cfg); ok && o.Sandbox != nil {
-		s.Registry.Add(NetworkTool{N: net})
-	}
 	// In force before anything below connects, MCP servers included.
 	// An unguarded set too, so a request naming no set amid a mix is refused.
 	s.uninstall = egress.Install(s.Guard())

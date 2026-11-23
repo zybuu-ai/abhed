@@ -2,7 +2,6 @@ package toolset
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -16,9 +15,11 @@ import (
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
-// NetworkToolName is the tool that asks the person to open the network to
-// commands where it is off.
-const NetworkToolName = "network_access"
+// NetworkOfferText ends what a command that failed for the network is told,
+// and marks that output for Studio, which offers the person the choice. The
+// network is opened by the person alone (Studio, or /network at the
+// terminal); the agent can only say it needs it.
+const NetworkOfferText = "Tell the user what needs the network: they can open it for this workspace, one host or this chat."
 
 // KeptNetwork is what a person opened to commands in a workspace, kept in
 // their own state: the whole network, or some hosts.
@@ -112,11 +113,11 @@ func (n *Network) State() string {
 	cfg := n.cfg
 	switch {
 	case sandboxconfig.NetworkOpen(cfg):
-		return "on: commands can reach any host."
+		return "on"
 	case cfg.Sandbox.Network == config.NetworkAllowlist:
 		pol := n.policy()
 		if pol != nil && pol.AnyGranted() {
-			return "on through the session's proxy: the person opened it to any host."
+			return "on (opened by the user, via proxy)"
 		}
 		hosts := "the hosts the egress rules allow"
 		if pol != nil {
@@ -124,62 +125,18 @@ func (n *Network) State() string {
 				hosts = strings.Join(h, ", ")
 			}
 		}
-		return "allowlist: commands reach only " + hosts + ", through the session's proxy."
+		return "allowlist only: " + hosts
 	}
 	pol := n.policy()
 	if pol != nil && pol.AnyGranted() {
-		return "on for http and https, which the user opened (ssh and ping still fail)."
+		return "http(s) only, opened by the user"
 	}
 	if pol != nil {
 		if h := pol.AllowedHosts(); len(h) > 0 {
-			return "off, except hosts the user opened (http, https): " + strings.Join(h, ", ") + "."
+			return "off except " + strings.Join(h, ", ")
 		}
 	}
-	return "off: commands reach no host (curl, installs and git fetch, pull, push, clone fail)."
-}
-
-// NetworkTool asks the person, through the ordinary approval, to open the
-// network to commands: for this workspace, one host, or this chat alone.
-type NetworkTool struct{ N *Network }
-
-func (NetworkTool) Name() string  { return NetworkToolName }
-func (NetworkTool) Mutates() bool { return true }
-
-func (NetworkTool) Description() string {
-	return "Ask the user to open the network to the session's commands, where it is off. Call it when a command failed because " +
-		"the network is off, or before one that needs it, with a reason the user can judge. scope is \"workspace\" (every later " +
-		"session in this workspace too), \"host\" (only host, kept for this workspace) or \"once\" (this chat alone; host if given, " +
-		"else any host). The user is asked first; if they refuse, say what cannot be done without it and stop. Never claim the network works when it is off."
-}
-
-func (NetworkTool) Schema() json.RawMessage {
-	return json.RawMessage(`{
-  "type":"object",
-  "properties":{
-    "scope":{"type":"string","enum":["workspace","host","once"],"description":"workspace: any host, kept for this workspace; host: only host, kept; once: this chat alone."},
-    "host":{"type":"string","description":"The one host, such as github.com: required for host, optional for once."},
-    "reason":{"type":"string","description":"Why the task needs it, shown to the user."}
-  },
-  "required":["scope","reason"]
-}`)
-}
-
-type networkArgs struct {
-	Scope  string `json:"scope"`
-	Host   string `json:"host"`
-	Reason string `json:"reason"`
-}
-
-func (t NetworkTool) Run(_ context.Context, _ *tools.Session, raw json.RawMessage) tools.Result {
-	var a networkArgs
-	if err := json.Unmarshal(raw, &a); err != nil {
-		return tools.Result{Content: "network_access: " + err.Error(), IsError: true}
-	}
-	msg, err := t.N.Open(a.Scope, a.Host, true)
-	if err != nil {
-		return tools.Result{Content: "network_access: " + err.Error(), IsError: true}
-	}
-	return tools.Result{Content: "The user opened " + msg + ". Run the command again."}
+	return "off"
 }
 
 // Open opens the network to the session's commands on the person's word:
@@ -259,7 +216,8 @@ func SessionNote(cfg config.Config, sb sandbox.Sandbox, n *Network) string {
 	}
 	n.ApplyKept()
 	var b strings.Builder
-	b.WriteString("[Session facts from Abhed. Do not test them by trial or dispute them with the user; if the user reports otherwise, believe what they saw.]\n")
+	// Kept short: it is in every request of the session.
+	b.WriteString("True now; don't probe or dispute; trust what the user reports. ")
 	where := ""
 	switch s.Tier() {
 	case sandbox.TierContainer, sandbox.TierVM:
@@ -267,22 +225,23 @@ func SessionNote(cfg config.Config, sb sandbox.Sandbox, n *Network) string {
 	case sandbox.TierNone:
 		where = ", no isolation"
 	}
-	fmt.Fprintf(&b, "- Sandbox: %s tier%s.\n", s.Tier(), where)
-	fmt.Fprintf(&b, "- Network: %s", n.State())
+	fmt.Fprintf(&b, "Sandbox: %s%s. Network: %s", s.Tier(), where, n.State())
 	if ok, why := n.Offer(); ok && !sandboxconfig.NetworkOpen(cfg) {
-		b.WriteString(" If needed, call " + NetworkToolName + "; the user is asked.")
+		b.WriteString(", only the user can open it")
 	} else if !sandboxconfig.NetworkOpen(cfg) {
-		b.WriteString(" It cannot be opened here: " + why + ".")
+		b.WriteString("; cannot be opened: " + why)
 	}
-	b.WriteString("\n- Git: runs in the sandbox; remote operations (fetch, pull, push, clone) are not brokered and need the network.\n")
+	b.WriteString(". Git remotes not brokered.")
 	if missing, known := sandbox.MissingTools(s); known && len(missing) > 0 {
-		fmt.Fprintf(&b, "- Not in the image: %s. Tell the user rather than trying them (/config set sandbox.tier, or sandbox.image).\n", strings.Join(missing, ", "))
+		fmt.Fprintf(&b, " Not in image: %s.", strings.Join(missing, ", "))
 	}
 	var clusters []string
 	for _, c := range cfg.K8s.Clusters {
 		clusters = append(clusters, c.Name)
 	}
-	fmt.Fprintf(&b, "- Kubernetes clusters: %s.\n", orNone(strings.Join(clusters, ", ")))
+	if len(clusters) > 0 {
+		fmt.Fprintf(&b, " Clusters: %s.", strings.Join(clusters, ", "))
+	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -305,15 +264,7 @@ func withNetwork(b tools.Bash, n *Network, offered bool) tools.Bash {
 		}
 	}
 	if ok, _ := NetworkOfferable(n.cfg); ok && offered {
-		b.NetworkNote = strings.TrimSpace(b.NetworkNote + " If the task needs the network, call " + NetworkToolName +
-			" with a reason: the user is asked to open it for this workspace, one host, or this chat.")
+		b.NetworkNote = strings.TrimSpace(b.NetworkNote + " " + NetworkOfferText)
 	}
 	return b
-}
-
-func orNone(s string) string {
-	if s == "" {
-		return "none"
-	}
-	return s
 }
