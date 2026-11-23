@@ -618,9 +618,115 @@ counts (`12 tests`, `replicas: 3`). Then:
   deep): its results are evidence and its calls are changes, placed at the
   parent's entry for its return. Its runs do not show the workspace's tests
   passing, and its folder is not known.
-- **`file:line` cites are checked against the file now.** Text a cite quotes
-  must be on that line or the two either side; a cite the file does not hold
-  now leaves the statement unverified.
+- **`file:line` cites are checked against what a read showed.** The lines
+  of a current read of that file, as the read numbered them, come first; the
+  file as it is now is read only when no read of it is current. Code the
+  statement says is there, and every number it gives ("returns 2",
+  "returns `2`"), must be within three lines of the cited one and inside
+  the same innermost definition (`def`, `class`, `func`, `fn`; in
+  JavaScript and TypeScript a `function`, a `class`, a method, a `const`,
+  `let` or `var` given a function or an arrow function, and `name: () =>`
+  or `name: function` in an object, `export default` and `async` forms
+  included, and each class field with its decorators; read by
+  indentation): models cite a method's line for its class or a call's
+  line for its result, never a line of the next function. In a file
+  whose definitions are not read here (Python, Go, JavaScript and
+  TypeScript, and Rust are), or at a line that lies in no definition,
+  only the cited line counts. A range (`a.py:22-81`) is read as its first
+  line. A method named with its class (`` `HybridRetriever.retrieve` ``)
+  is at a line inside that method, inside that class. The file a matched
+  cite names ("`rag_agent.py` imports …") needs no tool output naming it.
+  With several cites, each line must show some of the code the statement
+  names and each piece of it must be at one of them; a statement naming a
+  different definition at each cite stays unverified. "`f` (a.py:L)" or "… in `f`"
+  needs L inside `f`, with no definition nested in `f` holding L; "`f` is
+  defined at a.py:L" needs `f`'s definition at L (or one line off past
+  blank or decorator lines). A cite further off, or of a file that
+  cannot be read, leaves the statement unverified.
+- **A command is shown by the call that ran it.** "The tests were run
+  using `python3 -m unittest tests.test_text` and passed" is matched to the
+  bash call whose command that is (or, for a test run, to the test names it
+  was given), and to that run's exit and output for the pass; text that only
+  appears inside a command's arguments ("`printf ok # replicas: 5`") shows
+  no value. "Running `X` resulted in `OK`" is read from the last run of
+  exactly X, as written (not a longer or shorter command), and only when
+  no change came after it. A success ("OK", "passed", "green", "clean")
+  needs a known exit 0 that is X's own: one command, or an `&&` chain
+  that ends in the test run. With `||`, `;` or a pipe (`pytest || true`,
+  `npm test | tail -5`) the exit is another command's, so a success is not
+  shown. The output must hold no failure: FAIL, a count such as "1
+  failed", "2 failing", "1 failures", "1 test failed", "Failed: 1",
+  "ℹ fail 1" or `failures="1"`, TAP's "not ok", or make's "Error 1
+  (ignored)". A test command must be a whole run by the same rules as a
+  test claim: only `cd` before it in the chain (no `trap`), in the
+  workspace, no variable that may filter it (`PYTEST_ADDOPTS`, `env
+  GOFLAGS=-run=…`), and no `-run`, `-k` or other filter. A failure needs
+  a known non-zero exit; anything else it says must be in that run's own
+  output.
+- **Edits are read from the session's own edits.** A change claim that
+  names its file and the code it changed ("Changed `text.split(" ")` to
+  `text.split()`", "Replaced the `range` loop with a `while` loop") is
+  matched to the edit of that file, by what it took away and put in; code
+  the claim says was replaced is found in what the edit took away, not in
+  output after it. The file's own name and the tests a claim names are not
+  read as code that changed. "I fixed the bugs in `src/utils/text.py`" is
+  shown by a change to that file and, after the last change, a test run
+  that passed and covers what the last failing run before the change
+  covered (the same test module, package or names, or more); with no
+  failing run before it, a whole run or one of the file's folder. An
+  unrelated module passing shows no fix. "After the changes" or "following
+  the fix" needs the session to have changed its work: a `write` or an
+  `edit` of a file in the workspace, or a shell command whose every file
+  is known and in the workspace. A file outside it (`echo x > /tmp/f`,
+  `cp src/a.py /tmp/a.py`, a write of `/tmp/scratch.txt`), a command whose
+  files are not known, or a call of another tool (a cluster scale, an
+  issue created) is not such a change, nor is a write to `.git/`,
+  `.abhed/` or a subagent's own worktree, or to a path a shell line made a
+  link to somewhere outside the workspace (`ln -s /tmp/out src/out`). A
+  subagent's edit of a workspace file counts as the session's work.
+- **What the person attached is evidence for what it holds.** Piped stdin
+  and an @-mentioned file, attached to the message, show the values,
+  lines and code in them ("the input has `replicas: 3`"), and never the
+  session's work: a pasted test log does not show the tests pass, and a
+  pasted diff does not show a change. Only the attached blocks count, not
+  what the person typed around them. A pasted block shows what was
+  pasted, not the live state: "the service runs 2.4.1" from a pasted
+  config is verified even if the service has moved on.
+- **A read on a host does not make earlier results out of date.** An ssh
+  call the policy ran as a read (under `ssh.read_only`, or as an entry of
+  `ssh.read_commands`) and whose command parses as known readers changed
+  nothing; any other ssh call may have, including a writing command an
+  operator listed in `ssh.read_commands`.
+- **A change made by another tool is not read from its call.** "web in
+  demo was scaled to 2", "I deleted the web deployment" and the like stay
+  unverified even when a call of the agent's own (`k8s_apply`, an MCP
+  tool) did it: a tool's text output cannot show that the change held, in
+  the scope and on the object the claim names, and was not undone later.
+  Only `write`, `edit` and shell commands are read as changes. This is a
+  known false negative; cite the read that shows the new state instead
+  ("`kubectl get deploy web` shows 2/2 ready (#9)").
+- **An explanation of code is not checked, and never fails an answer.** A
+  statement that only says how or why code the session read behaves, or
+  what code did before the session changed it ("The previous
+  implementation skipped the tail if it didn't fit"), is shown as
+  "explanation: not checked", counted in the footer and in the verdict's
+  `note`, and never verified. It qualifies only when it holds no pass,
+  count, number, change, deed, run, `file:line`, state, outcome, judgement
+  or citation, says no event but what code does ("skipped", "to be
+  added"), and names something one of the session's reads or edits holds.
+  A statement that the session's own change works is not an explanation
+  but a claim about the work, whatever its wording: its subject is the new
+  code, implementation or logic, "this", the fix or change, or a function
+  or file the session edited, with a word such as correctly, properly,
+  now, works, allows, lets, supports, fixes, ensures, prevents or handles
+  ("This correctly handles multiple whitespace…", "The new logic ensures
+  …"). Strict mode fails on it until the record shows it. So do "This
+  ensures all 12 tests pass", "…, so the deploy succeeded", "This handles
+  retries, which I added" and an invented citation.
+- **Evidence may be given as objects.** A claim's `evidence` may list
+  `{"call_id": …, "quote": …}` as well as ids; such a quote is used only
+  when the cited output holds it. A later clause that opens with its verb
+  ("… and passed successfully") keeps the first clause's subject and code.
 
 A statement with nothing in it to compare ("the design is sound") is
 unverified, and so is general knowledge. These are not counted as about the
@@ -889,7 +995,7 @@ the person's question, is not checked.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 980 plant a wrong claim. Some cite the result that shows them wrong
+session. 1011 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -995,11 +1101,14 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 980
+tail, a port not listening, a file not in a response). Today none of the 1011
 planted claims is shown as verified (33 are contradicted: 31 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
-shows; the rest unverified), all 253 controls are verified,
-and none of the 368 true or neutral claims is contradicted. 19 of the
+shows; the rest unverified), all 276 controls are verified,
+and none of the 396 true or neutral claims is contradicted. Among the
+controls are the claims of two real sessions on a local model, recorded as
+they were given: a review that cited `file:line` and a fix checked in
+strict mode. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
 shares no word with the read (5 did before the rule), and no planted claim
@@ -1038,6 +1147,21 @@ makes them.
 - Remote state (a cluster, a host over ssh) is only as current as the last
   command that read it; any later call that may change state outside a file
   makes that output out of date.
+- A change made by a tool other than `write`, `edit` or a shell command
+  ("I scaled web to 2", "I deleted the web deployment") is never verified
+  from that tool's call, even when it is true: a known false negative.
+- A project runner's own definition is not read. A Makefile recipe
+  `-pytest -q >test.log` or a `package.json` script `"test": "jest >
+  out.log || true"` exits 0 and prints nothing to read, so "Running
+  `make test` resulted in OK" is verified after it. A change this
+  session made to a Makefile or `package.json` (including `npm pkg set`
+  or `npm set-script`) before the run makes `make` or `npm` (`pnpm`,
+  `yarn`, `bun`) not a whole run, as a change to `pytest.ini`,
+  `pyproject.toml`, `setup.cfg` or `tox.ini` does for pytest; a pytest
+  run that reports tests "deselected" is never a whole run. A runner
+  that hid its failures before the session is not seen, nor is one of
+  these files written by a script that does not name it
+  (`python3 -c "open('package.json','w')…"`).
 - Labels do not stop a reply from streaming; the banner follows it, and
   strict mode's exit code is the gate for a script.
 - The checks lean to "unverified": most shell work (builds, scripts, test

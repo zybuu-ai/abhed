@@ -105,6 +105,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.9
 
+- Under `-verify strict`, a statement that only explains code the session
+  read and did not change ("the running total is 0 because nothing has been
+  added yet"), or what changed code did before, no longer fails the
+  answer: it is shown as "explanation: not checked" and counted in the
+  verdict's `note`. 1.2.9 failed strict on it. A statement that the
+  session's own change works is still work, and still fails strict until
+  the record shows it.
 - A `*` or `?` in an `ssh.read_commands` entry now stands within one
   argument. An entry that relied on `*` spanning several words, such as
   `journalctl *` for `journalctl -u app -n 50`, no longer matches such a
@@ -801,6 +808,66 @@ All notable changes to Abhed are recorded here. The format follows
   diagnostics for the language are off with one note on stderr naming the
   install (`abhed toolchain install -lsp python`), and a start that policy
   does not allow is a note too, never a denial of the agent's.
+- Answer checks refused correct claims on a real model. A command named in
+  a claim ("the tests were run using `python3 -m unittest tests.test_text`
+  and passed") was looked for only in tool output, never in the call that
+  ran it; an edit claim's file name was read as code that should have
+  changed; a `file:line` cite had to match the line almost exactly, and
+  was read from the file on disk rather than from the read the session
+  made; evidence given as `{"call_id", "quote"}` objects was dropped. On a
+  recorded review, 0 of 5 accurate, line-cited claims verified; on a
+  recorded correct fix, strict mode exited 8. A command is now shown by the
+  call that ran it, an edit claim by the session's own edit (what it took
+  away and put in), a `file:line` cite by the read's numbered lines within
+  three lines of the cite, "I fixed X" by the change to X and a test run
+  that passed after it and covers what failed before it, and evidence
+  objects are read. A change made by another tool's call (`k8s_apply`
+  scaling `web` to 2) is still not read from that call, whose text cannot
+  show the change held: such a claim stays unverified, a known false
+  negative. A `file:line` cite counts within three lines only inside the
+  same innermost definition (JavaScript and TypeScript arrow functions,
+  methods, object functions and class fields included), only at the
+  line itself where the line is in no definition, and the code and
+  numbers the claim gives must be there; "`f` is defined at L" needs
+  `f`'s definition there. An explanation of code the
+  session read, or of what changed code did before, with no event, count,
+  result, change, run or citation of its own, is shown as "explanation:
+  not checked" and no longer fails strict mode; a statement that the
+  session's own change works ("This correctly handles …", "The new logic
+  ensures …") is work. Of the two real answers' 24 statements, 14 now
+  verify (2 did) and 1 is an explanation. The recorded correct fix still
+  ends `unverified` in strict mode: its answers say their change works
+  ("This correctly handles multiple whitespace…") where the record shows
+  only that the tests pass, and the first also cites two call ids the
+  record never held. "Running `X` resulted in `OK`" is read from the
+  last run of exactly X, with no change after it. A success needs a known
+  exit 0 that is X's own (one command, or an `&&` chain ending in the
+  test run, so never `pytest || true`, `pytest; echo done` or
+  `npm test | tail`), no failure in the output (FAIL, a count such as
+  "1 failed", "1 failures" or "Failed: 1", TAP's "not ok", or make's
+  "Error 1 (ignored)") and, for tests, a whole run that ran some, by the
+  same rules as a test claim (only `cd` before it, no variable such as
+  `PYTEST_ADDOPTS` that may filter it, and no change to the Makefile,
+  `package.json` or pytest config before a `make`, `npm` or pytest
+  run); a failure needs a known non-zero exit. A pytest run that reports
+  tests "deselected" (a `-k` or `-m` in its config) is not a whole run,
+  for "All tests pass" too. A cite of a range (`a.py:22-81`), of a method named
+  with its class, or several cites in one statement are read; what the
+  person attached (piped stdin, an @ file) shows the values in it but
+  never the work; and an ssh call the policy ran as a read, whose
+  command parses as known readers, no longer makes earlier results out
+  of date. On a regression check of a 1.3.0 candidate, the strict fix's
+  final answer now verifies in full, 3 of 5 line-cited review statements
+  verify (0 did), and both listed core dumps verify.
+  The false-claim corpus gains the two sessions' statements (14 controls,
+  2 planted, 8 neutral), the regression check's 42 statements (21
+  controls, 1 planted, 20 neutral), 160 more planted cases (62 of them
+  changes said of another tool's call, or a pass "after the changes"
+  that only another tool's call or a change outside the workspace made),
+  31 controls and 10 neutral known false negatives, and 3 true statements
+  that were neutral now verify; none of the 1143 planted claims verifies,
+  all 322 controls do, and none of the 472 true or neutral claims is
+  contradicted.
 - In `abhed -p -runbook`, a change the runbook does not list was refused
   with the hint "rerun with -allow '…'", which could not help: under a bound
   runbook such a change asks whatever an allow rule says. The hint now says

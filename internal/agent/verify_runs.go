@@ -387,7 +387,16 @@ func (ix *recordIndex) testScope(f facts) []string {
 	if f.inclusive {
 		return nil
 	}
-	scope := append(slices.Clone(f.scope), f.modules...)
+	// A source file a claim also names ("I fixed src/a.py so the tests in
+	// tests.test_a pass") is what changed, not where the tests ran.
+	var scope []string
+	for _, s := range f.scope {
+		if b := filepath.Base(strings.TrimSuffix(s, "/")); strings.Contains(b, ".") && !strings.HasSuffix(s, "...") && !testName(s) {
+			continue
+		}
+		scope = append(scope, s)
+	}
+	scope = append(scope, f.modules...)
 	if len(scope) == 0 && f.theTests && f.testish == "test" {
 		return promptTests(ix.prompts)
 	}
@@ -632,6 +641,16 @@ var (
 	pyNoneRe     = regexp.MustCompile(`\bno tests ran\b|\b\d+ (?:skipped|deselected|xfailed|xpassed)\b`)
 	cargoOKRe    = regexp.MustCompile(`test result: ok\. [1-9]\d* passed`)
 )
+
+// pyDeselectedRe is pytest's count of tests a -k, -m or config filter left out.
+var pyDeselectedRe = regexp.MustCompile(`\b[1-9]\d* deselected\b`)
+
+// deselected reports a pytest run that left tests out by a filter, from
+// the line or from config (addopts in pytest.ini, pyproject.toml, setup.cfg
+// or tox.ini): not a whole run, whatever its command says.
+func deselected(o *obsRec) bool {
+	return len(o.line.final) > 0 && runnerKey(o.line.final) == "pytest" && pyDeselectedRe.MatchString(o.content)
+}
 
 // ranNothing reports a test run that passed without running a test: go
 // test with no test files or none matched, unittest's "Ran 0 tests" or every
