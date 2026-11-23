@@ -680,6 +680,8 @@ func TestUnattendedRunGetsNoClarifyNote(t *testing.T) {
 		{"Merge PR 12 and PR 13 at once", ""},
 		{"Close #12 and #13 at once", ""},
 		{"Restart nginx and redis at the same time", ""},
+		{"Run alpha and beta at once", ""},
+		{"Merge PR 12 at once", ""},
 		{"Ship v1.2 and v1.3 at once", ""},
 		{"Clone the three repos at once and then run the services at once", ""},
 		// Near misses: only generic objects, or a count with no noun, are
@@ -705,6 +707,24 @@ func TestUnattendedRunGetsNoClarifyNote(t *testing.T) {
 		{"Run my tasks in parallel", UnattendedClarifyNote},
 		{"Run the three repos in parallel", UnattendedClarifyNote},
 		{"Make the parser faster in parallel", UnattendedClarifyNote},
+		// A number, version or pair of words inside an adjunct or after a
+		// vague subject is no name.
+		{"Speed up the project by running things in parallel on Python 3", UnattendedClarifyNote},
+		{"Speed up the project by running things in parallel using Python 3", UnattendedClarifyNote},
+		{"Run things in parallel with Go 1.22", UnattendedClarifyNote},
+		{"Speed up the project by running things in parallel, top 3", UnattendedClarifyNote},
+		{"Run things quick and easy in parallel", UnattendedClarifyNote},
+		{"Do it nice and quick, all in parallel", UnattendedClarifyNote},
+		{"Be smart and fast, run things at once", UnattendedClarifyNote},
+		// Words for parts of the work are as generic as "things".
+		{"Speed up the project by running the steps in parallel", UnattendedClarifyNote},
+		{"Speed up the project by running the pieces in parallel", UnattendedClarifyNote},
+		{"Run the parts at once", UnattendedClarifyNote},
+		{"Run all the bits in parallel", UnattendedClarifyNote},
+		{"Run the stages and chunks at once", UnattendedClarifyNote},
+		{"Run the items at once", UnattendedClarifyNote},
+		{"Speed up the project by splitting the load in parallel", UnattendedClarifyNote},
+		{"Run the whole lot at once", UnattendedClarifyNote},
 		{"Plan and execute at once", UnattendedClarifyNote},
 		// "make" alone does not make a vague request concrete.
 		{"Make it faster by doing things in parallel", UnattendedClarifyNote},

@@ -964,7 +964,10 @@ All notable changes to Abhed are recorded here. The format follows
   these three branches at once", "run the three migrations in parallel")
   gets no note and is done as asked: a specific object counts as concrete,
   not only a verb from a list, and so does an issue number, a version, a
-  name with a number ("PR 12") or two names ("nginx and redis"). What is
+  name with a number ("PR 12") or two names ("nginx and redis"), unless the
+  word before it opens an adjunct or is vague ("on Python 3", "things quick
+  and easy"); "steps", "parts", "the whole lot" and the like are as generic
+  as "things". What is
   sped up, and a phrase after a preposition or a comma ("for the demo",
   "the deadline is close"), is not an object, so a vague request keeps the
   note. The judgement is English only. "Make everything run in parallel" counts as

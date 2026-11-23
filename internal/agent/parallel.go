@@ -458,7 +458,8 @@ var (
 	// noun ("do these three at the same time", "run all in parallel").
 	notAnObject = wordSet("thing things stuff everything anything work project projects repo repos repository " +
 		"repositories codebase program system pipeline pipelines product products platform platforms site website " +
-		"tool tools agent agents subagents task tasks job jobs whole rest it them they this that in at on to by " +
+		"tool tools agent agents subagents task tasks job jobs step steps stage stages part parts piece pieces " +
+		"bit bits chunk chunks item items load loads lot lots whole rest it them they this that in at on to by " +
 		"for with and or but up down out as so is are be same time way more less much now please then " +
 		"run runs running go do done speed")
 )
@@ -495,12 +496,15 @@ func specificObject(typed string) bool {
 		switch {
 		case len(w) > 1 && w[0] == '#' && isNumber(w[1:]):
 			return true
-		case versionToken.MatchString(w) && !prepositions[prev]:
+		// A name is work only when the word before it is not an adjunct's
+		// or a vague subject's: "on Python 3", "with Go 1.22", ", top 3",
+		// "things quick and easy", "be smart and fast" are not.
+		case versionToken.MatchString(w) && !weakLead(prev, adjunct) && !weakLead(at(i-2), adjunct):
 			return true
-		case isNumber(w) && isWord(prev) && !adjunct(prev) && !determiners[prev] && !quantifiers[prev] &&
-			(next == "" || next == "and" || next == "or" || !isWord(next)):
+		case isNumber(w) && isWord(prev) && !weakLead(prev, adjunct) && !weakLead(at(i-2), adjunct) &&
+			!determiners[prev] && !quantifiers[prev] && (next == "" || next == "and" || next == "or" || !isWord(next)):
 			return true
-		case w == "and" && i >= 2 && namePart(prev) && namePart(next) && isWord(at(i-2)) && !adjunct(at(i-2)) &&
+		case w == "and" && i >= 2 && namePart(prev) && namePart(next) && !weakLead(at(i-2), adjunct) &&
 			(at(i+2) == "" || !isWord(at(i+2))):
 			return true
 		}
@@ -517,6 +521,19 @@ func specificObject(typed string) bool {
 	}
 	return false
 }
+
+// weakLead reports a word before a name that makes it no work to do: a
+// preposition, a mark or punctuation, a generic subject or a copula. ""
+// (the start of the message) is not one.
+func weakLead(t string, adjunct func(string) bool) bool {
+	return adjunct(t) || weakLeads[t]
+}
+
+// weakLeads are generic subjects, copulas and "using", which opens an adjunct
+// as a preposition does. "run" is not one: "Run alpha and beta at once" is
+// work.
+var weakLeads = wordSet("things thing stuff everything anything it them they this that " +
+	"be is are was were been being using like than")
 
 // namePart is a word that can be one of two names in a list.
 func namePart(t string) bool {
