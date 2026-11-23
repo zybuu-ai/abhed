@@ -717,24 +717,26 @@ func (p *Postgres) ListSessions(ctx context.Context, limit int) ([]SessionRecord
 // guests) that no live guest can still hold, so a server may remove them
 // without touching another node's guests. A guest lives in one process's
 // memory for at most ttl, so a session qualifies when:
-//   - it was held by holder's node in an earlier run (a guest there died
-//     with that run), never by holder itself;
-//   - it is open and its holder's heartbeat is older than stale (or it has
-//     none and started longer ago than stale): its node is gone; or
+//   - ownEarlier is set and it was held by holder's node in an earlier run
+//     (a guest there died with that run), never by holder itself;
+//   - it is open and its holder's heartbeat is older than stale: its node
+//     is gone. An open row with no heartbeat at all (released or parked)
+//     may still be a live guest's, so it qualifies only once it started
+//     longer ago than ttl; or
 //   - it has ended and started longer ago than ttl: its guest has expired.
 //
 // An open session another node heartbeats is never listed.
-func (p *Postgres) GuestLeftovers(ctx context.Context, prefix, holder string, stale, ttl time.Duration) ([]SessionRecord, error) {
+func (p *Postgres) GuestLeftovers(ctx context.Context, prefix, holder string, ownEarlier bool, stale, ttl time.Duration) ([]SessionRecord, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id, tenant_id, user_id FROM sessions
 		WHERE deleted_at IS NULL AND starts_with(user_id, $1)
 		  AND node_id IS DISTINCT FROM $2
-		  AND ((node_id IS NOT NULL AND strpos($2, '#') > 0
+		  AND (($5 AND node_id IS NOT NULL AND strpos($2, '#') > 0
 		        AND split_part(node_id, '#', 1) = split_part($2, '#', 1))
 		    OR (ended_at IS NULL AND (node_seen_at <= now() - $3::interval
-		        OR (node_seen_at IS NULL AND started_at <= now() - $3::interval)))
+		        OR (node_seen_at IS NULL AND started_at <= now() - $4::interval)))
 		    OR (ended_at IS NOT NULL AND started_at <= now() - $4::interval))`,
-		prefix, holder, stale.String(), ttl.String())
+		prefix, holder, stale.String(), ttl.String(), ownEarlier)
 	if err != nil {
 		return nil, err
 	}
@@ -748,6 +750,25 @@ func (p *Postgres) GuestLeftovers(ctx context.Context, prefix, holder string, st
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// SameNodeLive reports whether another run under holder's node id (the
+// part before '#') heartbeated an open session within the last within: two
+// live servers given one node id, which must never treat each other's
+// sessions as their own earlier run's. A run that stopped moments ago can
+// look live too; its sessions then wait for the other cases.
+func (p *Postgres) SameNodeLive(ctx context.Context, holder string, within time.Duration) (bool, error) {
+	node, _, ok := strings.Cut(holder, "#")
+	if !ok {
+		return false, nil
+	}
+	var live bool
+	err := p.pool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM sessions
+		  WHERE split_part(node_id, '#', 1) = $1 AND node_id <> $2
+		    AND ended_at IS NULL AND deleted_at IS NULL
+		    AND node_seen_at > now() - $3::interval)`, node, holder, within.String()).Scan(&live)
+	return live, err
 }
 
 // ListSessionsOwnedBy is ListSessions for one owner, filtered in the query so

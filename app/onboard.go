@@ -351,6 +351,9 @@ func friendlyModelError(err error, name string, p config.ProviderConfig) string 
 	next := "Run `abhed doctor` to check the configuration, `abhed init` to write one, or set ABHED_BASE_URL to use another endpoint for this run."
 	var se *model.StatusError
 	msg := friendlyCause(err, name, p, where, next)
+	if hint := keyMismatchHint(err, p); hint != "" {
+		msg += "\n" + hint
+	}
 	// A local Ollama that is down or lacks the model: also what is wrong with it, and the steps.
 	if errors.Is(err, syscall.ECONNREFUSED) || errors.As(err, &se) && se.Status == http.StatusNotFound {
 		if steps := ollamaSteps(context.Background(), name, p); steps != "" {
@@ -382,11 +385,15 @@ func friendlyCause(err error, name string, p config.ProviderConfig, where, next 
 		switch {
 		case se.Status == http.StatusUnauthorized || se.Status == http.StatusForbidden:
 			key := "the key"
-			if p.APIKeyEnv != "" {
+			switch {
+			case p.KeySource.Kind != "":
+				key = keySourceText(p)
+			case p.APIKeyEnv != "" && os.Getenv(p.APIKeyEnv) == "":
+				key = "$" + p.APIKeyEnv + ", which is not set,"
+			case p.APIKeyEnv != "":
 				key = "the key in $" + p.APIKeyEnv
-				if os.Getenv(p.APIKeyEnv) == "" {
-					key = "$" + p.APIKeyEnv + ", which is not set,"
-				}
+			case p.KeySource.Name != "":
+				key = keySourceText(p) + " (store one with `abhed provider login " + loginArg(p) + "`)"
 			}
 			return fmt.Sprintf("%s refused the request (%d): check %s and that it may use model %q. %s", where, se.Status, key, p.Model, next)
 		case se.Status == http.StatusNotFound:

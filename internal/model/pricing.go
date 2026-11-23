@@ -75,6 +75,9 @@ var builtinPrices = map[string]Price{
 	"claude-haiku-4-5-20251001":  {Input: 1.00, Output: 5.00, CachedInput: 0.10, CacheWrite: 1.25},
 }
 
+// PricedModels are the names on the built-in price list, sorted.
+func PricedModels() []string { return slices.Sorted(maps.Keys(builtinPrices)) }
+
 // PriceFor is the price of a model by its name as sent to the provider:
 // a configured price first, then the built-in list. ok is false for a model
 // with no price, which is then shown as unpriced.

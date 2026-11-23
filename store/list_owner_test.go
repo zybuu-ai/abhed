@@ -184,6 +184,11 @@ func TestGuestLeftovers(t *testing.T) {
 		row("old-ended", "guest:c", "node-c#1", ", ended_at = now(), started_at = now() - interval '9 hours'"),
 	}
 	sort.Strings(want)
+	// Open with no heartbeat (released after a run that wrote no end, or
+	// parked): possibly a live guest's, until a guest's hours have passed.
+	row("open-released-recent", "guest:g", "node-a#1", ", node_seen_at = NULL, started_at = now() - interval '10 minutes'")
+	want = append(want, row("open-released-old", "guest:h", "node-a#1", ", node_seen_at = NULL, started_at = now() - interval '9 hours'"))
+	sort.Strings(want)
 	row("live-elsewhere", "guest:d", "node-a#1", "")
 	row("recent-ended-elsewhere", "guest:d", "node-a#1", ", ended_at = now()")
 	row("this-run", "guest:e", "node-b#now", ", node_seen_at = now() - interval '10 minutes'")
@@ -192,7 +197,7 @@ func TestGuestLeftovers(t *testing.T) {
 	if err := p.DeleteSession(deleted); err != nil {
 		t.Fatal(err)
 	}
-	got, err := p.GuestLeftovers(ctx, "guest:", "node-b#now", 2*time.Minute, 8*time.Hour)
+	got, err := p.GuestLeftovers(ctx, "guest:", "node-b#now", true, 2*time.Minute, 8*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,5 +211,29 @@ func TestGuestLeftovers(t *testing.T) {
 	sort.Strings(ids)
 	if strings.Join(ids, ",") != strings.Join(want, ",") {
 		t.Fatalf("leftovers %v, want %v", ids, want)
+	}
+
+	// Without the earlier-run case, the earlier run's ended session stays.
+	got, err = p.GuestLeftovers(ctx, "guest:", "node-b#now", false, 2*time.Minute, 8*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range got {
+		if strings.HasSuffix(r.ID, "-earlier-run") {
+			t.Fatalf("the earlier run's session was listed with that case off: %s", r.ID)
+		}
+	}
+
+	// node-a#1 heartbeated an open session just now (live-elsewhere):
+	// another live run under node-a. node-b#before's rows are ended, so
+	// however fresh their last beat, it is not a live run.
+	if live, err := p.SameNodeLive(ctx, "node-a#2", time.Minute); err != nil || !live {
+		t.Fatalf("SameNodeLive(node-a#2) = %v, %v", live, err)
+	}
+	if live, err := p.SameNodeLive(ctx, "node-a#1", time.Minute); err != nil || live {
+		t.Fatalf("SameNodeLive counted the run itself: %v, %v", live, err)
+	}
+	if live, err := p.SameNodeLive(ctx, "node-b#now", time.Minute); err != nil || live {
+		t.Fatalf("SameNodeLive took an earlier run for a live one: %v, %v", live, err)
 	}
 }

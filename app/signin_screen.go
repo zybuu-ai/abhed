@@ -99,8 +99,8 @@ func chooseWho(s *identity.Store, rules identity.Rules, p *prompter) (identity.P
 
 	fmt.Fprintln(p.out)
 	if legacy {
-		fmt.Fprintln(p.out, "Abhed now asks who is working. You have sessions, history or memory from")
-		fmt.Fprintln(p.out, "earlier versions; create your account and they move into it.")
+		fmt.Fprintln(p.out, "Abhed now asks who is working. You have data from earlier versions;")
+		fmt.Fprintln(p.out, "create your account and it moves into it.")
 	} else {
 		fmt.Fprintln(p.out, "Abhed — who is working?")
 	}

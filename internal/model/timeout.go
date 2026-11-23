@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -71,7 +72,21 @@ func (w *WatsonX) endpoints() []string          { return []string{w.BaseURL, w.I
 // request to a host other than endpoints is judged by the rules.
 func timeoutClient(t Timeouts, endpoints func() []string) *http.Client {
 	base := &egress.Transport{Kind: egress.KindModel, Model: endpoints}
-	return &http.Client{Transport: &timeoutTransport{base: base, t: t.orDefault()}}
+	return &http.Client{Transport: &timeoutTransport{base: base, t: t.orDefault()}, CheckRedirect: sameHostRedirect}
+}
+
+// sameHostRedirect follows a redirect only to the same scheme and host: Go
+// carries a header such as x-api-key across hosts, so a key bound to one
+// host would otherwise follow a redirect to another.
+func sameHostRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	first := via[0].URL
+	if !strings.EqualFold(req.URL.Host, first.Host) || req.URL.Scheme != first.Scheme {
+		return fmt.Errorf("a model endpoint redirected to another host (%s); Abhed does not follow it with the key", req.URL.Host)
+	}
+	return nil
 }
 
 // timeoutTransport ends a request that runs past its Timeouts with a

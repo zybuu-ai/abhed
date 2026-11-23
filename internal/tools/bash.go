@@ -974,6 +974,9 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		return res
 	}
 	endProc()
+	if left := output.leftNote(); left != "" {
+		content += "\n[" + left + "]"
+	}
 	res := b.finish(ctx, runCtx, s, a, content, truncated, held, err, elapsed, timeout)
 	if snapNote != "" {
 		res.Content = withNote(res.Content, snapNote)

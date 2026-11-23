@@ -46,6 +46,11 @@ func TestSelfAdministrationRefusedInAgentCommand(t *testing.T) {
 		{"secret", "rm", "X"},
 		{"mcp", "add", "x", "/bin/true"},
 		{"mcp", "remove", "x"},
+		{"provider", "login", "anthropic"},
+		{"provider", "logout", "anthropic"},
+		{"models", "add", "anthropic", "claude-opus-5-5"},
+		{"models", "default", "local"},
+		{"models", "remove", "local"},
 		{"migrate"},
 		{"serve", "-trust-workspace"},
 		{"-trust-workspace", "-p", "hi"},
@@ -80,6 +85,7 @@ func TestSelfAdministrationRefusedInAgentCommand(t *testing.T) {
 	}
 	// Reading, and a session with one more deny rule or a narrower mode, are still allowed.
 	for _, args := range [][]string{{"record", "list"}, {"trust", "show"}, {"mcp", "list"},
+		{"provider", "status"}, {"models", "list"}, {"models", "known"},
 		{"-p", "hi"}, {"-mode", "plan", "-p", "hi"}, {"-mode", "default", "-p", "hi"},
 		{"-disallowedTools", "Bash(wget:*)", "-p", "hi"}} {
 		if out, _ := stderrOf(t, append([]string{"-C", ws}, args...)); strings.Contains(out, "refused inside") {
@@ -98,6 +104,9 @@ func TestSelfAdminNamesOnlyChanges(t *testing.T) {
 		"admin web-search on": true, "admin web-search off": true,
 		"login https://a.test": true, "logout": true, "profile use a": true, "profile rm a": true,
 		"profile list": false, "pki init": false, "sandbox connect --stdio sbx_0123456789abcdef": true,
+		"provider login anthropic": true, "provider logout anthropic": true, "provider status": false,
+		"models add anthropic m": true, "models default m": true, "models remove m": true, "models rm m": true,
+		"models list": false, "models known": false,
 		"sandbox list": true, "sandbox get sbx_0123456789abcdef": true, "sandbox template list": true, "sandbox -h": false,
 	} {
 		if got := selfAdmin(strings.Fields(args)) != ""; got != want {

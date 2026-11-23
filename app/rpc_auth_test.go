@@ -530,6 +530,10 @@ func TestBringMyDataIsOfferedForAnyEarlierItem(t *testing.T) {
 	if !strings.Contains(out.String(), "bring my data") {
 		t.Fatalf("no offer to bring the earlier data:\n%s", out.String())
 	}
+	// Only a trust file and secrets: the screen does not claim sessions.
+	if !strings.Contains(out.String(), "data from earlier versions") || strings.Contains(out.String(), "sessions, history or memory") {
+		t.Fatalf("the screen names data that is not there:\n%s", out.String())
+	}
 	if identity.LegacyData() {
 		t.Fatal("a trust file and secrets made an unattended run legacy")
 	}

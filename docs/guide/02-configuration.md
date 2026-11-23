@@ -33,7 +33,7 @@ configuration](#trusting-the-workspace-configuration).
 
 | Section | What it controls |
 |---|---|
-| `model` | providers and which one is default — [Models](03-providers.md); `ollama.assist` (`ask`, `local` or `off`): what Abhed offers when a chosen local Ollama model is not working yet — [A local Ollama model](03-providers.md#a-local-ollama-model); `completion`: the provider Studio's inline completions use, and `next_edit` and `commit` for its next-edit suggestions and commit messages (each falls back to `completion`) — [Inline completions](34-inline-completions.md); `allowed`: the only models any session may use — [Allowed models and MCP servers](#allowed-models-and-mcp-servers) |
+| `model` | providers and which one is default — [Models](03-providers.md); `ollama.assist` (`ask`, `local` or `off`): what Abhed offers when a chosen local Ollama model is not working yet, `ollama.auto_start` (`false`: never start Ollama without a click) and `ollama.idle_stop_minutes` (how long a server Abhed started may go unused before Abhed stops it; 10 by default, `-1` only at exit) — [A local Ollama model](03-providers.md#a-local-ollama-model); a provider's key by `api_key_env` or `api_key_secret`, stored with `abhed provider login` — [Authentication](03-providers.md#authentication); `abhed models add` and `abhed models default` change this section for you — [Adding models](03-providers.md#adding-models-and-choosing-the-default); `completion`: the provider Studio's inline completions use, and `next_edit` and `commit` for its next-edit suggestions and commit messages (each falls back to `completion`) — [Inline completions](34-inline-completions.md); `allowed`: the only models any session may use — [Allowed models and MCP servers](#allowed-models-and-mcp-servers) |
 | `completion` | `enabled` and `local_only`: turn Studio's model features (inline completions, next-edit suggestions, commit messages) off, or keep them to a model on this machine — [Inline completions](34-inline-completions.md) |
 | `permissions` | what runs unattended — [Permissions](04-permissions.md) |
 | `mode` | `default`: the mode new sessions start in where `permissions.mode` names none, such as the CLI's and Studio's new chats in this workspace; a `-mode` flag is chosen over it (`plan`, `default`, `accept-edits` or `auto`; never `bypass`, which is chosen for a session each time). `permissions.mode`, when set, wins, and a managed mode binds. An untrusted workspace file may only set it narrower than sessions would start in |
@@ -362,6 +362,42 @@ sessions started after it. See [Agent definitions](17-agent-definitions.md).
 "sandbox": { "allow_network": false }
 ```
 
+**Nothing a command starts outlives it.** When a foreground command ends,
+every process it started is ended with it, before the command is reported
+as finished; a background shell's are ended by `shell_kill` or the session
+ending ([Background commands](05-tools.md#background-commands)); and a
+session's sandbox closing ends whatever its foreground commands still run.
+A terminal's shell ends with its terminal, never with the sandbox. On
+Linux's process tier, bubblewrap does this itself: each command has a
+process namespace of its own that dies with it. On macOS, which has no such
+namespace, and on the `none` tier, Abhed ends only processes it can show
+are the command's own, and never one found otherwise:
+
+- those in the session the command leads;
+- those seen as its descendants while it ran: the process table is read
+  every 20 ms, and a process is followed when its parent is followed, even
+  after it leaves the session or its parent exits;
+- on macOS, one handed to launchd before a read saw it, when the process
+  that forked it was followed: the kernel keeps the unique id of the
+  parent that forked a process, and unique ids are never reused.
+
+Every process a command starts also carries its random marker,
+`ABHED_COMMAND_ID`, but a marker is not proof: an app started from a
+command's terminal inherits it, and `launchctl setenv` can plant it in any
+app. A marked process that is neither in the session nor followed is named
+in the command's result and left running, never ended.
+
+A process can still escape, and keep writing what the sandbox lets
+commands write (the workspace, `/private/tmp`, the account's temp folder)
+after the command and the session have ended. On macOS: one that starts a
+session of its own and whose parent was itself born and gone within one
+20 ms read, as a fast double fork does. On Linux's `none` tier, which has no
+such parent record: one that starts a session of its own and loses its
+parent within one read. Either is named in the command's result if it kept
+the marker. The command line, the
+server and the GitHub Action all run on this; on a Mac that is a person's
+own, use the container or vm tier for code you do not trust.
+
 Shell commands run in the sandbox. On the process tier a command may write the
 workspace and a few shared folders, not only the workspace:
 
@@ -375,7 +411,8 @@ workspace and a few shared folders, not only the workspace:
   `TMPDIR`. The toolchain caches commands write are folders of the
   sandbox's own, in `TMPDIR` and removed when the session ends:
   `XDG_CACHE_HOME`, `GOCACHE`, `GOMODCACHE`, `npm_config_cache`,
-  `PIP_CACHE_DIR` and `CARGO_HOME` point there, so nothing a command writes
+  `PIP_CACHE_DIR`, `CARGO_HOME` and `xcrun_db` (the cache of Apple's
+  `/usr/bin` shims) point there, so nothing a command writes
   reaches the real `~/.cache`, `~/Library/Caches`, `~/.npm`,
   `~/.cargo/registry` or `~/go/pkg/mod`, which stay readable. Go modules
   already in your module cache are read from it through `GOPROXY`
@@ -383,7 +420,12 @@ workspace and a few shared folders, not only the workspace:
   does; npm, pip and cargo start from an empty cache and need the network
   for what they fetch. Commands read in home only the workspace, `read_only_paths`, the
   toolchains, the caches and the files git, editors and shells read (see
-  [security posture](../trust/security-posture.md));
+  [security posture](../trust/security-posture.md)). Home here is both
+  `$HOME` and the account's own home when `HOME` names another folder (from
+  the user database, and, whatever that says, the `/Users/NAME` or
+  `/home/NAME` folder that holds `$HOME`, `/Users/Shared` excepted, which
+  is every account's; a lookup that fails is said in `abhed doctor`'s
+  sandbox line);
   `"readable_home": true` lets them read the rest of home but the credential
   paths again, and `read_only_paths` names a folder they need. `"shared_caches": true` lets commands write the real
   folders again, shared with the rest of your machine, where a command can

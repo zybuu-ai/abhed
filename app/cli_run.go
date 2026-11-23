@@ -11,12 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/term"
-
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/ollama"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
@@ -25,6 +24,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/internal/webfetch"
 	"github.com/zybuu-ai/abhed/orgpolicy"
+	"golang.org/x/term"
 )
 
 func run(a *App, workspace string, f *cliFlags) int {
@@ -549,9 +549,12 @@ func fail(err error) {
 	os.Exit(1)
 }
 
-// endAtExit ends what an exit would leave behind: background shells, and
-// MCP servers' containers, which their closes did not reach.
+// endAtExit ends what an exit would leave behind: an Ollama server this
+// process started, background shells, and MCP servers' containers, which
+// their closes did not reach.
 func endAtExit() {
+	// First, and briefly: a server Abhed started itself, by its own pid only.
+	ollama.StopOwned("the Abhed that started it exited")
 	tools.EndBackgroundShells(shellEndWait)
 	sandbox.EndServers()
 	// Last: a guest's shells and servers have ended, so nothing writes into

@@ -36,8 +36,8 @@ const commandWaitDelay = 2 * time.Second
 // hangUp ends a shell as closing a terminal does, so bash hangs up its jobs;
 // jobs that escape that are ended by Leader.Wait.
 func hangUp(cmd *exec.Cmd) *exec.Cmd {
-	// Every process the shell starts carries it, one that leaves the
-	// shell's session included, so Leader.Wait finds those too.
+	// Every process the shell starts carries it; it marks them, but is no
+	// proof they are the shell's, so nothing is ended by it.
 	if m := commandMarker(); cmd.Env != nil && m != "" {
 		cmd.Env = append(cmd.Env, m)
 	}

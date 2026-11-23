@@ -1,0 +1,10 @@
+{
+  "name": "abhed-action-markdown-check",
+  "private": true,
+  "description": "Parses generated reviews as CommonMark and checks no HTML renders, no mention is live, and the note survives",
+  "license": "Apache-2.0",
+  "type": "module",
+  "devDependencies": {
+    "commonmark": "0.31.2"
+  }
+}
