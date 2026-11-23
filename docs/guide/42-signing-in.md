@@ -85,7 +85,9 @@ seconds up to 15 minutes. Each account's data lives in a folder of its own,
 your OS user can read these files, as they always could. Accounts keep two
 people who share one OS login out of each other's sessions and memory at a
 glance; for real separation, give each person their own OS account, or use
-a server.
+a server. The same holds for stored model keys: within Abhed another
+account never sees them, but any program the OS user runs can read another
+account's Keychain item (`security find-generic-password`).
 
 **Recovery with no server.** Keep the recovery code shown when you create
 the account: `abhed account reset NAME` takes it and sets a new password
@@ -105,6 +107,7 @@ account's next sign-in says it happened, when and from where.
 | trust decisions, Studio folder grants | toolchain and package caches |
 | skills, agents, commands and styles of your own | |
 | plugins: installs, approvals, trusted publishers and root | |
+| stored model keys (`abhed provider login`): its own Keychain service, or its own secret store | |
 
 ## Guest
 
@@ -216,11 +219,22 @@ offline, and the session's `session.started` then says
 (no profile, no token) or that the server refuses is not a sign-in: it is
 forgotten, and where a sign-in is required the run exits 10.
 
-Signing in through an identity provider (OIDC, including Google and
-Microsoft, and GitHub), group roles, SCIM deprovisioning and requiring a
-sign-in to the organisation's server are Team features, documented with the
-Team and Enterprise edition. In the Community Edition, a server's accounts
-are local usernames and passwords; see [TLS and command-line
+Which edition does what:
+
+- **Community:** requiring a sign-in, a server's sign-in or no guest
+  through the machine's managed configuration (`/etc/abhed/config.json`),
+  against any Abhed server. It is the machine owner's control, as the
+  managed file always was.
+- **Enterprise:** pushing the same keys to every laptop from a signed org
+  policy that the organisation's server publishes
+  (`ABHED_ORG_MACHINE_SIGN_IN` on that server). This client applies such a
+  policy; publishing one is the Enterprise edition's.
+- **Team:** signing in through an identity provider (OIDC, including Google
+  and Microsoft, and GitHub), group roles and SCIM deprovisioning.
+
+The Team and Enterprise features are documented with the Team and
+Enterprise edition. In the Community Edition, a server's accounts are local
+usernames and passwords; see [TLS and command-line
 sign-in](26-tls-and-cli-login.md).
 
 ## `abhed serve`
@@ -254,8 +268,9 @@ id logs an error and does not treat that id's sessions as its earlier
 run's. With Postgres, removal crypto-shreds the session's
 content; each step's metadata stays, as for any deleted session. One
 address can start five guests an hour (behind a proxy, set
-`server.trust_proxy` so the client's address is the one counted). It needs
-`auth.mode` `local` or `oidc`.
+`server.trust_proxy` so the client's address is the one counted). In the
+Community Edition it needs `auth.mode` `local`; the Team and Enterprise
+edition also allows it with its `oidc` browser sign-in.
 Think before turning it on: a guest's agent runs commands on the server for
 anyone who can reach the page.
 
