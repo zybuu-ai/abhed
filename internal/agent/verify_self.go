@@ -9,45 +9,112 @@ import (
 // can do is not checked: it says nothing about this session's work.
 const selfReason = "a self-introduction or a statement of what the assistant can do; not a claim about this session's work"
 
-// selfLeadRe opens a sentence about the assistant itself, after an optional
-// greeting: who it is ("I'm Abhed", "I am your assistant") or what it can
-// do in general ("I can help with", "I'm here to"). "I can confirm", "I can
-// see" and the like report what was found, and are not among them.
-var selfLeadRe = regexp.MustCompile(`^(?:(?:hi|hello|hey|greetings|welcome)(?: there)?[!,.]*\s+)?` +
-	`(?:(?:i'm|i am|this is|my name is)\s+(?:abhed\b|an?\s|your\s)|` +
-	`(?:i can|i'm able to|i am able to|i'm here to|i am here to)\s+(?:(?:also|help|assist|answer|explain|read|write|run|edit|search|work|look|review|debug|plan|create|build|use)\b))`)
+// The exemption is an allowlist: a sentence is exempt only when, after an
+// optional greeting, it is wholly made of the words below. Anything else in
+// it (an adjective, a past participle, a state, a second clause) leaves it to
+// be checked as any claim is.
 
-// selfAfterRe is wording that turns a sentence about the assistant into a
-// report of the session: something done, seen or found.
-var selfAfterRe = regexp.MustCompile(`\b(?:i've|i have|i had|i did|i was|i just|i already|already|just now|so far|in this session|this session|i ran|i made|i wrote|i fixed|i changed|i updated|i added|i removed|i found|i checked|i tested|i verified|i deployed|confirm|confirmed|verified|tested|deployed|released|built|ran|wrote|made|changed|updated|added|removed|edited|created|passed|passes|pass|fixed|failing|failed|succeeded|done|finished|completed|now)\b`)
+// selfGreetingRe is an optional greeting before the lead.
+var selfGreetingRe = regexp.MustCompile(`^(?:hi|hello|hey|greetings|welcome)(?: there)?[!,.]*\s+`)
 
-// selfSecondRe is a second clause, or a state said of something, after the
-// lead: a joining word or mark, or a form of be or have.
-var selfSecondRe = regexp.MustCompile(`[;:!?]|\s[-–—]\s|,\s*(?:and|but|so|yet|which|while|because|although|now)\b|\b(?:and|but|so)\s+(?:the|your|its?|this|that|these|those|all|every|my|our|i|we|you|he|she|they|there)\b|\b(?:is|are|was|were|be|been|being|has|have|had|isn't|aren't|wasn't|weren't|hasn't|haven't|it's|that's|there's|they're)\b`)
+// selfIdentityRe leads an introduction; selfCapabilityRe leads a statement
+// of what the assistant can do.
+var (
+	selfIdentityRe   = regexp.MustCompile(`^(?:i'm|i am|this is|my name is)\s+`)
+	selfCapabilityRe = regexp.MustCompile(`^(?:i can|i'm able to|i am able to|i'm here to|i am here to)\s+(?:also\s+)?`)
+)
 
-// selfDescription reports a sentence that introduces the assistant or says
-// what it can do, and reports nothing of this session: no command, file,
-// number, host, test or change in it, and no wording of something done.
+// selfRoleRe is one role an introduction may name.
+var selfRoleRe = regexp.MustCompile(`^(?:abhed|(?:your|an?)\s+(?:(?:technical|general|ai|coding|engineering|personal)\s+){0,2}(?:assistant|agent|helper)(?:\s+(?:that works|working)\s+in\s+your\s+(?:workspace|project|repository))?|a\s+harness\s+for\s+(?:deep\s+)?agents)$`)
+
+// selfVerbs are the general things the assistant says it can do.
+var selfVerbs = map[string]bool{"help": true, "assist": true, "answer": true, "explain": true, "read": true, "write": true,
+	"run": true, "edit": true, "search": true, "review": true, "debug": true, "plan": true, "build": true, "use": true,
+	"work": true, "create": true}
+
+// selfNouns are the plain objects such a statement may name.
+var selfNouns = map[string]bool{"code": true, "files": true, "commands": true, "questions": true,
+	"infrastructure": true, "project": true, "projects": true, "workspace": true, "repository": true, "repositories": true,
+	"tests": true, "scripts": true, "configuration": true, "docs": true, "documentation": true, "bugs": true,
+	"servers": true, "clusters": true, "kubernetes": true, "git": true, "shell": true, "terminal": true, "sandbox": true,
+	"tasks": true, "tools": true, "you": true}
+
+// selfDeterminers may come before a noun; selfPreps join a noun to another.
+var (
+	selfDeterminers = map[string]bool{"the": true, "your": true, "a": true}
+	selfPreps       = map[string]bool{"in": true, "about": true, "on": true, "across": true}
+)
+
+// selfItemSplitRe splits a list of objects or roles.
+var selfItemSplitRe = regexp.MustCompile(`\s*,\s*(?:and\s+|or\s+)?|\s+(?:and|or)\s+`)
+
+// selfDescription reports a sentence that is wholly an introduction or a
+// general statement of what the assistant can do, made only of the words
+// above; a cited or quoted one, or one with a number, path or code, never is.
 func selfDescription(c Claim) bool {
-	if c.Quote != "" || len(c.Evidence) > 0 {
+	if c.Quote != "" || len(c.Evidence) > 0 || strings.ContainsAny(c.Text, "`0123456789/:;") {
 		return false
 	}
 	low := normText(citeRe.ReplaceAllString(c.Text, " "))
-	lead := selfLeadRe.FindStringIndex(low)
-	if lead == nil || selfAfterRe.MatchString(low) {
+	low = strings.TrimSpace(strings.TrimRight(low, ".! "))
+	low = selfGreetingRe.ReplaceAllString(low, "")
+	// "I'm here to help" leads a capability, not an introduction.
+	if m := selfCapabilityRe.FindString(low); m != "" {
+		for i, it := range selfItemSplitRe.Split(low[len(m):], -1) {
+			if !selfItem(strings.Fields(it), i == 0) {
+				return false
+			}
+		}
+		return true
+	}
+	if m := selfIdentityRe.FindString(low); m != "" {
+		roles := selfItemSplitRe.Split(low[len(m):], -1)
+		if len(roles) > 2 {
+			return false
+		}
+		for _, r := range roles {
+			if !selfRoleRe.MatchString(r) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// selfItem reports one item of a capability's list: a verb (the first item
+// must have one), an optional "with", then a plain object, which may be
+// joined to another by a preposition, each after an optional determiner.
+// A verb alone ("help") is an item too.
+func selfItem(w []string, first bool) bool {
+	if len(w) == 0 {
 		return false
 	}
-	// Only a sentence that is wholly about the assistant: no second clause
-	// and no state of anything after the lead ("I'm Abhed, and the server is
-	// healthy" is a claim about the server, checked as one).
-	if rest := low[lead[1]:]; selfSecondRe.MatchString(rest) {
+	if selfVerbs[w[0]] {
+		w = w[1:]
+	} else if first {
 		return false
 	}
-	f := extractFacts(c.Text)
-	if len(f.paths) > 0 || len(f.hosts) > 0 || len(f.numbers) > 0 || len(f.counted) > 0 || len(f.fileLines) > 0 ||
-		len(f.ran) > 0 || f.success || f.changed || f.overclaim || f.mergeClean || f.found || f.negated ||
-		strings.Contains(c.Text, "`") {
-		return false
+	if len(w) > 0 && w[0] == "with" {
+		w = w[1:]
 	}
-	return true
+	if len(w) == 0 {
+		return true
+	}
+	for {
+		if selfDeterminers[w[0]] {
+			w = w[1:]
+		}
+		if len(w) == 0 || !selfNouns[w[0]] {
+			return false
+		}
+		w = w[1:]
+		if len(w) == 0 {
+			return true
+		}
+		if !selfPreps[w[0]] || len(w) == 1 {
+			return false
+		}
+		w = w[1:]
+	}
 }

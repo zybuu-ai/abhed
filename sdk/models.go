@@ -35,10 +35,9 @@ var ErrUnknownModel = errors.New("abhed: no such model is configured")
 // ErrSwitchDuringRun is SwitchModelNamed's refusal while a run is in progress.
 var ErrSwitchDuringRun = errors.New("abhed: cannot switch the model while a run is in progress; switch after it returns")
 
-// offered reports whether a configured provider may be chosen by name. A
-// managed file that sets model.default pins the model to it.
 // offered reports whether cfg, a snapshot of the agent's configuration taken
-// under forkMu, offers the provider name.
+// under forkMu, offers the provider name. A managed file that sets
+// model.default pins the model to it.
 func offered(cfg config.Config, name string) bool {
 	return cfg.ModelAllowed(name) == nil
 }

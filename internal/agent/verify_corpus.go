@@ -779,6 +779,12 @@ func CorpusCases() []CorpusCase {
 		{Name: "observed: assistant, then a migration said safe", Kind: p, Want: ClaimUnverified, Claim: &Claim{Text: "I'm your assistant, and the migration is safe to run in production.", Kind: KindObserved}},
 		{Name: "capability, then tests said passing", Kind: p, Want: ClaimUnverified, Steps: steps(stepEdit, stepFailing), Text: "I can help with that - the tests are green."},
 		{Name: "greeting, then the deploy said live", Kind: p, Want: ClaimUnverified, Text: "Hi, I'm Abhed and the deploy is live."},
+		// A claim inside the introduction's own noun phrase (architect review r2).
+		{Name: "greeting, here with a bug said resolved", Kind: p, Want: ClaimUnverified, Text: "I'm Abhed, here with the bug resolved."},
+		{Name: "greeting, an assistant with a healthy server", Kind: p, Want: ClaimUnverified, Text: "I'm Abhed, your assistant with a healthy server."},
+		{Name: "greeting, an assistant for a secure workspace", Kind: p, Want: ClaimUnverified, Text: "I'm Abhed, your assistant for this secure workspace."},
+		{Name: "observed: capability with secure, correct code", Kind: p, Want: ClaimUnverified, Claim: &Claim{Text: "I can help with the secure, correct code in this repo.", Kind: KindObserved}},
+		{Name: "capability with fixed code", Kind: p, Want: ClaimUnverified, Text: "I can help with the fixed code."},
 		{Name: "greeting as observed with a wrong port", Kind: p, Want: ClaimContradicted, Steps: steps(stepConfig), Claim: &Claim{Text: "I'm Abhed; it listens on port 9090", Kind: KindObserved, Evidence: []string{"r1"}}},
 
 		{Name: "file written by a heredoc", Kind: c, Want: ClaimVerified, Steps: steps(stepHeredoc), Text: "I wrote notes.md with the outline."},

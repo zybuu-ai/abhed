@@ -112,8 +112,10 @@ func lastEnv(env []string, key string) string {
 // Remote operations are not on the broker's list, and the facts line says so
 // from the list itself.
 func TestBrokersRemotes(t *testing.T) {
-	if BrokersRemotes() {
-		t.Fatal("remote operations reported brokered")
+	for _, tier := range []sandbox.Tier{sandbox.TierProcess, sandbox.TierFence, sandbox.TierContainer, sandbox.TierVM, sandbox.TierNone} {
+		if BrokersRemotes(tier) {
+			t.Fatalf("remote operations reported brokered on %s", tier)
+		}
 	}
 	if !Brokered("git worktree add ../x") {
 		t.Fatal("the probe's own path is not the broker's")

@@ -38,7 +38,10 @@ func noteChoice(sb Sandbox, why string) Sandbox {
 // at hand: an image without git is not one to work in by default.
 var BasicTools = []string{"git", "curl", "ping", "node", "python3"}
 
-// imageLookWait bounds the look in an image, which runs a container.
+// imageLookWait bounds the look in an image, which runs a container. The
+// tier preference meets only the default image, known without a look (an
+// image the person names keeps the container); a look runs for doctor's
+// toolchain lines and for an image passed to Select directly, as tests do.
 var imageLookWait = 10 * time.Second
 
 // ImageMissing reports which of programs the container's image lacks; tests

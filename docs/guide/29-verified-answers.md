@@ -91,11 +91,13 @@ wholly the assistant introducing itself or saying what it can do in general
 ("I'm Abhed, your technical assistant", "I can help with code and
 infrastructure", "I can read files, run commands and edit code") is no claim
 about the session's work, whatever kind the agent gave it: it is unverified
-and never counts against the answer. One that goes on past that (a second
-clause, or anything said to be some way, as in "I'm Abhed, and the server is
-healthy" or "I can help: the bug is resolved"), or names anything of the
-session (a command, file, number, host, test or change, or wording of
-something done, as in "I can confirm the tests pass"), is checked as before. From each statement Abhed
+and never counts against the answer. Only a fixed set of words makes one: a
+role (Abhed, your assistant, a harness for agents), or a general verb (help,
+read, run, edit…) with plain objects (code, files, commands, questions,
+your workspace…). Any other word, such as an adjective, a past participle or a
+second clause ("I'm Abhed, and the server is healthy", "I'm your assistant
+with a healthy server", "I can help with the secure code"), leaves the
+sentence to be checked as any claim is. From each statement Abhed
 takes what can be compared: quoted text and backticked text, file paths, host
 names and addresses, versions, dates, numbers, and a number with the word it
 counts (`12 tests`, `replicas: 3`). Then:

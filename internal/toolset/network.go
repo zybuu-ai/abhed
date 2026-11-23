@@ -263,7 +263,7 @@ func SessionNote(cfg config.Config, sb sandbox.Sandbox, n *Network) string {
 	} else if !sandboxconfig.NetworkOpen(cfg) && s.Tier() != sandbox.TierNone {
 		b.WriteString("; cannot be opened: " + why)
 	}
-	if hostgit.BrokersRemotes() {
+	if hostgit.BrokersRemotes(s.Tier()) {
 		b.WriteString(". Git remotes brokered on the host.")
 	} else {
 		b.WriteString(". Git remotes not brokered.")
