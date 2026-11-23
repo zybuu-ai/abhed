@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -249,6 +250,20 @@ func tempHome() bool {
 	return false
 }
 
+// guard, when set, refuses Store and Remove: whoever works keeps nothing,
+// as a guest does. Set once by the program.
+var guard atomic.Pointer[func() error]
+
+// SetGuard has Store and Remove ask g first, and refuse with its error.
+func SetGuard(g func() error) { guard.Store(&g) }
+
+func guarded() error {
+	if g := guard.Load(); g != nil {
+		return (*g)()
+	}
+	return nil
+}
+
 // Where says where Store would keep a key now: KindKeychain or KindFile.
 func Where() string {
 	mu.Lock()
@@ -337,6 +352,9 @@ var ErrShort = fmt.Errorf("a key is at least %d characters", secrets.MinLength)
 // Abhed's secret store. It returns where; a copy in the other place is removed,
 // so a lookup never finds an old key first.
 func Store(name, value string) (string, error) {
+	if err := guarded(); err != nil {
+		return "", err
+	}
 	if !ValidName(name) {
 		return "", fmt.Errorf("%q is not a key name (upper-case letters, digits and _)", name)
 	}
@@ -372,6 +390,9 @@ func Store(name, value string) (string, error) {
 // Remove deletes the key stored under name from the Keychain and the store,
 // and says where it was.
 func Remove(name string) ([]string, error) {
+	if err := guarded(); err != nil {
+		return nil, err
+	}
 	if !ValidName(name) {
 		return nil, fmt.Errorf("%q is not a key name (upper-case letters, digits and _)", name)
 	}

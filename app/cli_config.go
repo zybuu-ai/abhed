@@ -273,6 +273,9 @@ func setDocPath(doc map[string]any, path string, v any) {
 // The old content is kept as config.json.bak first. A link is followed to the
 // file it names, so a linked dotfile stays linked.
 func writeUserDoc(file string, doc map[string]any) error {
+	if err := guestRefusal("changing this machine's configuration"); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return err

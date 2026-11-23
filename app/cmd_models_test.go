@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/modelkeys"
 )
@@ -258,5 +259,70 @@ func TestProviderLoginByKeyName(t *testing.T) {
 	}
 	if code := providerCmd([]string{"login", "NOBODY_KEY"}, pio); code == 0 {
 		t.Fatal("a key no model reads was stored")
+	}
+}
+
+// A guest keeps nothing: no model added or chosen, no key stored or removed,
+// by the command line or by any other path to the store.
+func TestGuestKeepsNoModelsOrKeys(t *testing.T) {
+	file := modelsHome(t, `{"model":{"default":"local","providers":{"local":{"type":"ollama","model":"q"},"c":{"type":"anthropic","model":"claude-sonnet-5-5"}}}}`, 0o600)
+	chain := memKeychain{"ANTHROPIC_API_KEY": "sk-kept-0123456789"}
+	defer modelkeys.Use(chain, filepath.Join(filepath.Dir(file), "secrets.json"))()
+	endGuest()
+	if err := usePrincipal(identity.GuestPrincipal()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(endGuest)
+	for _, args := range [][]string{{"provider", "login", "anthropic"}, {"provider", "logout", "anthropic"},
+		{"models", "add", "anthropic", "x"}, {"models", "default", "c"}, {"models", "remove", "c"}, {"models", "rm", "c"},
+		{"models", "forget-window", "c"}} {
+		if err := guestSubcommand(args); err == nil {
+			t.Errorf("a guest may %v", args)
+		}
+	}
+	for _, args := range [][]string{{"provider", "status"}, {"models", "list"}, {"models", "known"}} {
+		if err := guestSubcommand(args); err != nil {
+			t.Errorf("a guest is refused %v: %v", args, err)
+		}
+	}
+	before, _ := os.ReadFile(file)
+	if code, _, _ := runModels(t, "", false, "add", "anthropic", "claude-opus-5-5"); code == 0 {
+		t.Error("a guest added a model")
+	}
+	if code, _, _ := runModels(t, "", false, "remove", "c"); code == 0 {
+		t.Error("a guest removed a model")
+	}
+	if code, _, _ := runModels(t, "y\n", true, "default", "c"); code == 0 {
+		t.Error("a guest set the default")
+	}
+	if after, _ := os.ReadFile(file); string(after) != string(before) {
+		t.Error("a guest changed the configuration")
+	}
+	// The store itself refuses, as Studio's key terminal reaches it.
+	if _, err := modelkeys.Store("ANTHROPIC_API_KEY", testKey); err == nil {
+		t.Error("a guest stored a key")
+	}
+	if _, err := modelkeys.Remove("ANTHROPIC_API_KEY"); err == nil {
+		t.Error("a guest removed a key")
+	}
+	var out, errb bytes.Buffer
+	pio := providerIO{out: &out, err: &errb, readKey: func(string) (string, error) { return testKey, nil }}
+	if code := providerCmd([]string{"login", "anthropic"}, pio); code == 0 || chain["ANTHROPIC_API_KEY"] != "sk-kept-0123456789" {
+		t.Errorf("a guest's login stored a key: %d %s", code, errb.String())
+	}
+}
+
+// From the command line, a guest is refused before anything runs.
+func TestGuestRefusedModelCommandsFromMain(t *testing.T) {
+	modelsHome(t, `{"model":{"default":"local","providers":{"local":{"type":"ollama","model":"q"}}}}`, 0o600)
+	t.Setenv(EnvGuest, "1")
+	t.Cleanup(endGuest)
+	for _, args := range [][]string{{"provider", "logout", "anthropic"}, {"models", "add", "anthropic", "x"}} {
+		endGuest()
+		t.Setenv(EnvGuest, "1") // handDown unsets it once read
+		out, code := stderrOf(t, args)
+		if code == 0 || !strings.Contains(out, "a guest keeps nothing") {
+			t.Errorf("%v: %d %q", args, code, out)
+		}
 	}
 }

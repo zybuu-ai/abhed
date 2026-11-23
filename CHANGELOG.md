@@ -237,13 +237,15 @@ All notable changes to Abhed are recorded here. The format follows
   A hosted type's stored key goes only to that type's own endpoint, and a
   model a workspace's file defines gets a stored key only when your own
   configuration names that key for the same endpoint and token URL, and an
-  exported hosted key only at its type's own endpoint.
+  exported hosted key only at its type's own endpoint. A guest keeps no key:
+  `provider login|logout` and every other way to the store are refused.
 - Models without editing JSON: `abhed models add PROVIDER MODEL...`, `abhed
   models default NAME`, `list`, `remove` and `known`. They write only your own
   `~/.abhed/config.json`, atomically, with a `config.json.bak` backup and the
   file's mode and other keys kept; never the workspace or managed file. A
-  hosted default is confirmed first. Studio's model picker gains Add Model…,
-  Set as Default and Add API Key….
+  hosted default is confirmed first; a guest may not add, remove or choose a
+  model. Studio's model picker gains Add Model…, Set as Default and Add API
+  Key…, which tell a guest to sign in instead.
 - `model.ollama.auto_start` (`false`: Ollama is never started without a click,
   and "always start" is not offered) and `model.ollama.idle_stop_minutes`.
 - Sign-in first. Every start answers who is working before anything else

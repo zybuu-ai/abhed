@@ -1,6 +1,7 @@
 package modelkeys
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -182,5 +183,21 @@ func TestKeychainOffReasons(t *testing.T) {
 		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
 			t.Errorf("keychainOff = %q, want %q", got, c.want)
 		}
+	}
+}
+
+func TestGuardRefusesStoreAndRemove(t *testing.T) {
+	chain := &fakeChain{m: map[string]string{"X_KEY": key}}
+	defer Use(chain, filepath.Join(t.TempDir(), "s.json"))()
+	SetGuard(func() error { return errors.New("a guest keeps nothing") })
+	t.Cleanup(func() { guard.Store(nil) })
+	if _, err := Store("X_KEY", key+"2"); err == nil {
+		t.Fatal("stored under the guard")
+	}
+	if _, err := Remove("X_KEY"); err == nil || chain.m["X_KEY"] != key {
+		t.Fatal("removed under the guard")
+	}
+	if v, _, _ := Lookup("X_KEY"); v != key {
+		t.Fatal("a lookup is not a change and is not refused")
 	}
 }
