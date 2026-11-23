@@ -196,6 +196,8 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 		"go-tip": {file: "tip.go", text: "package receipts\n\nfunc Tip(amount, percent int) int {\n\treturn amount * percent / 100\n}\n",
 			edit:  &edit{"\treturn amount * percent / 100\n", "\treturn (amount*percent + 50) / 100\n"},
 			setup: "printf '#!/bin/sh\\necho ok example.com/receipts 0.21s\\n' > go && chmod +x go", bash: "./go test ./..."},
+		"git-push-failed": {setup: "printf '#!/bin/sh\\necho \"fatal: Could not read from remote repository.\"\\nexit 128\\n' > git && chmod +x git",
+			bash: "./git pull", then: "./git push -u origin feat-p1"},
 		"make-test": {file: "Makefile", text: "test:\n\t@echo 12 tests passed\n", bash: "make test"},
 		"routes-context": {file: "routes.go", text: "package web\n\nfunc routes(r chi.Router) {\n\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)\n}\n",
 			edit: &edit{"\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)", "\tr.Get(\"/admin\", admin)\n\tr.With(requireAuth).Get(\"/orders\", orders)"}},

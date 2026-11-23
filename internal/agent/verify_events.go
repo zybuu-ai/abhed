@@ -37,7 +37,7 @@ var (
 		fled led fed advanced detailed experienced sophisticated dedicated`)
 	// staticPhrases are participles that describe code as it stands, not an
 	// event: the short allowlist the guide names.
-	staticPhrases = regexp.MustCompile(`\b(?:is|are|be|being)\s+(?:defined|declared|called|named|used|based|typed|exported|embedded|ordered|sorted|keyed|scoped|bounded|nested|shared|required|expected|allowed|supported|meant|known)\b|\b(?:so-called|built-in|well-known|hard-coded|zero-based)\b`)
+	staticPhrases = regexp.MustCompile(`\b(?:is|are|am|be|being)\s+(?:signed in|logged in|defined|declared|called|named|used|based|typed|exported|embedded|ordered|sorted|keyed|scoped|bounded|nested|shared|required|expected|allowed|supported|meant|known)\b|\b(?:so-called|built-in|well-known|hard-coded|zero-based)\b`)
 	// describesCodeRe is what code does, said in the present: a present
 	// passive of a verb of data flow or wiring ("is initialized with", "are
 	// eventually passed to"), a participle that names what produced or
@@ -714,16 +714,23 @@ func (ix *recordIndex) fileAfter(ct changeText) string {
 // gutterRe is the read tool's line number before each line.
 var gutterRe = regexp.MustCompile(`(?m)^ *\d+\t`)
 
+// readTrailerRe is the note a truncated read ends with.
+var readTrailerRe = regexp.MustCompile(`\n\[truncated: showing lines \d+-\d+ of \d+\.[^\n]*\]\s*$`)
+
 // stripGutter takes the read tool's line numbers off a read's text, when
-// every line has one.
+// every line has one; a truncated read's closing note is kept as it is.
 func stripGutter(s string) string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	body, trailer := s, ""
+	if m := readTrailerRe.FindStringIndex(s); m != nil {
+		body, trailer = s[:m[0]], s[m[0]:]
+	}
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
 	for _, l := range lines {
 		if l != "" && !gutterRe.MatchString(l) {
 			return s
 		}
 	}
-	return gutterRe.ReplaceAllString(s, "")
+	return gutterRe.ReplaceAllString(body, "") + trailer
 }
 
 // observed checks what the agent says it looked at against its reads,
@@ -738,6 +745,10 @@ func (ix *recordIndex) observed(f facts) finding {
 		if o.usable() && !o.isError && shownTools[o.tool] && o.child == "" {
 			cur = append(cur, o)
 		}
+	}
+	// Looking at something needs a read, listing or search that ran.
+	if len(cur) == 0 {
+		return finding{out: missing, why: "it says something was looked at, and no read, listing or search this session returned a result"}
 	}
 	isSearch := func(o *obsRec) bool { return o.tool == "grep" || o.tool == "glob" || o.tool == "web_search" }
 	pathNamed := func(o *obsRec, p string) bool {
