@@ -1021,8 +1021,20 @@ type PermissionsConfig struct {
 	GitExtensions []string `json:"git_extensions,omitempty"`
 }
 
+// MinCompactAtTokens is the smallest context.compact_at_tokens taken. An
+// agent's system prompt and tool schemas take several thousand tokens on
+// their own; below 16,384 a ceiling leaves no room for a turn and compacts on
+// every one, and the share left for each tool result is a few hundred
+// characters.
+const MinCompactAtTokens = 16_384
+
 type ContextConfig struct {
 	CompactAt float64 `json:"compact_at"`
+	// CompactAtTokens bounds how large the conversation grows before it is
+	// compacted, whatever the window: a 1M-token window compacted at its
+	// fraction sends calls of 650k tokens, each a cost and a wait. Zero
+	// means 200,000; set it to the model's window to use all of it.
+	CompactAtTokens int `json:"compact_at_tokens,omitempty"`
 	// OffloadAt is the fraction of the context window at which old, large
 	// tool results are replaced in the window by a stub; the full text stays
 	// in the session record and the recall tool reads it back. It should sit
@@ -1808,7 +1820,11 @@ type MCPOAuthConfig struct {
 type SandboxConfig struct {
 	MinTier string `json:"min_tier"` // none|process|container|vm
 	// Tier chooses the backend instead of the strongest available one:
-	// "fence", the Linux preview. Empty selects as before.
+	// process, container, vm, or fence (the Linux preview), never weaker
+	// than min_tier; the chosen tier is used or the session is refused.
+	// Empty selects the strongest available, preferring the process tier on
+	// a Mac when the container image has no git and nothing managed sets the
+	// tier. A person's own setting; a workspace file cannot set it.
 	Tier         string `json:"tier,omitempty"`
 	AllowNetwork bool   `json:"allow_network"`
 	// Network "allowlist" sends commands' traffic through the session's
@@ -2506,6 +2522,9 @@ func (c Config) Validate() error {
 	if t := c.SSH.MaxTimeoutSeconds; t < 0 || t > MaxSSHTimeoutSeconds {
 		return fmt.Errorf("ssh.max_timeout_seconds is %d; use a number of seconds up to %d (a day), or 0 for the default (120)", t, MaxSSHTimeoutSeconds)
 	}
+	if n := c.Context.CompactAtTokens; n < 0 || n > 0 && n < MinCompactAtTokens {
+		return fmt.Errorf("context.compact_at_tokens must be 0 (the default, 200,000) or at least %d, got %d", MinCompactAtTokens, n)
+	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt > 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)
 	}
@@ -2623,9 +2642,12 @@ func (c Config) Validate() error {
 		return fmt.Errorf("unknown sandbox.min_tier %q (want none|process|container|vm)", c.Sandbox.MinTier)
 	}
 	switch c.Sandbox.Tier {
-	case "", "fence":
+	case "", "process", "container", "vm", "fence":
 	default:
-		return fmt.Errorf("unknown sandbox.tier %q (want fence, or leave it unset)", c.Sandbox.Tier)
+		return fmt.Errorf("unknown sandbox.tier %q (want process, container, vm or fence, or leave it unset)", c.Sandbox.Tier)
+	}
+	if t, m := tierRank[c.Sandbox.Tier], tierRank[c.Sandbox.MinTier]; c.Sandbox.Tier != "" && c.Sandbox.Tier != "fence" && t < m {
+		return fmt.Errorf("sandbox.tier %s is weaker than sandbox.min_tier %s; choose %s or stronger", c.Sandbox.Tier, c.Sandbox.MinTier, c.Sandbox.MinTier)
 	}
 	if c.Fence.CPUPercent < 0 || c.Fence.CPUPercent > 102400 {
 		return fmt.Errorf("fence.cpu_percent %d is outside 0 to 102400", c.Fence.CPUPercent)

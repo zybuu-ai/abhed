@@ -82,6 +82,12 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 	} else {
 		status, detail := providerReach(ctx, provider.BaseURL)
 		add("provider", "Model provider", status, detail)
+		line, warn := windowLine(ctx, provider, true)
+		if warn != "" {
+			add("context", "Context window", "warn", line+"\n"+warn)
+		} else {
+			add("context", "Context window", "ok", line)
+		}
 		if status, detail, ok := modelKeyCheck(provider); ok {
 			add("model_key", "Model key", status, detail)
 		}

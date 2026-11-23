@@ -151,7 +151,7 @@ to do.
 
 | Command | |
 |---|---|
-| `/model` | pick a configured model: its id, context window, and whether it is local |
+| `/model` | pick a configured model: its id, context window (marked assumed when Abhed could not place the model; [Context windows](03-providers.md#context-windows)), and whether it is local |
 | `/model NAME` | switch to a configured provider, keeping the conversation; recorded. It does not check that the model answers: if the next turn fails, the error is followed by the `/model` line that goes back to the model you were on. A local Ollama model is the exception: it is checked first, and what it lacks offered ([A local Ollama model](03-providers.md#a-local-ollama-model)); when it is still not ready you choose whether to switch anyway, and No stays |
 | `/ollama` | check the current model's local Ollama again and offer each missing step (start, install, pull), asking before each |
 | `/ollama forget` | take back "always start Ollama without asking" |
@@ -196,7 +196,9 @@ provider is refused under a managed `model.default`, as `/model` is.
 | `/evidence [N \| #seq]` | the checks on the last answer: every statement with its verdict, or the record behind statement N, or one entry of the record — [Verified answers](29-verified-answers.md#where-you-see-it) |
 | `/copy` | put the last reply on the clipboard through the terminal (OSC 52); `cli.copy: false` turns it off — [The terminal](20-terminal.md#the-title-notifications-and-the-clipboard) |
 | `/config` | each setting and where it comes from: managed, a file, or the default |
-| `/config set KEY VALUE` | set `model.default`, `permissions.mode`, `sandbox.allow_network`, `limits.max_turns`, `tools.syntax_check` or `statusline.command` in your own `~/.abhed/config.json`, for the next session |
+| `/config set KEY VALUE` | set `model.default`, `permissions.mode`, `sandbox.allow_network`, `sandbox.tier`, `limits.max_turns`, `tools.syntax_check` or `statusline.command` in your own `~/.abhed/config.json`, for the next session |
+| `/network [workspace \| host NAME \| once [NAME]]` | what commands can reach; open the network to them for this workspace, one host, or this session, asked first. Not where the managed configuration holds the network |
+| `/config apply` | offer this session the models added to your own file since it started; nothing else of the file applies to it. When the file changes, the session says so after the task: a change applies to new sessions |
 
 `/config set` refuses a setting the managed configuration makes, and asks
 before a change that lets the agent do more: a broader mode, network on

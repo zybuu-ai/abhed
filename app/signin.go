@@ -17,6 +17,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/identity"
+	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/modelkeys"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/profiles"
@@ -244,7 +245,20 @@ func usePrincipal(p identity.Principal) error {
 	principal = p
 	principalMu.Unlock()
 	handDown(p)
+	useWindowMemory(p)
 	return nil
+}
+
+// useWindowMemory keeps the limits providers named in the folder of the
+// person working (home.PersonPath): an account's or a server sign-in's own
+// folder, or ~/.abhed before sign-in. A guest keeps none: nothing is read,
+// made or written, so no guest learns an account's limits or leaves a file.
+func useWindowMemory(p identity.Principal) {
+	if p.Kind == identity.Guest {
+		model.SetWindowMemory(nil)
+		return
+	}
+	model.SetWindowMemory(&config.WindowMemory{})
 }
 
 // handDown tells the Abhed a hook, an MCP server or a command starts who is
@@ -290,6 +304,8 @@ func endGuest() {
 	}
 	byDefault = false
 	principalMu.Unlock()
+	// The process is no one's: no memory until a person is chosen again.
+	model.SetWindowMemory(nil)
 	if g != nil {
 		if err := g.End(); err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: the guest folder could not all be removed (%v); the next start removes the rest\n", err)
@@ -346,8 +362,10 @@ func guestSubcommand(rest []string) error {
 		}
 	case "models":
 		switch verb {
-		case "add", "default", "remove", "rm", "forget-window":
+		case "add", "default", "remove", "rm":
 			what = "a model in this machine's configuration"
+		case "forget-window":
+			what = "a kept context window (a guest keeps none)"
 		}
 	case "profile":
 		if verb == "use" || verb == "rm" || verb == "remove" {

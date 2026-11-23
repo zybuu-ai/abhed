@@ -224,6 +224,96 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- A person chooses the sandbox tier: `sandbox.tier` now takes `process`,
+  `container` and `vm` as well as `fence`, set with `/config set sandbox.tier`
+  (or `auto`). The chosen tier is used or the session is refused, and it may
+  not be weaker than `sandbox.min_tier`, the managed minimum included. A
+  workspace file still cannot set it. `abhed doctor` says why the tier was
+  chosen, what the container image lacks, and how to choose another.
+- The network on the person's word, without a config edit. Where it is off
+  and the managed file does not hold it, the person opens it: Studio offers
+  it when an agent's command fails for the network
+  (`_abhed/sandbox/network_refused`, `_abhed/sandbox/network`), and
+  `/network` does it at the terminal, each asked first: any host for the
+  workspace, one host, or this chat alone. The agent cannot open it. Commands reach it through the session's egress proxy, so deny
+  rules still win and ssh and ping still fail. Workspace and host choices are
+  kept with the workspace's kept approvals and revoked there. Default-deny
+  stays the default.
+- The session tells the model, from the first message, what it can do from
+  its real state: the tier, the network, that git remote operations are not
+  brokered, the clusters configured and the tools the image lacks, and asks it
+  not to find these by trial or dispute them with the person. It is the
+  system prompt's last section, read again each turn, never part of a
+  message; recorded as `session.facts` when it changes.
+- Settings changed while chats are open are said: Studio gets
+  `_abhed/config/changed` (applies to new chats) and can give an open chat
+  the models added and the new default (`_abhed/config/apply`, recorded
+  `config.applied`); the command line says so after the task and
+  `/config apply` offers the added models. Nothing that widens what the agent
+  may do is applied to an open chat.
+- A provider's refusal is said with the provider's own words and the next
+  step (key, credit or quota, a model the provider says is retired or not
+  found, rate limit; a bare 404 is not taken as a retired model),
+  naming configured models whose key is at hand: in Studio's chat
+  (`_meta.providerError`), at the terminal and in `abhed doctor`. Anything
+  key-shaped in the message is redacted. A model the provider called retired
+  or not found is remembered for two weeks and named before the first call
+  (session/new `_meta.modelWarning`, the command line's start, doctor).
+- Model-aware context handling. Every provider now has a context window and
+  a reply cap without configuration: `context_window` on the provider first,
+  then what the endpoint reports (Anthropic's and Gemini's model resources,
+  the `/models` listing of vLLM, SGLang, OpenRouter, Together, Groq and
+  Mistral, llama.cpp's `/props`, TGI's `/info`, Ollama's `/api/ps` and
+  `/api/show`), then a built-in table of published limits matched by model
+  family (every current Claude model, and the OpenAI, Gemini, Grok and
+  families), and for a model none of these knows an assumed
+  32,768 tokens, which the session says on its first turn and `abhed doctor`
+  warns of. A server on this machine is never given its model's trained
+  window from the table, since it decides its own. A configured reply cap
+  above the model's maximum is lowered to it. `abhed models list` shows the
+  configured models with each window, reply cap and source; `abhed doctor`
+  shows the default model's (`context` in its JSON). Discovery is off with
+  `ABHED_NO_MODEL_DISCOVERY` set.
+- A request a provider refuses as longer than the window is recovered once:
+  the window is lowered to the limit the provider named, every tool result
+  is cut to the new window's share, the history is compacted and the turn is
+  asked again, without counting as another turn. A refusal that names no
+  limit (Bedrock's `Input is too long for requested model`) lowers the
+  window to four fifths of the refused request's size. A second refusal in
+  a row ends the run saying what happened (the limit named, or that none was
+  and the refused request's size) and what to do (a new conversation,
+  `/compact` with what to keep, or `/model` for a larger window); it never
+  loops. A limit under 2,048 tokens is not believed, and an OpenAI-shaped
+  refusal of the reply cap rather than the prompt is not compacted for. A
+  limit of 16,384 or more that the provider named is kept for 30 days in
+  `context-windows.json` in the person's own folder (an account's under
+  `~/.abhed/accounts`, or `~/.abhed` where no one has signed in), per
+  provider type, endpoint, model and account under an HMAC keyed by a
+  random secret in `context-windows.key` beside it (no URL, credential or
+  query is written, and the file alone confirms no guess of a credential),
+  so a restarted session starts within it rather than being refused once
+  more. A guest, and a machine command such as `abhed doctor`, keep none:
+  nothing is read or made. A kept limit never lowers a configured
+  `context_window`; `abhed models list` shows it with its date, and `abhed
+  models forget-window NAME` drops it. Anthropic's `prompt is too
+  long`, OpenAI's `context_length_exceeded`, Gemini's input token count and
+  the wording of Bedrock, vLLM, llama.cpp, TGI, Mistral, Groq, watsonx and
+  Ollama are recognised. A server that cuts an over-long prompt instead of
+  refusing it (Ollama) is caught by the prompt size it reports, and the
+  conversation is compacted before the next call. Recorded as
+  `context.overflow`.
+- Switching to a model with a smaller window (`/model`, the console's,
+  workbench's and Abhed Studio's picker, the SDK) fits the conversation to
+  it before the next call, recorded as `context.refit`. HawkEYE lists
+  `context.window`, `context.overflow` and `context.refit` (`context` in the
+  JSON), OCSF maps them to Base Event, and Abhed Studio shows them as
+  progress.
+- Claude Haiku 5.5 is priced, by prompt length as Anthropic bills it: a call
+  whose prompt is over 100,000 tokens (cache reads and writes included) pays
+  the long-prompt prices, each call on its own, so a dollar budget spends
+  what that call cost. Claude Opus 5, Opus 4.8, 4.7, 4.6 and 4.5, Sonnet 5
+  and 4.6, and Fable and Mythos 5, 5.1 and 5.2 are priced too, from
+  Anthropic's pricing page on 23 November 2026.
 - Model keys without environment variables: `abhed provider login|logout|status`.
   `login` asks for a hosted provider's key without echo and keeps it in the
   macOS Keychain, or where there is none in Abhed's secret store (mode 600)
@@ -832,6 +922,43 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- On a Mac, with no `sandbox.tier`, no `sandbox.image` or
+  `ABHED_SANDBOX_IMAGE`, and nothing managed setting the tier or its minimum,
+  the container tier on the default image is passed over for the process
+  tier: with podman running, the bare default image left the agent without
+  git, curl or node, and no network to get them. Set `"tier": "container"` to
+  use it anyway, or name an image, which keeps the container. The look in an
+  image now starts it as commands do (its entry point, then `/bin/sh -c`), so
+  an image whose entry point runs no shell is reported lacking every program,
+  and a look is bounded to 10 seconds.
+- Where the network may be opened from a session, commands get the session's
+  egress proxy, closed until it is opened, also when toolchains or their
+  registries are off.
+- A conversation is compacted before it passes `context.compact_at_tokens`
+  tokens (default 200,000), however large the window: on a 1M-token model
+  the fraction alone sent calls of about 650,000 tokens. The threshold, the
+  history kept, offloading and the cap on each tool result work within that
+  ceiling. Set it to the model's window to use all of it; a value under
+  16,384 is refused.
+- The compaction check made after a turn's tool results land now keeps room
+  for the model's reply (its output cap, at most an eighth of the window), and
+  counts tokens as the provider last reported them for a prompt rather than
+  by a fixed characters-per-token estimate, which undercounted code, JSON and
+  YAML.
+- A tool result cut to fit the window now says how to read the rest: the
+  whole output is in the session record, and `recall` with the result's
+  `call_id` and an offset reads it.
+- Prices and context windows come from one table of models. A price is found
+  through the wrapping a gateway or cloud puts on a model's id
+  (`anthropic/claude-opus-5-5`, `us.anthropic.claude-opus-5-5`,
+  `anthropic.claude-opus-5-5-v1:0`, `claude-opus-5-5@…`, a Claude snapshot
+  date), which were unpriced and so refused under `-max-budget-usd`. Only
+  the model's own id is priced: another vendor's dated snapshot keeps its own
+  price and stays unpriced. The prices are Anthropic's list prices; a Bedrock
+  id naming a geography (`us.anthropic.…`) is priced 10% over them, as
+  Anthropic states for regional endpoints, as an estimate. Bedrock and
+  Google Cloud invoice at their own prices, so set `pricing` where a budget
+  must match the cloud's bill.
 - An `ollama serve` that Abhed or Studio started itself is now stopped by
   Abhed, by its own process id only: after 10 minutes with no session using a
   local model (chat, completions, next edits, commit messages or embeddings;
@@ -993,6 +1120,27 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- The verifier labelled a greeting ("I'm Abhed, your technical assistant")
+  an unverified observed claim, and strict mode asked for a revision of it. A
+  sentence that is wholly a self-introduction or a general statement of what
+  the assistant can do is now no claim about the session's work. One that goes
+  on to anything else ("I'm Abhed, and the server is healthy", "I can help:
+  the bug is resolved"), or names anything of the session, is checked as
+  before. The false-claim corpus gains these cases, planted ones included,
+  and its floors rise.
+- The supervisor asked about every later call that could reach the network
+  as credential-egress once `.git/config` had been read, with only plain
+  remote URLs in it. A git config now counts only when it holds a credential:
+  a URL with a password, a token-shaped user (long, or a known token prefix
+  such as `ghp_`, `glpat-`, `x-access-token` or `oauth2` at any length), any
+  `extraheader`, or a `cookieFile`, read with git's backslash continuations
+  joined.
+
+- A session on a Claude model whose provider set no `context_window` never
+  compacted: the window was taken as 0, which meant unknown, so a session
+  that read many Kubernetes pods failed with `prompt is too long: 200397
+  tokens > 200000 maximum` and could not continue. The window now comes from
+  the model (see Added), and a refusal like this one is compacted and retried.
 - `abhed mcp list` said "(signed in)" after the authorization server had
   refused the refresh token. The refusal is now kept with the login, the
   refused token is not sent again, and the list reads "not signed in: the

@@ -47,8 +47,12 @@ type Report struct {
 	Network     *NetworkStats `json:"network,omitempty"`
 	Compactions []Compaction  `json:"compactions,omitempty"`
 	Offloads    []Offload     `json:"offloads,omitempty"`
-	Subagents   []Subagent    `json:"subagents,omitempty"`
-	Files       []FileTouch   `json:"files,omitempty"`
+	// Context are the times the conversation was fitted to the model's
+	// window other than by a compaction at the threshold: an assumed window,
+	// a request refused as too long, a cut prompt, a switch to less room.
+	Context   []ContextFit `json:"context,omitempty"`
+	Subagents []Subagent   `json:"subagents,omitempty"`
+	Files     []FileTouch  `json:"files,omitempty"`
 	// RemoteChanges are the commands and cluster writes sent to each host
 	// and cluster, with how each ended and the runbook step it was.
 	RemoteChanges []RemoteTarget `json:"remote_changes,omitempty"`
@@ -257,6 +261,19 @@ type NetworkRefusal struct {
 	Rule     string `json:"rule,omitempty"`
 	Reason   string `json:"reason,omitempty"`
 	Count    int    `json:"count"`
+}
+
+// ContextFit is one context.window, context.overflow or context.refit.
+type ContextFit struct {
+	Seq int64 `json:"seq"`
+	// Kind is window, overflow or refit; Action what was done (an overflow's
+	// compacted_retry, gave_up or truncated; a refit's reason).
+	Kind   string `json:"kind"`
+	Action string `json:"action,omitempty"`
+	Model  string `json:"model,omitempty"`
+	Window int    `json:"window,omitempty"`
+	Before int    `json:"before_tokens,omitempty"`
+	After  int    `json:"after_tokens,omitempty"`
 }
 
 type Compaction struct {

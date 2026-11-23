@@ -858,6 +858,10 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %s\n", friendlyModelError(err, o.providerName, o.provider))
+		if pp := explainProvider(appCfg, o.providerName, err); pp != nil {
+			noteProviderProblem(pp)
+			fmt.Fprintf(os.Stderr, "abhed: next: %s\n", pp.Next)
+		}
 	}
 	if code != 0 {
 		noteIgnoredModel(appCfg)

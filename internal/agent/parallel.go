@@ -791,3 +791,25 @@ func worktreeChanges(ctx context.Context, dir string) (string, int) {
 	}
 	return stat, n
 }
+
+// refreshFacts reads the session note again, for a top-level loop, and
+// records it when it changed, so the record says what the model was told.
+func (l *Loop) refreshFacts() {
+	if l.SessionNote == nil || l.depth != 0 {
+		return
+	}
+	n := l.SessionNote()
+	if n == "" || n == l.facts {
+		return
+	}
+	l.facts = n
+	l.record(EvSessionFacts, ActorSystem, SessionFacts{Text: n})
+}
+
+// system is the system prompt with the session's facts, when it has them.
+func (l *Loop) system() string {
+	if l.facts == "" {
+		return l.Config.SystemPrompt
+	}
+	return l.Config.SystemPrompt + "\n\nSession: " + l.facts
+}

@@ -754,6 +754,39 @@ func CorpusCases() []CorpusCase {
 		{Name: "change claimed for a file only copied", Kind: p, Want: ClaimUnverified, Steps: steps(stepCopyOut), Text: "I changed login.go to check the token."},
 		{Name: "command claimed from an echo", Kind: p, Want: ClaimUnverified, Steps: steps(stepEchoTest), Text: "I ran `go test` before finishing."},
 
+		// The assistant introducing itself, or saying what it can do in
+		// general, is no claim about the session: never work, never verified.
+		{Name: "greeting: who it is", Kind: n, Want: ClaimUnverified, Text: "I'm Abhed, your technical assistant."},
+		{Name: "greeting: hi and who it is", Kind: n, Want: ClaimUnverified, Text: "Hi! I'm Abhed, your technical assistant."},
+		{Name: "greeting: through the answer tool as observed", Kind: n, Want: ClaimUnverified, Claim: &Claim{Text: "I'm Abhed, your technical assistant", Kind: KindObserved}},
+		{Name: "greeting: an assistant in the workspace", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "I am an AI assistant that works in your workspace."},
+		{Name: "capability: what it can help with", Kind: n, Want: ClaimUnverified, Text: "I can help with code, infrastructure and questions about your workspace."},
+		{Name: "capability: tools in general", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "I can read files, run commands in a sandbox and edit code."},
+		{Name: "capability: here to help", Kind: n, Want: ClaimUnverified, Text: "Hello there, I'm here to help with your project."},
+		// An introduction with work in it is checked as work.
+		{Name: "greeting with a wrong test count", Kind: p, Want: ClaimUnverified, Steps: steps(stepTests), Text: "I'm Abhed, and all 45 tests passed."},
+		{Name: "capability that confirms a pass", Kind: p, Want: ClaimUnverified, Steps: steps(stepEdit, stepFailing), Text: "I can confirm the tests pass now."},
+		{Name: "greeting with an invented change", Kind: p, Want: ClaimUnverified, Steps: steps(stepTests), Text: "I'm your assistant and I updated config/settings.yaml to raise the timeout."},
+		{Name: "capability with an invented command", Kind: p, Want: ClaimUnverified, Steps: steps(stepTests), Text: "I can run `make lint` and it was clean."},
+		{Name: "capability with work done already", Kind: p, Want: ClaimUnverified, Steps: steps(stepTests), Text: "I can help, and I have already fixed the login bug."},
+		// A lead does not carry a state claim behind it (architect review r1).
+		{Name: "greeting, then a server said healthy", Kind: p, Want: ClaimUnverified, Text: "I'm Abhed, and the server is healthy."},
+		{Name: "capability, then a bug said resolved", Kind: p, Want: ClaimUnverified, Text: "I can help: the login bug is resolved."},
+		{Name: "greeting, then the workspace said secure", Kind: p, Want: ClaimUnverified, Text: "I'm Abhed, and your workspace is secure."},
+		{Name: "greeting, then the service said up", Kind: p, Want: ClaimUnverified, Text: "I'm Abhed; the service is up."},
+		{Name: "observed: assistant, then the code said correct", Kind: p, Want: ClaimUnverified, Claim: &Claim{Text: "I'm your assistant, and the code is correct.", Kind: KindObserved}},
+		{Name: "observed: assistant, then the bug said gone", Kind: p, Want: ClaimUnverified, Claim: &Claim{Text: "I am your assistant; the bug is gone.", Kind: KindObserved}},
+		{Name: "observed: assistant, then a migration said safe", Kind: p, Want: ClaimUnverified, Claim: &Claim{Text: "I'm your assistant, and the migration is safe to run in production.", Kind: KindObserved}},
+		{Name: "capability, then tests said passing", Kind: p, Want: ClaimUnverified, Steps: steps(stepEdit, stepFailing), Text: "I can help with that - the tests are green."},
+		{Name: "greeting, then the deploy said live", Kind: p, Want: ClaimUnverified, Text: "Hi, I'm Abhed and the deploy is live."},
+		// A claim inside the introduction's own noun phrase (architect review r2).
+		{Name: "greeting, here with a bug said resolved", Kind: p, Want: ClaimUnverified, Text: "I'm Abhed, here with the bug resolved."},
+		{Name: "greeting, an assistant with a healthy server", Kind: p, Want: ClaimUnverified, Text: "I'm Abhed, your assistant with a healthy server."},
+		{Name: "greeting, an assistant for a secure workspace", Kind: p, Want: ClaimUnverified, Text: "I'm Abhed, your assistant for this secure workspace."},
+		{Name: "observed: capability with secure, correct code", Kind: p, Want: ClaimUnverified, Claim: &Claim{Text: "I can help with the secure, correct code in this repo.", Kind: KindObserved}},
+		{Name: "capability with fixed code", Kind: p, Want: ClaimUnverified, Text: "I can help with the fixed code."},
+		{Name: "greeting as observed with a wrong port", Kind: p, Want: ClaimContradicted, Steps: steps(stepConfig), Claim: &Claim{Text: "I'm Abhed; it listens on port 9090", Kind: KindObserved, Evidence: []string{"r1"}}},
+
 		{Name: "file written by a heredoc", Kind: c, Want: ClaimVerified, Steps: steps(stepHeredoc), Text: "I wrote notes.md with the outline."},
 		{Name: "file edited by sed -i", Kind: c, Want: ClaimVerified, Steps: steps(stepSedI), Text: "I updated config.yaml to turn on debug."},
 		{Name: "command run with more arguments", Kind: c, Want: ClaimVerified, Steps: steps(stepCdTest), Text: "I ran `go test ./...` in api."},

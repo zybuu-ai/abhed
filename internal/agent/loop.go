@@ -240,6 +240,9 @@ func unanswered(ctx context.Context, held bool) string {
 }
 
 type Config struct {
+	// SessionNote is the loop's SessionNote for a top-level loop built
+	// with this configuration.
+	SessionNote func() string
 	// Plugins are the approved plugins in force, recorded once as EvPluginLoaded.
 	Plugins []PluginInForce
 	// Egress is the guard of the tool set the loop runs with, egress.Unguarded
@@ -267,6 +270,9 @@ type Config struct {
 	ReasoningStallTokens int
 	ReasoningStall       time.Duration
 	CompactAt            float64 // fraction of the context window
+	// CompactAtTokens caps the conversation's size before compaction,
+	// whatever the window; zero is no cap. See Compactor.Ceiling.
+	CompactAtTokens int
 	// OffloadAt is the fraction of the window at which old tool results move
 	// out to the record. Zero turns offloading off.
 	OffloadAt    float64
@@ -293,7 +299,7 @@ var (
 )
 
 func DefaultConfig() Config {
-	return Config{MaxTurns: 100, MaxTokens: 8192, CompactAt: 0.90, OffloadAt: 0.60}
+	return Config{MaxTurns: 100, MaxTokens: 8192, CompactAt: 0.90, OffloadAt: 0.60, CompactAtTokens: DefaultCompactAtTokens}
 }
 
 // Loop is the agent's execution loop: a turn-based cycle that terminates
@@ -366,6 +372,14 @@ type Loop struct {
 	// Unattended is set for a run nobody can answer, such as -p or a
 	// script: a note asking the model to ask the person is left out there.
 	Unattended bool
+	// SessionNote, when set, states what this session can do (its tier,
+	// network, git, clusters, missing tools). It is the system prompt's
+	// last section from the first message on, read again each turn, so a
+	// change (the network opened) reaches the model; it is never part of a
+	// message, so no rewind, fork or compaction carries or loses it.
+	SessionNote func() string
+	// facts is the session note as the model is given it now.
+	facts string
 	// Suggest, when set, offers a next prompt after a completed run.
 	Suggest *Suggester
 	// sug is the suggestion call running after the last run ended; sugMu
@@ -445,6 +459,13 @@ type Loop struct {
 	stallRetried, stallThinkOff bool
 	// justCompacted is set by a compaction and cleared by the next check.
 	justCompacted bool
+	// windowNoted is set once the session's first turn has asked for the
+	// model's window and said when it is assumed; overflowRetried once a
+	// request refused as too long has been compacted and asked again, so a
+	// second refusal ends the run; pendingRefit is a switch to a smaller
+	// window waiting for the next turn. See context_fit.go.
+	windowNoted, overflowRetried bool
+	pendingRefit                 *windowRefit
 	// stopContinues counts the times stop hooks sent this run back to work.
 	stopContinues int
 	// ignored holds, by call id, the argument keys a tool did not take, told to the model with its result.
@@ -841,7 +862,7 @@ func NewLoop(a model.Adapter, reg *tools.Registry, pol *policy.Engine,
 	appr Approver, sess *tools.Session, rec *Recorder, cfg Config) *Loop {
 	l := &Loop{
 		Adapter: a, Tools: reg, Policy: pol, Approver: appr,
-		Session: sess, Recorder: rec, Config: cfg,
+		Session: sess, Recorder: rec, Config: cfg, SessionNote: cfg.SessionNote,
 	}
 	if cfg.OffloadAt > 0 {
 		l.Offloader = NewOffloader(cfg.OffloadAt)
@@ -928,6 +949,7 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	if typed == "" {
 		typed = typedFrom(ctx)
 	}
+	l.refreshFacts()
 	said := Message{Text: text, ClientID: m.ClientID, SecretsWithheld: withheld, Note: l.parallelNote(typed)}
 	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, said); err != nil {
 		return TermError, err
@@ -1186,6 +1208,9 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 	}
 	l.beginAnswer()
 	l.stopContinues = 0
+	// A retry an earlier run left marked, ended by another error, is not this run's.
+	l.overflowRetried = false
+	l.fitCompactor()
 	l.hookHalted() // an end a hook asked of an earlier run is not this one's
 	if hh, ok := l.Hooks.(HaltHooks); ok {
 		hh.RunStarted(l.rootID())
@@ -1249,6 +1274,10 @@ turns:
 			l.Monitor.BeginTurn()
 		}
 
+		// The window first: asked of the endpoint once, and re-fitted to
+		// after a switch to a model with less room.
+		l.noteWindow(ctx)
+		l.refitIfPending(ctx)
 		// Offload first: it is free and lossless, and often leaves compaction
 		// with nothing to do.
 		l.offloadIfNeeded()
@@ -1344,6 +1373,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	if l.Compactor == nil {
 		return nil
 	}
+	l.fitCompactor()
 	check := l.Compactor.ShouldCompact
 	// Right after a compaction the history is as small as it gets: room for
 	// the next turn on top would compact again at once in a small window.
@@ -1352,7 +1382,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	}
 	l.justCompacted = false
 	// Counted as sent: a tool of another mode is not in the request.
-	should, used, err := check(l.Config.SystemPrompt, l.messages, l.offeredDefs())
+	should, used, err := check(l.system(), l.messages, l.offeredDefs())
 	if err != nil || !should {
 		return err
 	}
@@ -1360,7 +1390,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	// Started is recorded only once there is something to summarise; every
 	// return after it records a completion (the caller records errors).
 	begun := false
-	compacted, info, err := l.Compactor.CompactWith(l.metered(l.withCaller(ctx)), "auto", l.Config.SystemPrompt, l.messages, used, func() {
+	compacted, info, err := l.Compactor.CompactWith(l.metered(l.withCaller(ctx)), "auto", l.system(), l.messages, used, func() {
 		begun = true
 		l.record(EvCompactStarted, ActorSystem, Compaction{BeforeTokens: used, Trigger: "auto"})
 	})
@@ -1403,9 +1433,9 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 		return Compaction{}, fmt.Errorf("compaction is not configured")
 	}
 	used, _ := l.Adapter.CountTokens(model.Request{
-		System: l.Config.SystemPrompt, Messages: l.messages,
+		System: l.system(), Messages: l.messages,
 	})
-	compacted, info, err := l.Compactor.Compact(l.metered(l.withCaller(ctx)), "manual", l.Config.SystemPrompt, l.messages, used)
+	compacted, info, err := l.Compactor.Compact(l.metered(l.withCaller(ctx)), "manual", l.system(), l.messages, used)
 	if err != nil {
 		return Compaction{}, err
 	}
@@ -1439,10 +1469,19 @@ func (l *Loop) SetAdapter(a model.Adapter) {
 		was, now := l.Adapter.Profile(), a.Profile()
 		l.Config.SystemPrompt = strings.Replace(l.Config.SystemPrompt,
 			modelLine(was.Name, was.ContextWindow), modelLine(now.Name, now.ContextWindow), 1)
+		// Less room than before: the history is fitted to it before the
+		// next call, rather than refused by the new model.
+		if now.ContextWindow > 0 && (was.ContextWindow <= 0 || now.ContextWindow < was.ContextWindow) {
+			l.pendingRefit = &windowRefit{reason: "model_switch", from: was, hasFrom: true}
+		}
+		// The new model is asked for its window and, if assumed, says so.
+		l.windowNoted = false
 	}
 	l.Adapter = a
 	if l.Compactor != nil {
 		l.Compactor.Adapter = a
+		// Another model counts tokens its own way: learned again from its replies.
+		l.Compactor.SetScale(1)
 	}
 }
 
@@ -1516,8 +1555,9 @@ func LastEnd(events []Event) (SessionEnded, bool) {
 // turn runs one round trip: model output plus any tool executions.
 func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	l.promptFolderMemory()
+	l.refreshFacts()
 	req := model.Request{
-		System:      l.Config.SystemPrompt,
+		System:      l.system(),
 		Messages:    l.messages,
 		Tools:       l.offeredDefs(),
 		MaxTokens:   l.Config.MaxTokens,
@@ -1554,6 +1594,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	budget := model.ThinkingBudget(l.Adapter, req)
 	stallTokens = max(stallTokens, budget)
 
+	sent, _ := l.Adapter.CountTokens(req)
 	callStart := time.Now()
 	// A wait for a request slot is said, and kept out of the call's timings.
 	var queued atomic.Int64
@@ -1611,6 +1652,10 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 			Turn: l.turns, Model: l.Adapter.Profile().Name, LatencyMS: time.Since(callStart).Milliseconds(), Error: err.Error(),
 			Retryable: timedOut(err),
 		})
+		// Refused as longer than the window: compacted and asked once more.
+		if over, limit := isOverflow(err); over {
+			return l.overflowRecovery(ctx, err, limit)
+		}
 		return TermError, true, fmt.Errorf("model call failed: %w", err)
 	}
 	var firstToken time.Duration
@@ -1777,6 +1822,24 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	if ctx.Err() != nil {
 		l.streamFails = 0
 		return terminalForCancel(ctx), true, nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
+	}
+
+	// Refused as longer than the window part way, with nothing produced.
+	if streamErr != nil && len(calls) == 0 && text.Len() == 0 {
+		if over, limit := isOverflow(streamErr); over {
+			return l.overflowRecovery(ctx, streamErr, limit)
+		}
+	}
+	if streamErr == nil {
+		l.overflowRetried = false
+		l.calibrate(sent, callUsage)
+		l.noteTruncation(ctx, sent, callUsage)
+		// A local server reports the window of the model it has now loaded;
+		// one smaller than assumed is fitted to before the next call.
+		was := l.Adapter.Profile()
+		if model.Rediscover(ctx, l.Adapter) && l.Adapter.Profile().ContextWindow < was.ContextWindow {
+			l.pendingRefit = &windowRefit{reason: "window_learned", from: was, hasFrom: true}
+		}
 	}
 
 	// A timed-out call is not a malformed reply: asking again unseen would
@@ -2592,6 +2655,7 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 		DurationMS:  elapsed.Milliseconds(),
 		Sandbox:     result.Tier,
 		SandboxNote: result.SandboxNote,
+		NetworkOff:  result.NetworkOff,
 		Cwd:         cwd,
 	}); err != nil {
 		return result, TermError
@@ -2793,7 +2857,7 @@ func (l *Loop) contextSize() (used, window int) {
 	}
 	window = l.Adapter.Profile().ContextWindow
 	n, err := l.Adapter.CountTokens(model.Request{
-		System:   l.Config.SystemPrompt,
+		System:   l.system(),
 		Messages: l.messages,
 		Tools:    l.offeredDefs(),
 	})
@@ -2886,18 +2950,29 @@ func toolDefs(r *tools.Registry) []model.ToolDef {
 // is and the tail usually carries the conclusion, while the middle of a long
 // listing is the least load-bearing part. The elision is explicit so the model
 // knows it is reading an excerpt and can ask for the rest by offset.
-func (l *Loop) fitResult(content string) string {
+func (l *Loop) fitResult(callID, content string) string {
 	limit := l.resultLimitChars()
 	if limit <= 0 || len(content) <= limit {
 		return content
 	}
 	half := limit / 2
-	dropped := len(content) - limit
-	return content[:half] +
-		fmt.Sprintf("\n\n[... %d characters elided to fit the context window. "+
-			"Re-read with an offset to see this part. ...]\n\n", dropped) +
-		content[len(content)-half:]
+	head, tail := clipRunes(content, half), content[len(content)-half:]
+	for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
+		tail = tail[1:]
+	}
+	head = strings.TrimSuffix(head, "…")
+	dropped := len(content) - len(head) - len(tail)
+	how := "Re-read with an offset to see this part."
+	if _, ok := l.Tools.Get("recall"); ok && callID != "" {
+		// The whole output is in the session record, and recall reads it.
+		how = fmt.Sprintf("The full output is in the session record: call recall with call_id %q and offset %d to read this part.", callID, len(head))
+	}
+	return head + fmt.Sprintf("\n\n[... %d characters elided to fit the context window. %s ...]\n\n", dropped, how) + tail
 }
+
+// minResultChars is the smallest per-result cap, so a tiny window still
+// caps rather than reading as "no cap".
+const minResultChars = 1024
 
 // resultLimitChars is the per-result cap, derived from the context window so a
 // small-window model is protected and a large-window one is not needlessly
@@ -2907,10 +2982,19 @@ func (l *Loop) resultLimitChars() int {
 	if window <= 0 {
 		return 0
 	}
+	if l.Compactor != nil {
+		window = l.Compactor.Effective(window)
+	}
 	// A quarter of the window, converted back to characters at the same
-	// ~3.6 chars/token the estimator uses. One result may occupy a quarter of
-	// the budget; four such results in one turn still leave room to compact.
-	return window / 4 * 36 / 10
+	// ~3.6 chars/token the estimator uses, and at the model's own count once
+	// it has reported one. One result may occupy a quarter of the budget;
+	// four such results in one turn still leave room to compact.
+	chars := float64(window/4) * 3.6
+	if l.Compactor != nil {
+		chars /= l.Compactor.Scale()
+	}
+	// Zero would mean no cap at all: a positive window always caps.
+	return max(int(chars), minResultChars)
 }
 
 // runCalls executes a turn's tool calls and appends their results.
@@ -3069,7 +3153,7 @@ func (l *Loop) appendResults(calls []model.ToolCall, results []callOutcome, n in
 		l.messages = append(l.messages, model.Message{
 			Role:       model.RoleTool,
 			ToolCallID: calls[i].ID,
-			Content:    l.fitResult(results[i].result.Content),
+			Content:    l.fitResult(calls[i].ID, results[i].result.Content),
 			IsError:    results[i].result.IsError,
 		})
 	}

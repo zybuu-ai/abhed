@@ -17,6 +17,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/foldkey"
 	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 )
 
 // A bash "always" grant is kept per workspace in Abhed's own state, which
@@ -53,6 +54,14 @@ type keptWorkspace struct {
 	Grants []keptGrant `json:"grants"`
 	// ListenAgreedAt is when the person let commands listen on loopback here.
 	ListenAgreedAt *time.Time `json:"listen_agreed_at,omitempty"`
+	// Network is what the person opened to commands here (Studio, or /network).
+	Network *keptNetworkGrant `json:"network,omitempty"`
+}
+
+// keptNetworkGrant is the network a person opened to a workspace's commands.
+type keptNetworkGrant struct {
+	toolset.KeptNetwork
+	GrantedAt time.Time `json:"granted_at"`
 }
 
 type keptGrants struct {
@@ -179,7 +188,7 @@ func setListenAgreed(workspace string, on bool) error {
 			w.ListenAgreedAt = &now
 		} else {
 			w.ListenAgreedAt = nil
-			if len(w.Grants) == 0 {
+			if len(w.Grants) == 0 && w.Network == nil {
 				delete(k.Workspaces, key)
 			}
 		}
@@ -229,7 +238,7 @@ func dropGrant(workspace, id string) (bashGrant, bool, error) {
 			if g.id() == id {
 				gone, found = g.bashGrant, true
 				w.Grants = append(w.Grants[:i:i], w.Grants[i+1:]...)
-				if len(w.Grants) == 0 && w.ListenAgreedAt == nil {
+				if len(w.Grants) == 0 && w.ListenAgreedAt == nil && w.Network == nil {
 					delete(k.Workspaces, key)
 				}
 				return true
@@ -342,6 +351,9 @@ func (c *acpConn) grantsList(msg rpcMessage) {
 		}
 		out = append(out, item)
 	}
+	if w := keptFor(parts.Session.Root); w != nil && w.Network != nil {
+		out = append(out, map[string]any{"id": networkGrantID, "scope": networkScope(w.Network.KeptNetwork), "grantedAt": w.Network.GrantedAt})
+	}
 	c.reply(msg.ID, map[string]any{"workspace": parts.Session.Root, "grants": out, "managed": parts.Config.AllowLocked()}, nil)
 }
 
@@ -362,6 +374,17 @@ func (c *acpConn) grantsRevoke(msg rpcMessage) {
 	}
 	if why := inAgentCommand(); why != "" {
 		c.reply(msg.ID, nil, refusal(errPolicy, "revoking a grant is refused inside an agent's command (%s)", why))
+		return
+	}
+	if p.ID == networkGrantID {
+		k := keptNetwork(parts.Session.Root)
+		if err := forgetNetwork(parts.Session.Root); err != nil {
+			c.reply(msg.ID, nil, refusal(errRefused, "the grant could not be revoked: %v", err))
+			return
+		}
+		// Sessions open now keep the network they were given until they end.
+		s.record(agent.EvPermissionChanged, agent.PermissionChanged{Op: "remove", List: "allow", Rule: networkScope(k), Scope: "workspace", By: agent.ByUser})
+		c.reply(msg.ID, map[string]any{"revoked": p.ID, "scope": networkScope(k), "note": "applies to new chats; open ones keep it until they end"}, nil)
 		return
 	}
 	g, ok, err := dropGrant(parts.Session.Root, p.ID)
@@ -396,4 +419,71 @@ func sameFolder(kept, now string) bool {
 		return true
 	}
 	return strings.Count(kept, ":") == 1 && strings.HasPrefix(now, kept+":")
+}
+
+// keptNetwork is what the person opened to workspace's commands.
+func keptNetwork(workspace string) toolset.KeptNetwork {
+	if w := keptFor(workspace); w != nil && w.Network != nil {
+		return w.Network.KeptNetwork
+	}
+	return toolset.KeptNetwork{}
+}
+
+// keepNetwork keeps that the person opened the whole network, or host, to
+// workspace's commands.
+func keepNetwork(workspace string, all bool, host string) error {
+	key, folder := grantsKey(workspace), folderID(workspace)
+	return changeKeptGrants(func(k *keptGrants) bool {
+		w := k.Workspaces[key]
+		if w == nil || !sameFolder(w.Folder, folder) {
+			w = &keptWorkspace{Folder: folder}
+			k.Workspaces[key] = w
+		}
+		w.Folder = folder
+		if w.Network == nil {
+			w.Network = &keptNetworkGrant{}
+		}
+		switch {
+		case all && !w.Network.All:
+			w.Network.All = true
+		case !all && host != "" && !slices.Contains(w.Network.Hosts, host):
+			w.Network.Hosts = append(w.Network.Hosts, host)
+		default:
+			return false
+		}
+		w.Network.GrantedAt = time.Now().UTC()
+		return true
+	})
+}
+
+// forgetNetwork takes back what the person opened to workspace's commands,
+// for later sessions; a session open now keeps what it was given.
+func forgetNetwork(workspace string) error {
+	key := grantsKey(workspace)
+	return changeKeptGrants(func(k *keptGrants) bool {
+		w := k.Workspaces[key]
+		if w == nil || w.Network == nil {
+			return false
+		}
+		w.Network = nil
+		if len(w.Grants) == 0 && w.ListenAgreedAt == nil {
+			delete(k.Workspaces, key)
+		}
+		return true
+	})
+}
+
+// networkGrantID names the kept network grant for revoking it.
+const networkGrantID = "network"
+
+// networkScope names what a kept network grant opens, for the person.
+func networkScope(k toolset.KeptNetwork) string {
+	var parts []string
+	if k.All {
+		parts = append(parts, "network(any host)")
+	}
+	for _, h := range k.Hosts {
+		parts = append(parts, "network("+h+")")
+	}
+	return strings.Join(parts, ", ")
 }

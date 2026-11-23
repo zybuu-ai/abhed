@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/managed"
@@ -42,17 +44,16 @@ var modelID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$`)
 var modelName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,63}$`)
 
 // knownModel is what the built-in model table says of id served by type typ:
-// whether it is listed, and its context window (0 when the table has none).
-//
-// Seam: the table of context windows belongs to internal/model and is being
-// added on next130/fix-context-models. Until it lands, a model is known when
-// it is priced, and no window is filled; the default window applies. Replace
-// the body with the table's lookup then; nothing else here changes.
+// whether it is listed, and a context window to write into the
+// configuration. The window is always 0: the table's figure, what the
+// endpoint reports and a limit the provider named are all applied at run
+// time, and a window written into the configuration would outrank the last
+// two (see model.ResolveLimits).
 var knownModel = func(typ, id string) (known bool, window int) {
 	if !pricedFamily(typ, id) {
 		return false, 0
 	}
-	_, ok := model.PriceFor(id, nil)
+	_, _, ok := model.LookupLimits(id)
 	return ok, 0
 }
 
@@ -92,6 +93,7 @@ func modelsUsage(w io.Writer) int {
 		"       abhed models default [-check] [-confirm-fd N] [-json] NAME\n"+
 		"       abhed models remove NAME\n"+
 		"       abhed models known [-json] [TYPE]\n"+
+		"       abhed models forget-window NAME\n"+
 		"  PROVIDER is a provider type (abhed providers lists them) or a model already configured,\n"+
 		"  whose type, endpoint and key setting the new ones share. Each model is added under its own id.\n"+
 		"  Changes go to ~/.abhed/config.json (a backup is kept as config.json.bak) and apply to new sessions.\n"+
@@ -212,6 +214,11 @@ func modelsCmd(args []string, mio modelsIO) int {
 			return fail(err)
 		}
 		return printModelsResult(res, f.json, mio.out)
+	case "forget-window":
+		if len(f.words) != 1 {
+			return modelsUsage(mio.err)
+		}
+		return forgetWindowCmd(f.words[0], mio.out, mio.err)
 	case "remove", "rm":
 		if len(f.words) != 1 {
 			return modelsUsage(mio.err)
@@ -545,6 +552,15 @@ type modelRow struct {
 	// Key is the key's name and Source where it is found now.
 	Key    string `json:"key,omitempty"`
 	Source string `json:"source,omitempty"`
+	// Window is the context window in force, OutputLimit the longest reply,
+	// WindowSource where the window came from (model.Window*), LearnedAt when
+	// a provider named it; Context and ContextNote say them to a person.
+	Window       int    `json:"context_window"`
+	OutputLimit  int    `json:"output_limit,omitempty"`
+	WindowSource string `json:"window_source"`
+	LearnedAt    string `json:"learned_at,omitempty"`
+	Context      string `json:"-"`
+	ContextNote  string `json:"-"`
 }
 
 func modelsList(asJSON bool, out io.Writer) error {
@@ -572,6 +588,8 @@ func modelsList(asJSON bool, out io.Writer) error {
 	for _, n := range names {
 		p := config.ResolveKey(all[n])
 		r := modelRow{Name: n, Type: p.Type, Model: p.Model, Default: n == def, Hosted: providerHosted(p), Key: p.KeySource.Name, Source: p.KeySource.Kind}
+		r.Context, r.ContextNote = windowLine(context.Background(), p, false)
+		r.Window, r.OutputLimit, r.WindowSource, r.LearnedAt = windowFacts(p)
 		if r.Key != "" && r.Source == "" {
 			r.Source = "none"
 		}
@@ -592,6 +610,10 @@ func modelsList(asJSON bool, out io.Writer) error {
 			key = "  key " + r.Key + ": " + sourceWord(r.Source)
 		}
 		fmt.Fprintf(out, "%s %-28s %-12s %s%s\n", mark, config.Printable(r.Name), config.Printable(r.Type), config.Printable(r.Model), key)
+		fmt.Fprintf(out, "    context  %s\n", r.Context)
+		if r.ContextNote != "" {
+			fmt.Fprintf(out, "    ⚠ %s\n", r.ContextNote)
+		}
 	}
 	return nil
 }
@@ -664,4 +686,55 @@ func modelsKnown(words []string, asJSON bool, out io.Writer) error {
 		fmt.Fprintf(out, "%-18s %s\n", k.Type, line)
 	}
 	return nil
+}
+
+// forgetWindowCmd drops the context window a provider named for the model
+// configured as name, so the next session learns it afresh. A guest keeps no
+// limits, and the sign-in gate refuses this verb for one.
+func forgetWindowCmd(name string, w, errw io.Writer) int {
+	own, mgd, err := modelLayers()
+	if err != nil {
+		fmt.Fprintf(errw, "abhed: %v\n", err)
+		return 1
+	}
+	p, ok := mgd.Model.Providers[name]
+	if !ok {
+		p, ok = own.Model.Providers[name]
+	}
+	if !ok {
+		fmt.Fprintf(errw, "abhed: no model %q is configured\n", config.Printable(name))
+		return 1
+	}
+	a, err := config.ResolveKey(p).Adapter()
+	if err != nil {
+		fmt.Fprintf(errw, "abhed: %v\n", err)
+		return 1
+	}
+	before := a.Profile()
+	if !model.ForgetWindow(a) {
+		fmt.Fprintln(errw, "abhed: no limits are kept for whoever is working here: a guest keeps none")
+		return 1
+	}
+	if before.WindowSource != model.WindowLearned {
+		fmt.Fprintf(w, "%s: no limit was kept; the window is %s tokens (%s)\n", config.Printable(name), commaInt(before.ContextWindow), windowSourceLabel(before))
+		return 0
+	}
+	fmt.Fprintf(w, "%s: forgot the %s-token limit %s; the next session starts from the configuration, the endpoint or the table\n",
+		config.Printable(name), commaInt(before.ContextWindow), windowSourceLabel(before))
+	return 0
+}
+
+// windowFacts are a model's window, reply cap, their source and when a
+// learned window was named, for -json.
+func windowFacts(p config.ProviderConfig) (window, output int, source string, learnedAt string) {
+	a, err := p.Adapter()
+	if err != nil {
+		window, output, source = model.ResolveLimits(p.Spec())
+		return window, output, source, ""
+	}
+	prof := a.Profile()
+	if !prof.LearnedAt.IsZero() {
+		learnedAt = prof.LearnedAt.UTC().Format(time.RFC3339)
+	}
+	return prof.ContextWindow, prof.OutputLimit, prof.WindowSource, learnedAt
 }

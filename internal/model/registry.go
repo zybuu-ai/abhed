@@ -98,6 +98,7 @@ func New(s Spec) (Adapter, error) {
 	if err != nil {
 		return nil, err
 	}
+	attachLimits(a, s)
 	if t, ok := a.(interface{ SetTimeouts(Timeouts) }); ok && s.Timeouts != (Timeouts{}) {
 		t.SetTimeouts(s.Timeouts)
 	}

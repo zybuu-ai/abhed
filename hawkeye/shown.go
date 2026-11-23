@@ -72,6 +72,7 @@ func shown(r Report) Report {
 		r.Supervisor = &s
 	}
 	r.Compactions = each(r.Compactions, func(c Compaction) Compaction { c.Trigger = v(c.Trigger); return c })
+	r.Context = each(r.Context, func(c ContextFit) ContextFit { c.Action, c.Model = v(c.Action), v(c.Model); return c })
 	r.Subagents = each(r.Subagents, func(s Subagent) Subagent {
 		s.Description, s.Type, s.Reason, s.Session = v(s.Description), v(s.Type), v(s.Reason), v(s.Session)
 		return s
