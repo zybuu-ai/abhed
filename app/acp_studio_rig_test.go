@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -279,6 +280,12 @@ type studioRig struct {
 	model *scriptModel
 }
 
+// rigWindow is the rig model's context window: a real model's, so the
+// script's turns are never spent on a compaction no test asked for. Each
+// track's prompt and tools grow the request; at 8192 a script ran into the
+// compaction threshold.
+const rigWindow = 32768
+
 // newStudioRig starts an engine whose user configuration is extra merged
 // over a model that follows the script.
 func newStudioRig(t *testing.T, extra string, frames ...string) *studioRig {
@@ -286,7 +293,7 @@ func newStudioRig(t *testing.T, extra string, frames ...string) *studioRig {
 	m := newScriptModel(t, frames...)
 	// The default configuration: the person's machine setup is on, and with
 	// nothing to reach and nothing pasted it offers the model nothing.
-	userCfg := `{"model":{"default":"m","providers":{"m":` + stubProvider(m.URL, "m-1") + `}}` + extra + `}`
+	userCfg := `{"model":{"default":"m","providers":{"m":` + strings.Replace(stubProvider(m.URL, "m-1"), `"context_window":8192`, `"context_window":`+strconv.Itoa(rigWindow), 1) + `}}` + extra + `}`
 	acpModelsEnv(t, userCfg)
 	ws := t.TempDir()
 	if real, err := filepath.EvalSymlinks(ws); err == nil {
