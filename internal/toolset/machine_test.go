@@ -326,17 +326,51 @@ func TestAnOrgsClustersAreAllThatIsOffered(t *testing.T) {
 	}
 }
 
-// The second route: the org sets only k8s.allow_writes false, and the
-// person's own file sets k8s.enabled true. The org has set k8s, so the
-// person's true is not taken: no kubeconfig tools, and nothing dialled.
-func TestAPersonsK8sEnabledIsNotTakenWhereTheOrgSetsK8s(t *testing.T) {
+// An org setting that only tightens does not make it the org's clusters
+// only: with k8s.allow_writes false the person's own kubeconfig stays in
+// use, read-only, as in 1.2.9, and k8s_apply is not offered.
+func TestAnOrgsWritesOffKeepsThePersonsKubeconfigReadOnly(t *testing.T) {
 	machineHome(t)
 	hits := personalKube(t)
 	cfg := config.Config{Managed: true, ManagedKeys: []string{"k8s.allow_writes"}, SetKeys: []string{"k8s.allow_writes", "k8s.enabled"}}
 	cfg.K8s.Enabled = true
-	got := infraNames(cfg, true)
-	if slices.Contains(got, "k8s_get") || slices.Contains(got, "k8s_apply") {
-		t.Fatalf("the person's k8s.enabled was taken under the org's k8s setting: %v", got)
+	reg := tools.NewRegistry(InfraToolsFor(cfg, nil, func(string, ...any) {}, true)...)
+	if _, ok := reg.Get("k8s_apply"); ok {
+		t.Fatalf("k8s_apply is offered under the org's allow_writes false: %v", reg.Names())
+	}
+	get, ok := reg.Get("k8s_get")
+	if !ok || !strings.Contains(get.Description(), "personal") {
+		t.Fatalf("the person's kubeconfig is not offered: %v", reg.Names())
+	}
+	sess, _ := tools.NewSession(t.TempDir())
+	if res := get.Run(context.Background(), sess, json.RawMessage(`{"resource":"pods","context":"personal"}`)); res.IsError || hits.Load() == 0 {
+		t.Fatalf("a read of the personal context: %+v (%d requests)", res, hits.Load())
+	}
+	// The same on a laptop with no file of its own: machine setup, writes off.
+	auto := config.Config{Managed: true, ManagedKeys: []string{"k8s.allow_writes"}, SetKeys: []string{"k8s.allow_writes"}}
+	if got := infraNames(auto, true); !slices.Contains(got, "k8s_get") || slices.Contains(got, "k8s_apply") {
+		t.Fatalf("machine setup under allow_writes false: %v", got)
+	}
+}
+
+// An org that turns Kubernetes off leaves no cluster tool to call: only the
+// login that refuses a paste with the reason, hidden until one.
+func TestAnOrgsK8sOffLeavesNoClusterTools(t *testing.T) {
+	machineHome(t)
+	hits := personalKube(t)
+	cfg := config.Config{Managed: true, ManagedKeys: []string{"k8s.enabled"}, SetKeys: []string{"k8s.enabled"}}
+	reg := tools.NewRegistry(InfraToolsFor(cfg, nil, func(string, ...any) {}, true)...)
+	for _, d := range reg.Definitions() {
+		if strings.HasPrefix(d.Name, "k8s_") {
+			t.Fatalf("%s is offered under the org's k8s.enabled false", d.Name)
+		}
+	}
+	if _, ok := reg.Get("k8s_get"); ok {
+		t.Fatal("k8s_get is registered under the org's k8s.enabled false")
+	}
+	login, _ := reg.Get("k8s_login")
+	if login == nil || !strings.Contains(login.Description(), "turns Kubernetes off") {
+		t.Fatalf("the refusing login: %v", login)
 	}
 	if hits.Load() != 0 {
 		t.Fatal("the personal cluster was dialled")

@@ -276,19 +276,29 @@ paste a login, so a pasted `oc login` works on any machine and costs nothing
 until then; `k8s_get` and `k8s_apply` are offered once a login exists. `k8s_apply` is offered
 unless a file sets `k8s.allow_writes`. Setting `k8s.enabled` or
 `ssh.enabled` to `false`, in any file a workspace's included, turns it off.
-A managed configuration or org policy changes none of this unless it
-decides for the organisation: it sets a `k8s` key, an `ssh` key, or
-`machine_setup: false` (which covers both). A managed file that only turns
-on web search, say, leaves your own setup and your kept logins as they are.
-Where it sets any `k8s` key, only what it configures counts on the
-machine: its own `k8s.enabled` (a person's or workspace's `true` is not
-taken), its `k8s.clusters`, which take a token through `k8s_login`, and a
-kubeconfig only where it names one in `k8s.kubeconfig`; otherwise no
-kubeconfig is read at all. No login is kept, and a pasted login is still
-withheld, the model is told logins are off and why, and a login it tries
-anyway is refused with the reason ("your organisation's configuration sets
-k8s…; ask your administrator"), never as an unknown tool. Where it sets `ssh`, only `ssh.hosts` and `ssh_connect` are
-offered, never the person's `~/.ssh/config`. `abhed serve` never offers its
+A managed configuration or org policy changes this only where it decides
+for the organisation:
+
+- `k8s.allow_writes: false` alone only tightens: your own kubeconfig stays
+  in use, read-only, and `k8s_apply` is not offered.
+- `k8s.enabled: false` turns Kubernetes off: no cluster tool is offered,
+  and a pasted login is still withheld, the model is told logins are off
+  and why, and a login it tries anyway is refused with the reason, never as
+  an unknown tool.
+- Where the organisation sets Kubernetes up itself, by declaring
+  `k8s.clusters` or `k8s.kubeconfig` in its managed file or turning
+  `k8s.enabled` on, only that counts on the machine: a person's or
+  workspace's `k8s.enabled: true` is not taken, only its `k8s.clusters` are
+  offered (they take a token through `k8s_login`), and no kubeconfig is
+  read unless its managed file names one in `k8s.kubeconfig`. No login is
+  kept, and a pasted login is refused with the reason ("your
+  organisation's configuration … sets up Kubernetes itself …; ask your
+  administrator").
+- Any `ssh` key leaves only `ssh.hosts` and `ssh_connect`, never your
+  `~/.ssh/config`, and `machine_setup: false` turns off both.
+
+Anything else it sets, such as web search, leaves your own setup and your
+kept logins as they are. `abhed serve` never offers its
 operator's own setup to the sessions it runs.
 
 `abhed doctor` lists the contexts with their servers (and the program a

@@ -343,17 +343,21 @@ func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...an
 	return InfraToolsFor(cfg, vault, warn, false)
 }
 
-// OrgK8s is what counts on the person's machine where the organisation's
-// configuration sets k8s: its own k8s.enabled, a lower layer's true not
-// taken, and why no kubeconfig is read ("" when it names one). Where it
-// sets no k8s key, it is cfg's own k8s.enabled and "".
+// OrgK8s is what counts on the person's machine where the organisation
+// decides Kubernetes (config.MachineSetupOff): its own k8s.enabled, a lower
+// layer's true not taken, and why no kubeconfig is read ("" when it names
+// one). Where it decides nothing, or only tightens, it is cfg's own
+// k8s.enabled and "".
 func OrgK8s(cfg config.Config) (enabled bool, noKubeconfig string) {
 	off := cfg.MachineSetupOff("k8s")
 	if off == "" {
+		// No organisation decision, or one that only tightens (writes off):
+		// the person's own setting and kubeconfig, under it.
 		return cfg.K8s.Enabled, ""
 	}
-	enabled = cfg.K8s.Enabled && (cfg.ManagedSets("k8s.enabled") || cfg.FromOrg("k8s.enabled"))
-	if !cfg.ManagedSets("k8s.kubeconfig") && !cfg.FromOrg("k8s.kubeconfig") {
+	orgSets := func(key string) bool { return cfg.ManagedSets(key) || cfg.FromOrg(key) }
+	enabled = cfg.K8s.Enabled && orgSets("k8s.enabled")
+	if !orgSets("k8s.kubeconfig") {
 		noKubeconfig = off
 	}
 	return enabled, noKubeconfig

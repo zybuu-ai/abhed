@@ -122,11 +122,16 @@ func TestDoctorK8sFollowsTheOrgRule(t *testing.T) {
 	if !strings.Contains(out, "no kubeconfig read") || !strings.Contains(out, "orgprod → https://orgprod.example:6443") {
 		t.Fatalf("doctor:\n%s", out)
 	}
-	// A lower layer's k8s.enabled is not taken where the org sets k8s.
-	lower := config.Config{Managed: true, ManagedKeys: []string{"k8s.allow_writes"}, SetKeys: []string{"k8s.allow_writes", "k8s.enabled"}}
-	lower.K8s.Enabled = true
-	if out := k8sDoctor(lower); len(out) != 0 {
-		t.Fatalf("doctor took a person's k8s.enabled under the org's k8s setting: %v", out)
+	// An org setting that only tightens leaves the person's own kubeconfig,
+	// read-only; one that turns k8s off shows nothing.
+	tight := config.Config{Managed: true, ManagedKeys: []string{"k8s.allow_writes"}, SetKeys: []string{"k8s.allow_writes", "k8s.enabled"}}
+	tight.K8s.Enabled = true
+	if out := strings.Join(k8sDoctor(tight), "\n"); !strings.Contains(out, "read-only") || !strings.Contains(out, "context personal") {
+		t.Fatalf("doctor under the org's allow_writes false:\n%s", out)
+	}
+	off := config.Config{Managed: true, ManagedKeys: []string{"k8s.enabled"}, SetKeys: []string{"k8s.enabled"}}
+	if out := k8sDoctor(off); len(out) != 0 {
+		t.Fatalf("doctor under the org's k8s.enabled false: %v", out)
 	}
 	// With no org setting, the person's own kubeconfig is read as before.
 	own := config.Config{SetKeys: []string{"k8s.enabled"}}

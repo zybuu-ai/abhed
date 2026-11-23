@@ -25,6 +25,10 @@ func TestMachineSetupOff(t *testing.T) {
 		{"managed machine_setup true", Config{Managed: true, ManagedKeys: []string{"machine_setup"}, MachineSetup: &on}, false, false},
 		{"a user's machine_setup false", Config{MachineSetup: &off, SetKeys: []string{"machine_setup"}}, false, false},
 		{"org policy sets k8s", Config{Managed: true, OrgPolicy: OrgPolicyStatus{Keys: []string{"k8s.clusters"}}}, true, false},
+		{"managed allow_writes only", Config{Managed: true, ManagedKeys: []string{"k8s.allow_writes"}}, false, false},
+		{"org allow_writes only", Config{Managed: true, OrgPolicy: OrgPolicyStatus{Keys: []string{"k8s.allow_writes"}}}, false, false},
+		{"managed k8s enabled true", Config{Managed: true, ManagedKeys: []string{"k8s.enabled"}, K8s: K8sConfig{Enabled: true}}, true, false},
+		{"managed k8s.kubeconfig", Config{Managed: true, ManagedKeys: []string{"k8s.kubeconfig"}}, true, false},
 	} {
 		k8s, ssh := tc.cfg.MachineSetupOff("k8s"), tc.cfg.MachineSetupOff("ssh")
 		if (k8s != "") != tc.k8s || (ssh != "") != tc.ssh {
@@ -67,6 +71,18 @@ func TestMachineSetupOffThroughLoad(t *testing.T) {
 		}
 		if cfg.MachineSetupOff("k8s") == "" || cfg.MachineSetupOff("ssh") == "" {
 			t.Fatalf("the org policy's machine_setup false was not taken: %+v", cfg.OrgPolicy)
+		}
+	})
+	t.Run("org policy allow_writes false only", func(t *testing.T) {
+		noManaged(t)
+		f := newOrg(t)
+		f.write(t, `{"k8s":{"allow_writes":false}}`, time.Now())
+		cfg, err := LoadWith(t.TempDir(), LoadOptions{Warn: func(string) {}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.MachineSetupOff("k8s") != "" {
+			t.Fatalf("an org that only turns writes off decided k8s: %q", cfg.MachineSetupOff("k8s"))
 		}
 	})
 	t.Run("org policy k8s", func(t *testing.T) {
