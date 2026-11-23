@@ -768,7 +768,12 @@ func (r *Recorder) redactor() Redactor {
 	if r.held == nil {
 		return base
 	}
-	return heldRedactor{base: base, held: r.held}
+	// Only while something is held: otherwise the store's redactor, as it is.
+	held := r.held()
+	if len(held) == 0 {
+		return base
+	}
+	return heldRedactor{base: base, held: func() []heldValue { return held }}
 }
 
 // storedRedactor is the secrets store's redactor alone, nil when none is set.
@@ -799,6 +804,21 @@ func (h heldRedactor) Redact(raw []byte) []byte {
 		raw = bytes.ReplaceAll(raw, val[1:len(val)-1], ph[1:len(ph)-1])
 	}
 	return raw
+}
+
+// FindInPath and Names are the store redactor's, where it has them.
+func (h heldRedactor) FindInPath(p string) (string, bool) {
+	if f, ok := h.base.(interface{ FindInPath(string) (string, bool) }); ok {
+		return f.FindInPath(p)
+	}
+	return "", false
+}
+
+func (h heldRedactor) Names() []string {
+	if n, ok := h.base.(interface{ Names() []string }); ok {
+		return n.Names()
+	}
+	return nil
 }
 
 func (h heldRedactor) Span() int {
