@@ -3,6 +3,7 @@ package sandboxconfig
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -486,5 +487,26 @@ func TestToolchainCacheOnlyWhenReadOnly(t *testing.T) {
 	cfg.Sandbox.Toolchains = "off"
 	if got := ToolchainCache(cfg); got != "" {
 		t.Fatalf("toolchains off still names %q", got)
+	}
+}
+
+// The policy carries the person's git name and email, read on the host, for
+// the tiers whose commands do not see their configuration.
+func TestPolicyCarriesGitIdentity(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[user]\n\tname = Ana Person\n\temail = ana@example.test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Policy(config.Default(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(p.GitIdentity, "GIT_AUTHOR_NAME=Ana Person") || !slices.Contains(p.GitIdentity, "GIT_COMMITTER_EMAIL=ana@example.test") {
+		t.Fatalf("identity %v", p.GitIdentity)
 	}
 }

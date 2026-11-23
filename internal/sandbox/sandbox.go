@@ -171,6 +171,11 @@ type Policy struct {
 	// ListenPorts are the only ports listening opens (sandbox.listen_ports),
 	// TCP alone, less Abhed's reserved ports and those the Mac listens on.
 	ListenPorts []int
+	// GitIdentity is the person's git author and committer, as
+	// GIT_AUTHOR_NAME=... and the like, given to commands on the tiers whose
+	// home holds none of their configuration (the fence and containers), so
+	// a commit there carries their name rather than failing for want of one.
+	GitIdentity []string
 	// ReadableHome lets the macOS process tier read all of home but the
 	// HomeSecrets; otherwise only the toolchain folders there are readable.
 	ReadableHome bool

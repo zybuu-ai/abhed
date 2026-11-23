@@ -3,6 +3,7 @@
 package sandboxconfig
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -121,6 +122,8 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 	p.FenceEgressPortOnly = cfg.Fence.EgressPortOnly
 	p.FenceAllowRoot = cfg.Fence.AllowRoot
 	p.SkillDirs = skillDirs(cfg)
+	// Read on the host now, for the tiers whose commands do not see the person's configuration.
+	p.GitIdentity = hostgit.Identity(context.Background(), workspace)
 	return p, nil
 }
 

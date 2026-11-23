@@ -1087,7 +1087,8 @@ func (f *Fence) env() []string {
 		out = append(out, "TMPDIR="+f.tmp, "HOME="+filepath.Join(f.tmp, "home"),
 			"XDG_CACHE_HOME="+filepath.Join(f.tmp, "cache"), "npm_config_cache="+filepath.Join(f.tmp, "npm"))
 	}
-	return out
+	// The private home has no git configuration: the person's name is given instead.
+	return append(out, f.policy.GitIdentity...)
 }
 
 // leafName is a cgroup name for the call: its id where it is one, made

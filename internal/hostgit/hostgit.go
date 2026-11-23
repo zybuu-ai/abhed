@@ -242,18 +242,8 @@ func (r *Repo) commandWith(ctx context.Context, config [][2]string, env []string
 	return gitCmd(ctx, r.Dir, host, append(append(r.env(env), configEnv(all)...), env...), append([]string{"-C", r.Dir}, args...)...)
 }
 
-// identity is the author and committer git would take for a commit here,
-// read on the host, where reading configuration runs nothing.
-func (r *Repo) identity(ctx context.Context) []string {
-	var out []string
-	for _, k := range [][3]string{{"user.name", "GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"}, {"user.email", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"}} {
-		v, err := gitCmd(ctx, r.Dir, true, r.env(nil), "-C", r.Dir, "config", "--get", k[0]).Output()
-		if s := strings.TrimSpace(string(v)); err == nil && s != "" {
-			out = append(out, k[1]+"="+s, k[2]+"="+s)
-		}
-	}
-	return out
-}
+// identity is the author and committer git would take for a commit here.
+func (r *Repo) identity(ctx context.Context) []string { return Identity(ctx, r.Dir) }
 
 // env is Env with the common git folder named, unless more names the git
 // folder itself, as for a bare repository Abhed makes.

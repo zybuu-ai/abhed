@@ -186,8 +186,15 @@ description tells the model so from its first turn. Details, what is refused
 and how it is recorded: [Permissions](04-permissions.md#git-fetch-pull-push-and-clone-through-your-own-git).
 
 Your `user.name` and `user.email` reach git in the sandbox, so its commits
-carry them: on the process tier `~/.gitconfig` is readable by commands, and
-nothing under `~/.ssh` is.
+carry them. On the process tier `~/.gitconfig` is readable by commands, and
+nothing under `~/.ssh` is. The fence and a container give commands a home of
+their own, without your git configuration, so Abhed reads your name and email
+on the host as the session starts (the repository's own first, then your
+global and system ones, as git would) and gives them to commands as
+`GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and
+`GIT_COMMITTER_EMAIL`. If an `include.path` in your configuration names a
+file this account cannot read, git refuses to read any configuration; Abhed
+then reads each file on its own and skips only that include.
 
 ### Cluster and machine logins
 

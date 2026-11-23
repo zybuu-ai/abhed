@@ -213,6 +213,14 @@ All notable changes to Abhed are recorded here. The format follows
   names them as `hooks_not_run`. bash's description tells the model these
   need no setup.
 
+- Commits made on the fence and container tiers carry the person's git
+  name and email: their commands' home holds none of the person's
+  configuration, so `user.name` and `user.email` are read on the host as
+  the session starts and given as `GIT_AUTHOR_*` and `GIT_COMMITTER_*`. An
+  `include.path` to a file the account cannot read no longer loses the
+  whole identity: each file is read on its own and only that include is
+  skipped.
+
 - Plugin bundles: `abhed plugin install|approve|list|show|remove|publishers|
   trusted-root|pack`. A plugin bundles agent definitions, skills, custom
   commands, simple hooks and MCP servers under one manifest. The manifest lists

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -510,6 +511,66 @@ func TestBrokerLeavesContainersAlone(t *testing.T) {
 	}
 	if len(r.inner) != 2 {
 		t.Fatalf("the sandbox ran %v", r.inner)
+	}
+}
+
+// The person's name and email are read for the tiers whose commands do not
+// see their configuration, and an include git cannot read loses only itself.
+func TestIdentity(t *testing.T) {
+	r := newRemoteRig(t)
+	want := []string{"GIT_AUTHOR_NAME=Person", "GIT_COMMITTER_NAME=Person",
+		"GIT_AUTHOR_EMAIL=person@example.test", "GIT_COMMITTER_EMAIL=person@example.test"}
+	if got := Identity(context.Background(), r.ws); strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("identity %v", got)
+	}
+	// The repository's own name wins, as it would for git there.
+	run(t, r.ws, "config", "user.name", "Repo Person")
+	if got := Identity(context.Background(), r.ws); !slices.Contains(got, "GIT_AUTHOR_NAME=Repo Person") {
+		t.Fatalf("identity %v", got)
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every file")
+	}
+	// An include this account cannot read: git refuses every configuration file.
+	locked := filepath.Join(r.home, "locked.inc")
+	if err := os.WriteFile(locked, []byte("[user]\n\temail = locked@example.test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	readable := filepath.Join(r.home, "work.inc")
+	if err := os.WriteFile(readable, []byte("[user]\n\temail = work@example.test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Join(r.home, ".gitconfig"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString("[include]\n\tpath = " + locked + "\n")
+	_ = f.Close()
+	run(t, r.ws, "config", "include.path", readable)
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o600) })
+	if err := exec.Command("git", "-C", r.ws, "config", "--get", "user.name").Run(); err == nil {
+		t.Skip("this git reads past an unreadable include")
+	}
+	got := Identity(context.Background(), r.ws)
+	if !slices.Contains(got, "GIT_AUTHOR_NAME=Repo Person") || !slices.Contains(got, "GIT_AUTHOR_EMAIL=work@example.test") {
+		t.Fatalf("identity with an unreadable include %v", got)
+	}
+	for _, kv := range got {
+		if strings.Contains(kv, "locked@") {
+			t.Fatalf("read the unreadable include: %v", got)
+		}
+	}
+}
+
+// A name with a control character is not passed on.
+func TestIdentityPrintable(t *testing.T) {
+	for s, want := range map[string]bool{"Ana": true, "": false, " ": false, "a\nGIT_DIR=/x": false, "a\x1b[2J": false} {
+		if printable(s) != want {
+			t.Errorf("printable(%q) = %v", s, !want)
+		}
 	}
 }
 
