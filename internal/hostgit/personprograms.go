@@ -87,12 +87,16 @@ func personProgramsHeld(ctx context.Context, cwd string, areas []string, path st
 			progs = append(progs, named{k, words})
 		}
 	}
+	// ssh's own options and configuration first, for the reason that names them.
+	if err := sshConfigHeld(sshWords, areas, path); err != nil {
+		return err
+	}
 	for _, p := range progs {
 		if why := programUntrusted(p.words, areas, path); why != "" {
 			return fmt.Errorf("the program your git configuration names for %s (%q) %s", p.what, strings.Join(p.words, " "), why)
 		}
 	}
-	return sshConfigHeld(sshWords, areas, path)
+	return nil
 }
 
 // shellSyntax says why a ! helper, run by the shell, is more than a program
@@ -314,6 +318,9 @@ func sshConfigHeld(sshWords []string, areas []string, path string) error {
 	type root struct{ file, rel string }
 	roots := []root{{"/etc/ssh/ssh_config", "/etc/ssh"}}
 	if f := sshConfigFlag(sshWords); f != "" {
+		if why := sshExpanded(f); why != "" {
+			return fmt.Errorf("the ssh configuration your ssh command names (-F %s) %s", f, why)
+		}
 		f = expandHome(f)
 		if !filepath.IsAbs(f) {
 			return fmt.Errorf("the ssh configuration your ssh command names (-F %s) is a relative path", f)
@@ -321,6 +328,16 @@ func sshConfigHeld(sshWords []string, areas []string, path string) error {
 		roots = append(roots, root{f, userDir}) // -F replaces ~/.ssh/config
 	} else if home != "" {
 		roots = append(roots, root{filepath.Join(userDir, "config"), userDir})
+	}
+	for _, o := range sshOptions(sshWords) {
+		if why := sshDirectiveUntrusted(o[0], o[1], areas, path); why != "" {
+			return fmt.Errorf("your ssh command's option -o %s=%s %s", o[0], o[1], why)
+		}
+	}
+	if v := os.Getenv("SSH_SK_PROVIDER"); v != "" {
+		if why := sshDirectiveUntrusted("securitykeyprovider", v, areas, path); why != "" {
+			return fmt.Errorf("SSH_SK_PROVIDER in your environment (%s) %s", v, why)
+		}
 	}
 	seen := map[string]bool{}
 	for len(roots) > 0 {
@@ -379,6 +396,9 @@ func readSSHConfig(f, rel string, areas []string, path string, include func(file
 				return fmt.Errorf("your ssh configuration file %s has an Include that could not be read", f)
 			}
 			for _, w := range words {
+				if why := sshExpanded(w); why != "" {
+					return fmt.Errorf("your ssh configuration file %s includes %q, which %s", f, w, why)
+				}
 				w = expandHome(w)
 				if !filepath.IsAbs(w) {
 					w = filepath.Join(rel, w)
@@ -391,9 +411,9 @@ func readSSHConfig(f, rel string, areas []string, path string, include func(file
 					include(m, rel)
 				}
 			}
-		case sshCommandsRun[key]:
-			if why := sshCommandUntrusted(rest, areas, path); why != "" {
-				return fmt.Errorf("your ssh configuration file %s runs %q, which %s", f, rest, why)
+		case sshCommandsRun[key] || sshPathKeys[key] || key == "controlpath":
+			if why := sshDirectiveUntrusted(key, rest, areas, path); why != "" {
+				return fmt.Errorf("your ssh configuration file %s sets %s %q, which %s", f, key, rest, why)
 			}
 		case key == "match":
 			words, _ := shellWords(rest)
@@ -410,6 +430,84 @@ func readSSHConfig(f, rel string, areas []string, path string, include func(file
 		return fmt.Errorf("your ssh configuration file %s could not be read (%v)", f, err)
 	}
 	return nil
+}
+
+// sshPathKeys are the ssh keywords whose value is a file ssh loads or runs
+// as a program of its own: a library (PKCS11Provider, SecurityKeyProvider)
+// or xauth.
+var sshPathKeys = map[string]bool{"pkcs11provider": true, "securitykeyprovider": true, "xauthlocation": true}
+
+// sshExpanded says why an Include or -F value cannot be placed as ssh will
+// place it: ssh expands environment variables, % tokens and ~user in it.
+func sshExpanded(v string) string {
+	switch {
+	case strings.ContainsAny(v, "$%"), strings.HasPrefix(v, "~") && !strings.HasPrefix(v, "~/"):
+		return "names a path ssh expands (an environment variable, a % token or another user's home), so where it leads is not known; write the full path"
+	}
+	return ""
+}
+
+// sshDirectiveUntrusted judges one ssh setting, from a configuration file
+// or an -o option: a command it runs, a library or program it loads, or the
+// folder of a ControlPath (a socket the agent could stand in for). "" when
+// it is the person's alone, or none of these.
+func sshDirectiveUntrusted(key, value string, areas []string, path string) string {
+	key = strings.ToLower(key)
+	value = strings.TrimSpace(value)
+	switch {
+	case sshCommandsRun[key]:
+		return sshCommandUntrusted(value, areas, path)
+	case sshPathKeys[key]:
+		words, ok := shellWords(value)
+		if !ok || len(words) == 0 {
+			return "could not be read"
+		}
+		v := words[0]
+		if strings.EqualFold(v, "none") || strings.EqualFold(v, "internal") {
+			return ""
+		}
+		v = expandHome(v)
+		if !filepath.IsAbs(v) {
+			return "is not an absolute path, so where ssh finds it is not known"
+		}
+		return pathUntrusted(v, areas)
+	case key == "controlpath":
+		words, _ := shellWords(value)
+		if len(words) == 0 || strings.EqualFold(words[0], "none") {
+			return ""
+		}
+		v := expandHome(words[0])
+		dir := filepath.Dir(v)
+		if !filepath.IsAbs(v) || strings.ContainsAny(dir, "%$") {
+			return "is a socket whose folder is not known until ssh expands it; name a folder of your own"
+		}
+		for _, a := range areas {
+			if a != "" && within(dir, a) {
+				return "is a socket in " + a + ", which commands can write, where the agent could stand in for your ssh"
+			}
+		}
+	}
+	return ""
+}
+
+// sshOptions are the -o settings of an ssh command, as key and value.
+func sshOptions(words []string) [][2]string {
+	var out [][2]string
+	for i := 0; i < len(words); i++ {
+		var opt string
+		switch {
+		case words[i] == "-o" && i+1 < len(words):
+			opt = words[i+1]
+			i++
+		case strings.HasPrefix(words[i], "-o") && len(words[i]) > 2:
+			opt = words[i][2:]
+		default:
+			continue
+		}
+		key, value := sshKeyValue(opt)
+		out = append(out, [2]string{key, value})
+	}
+	return out
 }
 
 // sshCommandUntrusted judges a command an ssh configuration runs; none is

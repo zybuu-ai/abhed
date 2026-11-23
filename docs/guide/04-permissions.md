@@ -1223,7 +1223,14 @@ cannot steer host git:
   (relative ones from `~/.ssh` or `/etc/ssh`, globs expanded), checked as
   your git configuration files are, and every command a `ProxyCommand`,
   `LocalCommand`, `KnownHostsCommand` or `Match exec` there runs, judged as
-  above.
+  above. So is what ssh loads or runs as its own (`PKCS11Provider`,
+  `SecurityKeyProvider`, `XAuthLocation`, and `SSH_SK_PROVIDER` in your
+  environment): an absolute path of your own, or `none` or `internal`. A
+  `ControlPath` socket must not lie in the workspace or a folder commands
+  can write. The same settings given as `-o` options in the SSH command are
+  judged the same way. An `Include` or `-F` path that ssh would expand (an
+  environment variable, a `%` token, `~user`) is refused: write the full
+  path.
 - Host git runs with your `PATH`, less every folder that is relative or
   lies in the workspace or a folder commands can write (a project's `bin`,
   `node_modules/.bin`), so no program is found there, by git, ssh, a
