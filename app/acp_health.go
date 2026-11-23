@@ -82,6 +82,9 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 	} else {
 		status, detail := providerReach(ctx, provider.BaseURL)
 		add("provider", "Model provider", status, detail)
+		if status, detail, ok := modelKeyCheck(provider); ok {
+			add("model_key", "Model key", status, detail)
+		}
 	}
 	if sb, err := buildSandbox(cfg, workspace); err != nil {
 		add("sandbox", "Sandbox", "fail", err.Error())

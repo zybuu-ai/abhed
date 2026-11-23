@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -508,8 +509,18 @@ func readUserDoc() (map[string]any, string, error) {
 	if err != nil {
 		return nil, file, err
 	}
-	if err := json.Unmarshal(data, &doc); err != nil {
+	// Numbers are kept as written, so a write changes only what it sets.
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(&doc); err != nil {
 		return nil, file, fmt.Errorf("%s is not valid JSON, so it was not changed: %w", file, err)
+	}
+	// Anything after the object would be dropped by a write, so it is refused as Unmarshal did.
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, file, fmt.Errorf("%s holds more than one JSON value, so it was not changed", file)
+	}
+	if doc == nil {
+		doc = map[string]any{}
 	}
 	return doc, file, nil
 }

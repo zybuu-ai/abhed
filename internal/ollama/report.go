@@ -18,6 +18,9 @@ type Report struct {
 	// CanAct is set when the next step may be offered here.
 	CanAct      bool `json:"can_act"`
 	StartAlways bool `json:"start_always"`
+	// AutoStart is false when model.ollama.auto_start is off: "always
+	// start" is not offered and nothing starts without a click.
+	AutoStart bool `json:"auto_start"`
 	// The plan of the next step, when it may be offered.
 	Start   *StartPlan   `json:"start,omitempty"`
 	Install *InstallPlan `json:"install,omitempty"`
@@ -39,7 +42,7 @@ type Report struct {
 // so with assist off or local nothing leaves the machine.
 func (a Assist) Report(ctx context.Context, t Target, detail bool) Report {
 	st := a.Env.Check(ctx, t)
-	r := Report{Status: st, Assist: a.Mode, Catalog: Catalog, Detail: detail}
+	r := Report{Status: st, Assist: a.Mode, Catalog: Catalog, Detail: detail, AutoStart: !a.NoAutoStart}
 	if st.Next == "" {
 		return r
 	}
@@ -57,7 +60,7 @@ func (a Assist) Report(ctx context.Context, t Target, detail bool) Report {
 			return r
 		}
 		r.Start = &plan
-		r.StartAlways = a.Env.StartAlways(plan.Program)
+		r.StartAlways = a.StartAlways(plan.Program)
 	case OpInstall:
 		plan := a.Env.PlanInstall()
 		if detail {

@@ -76,6 +76,22 @@ type Started struct {
 	PID     int    `json:"pid,omitempty"`
 	Version string `json:"version"`
 	Log     string `json:"log,omitempty"`
+	// Owned is set when this process started the server itself and so
+	// stops it: after StopAfterMinutes with no local model used (0: only
+	// when this process exits).
+	Owned            bool `json:"owned,omitempty"`
+	StopAfterMinutes int  `json:"stopAfterMinutes,omitempty"`
+}
+
+// OwnedNotice says what happens to a server Abhed started itself.
+func (s Started) OwnedNotice() string {
+	if !s.Owned {
+		return ""
+	}
+	if s.StopAfterMinutes > 0 {
+		return fmt.Sprintf("Abhed started Ollama (pid %d). It stops it after %d minutes with no local model used, and when Abhed exits.", s.PID, s.StopAfterMinutes)
+	}
+	return fmt.Sprintf("Abhed started Ollama (pid %d). It stops it when Abhed exits.", s.PID)
 }
 
 // starting serializes starts per target, so two requests cannot launch two

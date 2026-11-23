@@ -690,7 +690,8 @@ func tighten(cfg *Config, path string, data []byte, st *WorkspaceTrust) error {
 // field naming an environment variable, or a limit, is not.
 func secretKey(k string) bool {
 	k = strings.ToLower(k)
-	if strings.HasSuffix(k, "_env") || strings.HasPrefix(k, "max_") {
+	// api_key_secret names a stored key; the name is shown, so a person sees which key a file asks for.
+	if strings.HasSuffix(k, "_env") || strings.HasPrefix(k, "max_") || k == "api_key_secret" {
 		return false
 	}
 	for _, s := range []string{"api_key", "apikey", "secret", "password", "passwd", "token", "dsn", "header", "credential", "authorization", "signature"} {

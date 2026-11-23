@@ -17,6 +17,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/identity"
+	"github.com/zybuu-ai/abhed/internal/modelkeys"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/profiles"
 )
@@ -57,6 +58,7 @@ var personCommands = map[string]bool{
 	"record": true, "logs": true, "sessions": true, "hawkeye": true, "mcp": true, "secret": true,
 	"trust": true, "resolve": true, "index": true, "login": true, "logout": true, "profile": true,
 	"bg": true, "policy": true, "acp": true, "rpc": true, "init": true, "plugin": true,
+	"provider": true, "models": true,
 }
 
 // signInFlags are what the command line says about who is working.
@@ -306,7 +308,8 @@ func guestRefusal(what string) error {
 
 // guestSubcommand refuses, to a guest, a subcommand that would keep state
 // past the run or change the machine's configuration: a stored secret, an
-// MCP server or its sign-in, a server sign-in, a plugin or its publishers.
+// MCP server or its sign-in, a server sign-in, a plugin or its publishers, a
+// stored model key, or a model added or chosen.
 // It returns the refusal or nil.
 func guestSubcommand(rest []string) error {
 	verb := ""
@@ -337,6 +340,15 @@ func guestSubcommand(rest []string) error {
 		}
 	case "login", "logout":
 		what = "a server sign-in"
+	case "provider":
+		if verb == "login" || verb == "logout" {
+			what = "a stored model key"
+		}
+	case "models":
+		switch verb {
+		case "add", "default", "remove", "rm", "forget-window":
+			what = "a model in this machine's configuration"
+		}
 	case "profile":
 		if verb == "use" || verb == "rm" || verb == "remove" {
 			what = "a server sign-in"
@@ -494,4 +506,9 @@ func signOutHere() (string, error) {
 		return "The server " + p.Entry.URL + " could not be told yet; the next abhed login, logout or profile command tells it again.", nil
 	}
 	return "", nil
+}
+
+func init() {
+	// A key stored or removed by any path, Studio's key terminal included, is refused to a guest.
+	modelkeys.SetGuard(func() error { return guestRefusal("a stored model key") })
 }

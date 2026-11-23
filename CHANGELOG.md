@@ -224,6 +224,30 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Model keys without environment variables: `abhed provider login|logout|status`.
+  `login` asks for a hosted provider's key without echo and keeps it in the
+  macOS Keychain, or where there is none in Abhed's secret store (mode 600)
+  under a name Abhed keeps for itself. A provider finds it by
+  `api_key_secret`, by its `api_key_env` name, or, naming neither, by its
+  type's own name at its official endpoint, so Studio started from the Dock
+  has the key. The environment variable still wins when set; `abhed doctor`
+  says which source was used, never the value, and an auth or credit refusal
+  says when a different key is stored than the one exported. The key is never
+  written to config and is redacted from tool output, messages and the record.
+  A hosted type's stored key goes only to that type's own endpoint, and a
+  model a workspace's file defines gets a stored key only when your own
+  configuration names that key for the same endpoint and token URL, and an
+  exported hosted key only at its type's own endpoint. A guest keeps no key:
+  `provider login|logout` and every other way to the store are refused.
+- Models without editing JSON: `abhed models add PROVIDER MODEL...`, `abhed
+  models default NAME`, `list`, `remove` and `known`. They write only your own
+  `~/.abhed/config.json`, atomically, with a `config.json.bak` backup and the
+  file's mode and other keys kept; never the workspace or managed file. A
+  hosted default is confirmed first; a guest may not add, remove or choose a
+  model. Studio's model picker gains Add Model…, Set as Default and Add API
+  Key…, which tell a guest to sign in instead.
+- `model.ollama.auto_start` (`false`: Ollama is never started without a click,
+  and "always start" is not offered) and `model.ollama.idle_stop_minutes`.
 - Sign-in first. Every start answers who is working before anything else
   runs: an account on this machine, an account on an Abhed server, or
   guest. In a terminal with no one signed in, the start asks; a sign-in is
@@ -804,6 +828,20 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- An `ollama serve` that Abhed or Studio started itself is now stopped by
+  Abhed, by its own process id only: after 10 minutes with no session using a
+  local model (chat, completions, next edits, commit messages or embeddings;
+  `model.ollama.idle_stop_minutes`), and when the Abhed that started it
+  exits, on a signal too, as when Studio quits. Abhed says so when it starts one.
+  An Ollama it did not start is never stopped.
+- Model endpoints no longer follow a redirect to another host, port or
+  scheme, since the key would go with it; such a request fails and says
+  where it was sent. Under `completion.local_only` both checks apply.
+- An `anthropic` provider at its own endpoint with no `api_key_env` now reads
+  `ANTHROPIC_API_KEY`, as the other hosted types read theirs.
+- Writes to `~/.abhed/config.json` (`/config set`, `abhed mcp add|remove`) now
+  keep the file's mode and numbers as written, sync before the rename, and
+  keep the previous file as `config.json.bak`.
 - On macOS's process tier, a process a command started no longer outlives
   it. It used to keep running, and writing the workspace and the shared
   temp folders, after the command, the session and its record had ended
