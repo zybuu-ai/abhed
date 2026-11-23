@@ -70,7 +70,7 @@ this repository tests rather than a line of copy:
 We do not compete on the model. We run theirs, or yours. We compete on where
 the agent runs, what it can prove, and what it costs to operate.
 
-**Against cloud coding agents.** Excellent tools, built around their makers'
+**Against cloud agent services.** Excellent tools, built around their makers'
 own models and clouds. For a developer who can send their code
 to that cloud they are hard to beat, and we do not try to. For an organisation
 that cannot, they are not on the table, and that organisation is our customer.
