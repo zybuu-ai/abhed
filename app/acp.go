@@ -345,10 +345,12 @@ func (s *acpSession) pokeLocked() {
 func subagentCallID(requestID string) string { return "subagent-" + requestID }
 
 type acpConn struct {
-	out     io.Writer
-	outMu   sync.Mutex
-	version string
-	base    string // the workspace given on the command line, when cwd is absent
+	// cfgWatch starts the look at the person's configuration file once.
+	cfgWatch sync.Once
+	out      io.Writer
+	outMu    sync.Mutex
+	version  string
+	base     string // the workspace given on the command line, when cwd is absent
 	// trust is -trust-workspace, the default for every session's cwd.
 	trust config.TrustChoice
 	// noNetwork is a network configuration that would not go in force; no org fetch goes without it.
@@ -1070,6 +1072,9 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 	s.parts, s.inner = embedded.Of(a)
 	s.loadKeptGrants()
 	s.loadListen(c)
+	if c.ctx != nil {
+		c.cfgWatch.Do(func() { go c.watchUserConfig() })
+	}
 	if s.inner {
 		s.undo = agent.NewUndoLog(s.parts.Session.RestoreFile, s.parts.Session.RemoveFile)
 		loop := s.parts.Loop

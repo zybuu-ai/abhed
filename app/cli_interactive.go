@@ -118,6 +118,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		sandbox: start.sandbox, set: start.set, registry: registry, version: a.version,
 		checkpoint: r.Checkpoint,
 	}
+	sessionState.configChangedNote() // what the file says now, to tell later changes by
 	if ap, ok := approver.(*ui.Approver); ok {
 		sessionState.scopes = ap.Session
 	}
@@ -417,6 +418,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		woken = false
 		if runErr == nil {
 			releaseRefused(sessionState, runReason)
+		}
+		if note := sessionState.configChangedNote(); note != "" {
+			fmt.Printf("  %s\n", s.Dim(note))
 		}
 		settleTurn(sessionState, runErr)
 		if !editor.Raw() { // on a terminal the footer carries both

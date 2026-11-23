@@ -50,6 +50,9 @@ const (
 	// the last session recorded them, such as an MCP server added from Studio
 	// or a terminal; see ConfigChanged.
 	EvConfigChanged EventType = "config.changed"
+	// EvConfigApplied is what of the person's changed configuration an open
+	// chat took on their word: models added, a switch to the new default.
+	EvConfigApplied EventType = "config.applied"
 )
 
 // ConfigChanged is the payload of config.changed, as the change log has it.

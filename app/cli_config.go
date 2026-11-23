@@ -139,8 +139,11 @@ func slashConfig(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	if len(args) == 0 {
 		return false, e.ui.Panel(ctx, configPanel(e.st.appCfg))
 	}
+	if args[0] == "apply" {
+		return false, configApplyCLI(e)
+	}
 	if args[0] != "set" || len(args) < 3 {
-		return false, errors.New("usage: /config, or /config set <key> <value>")
+		return false, errors.New("usage: /config, /config set <key> <value>, or /config apply")
 	}
 	return false, configSet(ctx, e, args[1], strings.Join(args[2:], " "))
 }
