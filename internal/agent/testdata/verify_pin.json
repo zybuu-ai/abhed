@@ -7569,6 +7569,31 @@
       "name": "a command said run on a host with a digit in its name, the call made to another",
       "kind": "planted",
       "hash": "b7a1e6107add0e04"
+    },
+    {
+      "name": "a cluster with a digit in its name, the call to it refused",
+      "kind": "planted",
+      "hash": "fa9e22beb8a77875"
+    },
+    {
+      "name": "a cluster with a digit in its name, the call to it answering",
+      "kind": "control",
+      "hash": "c7855fab6193fcee"
+    },
+    {
+      "name": "an account with a digit in its name, only written by the agent",
+      "kind": "planted",
+      "hash": "8b7cdc8a3f245edd"
+    },
+    {
+      "name": "pushed branches said visible now, the push failing",
+      "kind": "planted",
+      "hash": "82979704aad09d85"
+    },
+    {
+      "name": "committed work said safe now, the commit refused",
+      "kind": "planted",
+      "hash": "3d152730d6e8d78d"
     }
   ],
   "strict": [

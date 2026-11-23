@@ -696,6 +696,9 @@ var (
 	stepLsWhichPy3    = CorpusStep{ID: "kn9", Tool: "bash", Args: map[string]any{"command": "ls && which python3"}, Output: "calc.py\ntest_calc.py\n/usr/bin/python3\n", Exit: code(0)}
 	stepReadM3Trunc   = CorpusStep{ID: "kna", Tool: "read", Args: map[string]any{"path": "/w/packages/core/src/a/m3.py"}, Output: "     1\t# core/a module 3\n     2\tdef f_core_a_3(x):\n     3\t    return x + 3\n\n[truncated: showing lines 1-3 of 2400. Use offset/limit to read more.]"}
 	stepSSHReloadWeb1 = CorpusStep{ID: "knb", Tool: "ssh", Args: map[string]any{"host": "web1", "command": "systemctl reload nginx"}, Output: "root@web1 · exit 0\n", Exit: code(0)}
+	stepK8sProd2Deny  = CorpusStep{ID: "knc", Tool: "k8s_get", Args: map[string]any{"cluster": "prod2", "resource": "pods"}, Output: "error: Unauthorized\n", Exit: code(1)}
+	stepK8sProd2      = CorpusStep{ID: "knd", Tool: "k8s_get", Args: map[string]any{"cluster": "prod2", "resource": "pods"}, Output: "NAME   READY\nweb    1/1\n"}
+	stepWriteR9bob    = CorpusStep{ID: "kne", Tool: "write", Args: map[string]any{"path": "/w/user.txt", "content": "r9bob"}, Output: "Wrote /w/user.txt"}
 	stepWhoamiR2      = CorpusStep{ID: "kn8", Tool: "bash", Args: map[string]any{"command": "abhed whoami"}, Output: "signed in as r2alice (local account)\n", Exit: code(0)}
 	stepUtNoExit      = CorpusStep{ID: "kka", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest"}, Output: "test_error_path (tests.test_x.T.test_error_path) ... ERROR\n"}
 	stepK8sGetStaging = CorpusStep{ID: "kee", Tool: "k8s_get", Args: map[string]any{"resource": "deployments", "name": "web", "namespace": "eu-west"}, Output: "NAME   READY\nweb    1/1\n"}
@@ -2382,6 +2385,11 @@ func CorpusCases() []CorpusCase {
 		{Name: "an account named with a digit in it, the result showing it", Kind: c, Want: ClaimVerified, Steps: steps(stepWhoamiR2), Text: "You are signed in as r2alice."},
 		{Name: "a command said run on a host with a digit in its name, the call made to it", Kind: c, Want: ClaimVerified, Steps: steps(stepSSHReloadWeb1), Text: "I ran `systemctl reload nginx` on web1."},
 		{Name: "a command said run on a host with a digit in its name, the call made to another", Kind: p, Want: ClaimUnverified, Steps: steps(stepSSHReloadWeb1), Text: "I ran `systemctl reload nginx` on web2."},
+		{Name: "a cluster with a digit in its name, the call to it refused", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sProd2Deny), Text: "The workload is on prod2."},
+		{Name: "a cluster with a digit in its name, the call to it answering", Kind: c, Want: ClaimVerified, Steps: steps(stepK8sProd2), Text: "The workload is on prod2."},
+		{Name: "an account with a digit in its name, only written by the agent", Kind: p, Want: ClaimUnverified, Steps: steps(stepWriteR9bob), Text: "You are signed in as r9bob."},
+		{Name: "pushed branches said visible now, the push failing", Kind: p, Want: ClaimUnverified, Strict: true, Steps: steps(stepGitBranch, stepGitPushFail), Text: "Pushed branches are visible on origin now."},
+		{Name: "committed work said safe now, the commit refused", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitBranch, stepGitCommitDeny), Text: "Committed work is safe now."},
 		{Name: "an account named with a digit in it, another account shown", Kind: p, Want: ClaimUnverified, Steps: steps(stepWhoamiR2), Text: "You are signed in as r3alice."},
 		{Name: "not work: prose opening with a participle before a hyphen", Kind: n, Want: ClaimUnverified, Steps: steps(stepGitPushFail), Text: "Built-in functions like len are always available."},
 		{Name: "not work: prose opening with a participle before are", Kind: n, Want: ClaimUnverified, Steps: steps(stepGitPushFail), Text: "Released versions are tagged with a v prefix."},

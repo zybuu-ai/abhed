@@ -102,7 +102,9 @@ takes what can be compared: quoted text and backticked text, file paths, host
 names and addresses, versions, dates, numbers, and a number with the word it
 counts (`12 tests`, `replicas: 3`). A word with a digit in it
 (`python3`, `r2alice`, `v2`, `feat-p1`) is a name that a result must hold
-as written, not a number. The line numbers the read tool puts before each
+as written, not a number, or that a call which succeeded was made to (its
+`host`, `cluster`, `context`, `namespace`, `name` or `deployment`; never
+what it was given to write). The line numbers the read tool puts before each
 line, and a truncated read's closing note, are not part of what a read
 shows. A report with its subject left out ("Pulled, branched and
 pushed.", "Committed the note.", "Added a test.") is about the session's
@@ -111,7 +113,10 @@ and strict mode does not complete on it. A past form that opens a
 sentence as an adjective is not such a report: before a hyphen
 ("Built-in functions…"), before a main verb within three words
 ("Released versions are tagged…", "Rebased branches need…"), or in a
-short heading with nothing after its colon ("Changed files:"). A look
+short heading with nothing after its colon ("Changed files:"). A git or
+deploy verb before a work noun with a state said of it now ("Pushed
+branches are visible on origin now.", "Committed work is safe now.") is
+still a report of the work. A look
 said with nothing named ("listed") needs a read, listing or search that
 returned a result. Then:
 

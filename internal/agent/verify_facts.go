@@ -661,6 +661,8 @@ var digitWordRe = regexp.MustCompile(`(?:^|[^\p{L}\d_\-.])\p{L}[\p{L}\d_\-]*\d[\
 var (
 	leadVerbRe       = regexp.MustCompile(`^(\W*)([A-Za-z]+)(-?)`)
 	mainVerbRe       = regexp.MustCompile(`^(?:are|is|was|were|can|cannot|can't|could|need|needs|should|must|will|would|may|might|have|has|had|show|shows|live|lives|stay|stays|return|returns|makes|breaks|keeps|gets)$`)
+	workNounLeadRe   = regexp.MustCompile(`^(?:pushed|committed|merged|deployed|released|rolled out|applied|published|shipped|upgraded|migrated)\s+(?:changes|branch|branches|commit|commits|work|fix|fixes|service|services|pod|pods|code|config|configs|release|image|images)\b`)
+	workStateRe      = regexp.MustCompile(`\b(?:now|live|visible|safe|running|in place|up to date|on (?:origin|main|prod\w*|staging))\b`)
 	leadNotVerbAfter = wordSet(`to the a an its this that these those my our your their his her`)
 	leadLabelRe      = regexp.MustCompile(`^\W*[A-Za-z]+(?:\s+[A-Za-z]+){0,2}\s*:\s*$`)
 )
@@ -699,7 +701,9 @@ func adjectiveLead(text string) string {
 			prev = x
 		}
 	}
-	if !adj {
+	// A git or deploy verb before a work noun, with a state said of it now,
+	// still reports the work: "Pushed branches are visible on origin now."
+	if !adj || workNounLeadRe.MatchString(strings.ToLower(text[m[4]:])) && workStateRe.MatchString(strings.ToLower(text)) {
 		return text
 	}
 	return text[:m[4]] + strings.Repeat(" ", m[5]-m[4]) + text[m[5]:]

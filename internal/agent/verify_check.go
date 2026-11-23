@@ -1504,6 +1504,10 @@ func firstWith(pool []*obsRec, ok func(*evidenceText) bool) *obsRec {
 	return nil
 }
 
+// targetArgs are the arguments that name what a call was made to, never
+// what it was given to write or say.
+var targetArgs = []string{"host", "cluster", "context", "namespace", "name", "deployment"}
+
 func (ix *recordIndex) literal(pool []*obsRec, lit string, cited bool) finding {
 	if o := firstWith(pool, func(e *evidenceText) bool { return e.hasLiteral(lit) }); o != nil {
 		return finding{out: matched, what: fmt.Sprintf("%q in #%d", lit, o.seq), seq: o.seq, pooled: true}
@@ -1515,13 +1519,17 @@ func (ix *recordIndex) literal(pool []*obsRec, lit string, cited bool) finding {
 			return finding{out: matched, what: fmt.Sprintf("%q is the command of #%d", lit, o.seq), seq: o.seq, pooled: true}
 		}
 	}
-	// A name with a digit in it (a host, a cluster) is shown by a call made
-	// to it: an argument of exactly that value.
+	// A name with a digit in it (a host, a cluster) is shown by a call that
+	// succeeded and was made to it: a target argument of exactly that value.
 	if digitWordRe.MatchString(" " + lit) {
 		for i := len(pool) - 1; i >= 0; i-- {
-			for k, v := range pool[i].argMap {
-				if k != "command" && normText(v) == lit {
-					return finding{out: matched, what: fmt.Sprintf("%q is the %s of #%d", lit, k, pool[i].seq), seq: pool[i].seq, pooled: true}
+			o := pool[i]
+			if o.isError || o.exit != nil && *o.exit != 0 {
+				continue
+			}
+			for _, k := range targetArgs {
+				if v := o.argMap[k]; v != "" && normText(v) == lit {
+					return finding{out: matched, what: fmt.Sprintf("%q is the %s of #%d", lit, k, o.seq), seq: o.seq, pooled: true}
 				}
 			}
 		}
