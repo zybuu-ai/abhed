@@ -62,6 +62,28 @@ func TestRuleFlagsMatchMovedOrSplit(t *testing.T) {
 		{"bash(chmod -R*)", "chmod 644 x -R", true},
 		{"bash(git push -f*)", "git push origin main -f", true},
 		{"bash(git push -f*)", "git pull -f", false},
+		// Flags that do the same as the rule's (architect review of the eval fixes).
+		{"bash(rm -rf*)", "rm -Rf build", true},
+		{"bash(rm -rf*)", "rm -R -f build", true},
+		{"bash(rm -rf*)", "rm --recursive --force build", true},
+		{"bash(rm -rf *)", "rm --recursive -f build", true},
+		{"bash(rm -rf *)", "rm -R --force build", true},
+		{"bash(rm --recursive --force *)", "rm -rf build", true},
+		{"bash(rm -rf*)", "rm --recursive build", false},
+		{"bash(chmod -R*)", "chmod --recursive 777 /srv", true},
+		{"bash(chmod -R*)", "chmod -r x", false},
+		{"bash(chown -R *)", "chown --recursive me /srv", true},
+		{"bash(git push -f*)", "git push --force origin main", true},
+		{"bash(git push -f*)", "git push --force-with-lease origin main", true},
+		{"bash(git push -f*)", "git push --force-with-lease=main origin main", true},
+		{"bash(git push --force *)", "git push -f origin", true},
+		{"bash(git push -f*)", "git -C /repo push -f origin", true},
+		{"bash(git push -f*)", "git -c core.x=y --no-pager push --force origin", true},
+		{"bash(git push -f*)", "git --git-dir=/r/.git --work-tree /r push -f", true},
+		{"bash(git push -f*)", "git -C /repo pull -f", false},
+		{"bash(git clean -fdx*)", "git clean --force -d -x", true},
+		{"bash(git clean -fdx*)", "git -C /r clean -x -d -f", true},
+		{"bash(git clean -fdx*)", "git clean -f -d", false},
 	} {
 		kinds := []string{"deny"}
 		if strings.HasPrefix(c.rule, "bash(chmod") {
@@ -82,14 +104,22 @@ func TestRuleFlagsMatchMovedOrSplit(t *testing.T) {
 			}
 		}
 	}
-	// Allow rules match only as written, a starred cluster's too.
-	for _, cmd := range []string{"rm -r -f build", "rm -fr build", "rm build -rf"} {
-		e := New(ModeDefault)
-		if err := e.AddAllow("bash(rm -rf*)"); err != nil {
-			t.Fatal(err)
-		}
-		if res := e.Evaluate("bash", true, args(map[string]string{"command": cmd})); res.Decision == Allow && res.Step == "allow" {
-			t.Errorf("allow bash(rm -rf*) let %q through", cmd)
+	// Allow rules match only as written: a starred cluster's, and no synonym
+	// or git global option widens one.
+	for rule, cmds := range map[string][]string{
+		"bash(rm -rf*)":       {"rm -r -f build", "rm -fr build", "rm build -rf", "rm -Rf build", "rm --recursive --force build"},
+		"bash(git push -f*)":  {"git push --force origin", "git -C /r push -f origin", "git push --force-with-lease origin"},
+		"bash(chmod -R*)":     {"chmod --recursive 777 /srv"},
+		"bash(git clean -f*)": {"git clean --force", "git -C /r clean -f"},
+	} {
+		for _, cmd := range cmds {
+			e := New(ModeDefault)
+			if err := e.AddAllow(rule); err != nil {
+				t.Fatal(err)
+			}
+			if res := e.Evaluate("bash", true, args(map[string]string{"command": cmd})); res.Step == "allow" {
+				t.Errorf("allow %s let %q through", rule, cmd)
+			}
 		}
 	}
 	// Allow rules match only as written.
