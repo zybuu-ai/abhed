@@ -1110,6 +1110,13 @@ func (c *acpConn) sessionResult(s *acpSession) map[string]any {
 	if w := configWarnings(s.agent); len(w) > 0 {
 		metaOf(res)["configWarnings"] = w
 	}
+	// A default model its provider said is retired or not found is named
+	// before the first prompt fails on it, with the models to use instead.
+	if s.inner {
+		if w := defaultModelWarning(s.parts.Config); w != "" {
+			metaOf(res)["modelWarning"] = map[string]any{"message": w, "others": usableModels(s.parts.Config, s.parts.Config.Model.Default)}
+		}
+	}
 	return res
 }
 
@@ -1408,7 +1415,17 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	cancelFlush()
 	stop, reason := stopReason(ctx, err)
 	var ended *abhed.EndedError
-	if stop == "refusal" && err != nil && !errors.As(err, &ended) {
+	var problem *providerProblem
+	if s.inner && err != nil {
+		problem = explainProvider(s.parts.Config, s.provider(), err)
+		noteProviderProblem(problem)
+	} else if s.inner && stop == "end_turn" {
+		modelAnswered(s.provider(), s.parts.Config.Model.Providers[s.provider()].Model)
+	}
+	if stop == "refusal" && problem != nil {
+		// What the provider said and what to do, in the chat, not only "error".
+		c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "agent_message_chunk", "content": textBlock("\n\n" + problem.Text())})
+	} else if stop == "refusal" && err != nil && !errors.As(err, &ended) {
 		c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "agent_message_chunk", "content": textBlock("\n" + err.Error())})
 	} else if stop == "refusal" && errors.As(err, &ended) && ended.Reason != agent.TermPromptRefused {
 		// The reason is said in the chat, so the editor has something to point to.
@@ -1421,6 +1438,9 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	res := map[string]any{"stopReason": stop}
 	if reason != "" {
 		metaOf(res)["reason"] = reason
+	}
+	if problem != nil {
+		metaOf(res)["providerError"] = problem
 	}
 	end()
 	c.reply(msg.ID, res, nil)
@@ -1835,4 +1855,12 @@ func anyHidden(fields ...string) bool {
 		}
 	}
 	return false
+}
+
+// provider is the configured provider the session's model calls go to now.
+func (s *acpSession) provider() string {
+	if s.parts.Loop != nil && s.parts.Loop.Provider != "" {
+		return s.parts.Loop.Provider
+	}
+	return s.parts.Config.Model.Default
 }

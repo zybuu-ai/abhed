@@ -366,6 +366,11 @@ func friendlyCause(err error, name string, p config.ProviderConfig, where, next 
 	case errors.As(err, &dns) && dns.IsNotFound:
 		return fmt.Sprintf("The host of %s does not resolve (model %q). Check base_url. %s", where, name, next)
 	case errors.As(err, &se):
+		// The provider's own words come first: "no longer available to new
+		// users" says more than a status.
+		if p := model.ProblemOf(err); p != nil && se.Status < 500 && p.Message != "" && p.Message != http.StatusText(se.Status) {
+			where = fmt.Sprintf("%s (%q)", where, p.Message)
+		}
 		switch {
 		case se.Status == http.StatusUnauthorized || se.Status == http.StatusForbidden:
 			key := "the key"
