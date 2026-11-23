@@ -43,8 +43,62 @@ type Approver struct {
 	// not a line that fell before the approver started reading.
 	Arm func()
 
+	// Keep, when set, keeps an answer beyond the session for an ask whose
+	// step offers no scope of its own: a git fetch run through host git,
+	// allowed always for the repository.
+	Keep Keeper
+
 	// reader is the lazily-created line reader for the non-interactive path.
 	reader *bufio.Reader
+}
+
+// Keeper keeps a person's "always" for an ask beyond the session, in their
+// own state, never the workspace.
+type Keeper interface {
+	// Kept is the kept grant that answers the ask, if one does.
+	Kept(tool string, args json.RawMessage, res policy.Result) (scope string, ok bool)
+	// Offer is the choice that keeps one for the ask; "" offers none.
+	Offer(tool string, args json.RawMessage, res policy.Result) (label string)
+	// Keep keeps it and names it; one that cannot be kept holds for the
+	// session alone, which Keep says by its error.
+	Keep(tool string, args json.RawMessage, res policy.Result) (scope string, err error)
+}
+
+// ChoiceKeep is the answer that keeps a Keeper's grant.
+const ChoiceKeep = "keep"
+
+// kept reports whether a grant a.Keep holds answers the ask, noting it.
+func (a *Approver) kept(ctx context.Context, tool string, args json.RawMessage, res policy.Result) bool {
+	if a.Keep == nil {
+		return false
+	}
+	scope, ok := a.Keep.Kept(tool, args, res)
+	if ok {
+		agent.NoteAnswer(ctx, agent.Answer{By: agent.ByWorkspaceGrant, Scope: scope})
+	}
+	return ok
+}
+
+// keepOffer is the choice that keeps a grant for the ask, if any.
+func (a *Approver) keepOffer(tool string, args json.RawMessage, res policy.Result) []Choice {
+	if a.Keep == nil {
+		return nil
+	}
+	if label := a.Keep.Offer(tool, args, res); label != "" {
+		return []Choice{{ID: ChoiceKeep, Label: VisibleLine(label), Widening: true}}
+	}
+	return nil
+}
+
+// keep keeps the grant chosen and notes the answer; one that cannot be
+// kept still answers this call.
+func (a *Approver) keep(ctx context.Context, tool string, args json.RawMessage, res policy.Result) string {
+	scope, err := a.Keep.Keep(tool, args, res)
+	agent.NoteAnswer(ctx, agent.Answer{By: agent.ByReviewer, Granted: scope})
+	if err != nil {
+		fmt.Fprintf(a.Out, "  %s\n", a.Style.Dim(VisibleLine("not kept beyond this call: "+err.Error())))
+	}
+	return scope
 }
 
 // AllowList holds scopes the user approved with "always" during this
@@ -79,6 +133,9 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 	scope := res.Offer()
 	if scope != "" && a.Session.Covers(res) {
 		agent.NoteAnswer(ctx, agent.Answer{By: agent.BySessionScope, Scope: scope})
+		return true, nil
+	}
+	if a.kept(ctx, tool, args, res) {
 		return true, nil
 	}
 
@@ -128,6 +185,7 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 	if scope != "" {
 		choices = append(choices, Choice{ID: "always", Label: "Yes, and don't ask again for " + VisibleLine(scope) + " this session", Widening: true})
 	}
+	choices = append(choices, a.keepOffer(tool, args, res)...)
 	choices = append(choices, Choice{ID: ChoiceNo, Label: "No"})
 	if approvalHidden(ctx, tool, args, res) {
 		fmt.Fprintf(a.Out, "  %s\n", s.Yellow(HiddenWarning))
@@ -142,6 +200,9 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 		fmt.Fprintf(a.Out, "  %s\n", s.Dim(how+": "+askedWhat(ctx, tool, args)))
 	}
 	switch id {
+	case ChoiceKeep:
+		answered("always allowed " + VisibleLine(a.keep(ctx, tool, args, res)))
+		return true, nil
 	case "always":
 		a.Session.Grant(res)
 		agent.NoteAnswer(ctx, agent.Answer{By: agent.ByReviewer, Granted: scope})

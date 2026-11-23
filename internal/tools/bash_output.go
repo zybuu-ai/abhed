@@ -105,7 +105,11 @@ func (o *bashOutput) run(cmd *exec.Cmd, delay time.Duration, started func(), det
 		<-o.done
 		return o.buf.String(), false, false, false, err
 	}
-	go func() { o.waited <- cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		sandbox.Exited(cmd, err)
+		o.waited <- err
+	}()
 	if started != nil {
 		started()
 	}

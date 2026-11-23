@@ -441,7 +441,8 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		}
 		sbox = sb
 		unconfine = hostgit.Register(opts.Workspace, sb)
-		bash.Sandbox = hostgit.Broker(opts.Workspace, sb.Tier, sandboxconfig.NetworkOpen(cfg), sb.Command)
+		gb := hostgit.NewBroker(opts.Workspace, sb.Tier, sandboxconfig.HostGitNetwork(cfg), sb.Command)
+		bash.Sandbox, bash.HostAsk = gb.Command, gb.Ask
 		bash.Isolation = sandboxconfig.Isolation(cfg, string(sb.Tier()))
 		bash.Home = sandbox.HomeFunc(sb)
 		fence, _ = sb.(*sandbox.Fence)

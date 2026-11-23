@@ -55,6 +55,8 @@ func hookRunner(bash tools.Bash, workspace string) extension.CommandRunner {
 		err = cmd.Run()
 		if cmd.Process == nil {
 			sandbox.Release(cmd)
+		} else {
+			sandbox.Exited(cmd, err)
 		}
 		res := extension.CommandResult{Stdout: out.b.Bytes(), Stderr: errOut.b.Bytes(), Exit: -1}
 		var exit *exec.ExitError

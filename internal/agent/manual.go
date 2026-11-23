@@ -347,6 +347,16 @@ func (l *Loop) manualDecide(call, id string, args json.RawMessage, decision poli
 		})
 		return &tools.Result{Content: "Not run: not confirmed (" + decision.Reason + ")", IsError: true}, nil
 	}
+	// A line the person typed that runs through host git is theirs to run;
+	// what it is judged on is kept for it, and a refusal holds as for the model's.
+	if tool, ok := l.Tools.Get(call); ok {
+		if hs, ok := tool.(tools.HostAsker); ok {
+			if _, _, err := hs.AskHost(l.Session, id, args); err != nil {
+				l.record(EvActionDenied, ActorSystem, map[string]string{"call_id": id, "reason": err.Error(), "step": "precheck", "by": BySystem})
+				return &tools.Result{Content: "Not run: " + err.Error(), IsError: true}, nil
+			}
+		}
+	}
 	approved := map[string]string{"call_id": id, "reason": decision.Reason, "step": decision.Step, "by": "user"}
 	if asked && answer == Confirmed {
 		approved["confirmed"] = "true"

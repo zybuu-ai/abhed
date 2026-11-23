@@ -10,6 +10,7 @@ import (
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
@@ -101,6 +102,7 @@ var table = map[agent.EventType]rule{
 	agent.EvOllamaInstall:   {fn: mapOllama, classes: []int{1007}},
 	agent.EvShellStarted:    {fn: mapProcess(1, "Launch"), classes: []int{1007}},
 	agent.EvShellEnded:      {fn: mapProcess(2, "Terminate"), classes: []int{1007}},
+	hostgit.EvBrokered:      {fn: mapHostGit, classes: []int{1007}},
 
 	// The network: Network Activity and HTTP Activity.
 	egress.EventName:          {fn: mapEgress, classes: []int{4001, 4002}},
@@ -553,6 +555,16 @@ func mapProcess(activity int, name string) func(*builder) {
 		}
 		b.set("message", string(b.l.Type)+" for "+b.str("call_id"))
 	}
+}
+
+// mapHostGit is a git command run through host git for the sandbox: its
+// launch, then its end.
+func mapHostGit(b *builder) {
+	if b.str("stage") == "exited" {
+		mapProcess(2, "Terminate")(b)
+		return
+	}
+	mapProcess(1, "Launch")(b)
 }
 
 // httpActivities are HTTP Activity's activity ids by method.

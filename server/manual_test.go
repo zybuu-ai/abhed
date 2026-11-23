@@ -19,6 +19,12 @@ import (
 // manualBench is a workbench whose registry can also run commands.
 func manualBench(t *testing.T, edit func(*config.Config)) *workbench {
 	t.Helper()
+	return manualBenchWith(t, edit, tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{}))
+}
+
+// manualBenchWith is manualBench with the session's tools.
+func manualBenchWith(t *testing.T, edit func(*config.Config), registry *tools.Registry) *workbench {
+	t.Helper()
 	cfg := config.Default()
 	cfg.Auth.Mode = "proxy"
 	if edit != nil {
@@ -27,7 +33,7 @@ func manualBench(t *testing.T, edit func(*config.Config)) *workbench {
 	dir := t.TempDir()
 	s := New(Options{
 		Workspace: dir, Config: cfg, Adapter: stubAdapter{},
-		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{}),
+		Registry: registry,
 	})
 	wb := &workbench{t: t, s: s, h: s.Handler(), workspace: dir}
 	rec := httptest.NewRecorder()

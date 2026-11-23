@@ -152,6 +152,8 @@ var samples = []sample{
 	{agent.EvModelWaiting, agent.ActorSystem, `{"session":"s-child","model":"m","ahead":2}`},
 	{agent.EvPluginLoaded, agent.ActorSystem, `{"plugins":[{"name":"acme-review","version":"1.0.0","digest":"ab12","basis":"signature","signer":"release@acme.example (https://issuer.acme.example)"}]}`},
 	{agent.EvConfigChanged, agent.ActorSystem, `{"time":"2026-11-17T05:00:00Z","by":"plugin install","key":"plugins","name":"acme-review","kind":"signature","sha256":"ab12"}`},
+	{"hostgit.brokered", agent.ActorSystem, `{"call_id":"c-1","stage":"started","command":"git fetch","workspace":"/w","cwd":"/w","network":"off","remotes":{"origin":["git@git.example:team/app.git"]},"hosts":["git.example"],"asked":"hostgit"}`},
+	{"hostgit.brokered", agent.ActorSystem, `{"call_id":"c-1","stage":"exited","command":"git fetch","workspace":"/w","cwd":"/w","network":"off","remotes":{"origin":["git@git.example:team/app.git"]},"hosts":["git.example"],"exit_code":0,"changed":[{"ref":"refs/remotes/origin/main","from":"aa","to":"bb"}]}`},
 }
 
 // sampleLines are the samples as one session's lines, seq from 1.

@@ -323,6 +323,7 @@ func (s *Server) launch(live *liveSession, sess *tools.Session, id, command stri
 	}
 	tty, err := pty.StartWithSize(cmd, size)
 	if err != nil {
+		sandbox.Release(cmd)
 		cancel()
 		res := tools.Result{Content: "Failed to run command: " + err.Error(), IsError: true}
 		s.unrecorded(nil, live, live.Loop.ManualObserve(id, "bash", res, 0))
@@ -544,10 +545,14 @@ func (s *Server) finishPTY(live *liveSession, sess *tools.Session, run *ptyRun) 
 			// A shell takes what it left running in its session with it.
 			refused, err := run.leader.Wait(run.cmd)
 			s.noteSweep(live, run, refused)
+			sandbox.Exited(run.cmd, err)
 			waited <- err
 			return
 		}
-		waited <- run.cmd.Wait()
+		err := run.cmd.Wait()
+		// A command run through host git for the sandbox records its end.
+		sandbox.Exited(run.cmd, err)
+		waited <- err
 	}()
 	var err error
 loop:

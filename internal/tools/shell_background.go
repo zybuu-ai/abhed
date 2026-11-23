@@ -150,7 +150,11 @@ func StartShellProc(cmd *exec.Cmd, stop func(), capBytes int) (*ShellProc, error
 	}
 	liveProcs.Store(p, struct{}{})
 	waited := make(chan error, 1)
-	go func() { waited <- cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		sandbox.Exited(cmd, err)
+		waited <- err
+	}()
 	go p.watch(waited, copied, r)
 	return p, nil
 }

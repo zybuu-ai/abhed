@@ -24,6 +24,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/embedded"
+	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/lsprelay"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -1463,11 +1464,11 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySessionScope, Scope: scope})
 		return true, nil
 	}
-	// A bash grant answers only the policy's default ask, never a rule's,
-	// the destructive check's, the supervisor's or a screen's.
+	// A bash grant answers only the policy's default ask, or host git's,
+	// never a rule's, the destructive check's, the supervisor's or a screen's.
 	command, grantable := s.grantable(tool, args, d)
 	if grantable {
-		if g, ok := s.grantFor(command); ok {
+		if g, ok := s.grantFor(command, d.Step == hostgit.StepHostGit); ok {
 			by := abhed.BySessionScope
 			if !g.Session {
 				by = abhed.ByWorkspaceGrant
@@ -1545,7 +1546,7 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	var grantOpts []grantOption
 	// Offered only when the card shows the command as it runs.
 	if grantable && bashCommandOf(shown) == command {
-		grantOpts = bashGrantOptions(command, s.workDir(), s.workRoot(), bind)
+		grantOpts = bashGrantOptions(command, s.workDir(), s.workRoot(), bind, d.Step)
 		for _, g := range grantOpts {
 			kind := "allow_always"
 			if g.grant.Session {

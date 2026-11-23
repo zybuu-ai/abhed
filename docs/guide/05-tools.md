@@ -171,6 +171,24 @@ the sandbox has none and a command fails because of it, the result ends with
 a note that says so, so the model reports the reason or uses a web tool
 instead of retrying.
 
+### git remotes and your credentials
+
+The sandbox hides your SSH keys, SSH agent and credential helpers from
+commands, yet `git fetch`, `git pull`, `git push`, `git clone`, `git
+ls-remote` and `git remote -v` work on the process tier and the fence with
+nothing to configure: run alone, in plain words, each goes through git on the
+host, as you, with your own SSH agent, keychain, credential helpers and
+`~/.gitconfig`, to the repository's configured remotes or a clone URL you
+approve. The agent sees git's output, never a key. With the network off it is
+asked first and reaches only the repository's own remote; a forced push, a
+clone and a remote added during the session are asked each time. bash's
+description tells the model so from its first turn. Details, what is refused
+and how it is recorded: [Permissions](04-permissions.md#git-fetch-pull-push-and-clone-through-your-own-git).
+
+Your `user.name` and `user.email` reach git in the sandbox, so its commits
+carry them: on the process tier `~/.gitconfig` is readable by commands, and
+nothing under `~/.ssh` is.
+
 ### Cluster and machine logins
 
 `k8s_login` and `ssh_connect` take credentials the same way: by name, from

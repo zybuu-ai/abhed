@@ -265,17 +265,18 @@ func (c *acpConn) openSessions() []*acpSession {
 	return open
 }
 
-// grantFor is the grant that covers command in the session's folder. One
+// grantFor is the grant that covers command in the session's folder, a
+// family grant for the whole workspace alone where familyOnly. One
 // kept for the workspace is looked up again first: revoked in another
 // process, it is dropped here and answers nothing.
-func (s *acpSession) grantFor(command string) (bashGrant, bool) {
+func (s *acpSession) grantFor(command string, familyOnly bool) (bashGrant, bool) {
 	cwd := s.workDir()
 	for {
 		s.mu.Lock()
 		var hit bashGrant
 		found := false
 		for _, g := range s.grants {
-			if g.covers(command, cwd) {
+			if g.covers(command, cwd) && (!familyOnly || g.Family != "" && g.Folder == "") {
 				hit, found = g, true
 				break
 			}

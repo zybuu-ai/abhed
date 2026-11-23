@@ -176,6 +176,43 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- git fetch, pull, push, clone, ls-remote and remote -v work in Abhed Studio
+  and the CLI on the process tier and the fence with nothing to configure,
+  for a remote such as `git@github.example.com:team/app.git`. The sandbox still
+  hides `~/.ssh`, the SSH agent and credential helpers from commands; a line
+  that is exactly one of these commands, in plain words with the usual
+  options, now runs through git on the host, as the person, with their SSH
+  agent, keychain, credential helpers and `~/.gitconfig`, and only git's
+  output reaches the agent. Host git runs with hooks, fsmonitor, filters,
+  external diff, signing, submodules and editors off; its SSH command,
+  askpass and credential helpers are the person's global ones, never the
+  repository's, and the default SSH checks `known_hosts` without writing
+  it. It reaches only the remotes the repository had when the session
+  started, by name, or a clone URL the person approves; a remote added or
+  changed since, a forced or deleting push and a clone are asked each time,
+  and a call runs only on the remote settings it was approved on. With
+  `allow_network` off it still reaches the repository's own remote, only
+  after the person approves, and the question says so; under the egress
+  allowlist the remote's host must be allowed. Abhed Studio offers "always
+  for this repository" for fetch, pull and ls-remote, and for push without
+  force, and so does the CLI, both keeping it in the person's
+  `~/.abhed/state/workspace-grants.json`, never the workspace. Refused
+  before anyone is asked: `git -c …` or `-C` before the command, a variable
+  such as `GIT_SSH_COMMAND` in front, `--upload-pack`, `--receive-pack`,
+  `--exec`, clone's `-u`, `-c` and `--config`, `--template`,
+  `--separate-git-dir`, `--reference`, `--bundle-uri`, a word naming
+  `core.sshCommand`, and `ext::`, `fd::`, `file://` or a local path. A
+  repository whose own configuration names a hook or remote helper is not
+  brokered. Each call is recorded as `hostgit.brokered` when it starts and
+  when it ends, with the remote (no password or token), the hosts, the
+  network setting and the refs it changed, whether the agent ran it in the
+  foreground or the background, a hook ran it or a person typed it on the
+  workbench terminal; OCSF maps it to Process Activity. System and global
+  hooks (a `core.hooksPath` in `/etc/gitconfig` or `~/.gitconfig`) do not
+  run on brokered calls, as no hook runs in host git; each call's record
+  names them as `hooks_not_run`. bash's description tells the model these
+  need no setup.
+
 - Plugin bundles: `abhed plugin install|approve|list|show|remove|publishers|
   trusted-root|pack`. A plugin bundles agent definitions, skills, custom
   commands, simple hooks and MCP servers under one manifest. The manifest lists

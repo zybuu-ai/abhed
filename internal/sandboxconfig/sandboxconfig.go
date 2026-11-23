@@ -11,6 +11,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/nlink"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/secrets"
@@ -498,6 +499,28 @@ func RelayBinary(cfg config.Config) string {
 // allowlist, so git run for them on the host reaches no more than they could.
 func NetworkOpen(cfg config.Config) bool {
 	return cfg.Sandbox.AllowNetwork && cfg.Sandbox.Network != config.NetworkAllowlist
+}
+
+// HostGitNetwork is what git run on the host for the sandbox (a brokered
+// fetch, pull, push or clone) may reach, as Isolation reads the network:
+// any host, the hosts the egress rules allow, or, with the network off,
+// only the repository's own remote after a person's approval.
+func HostGitNetwork(cfg config.Config) hostgit.Network {
+	if cfg.Sandbox.Network != config.NetworkAllowlist {
+		return hostgit.Network{Open: cfg.Sandbox.AllowNetwork}
+	}
+	pol, err := egress.Compile(cfg.Egress)
+	return hostgit.Network{Allows: func(host string, port uint16) (bool, string) {
+		if err != nil {
+			return false, "the egress rules could not be read: " + err.Error()
+		}
+		h, herr := egress.CanonicalHost(host)
+		if herr != nil {
+			return false, herr.Error()
+		}
+		v := pol.DecideHost(egress.Request{Host: h, Port: port, Tunnel: true})
+		return v.Allowed(), v.Reason
+	}}
 }
 
 // Isolation is what the bash tool tells the model of the sandbox of tier:
