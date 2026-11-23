@@ -33,7 +33,7 @@ configuration](#trusting-the-workspace-configuration).
 
 | Section | What it controls |
 |---|---|
-| `model` | providers and which one is default — [Models](03-providers.md); `ollama.assist` (`ask`, `local` or `off`): what Abhed offers when a chosen local Ollama model is not working yet — [A local Ollama model](03-providers.md#a-local-ollama-model); `completion`: the provider Studio's inline completions use, and `next_edit` and `commit` for its next-edit suggestions and commit messages (each falls back to `completion`) — [Inline completions](34-inline-completions.md); `allowed`: the only models any session may use — [Allowed models and MCP servers](#allowed-models-and-mcp-servers) |
+| `model` | providers and which one is default — [Models](03-providers.md); `ollama.assist` (`ask`, `local` or `off`): what Abhed offers when a chosen local Ollama model is not working yet, `ollama.auto_start` (`false`: never start Ollama without a click) and `ollama.idle_stop_minutes` (how long a server Abhed started may go unused before Abhed stops it; 10 by default, `-1` only at exit) — [A local Ollama model](03-providers.md#a-local-ollama-model); a provider's key by `api_key_env` or `api_key_secret`, stored with `abhed provider login` — [Authentication](03-providers.md#authentication); `abhed models add` and `abhed models default` change this section for you — [Adding models](03-providers.md#adding-models-and-choosing-the-default); `completion`: the provider Studio's inline completions use, and `next_edit` and `commit` for its next-edit suggestions and commit messages (each falls back to `completion`) — [Inline completions](34-inline-completions.md); `allowed`: the only models any session may use — [Allowed models and MCP servers](#allowed-models-and-mcp-servers) |
 | `completion` | `enabled` and `local_only`: turn Studio's model features (inline completions, next-edit suggestions, commit messages) off, or keep them to a model on this machine — [Inline completions](34-inline-completions.md) |
 | `permissions` | what runs unattended — [Permissions](04-permissions.md) |
 | `mode` | `default`: the mode new sessions start in where `permissions.mode` names none, such as the CLI's and Studio's new chats in this workspace; a `-mode` flag is chosen over it (`plan`, `default`, `accept-edits` or `auto`; never `bypass`, which is chosen for a session each time). `permissions.mode`, when set, wins, and a managed mode binds. An untrusted workspace file may only set it narrower than sessions would start in |
@@ -157,14 +157,15 @@ another turn. A refusal that names no limit (Bedrock's `Input is too long for
 requested model`) lowers the window to four fifths of the refused request's
 size, which brings the retry to about two fifths of it, so it fits any limit
 down to about half the refused size. A limit under 2,048 tokens is not
-believed. A limit of 16,384 tokens or more that the provider named is kept in
-`context-windows.json` in the folder of the person working (an account's or a
-server sign-in's own folder under `~/.abhed/accounts`, or `~/.abhed` itself on
-a machine where no one has signed in), so their next session, after a restart
-too, starts within it instead of paying a refused call to learn it again. A
-guest keeps none: nothing is read, made or written for a guest, so a guest
-neither leaves the file behind nor sees an account's limits. A machine command
-such as `abhed doctor`, which no one signs in for, keeps none either. It is
+believed. Limits are kept only for a signed-in account: a limit of 16,384
+tokens or more that the provider named is kept in `context-windows.json` in
+that account's (or server sign-in's) own folder under `~/.abhed/accounts`, so
+its next session, after a restart too, starts within it instead of paying a
+refused call to learn it again. On a machine where sign-in is not set up yet,
+the one person working keeps them in `~/.abhed`, as before sign-in. Nothing is
+kept before the sign-in gate has said who is working, for a guest (nothing is
+read, made or written, so a guest neither leaves the file behind nor sees an
+account's limits), or by a machine command such as `abhed doctor`. It is
 kept per provider type, endpoint, model and account, under a keyed hash of
 them (HMAC-SHA256 under a random secret made once in `context-windows.key`
 beside it, mode 0600, and used only for that folder): the file holds no URL, user,
@@ -176,8 +177,8 @@ session still lowers that one for the session), and is learned again after 30
 days, since accounts are moved to larger windows. A smaller limit, which a
 gateway falling back to another model can relay, lasts only for the process,
 as does a limit Abhed only inferred (below a refusal that named none, or from
-a prompt a server cut). `abhed models` shows a kept limit as "named by the
-provider on" its date, and `abhed models forget-window NAME`
+a prompt a server cut). `abhed models list` shows a kept limit as "named by
+the provider on" its date, and `abhed models forget-window NAME`
 drops it for the provider configured as NAME. The file is the person's own
 state: the agent cannot write it and a workspace cannot set it. An OpenAI-shaped refusal whose prompt was within the limit and whose
 reply cap was not (`N in the messages, M in the completion`) is not treated as

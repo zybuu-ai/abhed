@@ -47,6 +47,10 @@ type OllamaAction struct {
 	Bytes int64 `json:"bytes,omitempty"`
 	// PID is a started server's process id.
 	PID int `json:"pid,omitempty"`
+	// Owned marks a server Abhed started as its own child and will stop:
+	// after StopAfterMinutes with no local model used, and when it exits.
+	Owned            bool `json:"owned,omitempty"`
+	StopAfterMinutes int  `json:"stop_after_minutes,omitempty"`
 	// Consent is how the person agreed: asked (this time), always (a
 	// standing choice to start), or empty when nothing ran.
 	Consent string `json:"consent,omitempty"`

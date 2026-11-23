@@ -102,6 +102,13 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 			fmt.Printf("            ⚠ %s\n", config.Printable(warn))
 		}
 	}
+	if status, detail, ok := modelKeyCheck(provider); ok {
+		mark := ""
+		if status != "ok" {
+			mark = "⚠ "
+		}
+		fmt.Printf("key         %s%s\n", mark, detail)
+	}
 	fmt.Printf("mode        %s\n", modeLabel(cfg))
 	if line := managedLine(cfg); line != "" {
 		fmt.Printf("managed     %s\n", line)

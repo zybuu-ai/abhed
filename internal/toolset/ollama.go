@@ -23,5 +23,6 @@ func OllamaTarget(cfg config.Config, name string) (ollama.Target, bool) {
 // this host; inAgent says why this process runs inside an agent's command,
 // when it does.
 func OllamaAssist(cfg config.Config, env ollama.Env, surface string, admin bool, inAgent string, record func(agent.EventType, agent.OllamaAction)) ollama.Assist {
-	return ollama.Assist{Env: env, Mode: cfg.OllamaAssist(), Surface: surface, Admin: admin, InAgent: inAgent, Record: record}
+	return ollama.Assist{Env: env, Mode: cfg.OllamaAssist(), Surface: surface, Admin: admin, InAgent: inAgent, Record: record,
+		IdleStop: cfg.OllamaIdleStop(), NoAutoStart: !cfg.OllamaAutoStart()}
 }

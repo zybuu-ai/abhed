@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -578,63 +577,4 @@ func commaInt(n int) string {
 		b.WriteByte(d[i])
 	}
 	return b.String()
-}
-
-// modelsCmd is abhed models: every configured provider a session may use,
-// with its model, context window, reply cap and where they came from; and
-// abhed models forget-window NAME, which drops the limit kept for NAME.
-func modelsCmd(cfg config.Config, args []string, w, errw io.Writer) int {
-	switch {
-	case len(args) == 2 && args[0] == "forget-window":
-		return forgetWindowCmd(cfg, args[1], w, errw)
-	case len(args) > 0:
-		fmt.Fprintln(errw, "usage: abhed models [forget-window NAME]")
-		return 2
-	}
-	names := toolset.OfferedModels(cfg)
-	if len(names) == 0 {
-		fmt.Fprintln(w, "No models are configured; add one under model.providers in .abhed/config.json.")
-		return 1
-	}
-	for _, name := range names {
-		p := cfg.Model.Providers[name]
-		mark := " "
-		if name == cfg.Model.Default {
-			mark = "*"
-		}
-		line, warn := windowLine(context.Background(), p, false)
-		fmt.Fprintf(w, "%s %-16s %-14s %s\n    context  %s\n", mark, config.Printable(name), config.Printable(p.Type), config.Printable(p.Model), line)
-		if warn != "" {
-			fmt.Fprintf(w, "    ⚠ %s\n", warn)
-		}
-	}
-	fmt.Fprintln(w, "\n* the default. abhed doctor asks the default model's endpoint for its window.")
-	return 0
-}
-
-// forgetWindowCmd drops the context window a provider named for the
-// configured provider name, so the next session learns it afresh.
-func forgetWindowCmd(cfg config.Config, name string, w, errw io.Writer) int {
-	p, ok := cfg.Model.Providers[name]
-	if !ok {
-		fmt.Fprintf(errw, "abhed: no provider %q is configured\n", config.Printable(name))
-		return 1
-	}
-	a, err := p.Adapter()
-	if err != nil {
-		fmt.Fprintf(errw, "abhed: %v\n", err)
-		return 1
-	}
-	before := a.Profile()
-	if !model.ForgetWindow(a) {
-		fmt.Fprintln(errw, "abhed: no limits are kept for whoever is working here: a guest keeps none")
-		return 1
-	}
-	if before.WindowSource != model.WindowLearned {
-		fmt.Fprintf(w, "%s: no limit was kept; the window is %s tokens (%s)\n", config.Printable(name), commaInt(before.ContextWindow), windowSourceLabel(before))
-		return 0
-	}
-	fmt.Fprintf(w, "%s: forgot the %s-token limit %s; the next session starts from the configuration, the endpoint or the table\n",
-		config.Printable(name), commaInt(before.ContextWindow), windowSourceLabel(before))
-	return 0
 }

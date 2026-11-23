@@ -126,7 +126,7 @@ func (f ollamaFlow) start(ctx context.Context, t ollama.Target, st ollama.Status
 		return p.Retry && f.retry(ctx, "Check again?")
 	}
 	consent := "always"
-	if !f.a.Env.StartAlways(plan.Program) {
+	if !f.a.StartAlways(plan.Program) {
 		body := []ui.Block{{Kind: ui.BlockNotice, Text: st.Problem.Message},
 			{Kind: ui.BlockNotice, Text: "Command: " + plan.Display}}
 		if plan.Log != "" {
@@ -137,12 +137,18 @@ func (f ollamaFlow) start(ctx context.Context, t ollama.Target, st ollama.Status
 		} else {
 			body = append(body, ui.Block{Kind: ui.BlockNotice, Text: "It listens on this machine only."})
 		}
-		body = append(body, ui.Block{Kind: ui.BlockNotice, Text: "It runs as you and keeps running when Abhed exits; stop it as you would any Ollama."})
+		if plan.AppBinds {
+			body = append(body, ui.Block{Kind: ui.BlockNotice, Text: "It runs as you and keeps running when Abhed exits; stop it as you would any Ollama."})
+		} else {
+			body = append(body, ui.Block{Kind: ui.BlockNotice, Text: ownedPlanText(f.a)})
+		}
+		choices := []ui.Choice{{ID: "start", Label: "Start it"}}
+		if !f.a.NoAutoStart {
+			choices = append(choices, ui.Choice{ID: "always", Label: "Start it, and always start it without asking (abhed ollama forget takes this back)", Widening: true})
+		}
+		choices = append(choices, ui.Choice{ID: ui.ChoiceNo, Label: "No"})
 		id, err := f.ui.Dialog(ctx, ui.DialogSpec{Kind: ui.DialogChoice, Title: "Start Ollama?", Body: body,
-			Ask: "Start the Ollama server now?",
-			Choices: []ui.Choice{{ID: "start", Label: "Start it"},
-				{ID: "always", Label: "Start it, and always start it without asking (abhed ollama forget takes this back)", Widening: true},
-				{ID: ui.ChoiceNo, Label: "No"}},
+			Ask: "Start the Ollama server now?", Choices: choices,
 			Default: ui.ChoiceNo, Cancel: ui.ChoiceNo})
 		switch {
 		case err != nil || id == ui.ChoiceNo || id == "":
@@ -165,7 +171,11 @@ func (f ollamaFlow) start(ctx context.Context, t ollama.Target, st ollama.Status
 		f.ui.Append(ui.Block{Kind: ui.BlockError, Text: p.Text()})
 		return p.Retry && f.retry(ctx, "Try again?")
 	}
-	f.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: fmt.Sprintf("Ollama %s is running at %s. Abhed does not stop it when you exit.", s.Version, t.API)})
+	if n := s.OwnedNotice(); n != "" {
+		f.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: fmt.Sprintf("Ollama %s is running at %s. %s", s.Version, t.API, n)})
+	} else {
+		f.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: fmt.Sprintf("Ollama %s is running at %s. Abhed does not stop it when you exit.", s.Version, t.API)})
+	}
 	return true
 }
 
@@ -392,4 +402,12 @@ func ollamaSteps(ctx context.Context, name string, p config.ProviderConfig) stri
 		return ""
 	}
 	return st.Problem.Text()
+}
+
+// ownedPlanText says what becomes of a server Abhed starts itself.
+func ownedPlanText(a ollama.Assist) string {
+	if a.IdleStop > 0 {
+		return fmt.Sprintf("Abhed stops it after %d minutes with no local model used, and when Abhed exits (model.ollama.idle_stop_minutes).", int(a.IdleStop/time.Minute))
+	}
+	return "Abhed stops it when Abhed exits."
 }

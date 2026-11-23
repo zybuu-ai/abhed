@@ -2,6 +2,7 @@ package model
 
 import (
 	"math"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -77,6 +78,17 @@ func PromptTokens(u Usage) int {
 		return u.InputTokens + u.CachedInputTokens + u.CacheWriteTokens
 	}
 	return u.InputTokens
+}
+
+// PricedModels are the names on the built-in price list, sorted.
+func PricedModels() []string {
+	var out []string
+	for _, r := range catalog {
+		if r.price != nil {
+			out = append(out, r.id)
+		}
+	}
+	return slices.Sorted(slices.Values(out))
 }
 
 // PriceFor is the price of a model by its name as sent to the provider:

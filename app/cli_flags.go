@@ -32,6 +32,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandboxcli"
+	"golang.org/x/term"
 )
 
 // usage prints the synopsis, the subcommands and then the flags.
@@ -265,8 +266,9 @@ func (f *cliFlags) task() string {
 // Main runs the command with the given arguments and options and returns
 // the exit code. It is what every edition's main calls.
 func Main(args []string, opts ...Option) int {
-	// No background shell outlives the process that started it.
+	// No background shell, nor an Ollama server it started itself, outlives the process.
 	defer endAtExit()
+	noteLocalModelUse()
 	a := newApp(opts...)
 	recordAnchors = a.anchors
 	enableModelDiscovery()
@@ -494,13 +496,10 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return a.doctor(workspace, set, timeout)
 	case "providers":
 		return providersCmd()
+	case "provider":
+		return providerCmd(rest[1:], stdProviderIO())
 	case "models":
-		cfg, err := a.loadConfig(workspace)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "config: %v\n", err)
-			return 1
-		}
-		return modelsCmd(cfg, rest[1:], os.Stdout, os.Stderr)
+		return modelsCmd(rest[1:], modelsIO{in: os.Stdin, out: os.Stdout, err: os.Stderr, terminal: term.IsTerminal(int(os.Stdin.Fd()))})
 	case "ollama":
 		return ollamaCmd(workspace, rest[1:], a.trust, os.Stdin, os.Stdout, os.Stderr)
 	case "toolchain":
@@ -626,7 +625,7 @@ var permissionModes = map[string]string{
 var ownsHelp = map[string]bool{
 	"sandbox": true, "bg": true, "secret": true, "mcp": true, "record": true, "logs": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
 	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true, "ollama": true, "ssh-acp": true,
-	"account": true,
+	"provider": true, "models": true, "account": true,
 }
 
 func isHelpArg(s string) bool {

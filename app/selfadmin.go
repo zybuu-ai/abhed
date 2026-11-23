@@ -50,6 +50,15 @@ func selfAdmin(rest []string) string {
 		if slices.Contains([]string{"add", "remove", "rm"}, verb) {
 			return "abhed mcp " + verb
 		}
+	case "provider":
+		// A key is the person's; a command must neither store nor remove one.
+		if verb == "login" || verb == "logout" {
+			return "abhed provider " + verb
+		}
+	case "models":
+		if slices.Contains([]string{"add", "default", "remove", "rm"}, verb) {
+			return "abhed models " + verb
+		}
 	case "account":
 		// Who is working is the person's to say, never the agent's.
 		return "abhed account"
