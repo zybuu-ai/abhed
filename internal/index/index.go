@@ -457,7 +457,7 @@ func (ix *Index) searchSymbols(query string, limit int, keep func(string) bool) 
 }
 
 // searchBM25 is the lexical tier: strong on identifiers and error strings,
-// which is most of what a coding agent actually searches for.
+// which is most of what an agent actually searches for.
 func (ix *Index) searchBM25(query string, limit int, keep func(string) bool) []Hit {
 	ix.mu.RLock()
 	defer ix.mu.RUnlock()
