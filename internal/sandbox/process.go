@@ -328,19 +328,41 @@ func (s *Process) Describe() string {
 	}
 	d := fmt.Sprintf("process isolation via %s · workspace-scoped writes · %s · %s · %s",
 		s.backend, net, procs, mem)
-	if s.Caveat() != "" {
+	if s.noProc() {
 		d += " · no /proc: bubblewrap cannot mount one here, so commands that read it fail"
+	}
+	if s.imageBwrap() {
+		d += " · bubblewrap is the container image's own, so this tier is only as strong as the image"
 	}
 	return d
 }
 
-// Caveat is "no /proc" where bubblewrap cannot mount a fresh one, as under
-// a seccomp profile that allows user namespaces but not that mount.
+// ImageBwrapEnv, set to 1 by an editor that runs the engine in a container
+// image it did not build, says the bubblewrap found is the image's own.
+const ImageBwrapEnv = "ABHED_IMAGE_BWRAP"
+
+func (s *Process) imageBwrap() bool {
+	return s.backend == "bwrap" && os.Getenv(ImageBwrapEnv) == "1"
+}
+
+func (s *Process) noProc() bool {
+	return s.backend == "bwrap" && !s.bwrapFreshOK() && !rootCaps()
+}
+
+// Caveat names what makes this process tier weaker than it reads: "no
+// /proc" where bubblewrap cannot mount a fresh one, as under
+// a seccomp profile that allows user namespaces but not that mount; and
+// "image-supplied bubblewrap" where the bubblewrap is a container image's
+// own, which the image's author chose and Abhed cannot check.
 func (s *Process) Caveat() string {
-	if s.backend == "bwrap" && !s.bwrapFreshOK() && !rootCaps() {
-		return "no /proc"
+	var c []string
+	if s.imageBwrap() {
+		c = append(c, "image-supplied bubblewrap")
 	}
-	return ""
+	if s.noProc() {
+		c = append(c, "no /proc")
+	}
+	return strings.Join(c, ", ")
 }
 
 // Seatbelt is allow-default with targeted denials: deny-default breaks
@@ -509,10 +531,15 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 			fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", st)
 			fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", st)
 		}
-		// Skills are the one part of it a command may need: a skill can ship a
-		// script. Only the person's own skills, never another account's.
-		if skills, err := home.PersonPath("skills"); err == nil {
-			for _, d := range PathForms(skills) {
+		// Skills and plugins are the parts of it a command may need: a skill
+		// can ship a script, and a hook or server may run one its plugin
+		// ships. Only the person's own, never another account's.
+		for _, sub := range []string{"skills", "plugins"} {
+			dir, err := home.PersonPath(sub)
+			if err != nil {
+				continue
+			}
+			for _, d := range PathForms(dir) {
 				fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", d)
 			}
 		}

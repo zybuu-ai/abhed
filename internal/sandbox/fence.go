@@ -278,7 +278,7 @@ func (f *Fence) Describe() string {
 		planted += ", git's config and hooks (not held read-only without a mount namespace: an \"always allow\" for a git command is asked again once they change; " +
 			"sandbox.protect_git: true refuses this mode instead)"
 	}
-	return fmt.Sprintf("fence (preview, Linux) · each command under Landlock ABI %d: reads and runs system folders, ~/.abhed/skills and skills.dirs, writes the workspace and a private temp folder, "+
+	return fmt.Sprintf("fence (preview, Linux) · each command under Landlock ABI %d: reads and runs system folders, ~/.abhed/skills, ~/.abhed/plugins and skills.dirs, writes the workspace and a private temp folder, "+
 		"no other terminal, Abhed's state, record and secrets unreachable · %s · seccomp %s: no ptrace, namespaces, mounts, bpf, keyrings, unix sockets "+
 		"or signals to Abhed's process id · %s · cgroup per call: %s · not covered: Abhed itself and its in-process tools (file, web, MCP), network filtering but the allowlist, "+
 		"%s, a hard link to state made before the session, %s",
@@ -445,17 +445,21 @@ func (f *Fence) ServerCommand(ctx context.Context, name string, argv, env []stri
 	return cmd, nil
 }
 
-// skillDirs are the person's skills folder (~/.abhed/skills before sign-in),
-// as written and resolved, where it is a folder.
+// skillDirs are the person's skills and plugins folders (~/.abhed/skills
+// and ~/.abhed/plugins before sign-in), as written and resolved, where each
+// is a folder: a skill or an approved plugin can ship a script its hook or
+// server runs. Never another account's.
 func (f *Fence) skillDirs() []string {
-	skills, err := home.PersonPath("skills")
-	if err != nil {
-		return nil
-	}
 	var out []string
-	for _, d := range PathForms(skills) {
-		if info, err := os.Lstat(d); err == nil && info.IsDir() && !slices.Contains(out, d) {
-			out = append(out, d)
+	for _, sub := range []string{"skills", "plugins"} {
+		dir, err := home.PersonPath(sub)
+		if err != nil {
+			continue
+		}
+		for _, d := range PathForms(dir) {
+			if info, err := os.Lstat(d); err == nil && info.IsDir() && !slices.Contains(out, d) {
+				out = append(out, d)
+			}
 		}
 	}
 	return out

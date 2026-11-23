@@ -147,7 +147,7 @@ func TestOtherDecisionEventsAreCounted(t *testing.T) {
 	m.Observe(ev(agent.EvConfigRefused, map[string]any{}))
 	m.Observe(ev(agent.EvConfigNarrowed, map[string]any{}))
 	m.Observe(ev(agent.EvCompletionSummary, agent.CompletionSummary{Requests: 10, Served: 6, Failed: 1, Cancelled: 2, Refused: 3, Superseded: 4}))
-	m.Observe(ev(agent.EvNextEditSummary, agent.CompletionSummary{Requests: 3, Served: 2, TokensIn: 50, Local: 4, LocalDropped: 1}))
+	m.Observe(ev(agent.EvNextEditSummary, agent.CompletionSummary{Requests: 3, Served: 6, TokensIn: 50, Local: 4, LocalDropped: 1}))
 	m.Observe(ev(agent.EvCommitMessage, agent.CommitMessage{Outcome: "served"}))
 	m.Observe(ev(agent.EvCommitMessage, agent.CommitMessage{Outcome: "made up"}))
 	for name, ok := range map[string]bool{
@@ -176,6 +176,17 @@ func TestOtherDecisionEventsAreCounted(t *testing.T) {
 	}
 }
 
+// A summary from an older engine, whose served left local out, never counts
+// more empty answers than requests: served from the model is clamped at 0
+// for both lines.
+func TestOlderSummaryEmptyIsClamped(t *testing.T) {
+	m := New()
+	m.Observe(ev(agent.EvNextEditSummary, agent.CompletionSummary{Requests: 5, Served: 2, Local: 4}))
+	if served, empty := m.nextEdits.Value("served"), m.nextEdits.Value("empty"); served != 0 || empty != 5 {
+		t.Fatalf("served %v, empty %v; want 0 and 5 (no more than the requests)", served, empty)
+	}
+}
+
 // uncounted are the event types no metric counts, each because it decides
 // nothing; a new event type fails the test below until it is placed.
 var uncounted = []string{
@@ -195,6 +206,8 @@ var uncounted = []string{
 	"turns.extended", "hook.continued", "config.changed",
 	// A wait for a model slot is kept on its model.call, as queue_ms.
 	"model.waiting",
+	// Which plugins a session loaded is a setting, as memory.loaded is.
+	"plugin.loaded",
 }
 
 func TestEveryEventTypeIsPlaced(t *testing.T) {

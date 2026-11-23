@@ -239,6 +239,55 @@ records the change log's new entries as `config.changed`, so an add, from
 Studio or a terminal, reaches a hash-chained record. Studio removes a
 server of your own with `_abhed/mcp/remove`, recorded as `mcp.status`.
 
+### Importing servers, commands and agents in Studio
+
+**Abhed: Import Settings from Another Editor…** also offers *MCP Servers,
+Commands and Agents from Other Agent Tools* when a folder is open. It reads,
+and never changes, the shapes other agent tools keep: the folder's
+`.mcp.json`; a JSON file in your home folder that lists `mcpServers`, with
+the servers it keeps for this folder under `projects`; and, in a dot-folder of
+the project or your home folder, an `mcp.json`, Markdown commands under
+`commands/` and agent definitions under `agents/`. Each is mapped to Abhed's
+shape or left out with why:
+
+- A command server keeps its command and arguments. Its environment
+  variables are passed by name, so the server gets your own value; a value
+  written in the file is never copied. A URL server keeps its URL; a header
+  is kept only when its whole value is `${VARIABLE}` (as `headers_env`), and
+  sign in with `abhed mcp login` otherwise. A server is left out when its
+  command or URL holds a credential in a shape Studio recognises: a known
+  token shape, the value after a secret-named flag (`--api-key VALUE`,
+  `--token=VALUE`), a secret-named `NAME=VALUE` (as after docker's `-e`),
+  an Authorization, Basic or Bearer header, or a secret-named query
+  parameter (`client_secret`, `auth`, `token`, `key`, `sig`, `signature`,
+  `password` and the like); or when it uses `${…}` expansion Abhed does not
+  do. A credential in another shape is not recognised, so read the list
+  before you import.
+- A command or agent is written with a header Studio builds itself, never
+  the source's; one whose header does not read strictly (unclosed, nested,
+  a block value, a line that is not `key: value`, or text after it that
+  starts another header) is left out.
+- A command keeps `description`, `argument-hint` and `allowed-tools`, with
+  tool names mapped to Abhed's (a rule such as `Bash(git diff:*)` becomes
+  the `bash` tool, and the policy decides each call); another model and
+  other keys are left out. An agent keeps its name, description, tools,
+  disallowed tools, colour and a `plan` or `default` permission mode. A
+  command or agent none of whose tools has an Abhed equivalent is left out,
+  since no list would give it every tool.
+
+They land in the folder's `.abhed`, untrusted: servers in
+`.abhed/config.json`, commands in `.abhed/commands`, agents in
+`.abhed/agents`. Abhed starts a workspace's servers and loads its commands
+and agents only once you trust their exact content, so nothing imported
+runs until you review it in Studio's Health and Trust view (or `abhed
+trust`) and, for commands, `/commands trust` in an Abhed terminal. Changing
+`.abhed/config.json` sets the whole file aside until you trust it again.
+Nothing is written through a symbolic link: if `.abhed`, its `config.json`,
+`commands`, `agents` or any file on the way is a link, the import stops.
+Items found in your home folder start unpicked, since the folder they go
+into may be committed and pushed. The modal, whose default is Don't Import,
+names everything left out and every change made on the way, never a value.
+
 For one run, `-mcp-config FILE` adds servers and `-strict-mcp-config` makes
 them the only ones; see [The command line](18-cli.md#settings-servers-and-roles-for-one-run).
 
@@ -315,7 +364,22 @@ browser's apart, goes under the egress allowlist (`sandbox.network:
 corporate upstream proxy. `login` and `logout` are refused inside an
 agent's command, and `login` needs a person at a terminal; each is written
 to `~/.abhed/config-changes.jsonl`, never a token. `abhed mcp list` says
-which servers are signed in.
+which servers are signed in: "signed in" only while the login can still give
+a token. When the authorization server refuses the refresh token, the
+refusal is kept with the login, the refused token is not sent again, and
+`mcp list` shows "not signed in: the login was refused at refresh" with the
+time, until you run `login` again; a login that ended with no refresh token
+reads "the login ended".
+
+Abhed Studio signs in through the same command. A URL server in the
+Agents, Skills and MCP view shows its sign-in state and when the token
+ends, and Sign In when it answered `401` or its login cannot give a token.
+Studio asks in a modal whose default is No, then its engine host process
+runs `abhed mcp login -confirm-fd 3 NAME`, writing the yes on descriptor 3:
+`-confirm-fd` stands in for the terminal, fails when no yes is read, leaves
+opening the browser to Studio (which opens the printed address), and is
+logged as `by: "login -confirm-fd"`. The tokens stay in the engine's store;
+Studio never reads or keeps one.
 
 The login is read from the operator's store, by the terminal, an editor's
 sessions, the SDK and an `abhed serve` that no accounts sign in to. OAuth

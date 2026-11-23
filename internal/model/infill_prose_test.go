@@ -1,0 +1,177 @@
+package model
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+)
+
+// eofFixture is a recorded answer of a coder model asked at the end of a
+// file with no suffix (testdata/fim/qwen2.5-coder-7b-eof-prose.json).
+type eofFixture struct {
+	Model    string   `json:"model"`
+	Language string   `json:"language"`
+	Prefix   string   `json:"prefix"`
+	Suffix   string   `json:"suffix"`
+	Chunks   []string `json:"chunks"`
+	Openings []string `json:"openings"`
+}
+
+func loadEOFFixture(t *testing.T) eofFixture {
+	t.Helper()
+	b, err := os.ReadFile("testdata/fim/qwen2.5-coder-7b-eof-prose.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f eofFixture
+	if err := json.Unmarshal(b, &f); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// At the end of a file the suffix is empty, and Ollama then applies no
+// fill-in-the-middle template: the request always carries one, a newline.
+// The recorded answer the model gave without one is prose, and is dropped.
+func TestInfillAtTheEndOfAFile(t *testing.T) {
+	f := loadEOFFixture(t)
+	var sent map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &sent)
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, c := range f.Chunks {
+			out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"text": c}}})
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", out)
+		}
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	a := NewOpenAICompatible(srv.URL+"/v1", "", f.Model, Profile{})
+	res, err := a.Infill(context.Background(), InfillRequest{Prefix: f.Prefix, Suffix: f.Suffix, Language: f.Language, MaxTokens: 128,
+		Stop: FIMStops, Enough: func(text string) bool { _, done := OneBlock(f.Prefix, text); return done }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sent["suffix"] != "\n" || sent["prompt"] != f.Prefix {
+		t.Fatalf("sent suffix %q", sent["suffix"])
+	}
+	if res.Text != "" || !strings.Contains(res.Dropped, "prose") {
+		t.Fatalf("the recorded prose was offered: %q (%q)", res.Text, res.Dropped)
+	}
+	// Each of the other recorded answers is prose too.
+	for _, o := range f.Openings {
+		if !ReadsAsProse(o, f.Prefix, f.Language) {
+			t.Errorf("not taken as prose: %.60q", o)
+		}
+	}
+	// A suffix the editor gives is sent as it is.
+	if _, err := a.Infill(context.Background(), InfillRequest{Prefix: "x = ", Suffix: "\nprint(x)\n", Enough: func(string) bool { return false }}); err != nil || sent["suffix"] != "\nprint(x)\n" {
+		t.Fatalf("suffix %q %v", sent["suffix"], err)
+	}
+}
+
+func TestReadsAsProse(t *testing.T) {
+	for _, tc := range []struct {
+		text, prefix, lang string
+		want               bool
+	}{
+		{"It looks like you're working on a text library.", "def f(x):\n    ", "python", true},
+		{"Here's the completed function:\n    return x", "def f(x):\n    ", "python", true},
+		{"The function returns the number of words", "func Count(s string) int {\n\t", "go", true},
+		{"Sure, I can help with that.", "x = ", "javascript", true},
+		// Code, however it starts.
+		{"return len(text.split())", "def word_count(text):\n    ", "python", false},
+		{"Println(\"hello\")", "fmt.", "go", false},
+		{"ValueError(\"overlap must be smaller than size\")", "raise ", "python", false},
+		{"SELECT id FROM users WHERE name = ?", "q = ", "go", false},
+		{"Optional[int] = None", "x: ", "python", false},
+		// Code with a sentence's shape (architect review r1): constants and keywords open it, and it has
+		// no contraction, pronoun or article.
+		{"None if x is None else x", "y = ", "python", false},
+		{"True if a and b else False", "ok = ", "python", false},
+		{"False if v is None else True", "z = ", "python", false},
+		{"Self is not None", "assert ", "python", false},
+		{"Some value if ready else none", "x = ", "rust", false},
+		{"Count words in text and return them", "def f(text):\n    ", "python", false},
+		{"\n    return total", "def f(a, b):\n    total = a + b", "python", false},
+		// Words where words belong: a comment, a docstring, a string, a prose language.
+		{"Count the words in text and return how many there are.", "def f(text):\n    # ", "python", false},
+		{"Count the words in text and return how many there are.", "def f(text):\n    \"\"\"", "python", false},
+		{"Count the words in text and return how many there are.", "// ", "go", false},
+		{"Hello there from the app", "msg = \"", "python", false},
+		{"This guide shows how the parts fit together.", "# Guide\n\n", "markdown", false},
+		{"Just x y z", "f = ", "haskell", false},
+		// Strings that span lines (architect review r2): their content is text, kept.
+		{"Hello, you have a new message from the team", "msg := `\n", "go", false},
+		{"Dear user, your account is ready and we're happy", "const t = `\n", "typescript", false},
+		{"Welcome to the app, we hope you like it", "let s = r#\"\n", "rust", false},
+		{"Welcome to the app, we hope you like it", "let s = r\"\n", "rust", false},
+		{"Thanks for signing up, we'll be in touch", "body = <<~TEXT\n", "ruby", false},
+		{"Thanks for signing up, we'll be in touch", "cat <<EOF\nline\n", "shellscript", false},
+		{"It looks like you're writing a script.", "doc = \"\"\"\nUsage:\n", "python", false},
+		// Architect review r3: an escaped backtick inside an open template, and a Rust byte raw string.
+		{"Dear user, your account is ready and we're happy", "const t = `a \\` b\n", "typescript", false},
+		{"Welcome to the app, we hope you like it", "let s = br#\"\n", "rust", false},
+		// Each construct only where the language has it: a shift in Go or C, a backtick in Python, is no string.
+		{"It looks like you're working on a Go program.", "x := 1<<bits\n", "go", true},
+		{"It looks like you're working on a C program.", "int x = 1<<bits;\n", "c", true},
+		{"It looks like you're working on a Python script.", "# run `make\nx = 1\n", "python", true},
+		{"It looks like you're working on a Go program.", "s := \"r\"\n", "go", true},
+		// A language not named: every rule applies, and the text is kept.
+		{"Thanks for signing up, we'll be in touch", "body = <<~TEXT\n", "", false},
+		// Closed again before the cursor: code once more, and prose dropped.
+		{"It looks like you're working on a Go program.", "msg := `hi`\n", "go", true},
+		{"It looks like you're working on a Rust program.", "let s = r#\"hi\"#;\n", "rust", true},
+		{"It looks like you're working on a Ruby script.", "body = <<~TEXT\n  hi\nTEXT\n", "ruby", true},
+	} {
+		if got := ReadsAsProse(tc.text, tc.prefix, tc.lang); got != tc.want {
+			t.Errorf("ReadsAsProse(%q after %q, %s) = %v", tc.text, tc.prefix, tc.lang, got)
+		}
+	}
+}
+
+// The rest of the cursor's line, written again at the end of a one-line
+// suggestion, is not inserted twice.
+func TestDropLineRest(t *testing.T) {
+	for _, tc := range []struct{ text, prefix, suffix, want string }{
+		{" = size - overlap", "    stride", " = size - overlap\n    for start in range(0, len(text), step):\n", ""},
+		{"a, b)", "foo(", ")\n", "a, b"},
+		{"len(x))", "print(", "))", "len(x"},
+		// Brackets alone: kept where the line opened them (architect review r1).
+		{"x)", "f(g(", ")", "x)"},
+		{"1, 2]", "m = [[", "]\n", "1, 2]"},
+		{"return x", "\t", "\n}\n", "return x"},
+		{"x + 1", "y = ", " # note\n", "x + 1"},
+		{"foo()\nbar()", "", "()\n", "foo()\nbar()"},
+		{" + 1", "x", "   \n", " + 1"},
+	} {
+		if got := DropLineRest(tc.text, tc.prefix, tc.suffix); got != tc.want {
+			t.Errorf("DropLineRest(%q after %q, before %q) = %q, want %q", tc.text, tc.prefix, tc.suffix, got, tc.want)
+		}
+	}
+}
+
+// A next-edit answer cut at its token bound is not the window: the lines it
+// never reached would read as deletions. It is dropped, whatever the provider
+// calls the stop.
+func TestNextEditCutShortIsDropped(t *testing.T) {
+	window := "a := 1\nb := 2\nc := 3\nd := 4\n"
+	for _, stop := range []string{"length", "max_tokens", "MAX_TOKENS"} {
+		c := &chatOnly{reply: "a := 1\nb := 3\n", stop: stop}
+		res, err := NextEditByChat(context.Background(), c, NextEditRequest{Window: window, MaxTokens: 64})
+		if err != nil || res.Window != "" || !strings.Contains(res.Dropped, "cut short") {
+			t.Fatalf("%s: %+v %v", stop, res, err)
+		}
+	}
+	c := &chatOnly{reply: "a := 1\nb := 3\nc := 3\nd := 4\n", stop: "stop"}
+	if res, err := NextEditByChat(context.Background(), c, NextEditRequest{Window: window}); err != nil || res.Dropped != "" || res.Window == "" {
+		t.Fatalf("a whole answer: %+v %v", res, err)
+	}
+}

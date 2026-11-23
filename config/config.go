@@ -29,6 +29,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/nlink"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/toolchain"
+	"github.com/zybuu-ai/abhed/plugin"
 )
 
 type Config struct {
@@ -81,6 +82,8 @@ type Config struct {
 	Record RecordConfig `json:"record,omitempty"`
 	// Hooks governs the extension hooks.
 	Hooks HooksConfig `json:"hooks,omitempty"`
+	// Plugins governs plugin bundles. Managed only.
+	Plugins PluginsConfig `json:"plugins,omitempty"`
 	// Studio governs what Abhed Studio may offer beside the agent.
 	Studio StudioConfig `json:"studio,omitempty"`
 	// Suggest governs the next-prompt suggestion shown after a turn.
@@ -163,6 +166,10 @@ type Config struct {
 	// mergingManaged is set while the managed document merges: only it
 	// replaces a simple hook of a name an earlier layer gave.
 	mergingManaged bool
+	// loadedPlugins are the approved plugins loading added; see LoadedPlugins.
+	loadedPlugins []plugin.Loaded
+	// orgPlugins is the org policy's plugins section, a layer of its own.
+	orgPlugins *orgPlugins
 	// ruleLayers names the layer each permission rule came from; see RuleLayer.
 	ruleLayers map[string]string
 	// allowLayers are each file's own model.allowed and mcp lists, applied
@@ -426,6 +433,7 @@ var managedOnly = map[string]string{
 	"record.ship":                        "only the managed configuration ships the record to the org server",
 	"org_policy":                         "only the managed configuration says where the org policy comes from",
 	"hooks.disabled":                     "only the managed configuration switches hooks off, since that removes their vetoes",
+	"plugins":                            "only the managed configuration (or the signed org policy) sets which plugins may be installed and loaded",
 	"hooks.managed_only":                 "only the managed configuration limits hooks to its own extensions",
 	"studio.disable_host_terminal":       "only the managed configuration removes Studio's host terminal",
 	"sandbox.network":                    "only the managed configuration, or your own file narrowing allow_network, turns on the egress allowlist",
@@ -514,6 +522,8 @@ func clearManagedOnly(c *Config, key string) {
 		c.Auth.Client = ClientAuthConfig{}
 	case "hooks.disabled":
 		c.Hooks.Disabled = false
+	case "plugins":
+		c.Plugins = PluginsConfig{}
 	case "hooks.managed_only":
 		c.Hooks.ManagedOnly = false
 	case "studio.disable_host_terminal":
@@ -2031,10 +2041,13 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	applyWebIntents(&cfg)
 	dropLockedAllow(&cfg, userFile, cfg.Workspace.File, o.SettingsName)
 	userAllowlistNarrows(&cfg)
+	w := warnSink(o.Warn)
+	// After the managed file, whose plugins policy decides, and before the
+	// allow lists, which judge a plugin's servers as any other.
+	applyPlugins(&cfg, w)
 
 	applyEnv(&cfg)
 	narrowToAllowLists(&cfg)
-	w := warnSink(o.Warn)
 	warnOrgFallback(w, cfg)
 	if o.WarnFor == nil {
 		warnUnknown(w, cfg.Unknown)
@@ -2322,6 +2335,9 @@ func (c Config) Validate() error {
 	}
 	if k := c.ControlPlane.Kubernetes; len(k) > 0 && !jsonObject(k) {
 		return errors.New("control_plane.kubernetes must be a JSON object of the Kubernetes driver's options")
+	}
+	if err := c.Plugins.validate(); err != nil {
+		return err
 	}
 	if err := c.validateHooks(); err != nil {
 		return err

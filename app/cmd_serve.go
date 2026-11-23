@@ -49,6 +49,9 @@ func (a *App) serveCmd(workspace, addr string) int {
 		}
 		return 1
 	}
+	// A server's sessions are other people's, or jobs on their behalf: the
+	// plugins the operator approved for themselves do not load there.
+	cfg.DropPlugins()
 	provider, err := cfg.Provider()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)

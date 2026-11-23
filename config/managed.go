@@ -82,6 +82,12 @@ func mergeManaged(cfg *Config) error {
 	var orgLists map[string]any
 	if org != nil {
 		orgLists = takeOrgLists(org)
+		// Only a fresh, verified policy from pinned keys grants; a stale,
+		// refused or fallback one only narrows.
+		grants := len(orgMachine(local).Keys) > 0 && cfg.OrgPolicy.Status == orgpolicy.StatusApplied
+		if err := takeOrgPlugins(cfg, org, grants, source); err != nil {
+			return err
+		}
 		if b, err := json.Marshal(org); err == nil {
 			mine := managedRuleSet(local)
 			cfg.orgRules = map[string]bool{}

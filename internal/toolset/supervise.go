@@ -123,7 +123,37 @@ func hostLookPath(reg *tools.Registry) func(string) bool {
 // ProgramFinder reports whether a program is on the PATH the session's
 // commands get, toolchains included, or is nil where that cannot be told
 // from here (commands in a container or a VM).
-func ProgramFinder(reg *tools.Registry) func(string) bool { return hostLookPath(reg) }
+//
+// The CLI picks its tier when its first command runs (RanUnder): the
+// program is looked for then, on the host where the tier runs commands on
+// the host's files, and taken as there (for the start to find out) in a
+// container or a VM.
+func ProgramFinder(reg *tools.Registry) func(string) bool {
+	if look := hostLookPath(reg); look != nil {
+		return look
+	}
+	if reg == nil {
+		return nil
+	}
+	t, ok := reg.Get("bash")
+	if !ok {
+		return nil
+	}
+	b, ok := t.(tools.Bash)
+	if !ok || b.RanUnder == nil || b.Sandbox == nil {
+		return nil
+	}
+	return func(p string) bool {
+		switch b.RanUnder() {
+		case "none", "process", "fence":
+			if _, err := exec.LookPath(p); err == nil {
+				return true
+			}
+			return b.Provides != nil && b.Provides("", p)
+		}
+		return true
+	}
+}
 
 // SupervisorLabel says what supervises calls, for the banner, /status and doctor.
 func SupervisorLabel(cfg config.Config) string {

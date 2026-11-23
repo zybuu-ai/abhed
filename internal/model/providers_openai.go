@@ -25,16 +25,16 @@ func init() {
 	// The local servers accept the OpenAI body plus top_k, min_p and
 	// repetition_penalty, which hosted APIs do not define.
 	registerOpenAI("vllm", "vLLM server (OpenAI-compatible, /v1)",
-		parallelCalls(openAIStyle("http://127.0.0.1:8000/v1", SamplingLocal())))
+		parallelCalls(openAIStyle(localURLs["vllm"], SamplingLocal())))
 	registerOpenAI("ollama", "Ollama (OpenAI-compatible endpoint, /v1)", func(sp Spec) (Adapter, error) {
-		return openAIStyle(defaults.OllamaURL, SamplingLocal())(sp)
+		return openAIStyle(LocalDefaultURL("ollama"), SamplingLocal())(sp)
 	})
 	registerOpenAI("llamacpp", "llama.cpp server (OpenAI-compatible, /v1)",
-		openAIStyle("http://127.0.0.1:8080/v1", SamplingLocal()))
+		openAIStyle(localURLs["llamacpp"], SamplingLocal()))
 	registerOpenAI("tgi", "Hugging Face Text Generation Inference (/v1)",
-		openAIStyle("http://127.0.0.1:8080/v1", SamplingLocal()))
+		openAIStyle(localURLs["tgi"], SamplingLocal()))
 	registerOpenAI("sglang", "SGLang server (OpenAI-compatible, /v1)",
-		openAIStyle("http://127.0.0.1:30000/v1", SamplingLocal()))
+		openAIStyle(localURLs["sglang"], SamplingLocal()))
 
 	// Hosted OpenAI-compatible gateways.
 	registerOpenAI("groq", "Groq (OpenAI-compatible)",
@@ -54,6 +54,19 @@ func init() {
 	// permissive local sampling set because that is what it was used for.
 	registerOpenAI("openai-compatible", "any OpenAI-compatible endpoint (generic)",
 		parallelCalls(openAIStyle("", SamplingLocal())))
+}
+
+// localURLs are the endpoints local server types use when no base_url is set.
+var localURLs = map[string]string{"vllm": "http://127.0.0.1:8000/v1", "llamacpp": "http://127.0.0.1:8080/v1",
+	"tgi": "http://127.0.0.1:8080/v1", "sglang": "http://127.0.0.1:30000/v1"}
+
+// LocalDefaultURL is the endpoint a local server type uses with no
+// base_url, as its adapter resolves it; "" for any other type.
+func LocalDefaultURL(typ string) string {
+	if typ == "ollama" {
+		return defaults.OllamaURL
+	}
+	return localURLs[typ]
 }
 
 func openAIStyle(defaultURL string, sampling Sampling) Factory {

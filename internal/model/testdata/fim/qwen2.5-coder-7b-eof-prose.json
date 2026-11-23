@@ -1,0 +1,35 @@
+{
+ "about": "Parity review r2 (16 Nov 2026), Studio inline completion at the end of src/utils/textops.py with qwen2.5-coder:7b on Ollama, sent with suffix \"\" so no fill-in-the-middle template was applied. The answer text is verbatim from the evidence (inline.log FILE-AFTER-GHOST, the 370-character sample that Tab inserted); its split into stream chunks is ours. openings are the other six samples' first 160 characters as the editor showed them. The prefix is the file's text before the cursor as far as the evidence shows it.",
+ "model": "qwen2.5-coder:7b",
+ "language": "python",
+ "prefix": "def chunk(text, size, overlap):\n    \"\"\"Split text into pieces of size characters that overlap.\"\"\"\n    if overlap >= size:\n        raise ValueError(\"overlap must be smaller than size\")\n    chunks = []\n    step = size - overlap\n    for start in range(0, len(text), step):\n        chunks.append(text[start:start + size])\n        if start + size >= len(text):\n            break\n    return chunks, step\n\n\ndef normalise_whitespace(text):\n    \"\"\"Collapse runs of whitespace to one space and strip the ends.\"\"\"\n    return \" \".join(text.split())\n\n\ndef word_count(text):\n    ",
+ "suffix": "",
+ "chunks": [
+  "It looks like ",
+  "you're working on ",
+  "a Python script ",
+  "that involves text ",
+  "processing, including chunking, ",
+  "normalizing whitespace, counting ",
+  "words and characters, ",
+  "checking for blank ",
+  "text, identifying the ",
+  "first word, converting ",
+  "text to title ",
+  "case, counting vowels, ",
+  "and reversing words. ",
+  "However, the provided ",
+  "code snippets are ",
+  "incomplete. Let's complete ",
+  "the functions step ",
+  "by step."
+ ],
+ "openings": [
+  "It looks like you're working on a Python script to process text, and you've provided functions to chunk text and normalize whitespace. However, you've left the ",
+  "It looks like you're working on a function to count the number of words in a given text. However, the `char_count` function is not defined yet. Let's complete t",
+  "It looks like you're working on a text processing library and you've provided functions to chunk text and normalize whitespace. However, the `word_count` functi",
+  "It looks like you're working on a Python script to process text, but the code snippet you provided is incomplete. Let's complete the `word_count` function and a",
+  "It looks like you're working on a text processing library, and you've started implementing functions to split text into chunks, normalize whitespace, and count ",
+  "It looks like you're working on a Python script to process and analyze text. However, the code you provided is incomplete and lacks some essential functions. Le"
+ ]
+}

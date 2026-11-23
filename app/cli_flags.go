@@ -172,7 +172,7 @@ func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs.Var(&f.print, "p", "run headless and exit; the task is the argument after it, stdin, or both")
 	fs.DurationVar(&f.stdinWait, "stdin-wait", defaultStdinWait, "with -p and a task, how long to wait for piped input to start before going on without it; - waits for it to end")
 	fs.Var(&f.print, "print", "same as -p")
-	fs.StringVar(&f.mode, "mode", "", "permission mode: default|accept-edits|plan|auto|bypass")
+	fs.StringVar(&f.mode, "mode", "", "permission mode: default|accept-edits|plan|auto|bypass (acceptEdits and bypassPermissions too)")
 	fs.StringVar(&f.permissionMode, "permission-mode", "", "same as -mode; also takes acceptEdits and bypassPermissions")
 	fs.StringVar(&f.modelID, "model", "", "provider name from config")
 	fs.StringVar(&f.fallbackModel, "fallback-model", "", "comma-separated configured providers to move to, in order, when the model is unreachable or refuses access")
@@ -534,6 +534,11 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return adminCmd(rest[1:], os.Stdout, os.Stderr)
 	case "mcp":
 		return mcpCmd(workspace, rest[1:], a.trust, stdMCPIO())
+	case "ssh-acp":
+		// An editor's engine on an SSH host, ACP carried on this stdio.
+		return sshACPCmd(rest[1:], os.Stdin, os.Stdout, os.Stderr)
+	case "plugin":
+		return pluginCmd(workspace, rest[1:], a.trust, stdPluginIO())
 	case "index":
 		return buildIndexCmd(workspace, a.trust)
 	case "eval":
@@ -570,6 +575,10 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 // sets no mode here: it takes effect only after its confirmation, in run.
 func (f *cliFlags) permission() (string, error) {
 	mode := f.mode
+	// -mode takes the familiar camelCase spellings too (acceptEdits, bypassPermissions).
+	if m, ok := permissionModes[mode]; ok {
+		mode = m
+	}
 	if f.permissionMode != "" {
 		m, ok := permissionModes[f.permissionMode]
 		if !ok {
@@ -593,12 +602,14 @@ func (f *cliFlags) permission() (string, error) {
 var permissionModes = map[string]string{
 	"default": "default", "acceptEdits": "accept-edits", "accept-edits": "accept-edits",
 	"plan": "plan", "auto": "auto", "bypassPermissions": "bypass", "bypass": "bypass",
+	"acceptedits": "accept-edits", "AcceptEdits": "accept-edits", "bypasspermissions": "bypass", "BypassPermissions": "bypass",
+	"accept_edits": "accept-edits", "bypass_permissions": "bypass",
 }
 
 // ownsHelp are the subcommands that print their own usage for -h.
 var ownsHelp = map[string]bool{
 	"sandbox": true, "bg": true, "secret": true, "mcp": true, "record": true, "logs": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
-	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true, "ollama": true,
+	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true, "ollama": true, "ssh-acp": true,
 	"account": true,
 }
 

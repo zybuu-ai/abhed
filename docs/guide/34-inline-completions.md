@@ -27,10 +27,30 @@ Ollama for this; it uses it only when it is configured and running. Any other
 provider, a hosted one included, is asked through a chat turn with the cursor
 marked, at a low temperature, and only the text of its reply is used.
 
+The request always carries a suffix, a newline at the end of a file:
+Ollama applies a coder model's fill-in-the-middle template only when there
+is one, and without it the model answers the code before the cursor as a
+chat ("It looks like you're working on…").
+
 A chat or reasoning model often answers in prose, so the reply is cleaned
 first: reasoning written into the text is removed, a fenced block gives its
-code, and code repeated from around the cursor is trimmed. A reply that still
-reads as an explanation is not offered; Studio is told why (`dropped`). For
+code, and code repeated from around the cursor is trimmed, including the
+rest of the cursor's line written again at the end of a one-line answer. A
+reply that still reads as an explanation, or opens as an English sentence
+where code is written (not in a comment, a docstring or a string, one that
+spans lines included, nor in
+Markdown, plain text or a configuration file), is not offered; Studio is
+told why (`dropped`). Code shaped like a sentence (`None if x is None else
+x`) is not taken for one: a sentence must also have a contraction, a pronoun
+or an article. Studio then parses the file with the suggestion in place, for
+the languages it has a grammar for (as for next edits, below), and does not
+show one whose own text fails to parse or that leaves more syntax errors
+than the file had. This fails closed: a one-line block opener or an
+unfinished line offered alone (`if err != nil {` in Go, `x := foo(`) adds
+an error until its body or its close is written, so it is not shown; the
+next keystroke asks again. The check is incremental (the file as it is is
+parsed once per version), and a file over 256 KB is not checked: the
+engine's prose filter stands. For
 dependable ghost text, use a coding model with fill-in-the-middle.
 
 | Setting | Default | |
@@ -118,8 +138,23 @@ with the latest one:
   `local_only` is: a loopback address, `localhost`, or a local server type
   at its default endpoint. A proxy on this machine that forwards to a model
   elsewhere counts as local, so its model is warmed through it (still with
-  no code). Opening a file never starts the engine or opens a session for
-  a warm-up alone.
+  no code). Once you have clicked or typed in the window, a workspace file
+  in front opens the editor session and warms the model before your first
+  keystroke, starting the engine first if it is not running; coming back
+  to the window warms it again (within the two-minute bound), so a model
+  unloaded meanwhile is loaded before you type. Editors restored at
+  start-up, untouched, warm nothing and start nothing.
+- **Completions first.** A local server often answers one request at a
+  time. A completion waiting for the server goes ahead of next-edit calls
+  and agent turns that wait for it, and while one is asked for, next-edit
+  calls to that server wait and one already sent is cancelled; a hosted
+  server serves them side by side, so nothing waits there. A rename
+  finished from the file needs no model and is shown at once; on the
+  renamed line, in the languages the engine finishes renames in by itself
+  (Python, Go, JavaScript, TypeScript, Java), Studio shows it instead of
+  asking for ghost text. In the editor, next-edit suggestions yield to ghost
+  text: while a completion is shown at the cursor the next-edit model is not
+  asked, so ghost text never waits for it.
 - **Debounce and cancel.** Studio waits briefly after a keystroke before
   asking and sends its `seq`; a newer keystroke supersedes the older
   request, and Studio cancels a request whose place in the file has gone,
@@ -172,7 +207,10 @@ cover it, a managed model pin binds it, the same files are never sent, and
 stored secrets and key-shaped text are withheld. A line that held a withheld
 secret is never edited, since the model did not see what is there; a
 suggestion that rewrites most of the window, carries a secret or reads as
-prose is dropped and Studio is told why. The record holds
+prose is dropped and Studio is told why. The answer is bounded by the window
+it rewrites (about half its bytes in tokens, at most 1,024); an answer cut at
+that bound is dropped rather than read as a window with lines missing.
+Studio cancels the request in flight on each keystroke. The record holds
 `next_edit.enabled` and `next_edit.summary` as it does for completions, and
 the metrics count them as `abhed_next_edits_total` and
 `abhed_next_edit_tokens_total`.

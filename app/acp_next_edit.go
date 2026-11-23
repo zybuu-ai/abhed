@@ -3,9 +3,11 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf16"
 
@@ -21,10 +23,23 @@ import (
 // that into edits inside the document. No tools, no side effects.
 
 func init() {
-	liveFeatures = append(liveFeatures, "nextEdit")
+	liveFeatures = append(liveFeatures, "nextEdit", "nextEditCancel")
 	handle(map[string]func(*acpConn, rpcMessage){
-		"_abhed/nextEdit": (*acpConn).nextEdit,
+		"_abhed/nextEdit":        (*acpConn).nextEdit,
+		"_abhed/nextEdit/cancel": (*acpConn).nextEditCancel,
 	})
+}
+
+// nextEditCancel ends the session's next-edit request in flight, as Studio
+// asks on each keystroke: its window is stale.
+func (c *acpConn) nextEditCancel(msg rpcMessage) { c.featureCancel(msg, "next_edit") }
+
+// nextEditTokens bounds the answer by the window sent: the model writes the
+// window back with one edit. Half the window's bytes in tokens (code runs
+// near four bytes a token, dense or non-ASCII code nearer two) leaves room
+// for a real hunk; an answer cut at the bound is dropped, never offered.
+func nextEditTokens(window string) int {
+	return min(nextEditMaxTokens, max(128, len(window)/2+64))
 }
 
 // Next-edit bounds: the window sent, the recent edits, and the answer.
@@ -165,7 +180,8 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 				empty("dropped", why)
 				return
 			}
-			k.count(func(s *agent.CompletionSummary) { s.Local++ })
+			// Offered like any suggestion: served, and of those, from the file.
+			k.count(func(s *agent.CompletionSummary) { s.Local++; s.Served++ })
 			c.reply(msg.ID, map[string]any{"edits": edits, "rename": true}, nil)
 			return
 		}
@@ -213,13 +229,39 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		return
 	}
 	rel := rootRel(path, roots)
-	res, err := nextEditCall(ctx, a, model.NextEditRequest{
-		File: rel, Language: req.Language, Recent: recent.String(),
-		Window: strings.Join(shown, ""), CursorLine: req.Cursor.Line - req.Window.StartLine, MaxTokens: nextEditMaxTokens,
+	// Completions go first on a shared server: this call waits for them, and
+	// one asked for while it runs cancels it.
+	mctx, release, werr := c.pool.nextEditTurn(ctx, editorServer(provider))
+	if werr != nil {
+		k.count(func(s *agent.CompletionSummary) { s.Superseded++ })
+		empty("cancelled", "a newer request replaced it")
+		return
+	}
+	defer release()
+	window := strings.Join(shown, "")
+	capTokens := nextEditTokens(window)
+	// A call ended while it waited for the server's request slot was never sent: nothing to charge.
+	var queued, sent atomic.Bool
+	mctx = model.WithSlotWait(mctx, func(_ model.SlotWait, done bool) {
+		if done {
+			sent.Store(true)
+		} else {
+			queued.Store(true)
+		}
 	})
-	cancelled := err != nil && ctx.Err() != nil
-	tokIn, tokOut, usd, unpriced, estimated := editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, err, cancelled,
-		recent.Len()+len(strings.Join(shown, "")), len(res.Window), nextEditMaxTokens)
+	res, err := nextEditCall(mctx, a, model.NextEditRequest{
+		File: rel, Language: req.Language, Recent: recent.String(),
+		Window: window, CursorLine: req.Cursor.Line - req.Window.StartLine, MaxTokens: capTokens,
+	})
+	cancelled := err != nil && mctx.Err() != nil
+	preempted := cancelled && errors.Is(context.Cause(mctx), errCompletionFirst)
+	var tokIn, tokOut int
+	var usd *float64
+	var unpriced, estimated bool
+	if err == nil || !queued.Load() || sent.Load() {
+		tokIn, tokOut, usd, unpriced, estimated = editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, err, cancelled,
+			recent.Len()+len(window), len(res.Window), capTokens)
+	}
 	if err == nil {
 		k.took(time.Since(arrived))
 	}
@@ -245,6 +287,8 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		}
 	})
 	switch {
+	case preempted:
+		empty("cancelled", "a completion went first")
 	case cancelled:
 		empty("cancelled", "a newer request replaced it")
 	case err != nil:
