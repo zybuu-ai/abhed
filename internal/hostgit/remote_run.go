@@ -249,8 +249,9 @@ func hostScript(ctx context.Context, dir string, env []string, runs [][]string) 
 	return cmd
 }
 
-// repoEnv is the environment host git runs a remote command with in cwd's
-// repository: git's own dropped, the common git folder pinned, the safety
+// repoEnv is the environment host git runs a remote command with on cwd's
+// repository from another folder: git's own dropped, the repository named
+// by its git folder (GIT_DIR) with the common one pinned, the safety
 // settings and cfg in the command-line scope, and remoteEnv.
 func repoEnv(ctx context.Context, cwd string, cfg [][2]string) ([]string, error) {
 	r := New(ctx, cwd)
@@ -260,7 +261,26 @@ func repoEnv(ctx context.Context, cwd string, cfg [][2]string) ([]string, error)
 	if err := r.redirected(); err != nil {
 		return nil, err
 	}
-	return hostEnv(r.env(nil), append(append(append([][2]string(nil), safety...), r.drivers...), cfg...), append(personEnv(), remoteEnv...)...)
+	if r.gitDir == "" {
+		return nil, fmt.Errorf("%s is not in a git repository", cwd)
+	}
+	over := append(append([]string{"GIT_DIR=" + r.gitDir}, personEnv()...), remoteEnv...)
+	return hostEnv(r.env(nil), append(append(append([][2]string(nil), safety...), r.drivers...), cfg...), over...)
+}
+
+// runParent is the empty folder of the person's own that host git runs a
+// remote command in, with the repository given as GIT_DIR: a relative path
+// an SSH command, helper or askpass names then resolves there, never in the
+// workspace. Tests set it.
+var runParent = func() (string, error) { return privateDir("git-run") }
+
+// runDir is the folder a remote command runs in.
+func runDir() (string, error) {
+	dir, err := runParent()
+	if err != nil {
+		return "", fmt.Errorf("the folder host git runs in: %w", err)
+	}
+	return dir, nil
 }
 
 // hostEnv is the one way host git's environment for a remote command is
@@ -402,7 +422,11 @@ func (b *HostBroker) hostCommand(ctx context.Context, cwd string, op remoteOp, p
 		// A push goes by the remote's name: its URLs are held by the sandbox.
 		runs = [][]string{append(append([]string{"--no-pager", "push"}, op.opts...), op.positional...)}
 	}
-	return hostScript(ctx, cwd, env, runs), p
+	dir, err := runDir()
+	if err != nil {
+		return &exec.Cmd{Err: err}, p
+	}
+	return hostScript(ctx, dir, env, runs), p
 }
 
 // pull fetches on the host, at once, then merges or rebases in the
@@ -443,7 +467,11 @@ func (b *HostBroker) pull(ctx context.Context, cwd string, op remoteOp, p plan) 
 	}
 	fp := p
 	fp.names = []string{n}
-	host := hostScript(ctx, cwd, env, fetchRuns(remoteOp{verb: "fetch"}, fp, fetchOpts))
+	dir, err := runDir()
+	if err != nil {
+		return &exec.Cmd{Err: err}
+	}
+	host := hostScript(ctx, dir, env, fetchRuns(remoteOp{verb: "fetch"}, fp, fetchOpts))
 	out, err := b.runNow(ctx, cwd, op, p, host)
 	line := "printf '%s' " + shellQuote(out) + "; "
 	if err != nil {

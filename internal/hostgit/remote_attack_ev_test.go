@@ -72,7 +72,7 @@ func TestEvPersonProgramsOutOfReach(t *testing.T) {
 		{"core.askPass", inWS, "which commands can write"},
 		{"core.gitProxy", "./proxy", "relative path"},
 		{"credential.helper", "!" + inArea + " get", "which commands can write"},
-		{"credential.helper", "!f() { echo password=x; }; f", "shell function"},
+		{"credential.helper", "!f() { echo password=x; }; f", "shell command"},
 		{"credential.helper", "planted", "PATH"},
 	}
 	for _, c := range cases {

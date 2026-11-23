@@ -1205,13 +1205,21 @@ cannot steer host git:
   past 200 files. The same check stops an issue's push.
 - The programs your configuration names for host git must be yours alone
   too: the SSH command (or `ssh` when you name none), `core.askPass` and
-  `SSH_ASKPASS`, `core.gitProxy` and each credential helper (a `!` helper by
-  its first word, which must be a program, not a shell function). Nothing is
-  brokered while one is a relative path (git would find it from the
-  repository), lies in the workspace or a folder commands can write, is
-  found on `PATH` after a folder commands can write, or is another user's or
-  writable by others. `GIT_SSH`, `GIT_SSH_COMMAND` and `GIT_ASKPASS` in your
-  environment are not given to host git at all.
+  `SSH_ASKPASS`, `core.gitProxy` and each credential helper. Every word of
+  each is judged, and the value after `=` in each (ssh's `-o
+  ProxyCommand=…`): nothing is brokered while one is a relative path, or an
+  absolute one in the workspace or a folder commands can write, or another
+  user's or writable by others; while the program is found on `PATH` after
+  a folder commands can write; while a shell is given a command line (`sh
+  -c …`); or while a `!` credential helper is more than a program and its
+  words (a shell function such as `!f() { …; }; f`, a variable, a pipe or a
+  second command). If you use a shell-function helper, put it in a script
+  of your own and name the script instead: until then, a brokered git
+  remote command is refused, with the reason. Host git runs these
+  commands from an empty folder of your own, the repository given as
+  `GIT_DIR`, so nothing they name is found in the workspace.
+  `GIT_SSH`, `GIT_SSH_COMMAND` and `GIT_ASKPASS` in your environment are
+  not given to host git at all.
 - A brokered line is given no vault secret (`secrets`): git run on the host
   as you needs none.
 - On Linux, the process tier (bubblewrap) and the fence hold git's files by
