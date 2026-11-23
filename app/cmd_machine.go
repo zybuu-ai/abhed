@@ -128,7 +128,10 @@ func k8sDoctor(cfg config.Config) []string {
 		return nil
 	}
 	writes := "read-only"
-	if cfg.K8s.AllowWrites {
+	switch {
+	case (cfg.ManagedSets("k8s.allow_writes") || cfg.FromOrg("k8s.allow_writes")) && !cfg.K8s.AllowWrites:
+		writes = "read-only: writes off by your organisation"
+	case cfg.K8s.AllowWrites:
 		writes = "reads + writes (every write needs approval)"
 	}
 	out := []string{"kubernetes  " + writes}

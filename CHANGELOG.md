@@ -218,12 +218,14 @@ All notable changes to Abhed are recorded here. The format follows
   a managed configuration or org policy:
   - `k8s.allow_writes: false` alone only tightens, as in 1.2.9: the
     person's own kubeconfig stays in use, read-only, and `k8s_apply` is
-    not offered.
+    not offered. Set it explicitly to keep laptops read-only: otherwise a
+    person's own `k8s.allow_writes: true` offers `k8s_apply`.
   - `k8s.enabled: false` turns Kubernetes off: no cluster tool is offered,
     and a pasted login is refused with that reason.
   - Where the organisation sets Kubernetes up itself, by declaring
-    `k8s.clusters` or `k8s.kubeconfig` in its managed file or turning
-    `k8s.enabled` on, only that counts on the laptop: a person's or
+    `k8s.clusters` or `k8s.kubeconfig` in its managed file (which turns
+    Kubernetes on for them) or turning `k8s.enabled` on, only that counts
+    on the laptop: a person's or
     workspace's `k8s.enabled: true` is not taken, only its `k8s.clusters`
     are offered, no kubeconfig is read unless its managed file names
     `k8s.kubeconfig`, no login is kept, and a pasted login is refused with

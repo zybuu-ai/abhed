@@ -376,3 +376,36 @@ func TestAnOrgsK8sOffLeavesNoClusterTools(t *testing.T) {
 		t.Fatal("the personal cluster was dialled")
 	}
 }
+
+// An org that declares its clusters without k8s.enabled turns Kubernetes on
+// for them: whether the person sets k8s.enabled or not, the org's clusters
+// are offered and the person's kubeconfig is never read.
+func TestAnOrgsDeclaredClustersAreOfferedWithoutEnabled(t *testing.T) {
+	for _, personEnabled := range []bool{false, true} {
+		machineHome(t)
+		hits := personalKube(t)
+		keys := []string{"k8s.clusters"}
+		cfg := config.Config{Managed: true, ManagedKeys: keys, SetKeys: keys}
+		if personEnabled {
+			cfg.SetKeys = append(cfg.SetKeys, "k8s.enabled")
+			cfg.K8s.Enabled = true
+		}
+		cfg.K8s.Clusters = []config.K8sClusterConfig{{Name: "orgprod", Server: "https://orgprod.example:6443"}}
+		reg := tools.NewRegistry(InfraToolsFor(cfg, nil, func(string, ...any) {}, true)...)
+		get, _ := reg.Get("k8s_get")
+		login, _ := reg.Get("k8s_login")
+		if get == nil || login == nil || !strings.Contains(login.Description(), "orgprod") {
+			t.Fatalf("person enabled %v: the org's clusters are not offered: %v", personEnabled, reg.Names())
+		}
+		if strings.Contains(get.Description(), "personal") {
+			t.Fatalf("person enabled %v: the personal context is listed", personEnabled)
+		}
+		sess, _ := tools.NewSession(t.TempDir())
+		if res := get.Run(context.Background(), sess, json.RawMessage(`{"resource":"pods","context":"personal"}`)); !res.IsError || hits.Load() != 0 {
+			t.Fatalf("person enabled %v: the personal kubeconfig was used: %+v (%d requests)", personEnabled, res, hits.Load())
+		}
+		if on, noKube := OrgK8s(cfg); !on || noKube == "" {
+			t.Fatalf("person enabled %v: OrgK8s = %v %q", personEnabled, on, noKube)
+		}
+	}
+}
