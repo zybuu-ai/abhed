@@ -189,9 +189,11 @@ func jsonKind(t reflect.Type) string {
 }
 
 type acpSession struct {
-	id    string
-	cwd   string
-	agent acpAgent
+	// networkTold is set once Studio was told a command failed for the network this turn.
+	networkTold bool
+	id          string
+	cwd         string
+	agent       acpAgent
 	// parts are the SDK agent's insides; inner is false for a test's
 	// stand-in, whose session answers what needs them with a refusal.
 	parts embedded.Parts
@@ -1042,6 +1044,9 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 		Suggest: true,
 		// A person reads the answer there, so it is labelled unless configured otherwise.
 		VerifyByDefault: true,
+		// What the person opened to this workspace's commands, kept with its grants.
+		KeptNetwork: func() toolset.KeptNetwork { return keptNetwork(o.cwd) },
+		KeepNetwork: func(all bool, host string) error { return keepNetwork(o.cwd, all, host) },
 	}
 	// The editor's own files in the workspace are out of the agent's reach (§2.6).
 	s.protected = protectedPaths(o.cwd)
@@ -1384,6 +1389,9 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	undo = append(undo, func() { _ = attachImages(s.agent, nil) })
 	defer promptExit()
 	s.undo.BeginTurn()
+	s.mu.Lock()
+	s.networkTold = false // told again in a later turn
+	s.mu.Unlock()
 	if cmdErr, handled := c.slashCommand(ctx, s, text, withAttached); handled {
 		err = cmdErr
 	} else {

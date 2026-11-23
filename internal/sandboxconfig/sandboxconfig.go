@@ -84,6 +84,15 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 	if err := registryEgress(cfg, &p); err != nil {
 		return sandbox.Policy{}, err
 	}
+	// Where the network is off and the person may open it, commands get a
+	// proxy that refuses everything until they do (network_access).
+	if p.Egress == nil && p.OptionalEgress == nil && !p.AllowNetwork && !managedNetwork(cfg) {
+		pol, err := egress.Compile(egress.Config{})
+		if err != nil {
+			return sandbox.Policy{}, err
+		}
+		p.OptionalEgress = pol
+	}
 	p.ReadOnlyPaths = cfg.Sandbox.ReadOnlyPaths
 	// The toolchain cache, which commands read and never write: a container
 	// mounts it read-only, so the toolchains Abhed installed are there.
@@ -553,6 +562,11 @@ func RegistriesOpenable(cfg config.Config) bool {
 	}
 	managedNet := cfg.ManagedSets("sandbox.allow_network") || cfg.ManagedSets("sandbox.network") || cfg.ManagedSets("egress")
 	return !managedNet || cfg.ManagedSets("sandbox.toolchains_registries")
+}
+
+// managedNetwork reports whether the managed file holds the network.
+func managedNetwork(cfg config.Config) bool {
+	return cfg.ManagedSets("sandbox.allow_network") || cfg.ManagedSets("sandbox.network") || cfg.ManagedSets("egress")
 }
 
 // registryEgress gives p the proxy package registries are opened through:

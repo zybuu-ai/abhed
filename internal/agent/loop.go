@@ -240,6 +240,9 @@ func unanswered(ctx context.Context, held bool) string {
 }
 
 type Config struct {
+	// SessionNote is the loop's SessionNote for a top-level loop built
+	// with this configuration.
+	SessionNote func() string
 	// Plugins are the approved plugins in force, recorded once as EvPluginLoaded.
 	Plugins []PluginInForce
 	// Egress is the guard of the tool set the loop runs with, egress.Unguarded
@@ -366,6 +369,13 @@ type Loop struct {
 	// Unattended is set for a run nobody can answer, such as -p or a
 	// script: a note asking the model to ask the person is left out there.
 	Unattended bool
+	// SessionNote, when set, states what this session can do (its tier,
+	// network, git, clusters, missing tools). It goes with the first
+	// message the person sends, and again with a later one when it has
+	// changed, such as after the network was opened.
+	SessionNote func() string
+	// lastNote is the session note the model was last given.
+	lastNote string
 	// Suggest, when set, offers a next prompt after a completed run.
 	Suggest *Suggester
 	// sug is the suggestion call running after the last run ended; sugMu
@@ -841,7 +851,7 @@ func NewLoop(a model.Adapter, reg *tools.Registry, pol *policy.Engine,
 	appr Approver, sess *tools.Session, rec *Recorder, cfg Config) *Loop {
 	l := &Loop{
 		Adapter: a, Tools: reg, Policy: pol, Approver: appr,
-		Session: sess, Recorder: rec, Config: cfg,
+		Session: sess, Recorder: rec, Config: cfg, SessionNote: cfg.SessionNote,
 	}
 	if cfg.OffloadAt > 0 {
 		l.Offloader = NewOffloader(cfg.OffloadAt)
@@ -928,7 +938,7 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	if typed == "" {
 		typed = typedFrom(ctx)
 	}
-	said := Message{Text: text, ClientID: m.ClientID, SecretsWithheld: withheld, Note: l.parallelNote(typed)}
+	said := Message{Text: text, ClientID: m.ClientID, SecretsWithheld: withheld, Note: joinNotes(l.sessionNote(), l.parallelNote(typed))}
 	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, said); err != nil {
 		return TermError, err
 	}
@@ -1375,6 +1385,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	}
 
 	l.messages = compacted
+	l.lastNote = "" // the session facts went with what was summarised: given again with the next message
 	l.usage.Compactions++
 	l.justCompacted = true
 	l.forgetAnswers()
@@ -1414,6 +1425,7 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 		return Compaction{}, ErrNothingToCompact
 	}
 	l.messages = compacted
+	l.lastNote = "" // the session facts went with what was summarised: given again with the next message
 	l.usage.Compactions++
 	l.forgetAnswers()
 	l.SubdirMemory.forget()
@@ -1478,6 +1490,7 @@ func (l *Loop) SetHistory(msgs []model.Message, turns int) {
 	l.runMu.Lock()
 	defer l.runMu.Unlock()
 	l.messages = append([]model.Message(nil), msgs...)
+	l.lastNote = "" // a history set again is given the session facts with its next message
 	l.forgetSaid()
 	l.UnbindPlan() // a runbook binds the conversation that approved it, not one rebuilt from a record
 	if turns > l.turns {

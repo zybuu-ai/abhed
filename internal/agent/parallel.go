@@ -608,3 +608,28 @@ func worktreeChanges(ctx context.Context, dir string) (string, int) {
 	}
 	return stat, n
 }
+
+// sessionNote is the session's statement of what it can do when the model
+// has not had it as it stands now, else "".
+func (l *Loop) sessionNote() string {
+	if l.SessionNote == nil || l.depth != 0 {
+		return ""
+	}
+	n := l.SessionNote()
+	if n == "" || n == l.lastNote {
+		return ""
+	}
+	l.lastNote = n
+	return n
+}
+
+// joinNotes joins the notes that are set, a blank line apart.
+func joinNotes(notes ...string) string {
+	var out []string
+	for _, n := range notes {
+		if n != "" {
+			out = append(out, n)
+		}
+	}
+	return strings.Join(out, "\n\n")
+}

@@ -29,12 +29,25 @@ func TestRegistryEgress(t *testing.T) {
 	if _, opt := pol(all); opt == nil || !opt.Granted("proxy.golang.org") || !opt.Granted("api.nuget.org") {
 		t.Fatal("allow opens them all")
 	}
+	// With registries or toolchains off, the proxy is there still, closed,
+	// for the network the person may open (network_access), and opens no registry.
 	for _, c := range []func(*config.Config){
 		func(c *config.Config) { c.Sandbox.ToolchainsRegistries = "off" },
 		func(c *config.Config) { c.Sandbox.Toolchains = "off" },
+	} {
+		cfg := config.Default()
+		c(&cfg)
+		if _, opt := pol(cfg); opt == nil || opt.Granted("pypi.org") || opt.Decide(egress.Request{Host: "pypi.org", Port: 443, Tunnel: true}).Allowed() {
+			t.Errorf("%+v: not a closed proxy", cfg.Sandbox)
+		}
+	}
+	for _, c := range []func(*config.Config){
 		func(c *config.Config) { c.Sandbox.AllowNetwork = true },
 		func(c *config.Config) {
 			c.Managed, c.ManagedKeys, c.Sandbox.AllowNetwork = true, []string{"sandbox.allow_network"}, false
+		},
+		func(c *config.Config) {
+			c.Managed, c.ManagedKeys, c.Sandbox.Toolchains = true, []string{"egress"}, "off"
 		},
 	} {
 		cfg := config.Default()
