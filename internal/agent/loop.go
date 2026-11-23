@@ -240,6 +240,9 @@ func unanswered(ctx context.Context, held bool) string {
 }
 
 type Config struct {
+	// SessionNote is the loop's SessionNote for a top-level loop built
+	// with this configuration.
+	SessionNote func() string
 	// Plugins are the approved plugins in force, recorded once as EvPluginLoaded.
 	Plugins []PluginInForce
 	// Egress is the guard of the tool set the loop runs with, egress.Unguarded
@@ -366,6 +369,14 @@ type Loop struct {
 	// Unattended is set for a run nobody can answer, such as -p or a
 	// script: a note asking the model to ask the person is left out there.
 	Unattended bool
+	// SessionNote, when set, states what this session can do (its tier,
+	// network, git, clusters, missing tools). It is the system prompt's
+	// last section from the first message on, read again each turn, so a
+	// change (the network opened) reaches the model; it is never part of a
+	// message, so no rewind, fork or compaction carries or loses it.
+	SessionNote func() string
+	// facts is the session note as the model is given it now.
+	facts string
 	// Suggest, when set, offers a next prompt after a completed run.
 	Suggest *Suggester
 	// sug is the suggestion call running after the last run ended; sugMu
@@ -841,7 +852,7 @@ func NewLoop(a model.Adapter, reg *tools.Registry, pol *policy.Engine,
 	appr Approver, sess *tools.Session, rec *Recorder, cfg Config) *Loop {
 	l := &Loop{
 		Adapter: a, Tools: reg, Policy: pol, Approver: appr,
-		Session: sess, Recorder: rec, Config: cfg,
+		Session: sess, Recorder: rec, Config: cfg, SessionNote: cfg.SessionNote,
 	}
 	if cfg.OffloadAt > 0 {
 		l.Offloader = NewOffloader(cfg.OffloadAt)
@@ -928,6 +939,7 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	if typed == "" {
 		typed = typedFrom(ctx)
 	}
+	l.refreshFacts()
 	said := Message{Text: text, ClientID: m.ClientID, SecretsWithheld: withheld, Note: l.parallelNote(typed)}
 	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, said); err != nil {
 		return TermError, err
@@ -1352,7 +1364,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	}
 	l.justCompacted = false
 	// Counted as sent: a tool of another mode is not in the request.
-	should, used, err := check(l.Config.SystemPrompt, l.messages, l.offeredDefs())
+	should, used, err := check(l.system(), l.messages, l.offeredDefs())
 	if err != nil || !should {
 		return err
 	}
@@ -1360,7 +1372,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	// Started is recorded only once there is something to summarise; every
 	// return after it records a completion (the caller records errors).
 	begun := false
-	compacted, info, err := l.Compactor.CompactWith(l.metered(l.withCaller(ctx)), "auto", l.Config.SystemPrompt, l.messages, used, func() {
+	compacted, info, err := l.Compactor.CompactWith(l.metered(l.withCaller(ctx)), "auto", l.system(), l.messages, used, func() {
 		begun = true
 		l.record(EvCompactStarted, ActorSystem, Compaction{BeforeTokens: used, Trigger: "auto"})
 	})
@@ -1403,9 +1415,9 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 		return Compaction{}, fmt.Errorf("compaction is not configured")
 	}
 	used, _ := l.Adapter.CountTokens(model.Request{
-		System: l.Config.SystemPrompt, Messages: l.messages,
+		System: l.system(), Messages: l.messages,
 	})
-	compacted, info, err := l.Compactor.Compact(l.metered(l.withCaller(ctx)), "manual", l.Config.SystemPrompt, l.messages, used)
+	compacted, info, err := l.Compactor.Compact(l.metered(l.withCaller(ctx)), "manual", l.system(), l.messages, used)
 	if err != nil {
 		return Compaction{}, err
 	}
@@ -1516,8 +1528,9 @@ func LastEnd(events []Event) (SessionEnded, bool) {
 // turn runs one round trip: model output plus any tool executions.
 func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	l.promptFolderMemory()
+	l.refreshFacts()
 	req := model.Request{
-		System:      l.Config.SystemPrompt,
+		System:      l.system(),
 		Messages:    l.messages,
 		Tools:       l.offeredDefs(),
 		MaxTokens:   l.Config.MaxTokens,
@@ -2592,6 +2605,7 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 		DurationMS:  elapsed.Milliseconds(),
 		Sandbox:     result.Tier,
 		SandboxNote: result.SandboxNote,
+		NetworkOff:  result.NetworkOff,
 		Cwd:         cwd,
 	}); err != nil {
 		return result, TermError
@@ -2793,7 +2807,7 @@ func (l *Loop) contextSize() (used, window int) {
 	}
 	window = l.Adapter.Profile().ContextWindow
 	n, err := l.Adapter.CountTokens(model.Request{
-		System:   l.Config.SystemPrompt,
+		System:   l.system(),
 		Messages: l.messages,
 		Tools:    l.offeredDefs(),
 	})

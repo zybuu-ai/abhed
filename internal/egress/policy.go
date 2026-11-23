@@ -84,8 +84,12 @@ type Policy struct {
 	rules []rule
 	// granted are allow rules added while sessions run, such as a package
 	// registry a person opened; a deny rule still wins over them.
-	granted      atomic.Pointer[[]rule]
-	grantMu      sync.Mutex
+	granted atomic.Pointer[[]rule]
+	grantMu sync.Mutex
+	// anyGranted names the grant that lets any host through, as a default
+	// of allow would, once a person opened the network to commands; a deny
+	// rule still wins over it.
+	anyGranted   atomic.Pointer[string]
 	defaultAllow bool
 	audit        bool
 	hidePaths    bool
@@ -298,6 +302,8 @@ func (p *Policy) DecideHost(r Request) Verdict {
 		return Verdict{Decision: Allow, Rule: allowed, Reason: "an allow rule names the host; each request inside is decided", AllowIPs: ips, Exact: exact}
 	case p.defaultAllow:
 		return Verdict{Decision: Allow, Rule: "default", Reason: "no rule matches and the default is allow"}
+	case p.anyGranted.Load() != nil:
+		return Verdict{Decision: Allow, Rule: *p.anyGranted.Load(), Reason: "the person opened the network to commands"}
 	}
 	return p.deny("default", "no rule allows it")
 }
@@ -337,6 +343,40 @@ func (p *Policy) Grant(name string, hosts []string) error {
 	p.granted.Store(&next)
 	return nil
 }
+
+// GrantHosts adds an allow rule for each host on ports 80 and 443, named by
+// name: hosts a person let commands reach. Deny rules still win.
+func (p *Policy) GrantHosts(name string, hosts []string) error {
+	var add []rule
+	for _, h := range hosts {
+		r, err := compileRule(Rule{Host: h, Ports: []int{80, 443}, Decision: string(Allow)})
+		if err != nil {
+			return err
+		}
+		if r.wildcard {
+			return fmt.Errorf("a granted host is exact, not %q", h)
+		}
+		r.name = name + " " + h
+		add = append(add, r)
+	}
+	p.grantMu.Lock()
+	defer p.grantMu.Unlock()
+	var cur []rule
+	if g := p.granted.Load(); g != nil {
+		cur = *g
+	}
+	next := append(append([]rule(nil), cur...), add...)
+	p.granted.Store(&next)
+	return nil
+}
+
+// GrantAny lets any host through that no deny rule refuses, named by name:
+// the network a person opened to commands. Nothing takes it back but a new
+// policy.
+func (p *Policy) GrantAny(name string) { p.anyGranted.Store(&name) }
+
+// AnyGranted reports whether GrantAny opened the network.
+func (p *Policy) AnyGranted() bool { return p.anyGranted.Load() != nil }
 
 // Granted reports whether host has an allow rule granted on port 443.
 func (p *Policy) Granted(host string) bool {
@@ -418,6 +458,8 @@ func (p *Policy) Decide(r Request) Verdict {
 		return Verdict{Decision: Allow, Rule: allowedBy[0].name, Reason: "an allow rule matches", AllowIPs: ips, Exact: exact}
 	case p.defaultAllow:
 		return Verdict{Decision: Allow, Rule: "default", Reason: "no rule matches and the default is allow"}
+	case p.anyGranted.Load() != nil:
+		return Verdict{Decision: Allow, Rule: *p.anyGranted.Load(), Reason: "the person opened the network to commands"}
 	}
 	return p.deny("default", "no rule allows it")
 }
@@ -432,6 +474,9 @@ func (p *Policy) DecideName(name string) Verdict {
 	}
 	if p.defaultAllow {
 		return Verdict{Decision: Allow, Rule: "default", Reason: "no rule names this host and the default is allow"}
+	}
+	if g := p.anyGranted.Load(); g != nil {
+		return Verdict{Decision: Allow, Rule: *g, Reason: "the person opened the network to commands"}
 	}
 	return p.deny("default", "no allow rule names this host")
 }

@@ -621,6 +621,11 @@ func checkWhole(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 var citeRe = regexp.MustCompile(`\((?:see\s+)?#(\d+)\)|\[#(\d+)\]|\brecord #(\d+)\b`)
 
 func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
+	// "I'm Abhed, your assistant" or "I can help with code" is about the
+	// assistant, whatever kind it was given: nothing in the session shows it.
+	if selfDescription(c) {
+		return ClaimVerdict{Text: c.Text, Kind: KindStatement, Verdict: ClaimUnverified, Reason: selfReason}
+	}
 	f := extractFacts(citeRe.ReplaceAllString(c.Text, " "))
 	kind := c.Kind
 	// A sentence that says something was done or changed is about the work

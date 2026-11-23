@@ -158,6 +158,9 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 			label += "  ⚠"
 		}
 		fmt.Printf("sandbox     %s — %s\n", label, sb.Describe())
+		for _, line := range tierChoiceLines(cfg, sb) {
+			fmt.Printf("            %s\n", line)
+		}
 		for _, w := range limitWarnings(cfg, sb.Tier()) {
 			fmt.Printf("            ⚠ %s\n", w)
 		}
@@ -375,9 +378,20 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		fmt.Println("\nReview the workspace configuration with `abhed trust`, then run `abhed doctor` again.")
 		return 1
 	}
-	if !doctorModelProbes(buildAdapter(provider), timeout, os.Stdout) {
+	if w := defaultModelWarning(cfg); w != "" {
+		fmt.Printf("model       ⚠ %s\n", w)
+	}
+	var probeErr error
+	if !doctorModelProbes(buildAdapter(provider), timeout, os.Stdout, func(err error) { probeErr = err }) {
+		// A retired or not-found model, a spent key or credit: what to do, with the
+		// configured models to use instead; a retired one is remembered for sessions.
+		if pp := explainProvider(cfg, cfg.Model.Default, probeErr); pp != nil {
+			noteProviderProblem(pp)
+			fmt.Printf("  next: %s\n", pp.Next)
+		}
 		return 1
 	}
+	modelAnswered(cfg.Model.Default, provider.Model)
 
 	// The sandbox is checked by running something through it, not by asking
 	// whether it is configured. Inside a hardened container bubblewrap could
@@ -956,14 +970,20 @@ func doctorProbeRequests(p model.Profile) (endpoint, toolCall model.Request) {
 // doctorModelProbes asks the model for a word, then for a tool call, each
 // with a timeout of its own, and says how each went. It reports whether both
 // worked.
-func doctorModelProbes(adapter model.Adapter, timeout time.Duration, w io.Writer) bool {
+func doctorModelProbes(adapter model.Adapter, timeout time.Duration, w io.Writer, onErr ...func(error)) bool {
 	endpointReq, toolReq := doctorProbeRequests(adapter.Profile())
+	failed := func(err error) {
+		for _, f := range onErr {
+			f(err)
+		}
+	}
 
 	fmt.Fprint(w, "checking endpoint... ")
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	stream, err := adapter.Complete(ctx, endpointReq)
 	if err != nil {
+		failed(err)
 		fmt.Fprintf(w, "FAILED\n  %v\n", err)
 		fmt.Fprintln(w, "\nCheck that the endpoint is reachable and the model name is correct.")
 		return false
@@ -974,6 +994,7 @@ func doctorModelProbes(adapter model.Adapter, timeout time.Duration, w io.Writer
 			got.WriteString(c.Text)
 		}
 		if c.Type == model.ChunkError {
+			failed(c.Err)
 			fmt.Fprintf(w, "FAILED\n  %v\n", c.Err)
 			return false
 		}
@@ -996,6 +1017,7 @@ func doctorModelProbes(adapter model.Adapter, timeout time.Duration, w io.Writer
 	defer tcancel()
 	stream, err = adapter.Complete(tctx, toolReq)
 	if err != nil {
+		failed(err)
 		fmt.Fprintf(w, "FAILED\n  %v\n", err)
 		return false
 	}
@@ -1024,4 +1046,28 @@ func doctorModelProbes(adapter model.Adapter, timeout time.Duration, w io.Writer
 		return false
 	}
 	return true
+}
+
+// tierChoiceLines say why the sandbox's tier was chosen, what its image lacks,
+// and how a person may choose another.
+func tierChoiceLines(cfg config.Config, sb sandbox.Sandbox) []string {
+	var out []string
+	if why := sandbox.ChoiceReason(sb); why != "" {
+		out = append(out, "chosen: "+why)
+	}
+	if missing, known := sandbox.MissingTools(sb); known && len(missing) > 0 {
+		out = append(out, fmt.Sprintf("the image %s has no %s; commands that need them fail here", sandbox.SandboxImage(), strings.Join(missing, ", ")))
+	}
+	switch {
+	case cfg.ManagedSets("sandbox.tier"):
+		out = append(out, "the tier is set by the managed configuration")
+	case cfg.Sandbox.Tier == "":
+		floor := orDefault(cfg.Sandbox.MinTier, "process")
+		from := ""
+		if cfg.ManagedSets("sandbox.min_tier") {
+			from = ", set by the managed configuration"
+		}
+		out = append(out, fmt.Sprintf("choose another with /config set sandbox.tier process|container|vm (no weaker than %s%s)", floor, from))
+	}
+	return out
 }

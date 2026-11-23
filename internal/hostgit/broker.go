@@ -57,6 +57,21 @@ func Brokered(line string) bool {
 	return ok
 }
 
+// BrokersRemotes reports whether git's remote operations (fetch, pull, push,
+// clone) are run on the host for a sandbox of tier, as the broker's own list
+// says: only the process tier and the fence are brokered.
+func BrokersRemotes(tier sandbox.Tier) bool {
+	if tier != sandbox.TierProcess && tier != sandbox.TierFence {
+		return false
+	}
+	for _, l := range []string{"git fetch origin", "git pull origin main", "git push origin main", "git clone https://example.com/r.git"} {
+		if Brokered(l) {
+			return true
+		}
+	}
+	return false
+}
+
 // noProtocol names no transport git has, so git reaches no remote.
 const noProtocol = "abhed-none"
 

@@ -62,6 +62,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	if err := start.probe.firstResult(100 * time.Millisecond); err != nil {
 		fmt.Printf("  %s %s\n", s.Red("!"), friendlyModelError(err, appCfg.Model.Default, provider))
 	}
+	if w := defaultModelWarning(appCfg); w != "" {
+		fmt.Printf("  %s %s\n", s.Red("!"), strings.ToUpper(w[:1])+w[1:])
+	}
 
 	// Approval input rides the one stdin reader the editor owns. Without this
 	// the approver opened a second reader on stdin, racing the editor for each
@@ -115,6 +118,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		sandbox: start.sandbox, set: start.set, registry: registry, version: a.version,
 		checkpoint: r.Checkpoint,
 	}
+	sessionState.configChangedNote() // what the file says now, to tell later changes by
 	if ap, ok := approver.(*ui.Approver); ok {
 		sessionState.scopes = ap.Session
 	}
@@ -401,6 +405,10 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 
 		if line := runErrorLine(runErr, woken); line != "" {
 			fmt.Printf("%s %s\n", s.Red("error:"), friendlyModelError(runErr, sessionState.appCfg.Model.Default, sessionState.provider))
+			if pp := explainProvider(sessionState.appCfg, sessionState.appCfg.Model.Default, runErr); pp != nil {
+				noteProviderProblem(pp)
+				fmt.Printf("  %s\n", s.Dim("Next: "+pp.Next))
+			}
 			if hint := switchBackHint(sessionState, runErr); hint != "" {
 				fmt.Printf("  %s\n", s.Dim(hint))
 			}
@@ -410,6 +418,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		woken = false
 		if runErr == nil {
 			releaseRefused(sessionState, runReason)
+		}
+		if note := sessionState.configChangedNote(); note != "" {
+			fmt.Printf("  %s\n", s.Dim(note))
 		}
 		settleTurn(sessionState, runErr)
 		if !editor.Raw() { // on a terminal the footer carries both

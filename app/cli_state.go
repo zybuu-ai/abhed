@@ -19,15 +19,18 @@ import (
 
 // cliState carries what the slash commands need across turns.
 type cliState struct {
-	store     server.EventStore
-	appCfg    config.Config
-	loop      *agent.Loop
-	sessionID string
-	total     agent.Usage
-	undo      *agent.UndoLog
-	workspace string
-	adapter   model.Adapter
-	provider  config.ProviderConfig
+	// cfgSeen is the person's configuration file as this session last saw it.
+	cfgSeen    []byte
+	cfgSeenSet bool
+	store      server.EventStore
+	appCfg     config.Config
+	loop       *agent.Loop
+	sessionID  string
+	total      agent.Usage
+	undo       *agent.UndoLog
+	workspace  string
+	adapter    model.Adapter
+	provider   config.ProviderConfig
 	// open starts the loop for session id, whose record goes on after seq
 	// after (0 for a new one), and makes it the conversation.
 	open func(id string, after int64) *agent.Loop

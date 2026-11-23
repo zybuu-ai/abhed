@@ -101,6 +101,10 @@ type Options struct {
 	// Sandbox is the surface's sandbox. Under sandbox.network allowlist it
 	// confines the stdio MCP servers' network; without it they do not start.
 	Sandbox sandbox.Sandbox
+	// KeptNetwork is what the person opened to this workspace's commands
+	// before, and KeepNetwork keeps a new grant; nil keeps none.
+	KeptNetwork func() KeptNetwork
+	KeepNetwork func(all bool, host string) error
 }
 
 // Set is one assembled tool set. Registry holds no session-bound tool, so a
@@ -137,6 +141,8 @@ type Set struct {
 	// FlushListen records now the contested-port joins still held back, as
 	// the session ends.
 	FlushListen func()
+	// Network is the session's network as the person may open it.
+	Network *Network
 	// extensionTools names the tools extensions provided.
 	extensionTools []string
 	uninstall      func()
@@ -161,6 +167,9 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		o.Bash.Secrets = o.Vault.Env
 		o.Bash.SecretNames = VaultNames(o.Vault)
 	}
+	net := NewNetwork(cfg, o.Sandbox)
+	net.Kept, net.Keep = o.KeptNetwork, o.KeepNetwork
+	o.Bash = withNetwork(o.Bash, net, o.Sandbox != nil)
 	tc := Toolchains(cfg, o.Workspace, o.Sandbox)
 	o.Bash = withToolchains(o.Bash, tc)
 	s := &Set{
@@ -172,6 +181,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 			agent.TodoTool{},
 		),
 		Toolchains: tc,
+		Network:    net,
 		SetListen:  func(on bool) bool { return sandbox.SetListen(resolved(o.Sandbox), on) },
 		Listens:    func() bool { return sandbox.Listens(resolved(o.Sandbox)) },
 		ListenWatch: func(still func() bool, contested func(sandbox.PortContested), lost func(why string)) {

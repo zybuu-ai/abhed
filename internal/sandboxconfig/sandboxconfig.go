@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -31,7 +32,18 @@ func Build(cfg config.Config, workspace string, stateRoots ...string) (sandbox.S
 // Policy is the sandbox policy a configuration asks for, after checking its
 // state paths. Build selects a backend for it.
 func Policy(cfg config.Config, workspace string, stateRoots ...string) (sandbox.Policy, error) {
-	return policy(cfg, workspace, workspace, stateRoots)
+	p, err := policy(cfg, workspace, workspace, stateRoots)
+	p.PreferOwnTools = PreferOwnTools(cfg, runtime.GOOS)
+	return p, err
+}
+
+// PreferOwnTools reports whether a person's own workspace gets the process
+// tier in place of a container whose image has no git: on a Mac, with no
+// tier chosen, no image chosen (one chosen is a choice of the container),
+// and nothing managed setting the tier or its minimum.
+func PreferOwnTools(cfg config.Config, goos string) bool {
+	return goos == "darwin" && cfg.Sandbox.Tier == "" && cfg.Sandbox.Image == "" && os.Getenv("ABHED_SANDBOX_IMAGE") == "" &&
+		!cfg.ManagedSets("sandbox.min_tier") && !cfg.ManagedSets("sandbox.tier")
 }
 
 // InstancePolicy is Policy for a control-plane sandbox working in its own
@@ -72,6 +84,15 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 	}
 	if err := registryEgress(cfg, &p); err != nil {
 		return sandbox.Policy{}, err
+	}
+	// Where the network is off and the person may open it, commands get a
+	// proxy that refuses everything until they do (Studio, or /network).
+	if p.Egress == nil && p.OptionalEgress == nil && !p.AllowNetwork && !managedNetwork(cfg) {
+		pol, err := egress.Compile(egress.Config{})
+		if err != nil {
+			return sandbox.Policy{}, err
+		}
+		p.OptionalEgress = pol
 	}
 	p.ReadOnlyPaths = cfg.Sandbox.ReadOnlyPaths
 	// The toolchain cache, which commands read and never write: a container
@@ -539,6 +560,11 @@ func RegistriesOpenable(cfg config.Config) bool {
 	}
 	managedNet := cfg.ManagedSets("sandbox.allow_network") || cfg.ManagedSets("sandbox.network") || cfg.ManagedSets("egress")
 	return !managedNet || cfg.ManagedSets("sandbox.toolchains_registries")
+}
+
+// managedNetwork reports whether the managed file holds the network.
+func managedNetwork(cfg config.Config) bool {
+	return cfg.ManagedSets("sandbox.allow_network") || cfg.ManagedSets("sandbox.network") || cfg.ManagedSets("egress")
 }
 
 // registryEgress gives p the proxy package registries are opened through:

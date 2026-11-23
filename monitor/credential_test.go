@@ -22,12 +22,31 @@ func TestCredentialSeen(t *testing.T) {
 		{"token in output", "bash", `{"command":"env"}`, "API_TOKEN=abcdefgh12345678", true},
 		{"ordinary output", "bash", `{"command":"go test ./..."}`, "ok  pkg 0.2s", false},
 		{"sed -i on a key path", "bash", `{"command":"sed -i s/a/b/ /ws/.env"}`, "x", false},
+		{"git config with plain remotes", "bash", `{"command":"cat .git/config"}`, gitConfigPlain, false},
+		{"git config read with the tool", "read", `{"path":"/ws/.git/config"}`, gitConfigPlain, false},
+		{"git config with an ssh remote", "bash", `{"command":"cat .git/config"}`, "[remote \"origin\"]\n\turl = ssh://git@github.com/acme/api.git\n", false},
+		{"git config with a password in the url", "bash", `{"command":"cat .git/config"}`, "[remote \"origin\"]\n\turl = https://bot:s3cretValue99@git.acme.example/api.git\n", true},
+		{"git config with a token as the user", "bash", `{"command":"cat .git/config"}`, "[remote \"origin\"]\n\turl = https://Zq81kLm0Pw7xYb2cAb12Cd34@git.acme.example/api.git\n", true},
+		{"git config with an access token", "read", `{"path":"/ws/.git/config"}`, "\turl = https://x-access-token:abcdEFGH1234@github.com/acme/api.git\n", true},
+		{"git config with an auth header", "bash", `{"command":"cat .git/config"}`, "[http]\n\textraheader = AUTHORIZATION: basic eDpzZWNyZXQ=\n", true},
+		{"git config beside .env", "bash", `{"command":"cat .git/config .env"}`, gitConfigPlain, true},
+		{"git config with a continued password", "bash", `{"command":"cat .git/config"}`, "[remote \"origin\"]\n\turl = https://bot:s3cr\\\n3tValue99@git.acme.example/api.git\n", true},
+		{"git config with an api key header", "bash", `{"command":"cat .git/config"}`, "[http]\n\textraheader = X-Api-Key: 9f8e7d6c5b4a\n", true},
+		{"git config with a cookie header", "bash", `{"command":"cat .git/config"}`, "[http]\n\textraHeader = Cookie: session=abc\n", true},
+		{"git config with a cookie file", "bash", `{"command":"cat .git/config"}`, "[http \"https://git.acme.example\"]\n\tcookieFile = ~/.gitcookies\n", true},
+		{"git config with a short gitlab token", "bash", `{"command":"cat .git/config"}`, "\turl = https://glpat-abcDEF123456@gitlab.com/acme/api.git\n", true},
+		{"git config with an oauth2 user", "read", `{"path":"/ws/.git/config"}`, "\turl = https://oauth2:tok@gitlab.com/acme/api.git\n", true},
+		{"git config with a short github token user", "bash", `{"command":"cat .git/config"}`, "\turl = https://ghp_abc@github.com/acme/api.git\n", true},
+		{"git-credentials still counts", "bash", `{"command":"cat ~/.git-credentials"}`, "https://github.com", true},
 	} {
 		if got := CredentialSeen(c.tool, c.args, c.out); got != c.want {
 			t.Errorf("%s: %v", c.name, got)
 		}
 	}
 }
+
+const gitConfigPlain = "[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = https://github.com/acme/api.git\n" +
+	"\tfetch = +refs/heads/*:refs/remotes/origin/*\n[remote \"fork\"]\n\turl = git@github.com:me/api.git\n[credential]\n\thelper = osxkeychain\n"
 
 // Output the monitor counted as credential content before the shared list
 // still counts.
