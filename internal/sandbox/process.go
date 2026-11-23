@@ -327,19 +327,41 @@ func (s *Process) Describe() string {
 	}
 	d := fmt.Sprintf("process isolation via %s · workspace-scoped writes · %s · %s · %s",
 		s.backend, net, procs, mem)
-	if s.Caveat() != "" {
+	if s.noProc() {
 		d += " · no /proc: bubblewrap cannot mount one here, so commands that read it fail"
+	}
+	if s.imageBwrap() {
+		d += " · bubblewrap is the container image's own, so this tier is only as strong as the image"
 	}
 	return d
 }
 
-// Caveat is "no /proc" where bubblewrap cannot mount a fresh one, as under
-// a seccomp profile that allows user namespaces but not that mount.
+// ImageBwrapEnv, set to 1 by an editor that runs the engine in a container
+// image it did not build, says the bubblewrap found is the image's own.
+const ImageBwrapEnv = "ABHED_IMAGE_BWRAP"
+
+func (s *Process) imageBwrap() bool {
+	return s.backend == "bwrap" && os.Getenv(ImageBwrapEnv) == "1"
+}
+
+func (s *Process) noProc() bool {
+	return s.backend == "bwrap" && !s.bwrapFreshOK() && !rootCaps()
+}
+
+// Caveat names what makes this process tier weaker than it reads: "no
+// /proc" where bubblewrap cannot mount a fresh one, as under
+// a seccomp profile that allows user namespaces but not that mount; and
+// "image-supplied bubblewrap" where the bubblewrap is a container image's
+// own, which the image's author chose and Abhed cannot check.
 func (s *Process) Caveat() string {
-	if s.backend == "bwrap" && !s.bwrapFreshOK() && !rootCaps() {
-		return "no /proc"
+	var c []string
+	if s.imageBwrap() {
+		c = append(c, "image-supplied bubblewrap")
 	}
-	return ""
+	if s.noProc() {
+		c = append(c, "no /proc")
+	}
+	return strings.Join(c, ", ")
 }
 
 // Seatbelt is allow-default with targeted denials: deny-default breaks

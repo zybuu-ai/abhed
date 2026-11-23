@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -212,5 +215,125 @@ func TestMCPLoginUnderTheAllowlist(t *testing.T) {
 	}
 	if res, issued, _ := s.Get(); issued != 0 || res != "" {
 		t.Fatalf("the authorization server was reached: %q %d", res, issued)
+	}
+}
+
+// editorURLFollower is the output of a login run by an editor: when the sign-in's
+// address is printed it follows it, as the browser the editor opened would.
+type editorURLFollower struct {
+	t      *testing.T
+	follow func(string) error
+	mu     sync.Mutex
+	buf    bytes.Buffer
+	done   bool
+}
+
+func (u *editorURLFollower) Write(p []byte) (int, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.buf.Write(p)
+	if !u.done {
+		for _, line := range strings.Split(u.buf.String(), "\n") {
+			if l := strings.TrimSpace(line); strings.HasPrefix(line, "  http") && strings.Contains(l, "code_challenge") {
+				u.done = true
+				go func() { _ = u.follow(l) }()
+			}
+		}
+	}
+	return len(p), nil
+}
+
+func (u *editorURLFollower) String() string { u.mu.Lock(); defer u.mu.Unlock(); return u.buf.String() }
+
+// An editor signs in with the yes on a descriptor: the browser is left to it
+// (the address is printed, never opened here), the sign-in is logged as the
+// editor's, and no yes signs nothing in.
+func TestMCPLoginConfirmsOnADescriptor(t *testing.T) {
+	s := mcpauthtest.New(t)
+	ws := loginHome(t, s, "")
+	follow := openBrowser
+	openBrowser = func(string) error { t.Error("the engine opened a browser for an editor's sign-in"); return nil }
+	run := func(answer string) (int, string) {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		_, _ = w.WriteString(answer)
+		_ = w.Close()
+		out := &editorURLFollower{t: t, follow: follow}
+		var errw bytes.Buffer
+		// The argv exactly as Studio's engine host sends it: login -confirm-fd N -- NAME.
+		code := mcpCmd(ws, []string{"login", "-confirm-fd", strconv.Itoa(int(r.Fd())), "--", "corp"}, config.TrustRefused,
+			mcpIO{in: strings.NewReader(""), out: out, err: &errw})
+		return code, out.String() + errw.String()
+	}
+	if code, out := run("\n"); code == 0 || !strings.Contains(out, "no yes was read") {
+		t.Fatalf("no yes: %d %s", code, out)
+	}
+	if _, issued, _ := s.Get(); issued != 0 {
+		t.Fatal("a sign-in with no yes reached the token endpoint")
+	}
+	code, out := run("y\n")
+	if code != 0 || !strings.Contains(out, "Signed in to MCP server corp") || strings.Contains(out, "access-1") {
+		t.Fatalf("login: %d %s", code, out)
+	}
+	log, _ := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".abhed", "config-changes.jsonl"))
+	if !strings.Contains(string(log), `"by":"login -confirm-fd"`) {
+		t.Fatalf("change log %s", log)
+	}
+	// A descriptor that is not open is said as such.
+	var errw bytes.Buffer
+	if code := mcpCmd(ws, []string{"login", "-confirm-fd", "250", "--", "corp"}, config.TrustRefused, mcpIO{in: strings.NewReader(""), out: &bytes.Buffer{}, err: &errw}); code == 0 || !strings.Contains(errw.String(), "-confirm-fd 250 is not open") {
+		t.Fatalf("a closed descriptor: %d %q", code, errw.String())
+	}
+	for _, bad := range [][]string{{"login", "-confirm-fd", "2", "corp"}, {"login", "-confirm-fd", "3"}, {"login", "a", "b"}} {
+		if code := mcpCmd(ws, bad, config.TrustRefused, loginIO(&bytes.Buffer{}, &bytes.Buffer{})); code != 2 {
+			t.Errorf("%v: %d", bad, code)
+		}
+	}
+}
+
+// After the authorization server refuses the refresh, abhed mcp list no
+// longer says signed in, and Studio's view says a sign-in is wanted.
+func TestMCPListAfterARefusedRefresh(t *testing.T) {
+	s := mcpauthtest.New(t)
+	ws := loginHome(t, s, "")
+	var out, errw bytes.Buffer
+	if code := mcpCmd(ws, []string{"login", "corp"}, config.TrustRefused, loginIO(&out, &errw)); code != 0 {
+		t.Fatalf("login: %s", errw.String())
+	}
+	srv := config.MCPServerConfig{Name: "corp", URL: s.URL(), Enabled: true}
+	if v := mcpAuthView(srv, false, time.Now()); v["state"] != "signed-in" || v["needsLogin"] != false || v["refreshable"] != true {
+		t.Fatalf("view %v", v)
+	}
+	store := secrets.Default()
+	a, err := mcpauth.Load(store, "corp", s.URL(), mcpOAuthHTTP(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetDenyRefresh(true)
+	if _, err := a.Refresh(context.Background(), "access-1"); err == nil {
+		t.Fatal("the refresh was not refused")
+	}
+	out.Reset()
+	if code := mcpCmd(ws, []string{"list"}, config.TrustRefused, loginIO(&out, &errw)); code != 0 {
+		t.Fatal(errw.String())
+	}
+	if strings.Contains(out.String(), "(signed in") || !strings.Contains(out.String(), "refused at refresh") || !strings.Contains(out.String(), "abhed mcp login corp") {
+		t.Fatalf("list after a refused refresh: %s", out.String())
+	}
+	v := mcpAuthView(srv, false, time.Now())
+	if v["state"] != "refused" || v["needsLogin"] != true || v["refusedAt"] == nil {
+		t.Fatalf("view after a refused refresh: %v", v)
+	}
+	for _, tok := range []string{"access-1", "refresh-1"} {
+		if strings.Contains(fmt.Sprint(v), tok) {
+			t.Fatalf("the view holds a token: %v", v)
+		}
+	}
+	// No login, and a server that answered 401.
+	if v := mcpAuthView(config.MCPServerConfig{Name: "other", URL: s.URL()}, true, time.Now()); v["state"] != "none" || v["needsLogin"] != true {
+		t.Fatalf("a 401 with no login: %v", v)
 	}
 }
