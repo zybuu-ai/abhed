@@ -94,6 +94,9 @@ type Config struct {
 	// SessionLogins lets a pasted token log this session in, stored in the
 	// person's vault but kept nowhere else: a guest's, which go when they quit.
 	SessionLogins bool
+	// Off, when set, is why the organisation's configuration keeps cluster
+	// logins from this machine: k8s_login refuses with it.
+	Off string
 	// HiddenUntilLogin keeps k8s_get and k8s_apply from the model until a
 	// session of this manager logs in, or a kept login exists: offered for
 	// k8s_login alone, on a machine with nothing else to reach.

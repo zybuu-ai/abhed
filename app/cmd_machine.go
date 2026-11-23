@@ -65,8 +65,8 @@ func machineCmd(args []string, out, errw io.Writer) int {
 func machineDoctor(cfg config.Config) []string {
 	var out []string
 	switch {
-	case cfg.Managed && !cfg.K8s.Enabled:
-		out = append(out, "kubeconfig  not offered: the managed configuration decides")
+	case cfg.MachineSetupOff("k8s") != "" && !cfg.K8s.Enabled:
+		out = append(out, "kubeconfig  not offered: "+cfg.MachineSetupOff("k8s"))
 	case cfg.Sets("k8s.enabled") && !cfg.K8s.Enabled:
 		out = append(out, "kubeconfig  not offered: k8s.enabled is false")
 	case toolset.MachineK8s(cfg, true) || cfg.K8s.Enabled:

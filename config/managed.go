@@ -941,3 +941,26 @@ func warnReadOnlyHint(w warnSink, c Config) {
 		}
 	}
 }
+
+// MachineSetupOff says why the person's own machine setup is off for kind,
+// "k8s" or "ssh": the managed configuration or an org policy sets a k8s or
+// ssh key, which decides for the organisation, or machine_setup false. ""
+// when it is on: a managed file that sets other things (web search, say)
+// leaves it alone.
+func (c Config) MachineSetupOff(kind string) string {
+	switch {
+	case c.ManagedSets(kind) || c.FromOrg(kind):
+		return fmt.Sprintf("your organisation's configuration (%s) sets %s, so only what it configures is offered here; ask your administrator", c.managedFileName(), kind)
+	case (c.ManagedSets("machine_setup") || c.FromOrg("machine_setup")) && c.MachineSetup != nil && !*c.MachineSetup:
+		return fmt.Sprintf("your organisation's configuration (%s) turns off the use of this machine's own cluster and SSH setup (machine_setup false); ask your administrator", c.managedFileName())
+	}
+	return ""
+}
+
+// managedFileName names where managed settings come from, for a reason.
+func (c Config) managedFileName() string {
+	if len(c.OrgPolicy.Keys) > 0 {
+		return "its org policy"
+	}
+	return managed.ConfigFile
+}

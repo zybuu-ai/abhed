@@ -345,10 +345,11 @@ func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...an
 
 // MachineK8s reports whether the Kubernetes tools are offered only because
 // this is the person's own machine and it has a kubeconfig, or kept
-// cluster logins: no configuration file says k8s.enabled either way, and no
-// managed configuration is in force, which decides for an organisation.
+// cluster logins: no configuration file says k8s.enabled either way, and
+// the managed configuration or org policy sets no k8s key and does not turn
+// machine_setup off; see config.MachineSetupOff.
 func MachineK8s(cfg config.Config, machine bool) bool {
-	if !machine || cfg.K8s.Enabled || cfg.Sets("k8s.enabled") || cfg.Managed {
+	if !machine || cfg.K8s.Enabled || cfg.Sets("k8s.enabled") || cfg.MachineSetupOff("k8s") != "" {
 		return false
 	}
 	if len(machinegrant.Logins()) > 0 {
@@ -366,7 +367,7 @@ func MachineK8s(cfg config.Config, machine bool) bool {
 // the person's own machine and its ~/.ssh/config names a host, as for
 // MachineK8s. It returns the config read.
 func MachineSSH(cfg config.Config, machine bool) (*remote.SSHConfig, bool) {
-	if !machine || cfg.Managed || cfg.Sets("ssh.enabled") && !cfg.SSH.Enabled {
+	if !machine || cfg.MachineSetupOff("ssh") != "" || cfg.Sets("ssh.enabled") && !cfg.SSH.Enabled {
 		return nil, false
 	}
 	c, err := remote.LoadSSHConfig(remote.DefaultSSHConfigPath())
@@ -387,7 +388,8 @@ func InfraToolsFor(cfg config.Config, vault *secrets.Store, warn func(string, ..
 	// With nothing to reach yet, the person's own surface still offers
 	// k8s_login, so a pasted `oc login` works on any machine; the other
 	// cluster tools stay hidden from the model until a login exists.
-	loginOnly := machine && !autoK8s && !cfg.K8s.Enabled && !cfg.Sets("k8s.enabled") && !cfg.Managed
+	k8sOff := cfg.MachineSetupOff("k8s")
+	loginOnly := machine && !autoK8s && !cfg.K8s.Enabled && !cfg.Sets("k8s.enabled") && k8sOff == ""
 	if autoK8s || loginOnly {
 		cfg.K8s.Enabled = true
 		// Writes are asked each time, with a dry run first; offered unless a file says otherwise.
@@ -403,7 +405,9 @@ func InfraToolsFor(cfg config.Config, vault *secrets.Store, warn func(string, ..
 	var secretNames []string
 	if vault != nil {
 		secret = vault.Value
-		secretNames, _ = vault.Names() // unreadable lists nothing; a use reports why
+		// Only what may be offered: never a name Abhed keeps for itself (a
+		// model key, an MCP sign-in). Unreadable lists nothing; a use says why.
+		secretNames = vault.Offered()
 	}
 
 	if cfg.K8s.Enabled {
@@ -423,9 +427,9 @@ func InfraToolsFor(cfg config.Config, vault *secrets.Store, warn func(string, ..
 			HiddenUntilLogin: loginOnly,
 			// Under a managed configuration only the organisation's
 			// k8s.clusters take a token: no login is kept or offered.
-			KeptLogins: machine && !cfg.Managed && !machinegrant.Guest(),
+			KeptLogins: machine && k8sOff == "" && !machinegrant.Guest(),
 			// A guest may log in with a paste for the session; nothing is kept.
-			SessionLogins: machine && !cfg.Managed && machinegrant.Guest(),
+			SessionLogins: machine && k8sOff == "" && machinegrant.Guest(),
 			Secret:        secret,
 		})
 		for _, c := range cfg.K8s.Clusters {
@@ -444,6 +448,10 @@ func InfraToolsFor(cfg config.Config, vault *secrets.Store, warn func(string, ..
 		if cfg.K8s.AllowWrites {
 			out = append(out, k8s.ApplyTool{M: mgr, Secret: secret})
 		}
+	} else if machine && k8sOff != "" {
+		// The organisation decides: a pasted login is still withheld, and the
+		// login it asks for is refused with the reason, never an unknown tool.
+		out = append(out, k8s.LoginTool{M: k8s.NewManager(k8s.Config{Off: k8sOff, HiddenUntilLogin: true})})
 	}
 
 	// No len(Hosts) > 0 condition: ssh_connect is how a host gets declared in

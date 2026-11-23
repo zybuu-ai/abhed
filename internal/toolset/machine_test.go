@@ -1,6 +1,8 @@
 package toolset
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/machinegrant"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -64,9 +67,11 @@ func TestMachineSetupIsOfferedOnThePersonsOwnSurfaceOnly(t *testing.T) {
 	if got := infraNames(readOnly, true); slices.Contains(got, "k8s_apply") {
 		t.Fatalf("k8s.allow_writes false still offers k8s_apply: %v", got)
 	}
-	// An organisation's managed configuration decides for it.
-	if got := infraNames(config.Config{Managed: true}, true); len(got) != 0 {
-		t.Fatalf("under a managed configuration %v", got)
+	// An organisation's managed configuration that sets k8s and ssh decides
+	// for it: only a k8s_login that says why it refuses is left.
+	org := config.Config{Managed: true, ManagedKeys: []string{"k8s.enabled", "ssh.enabled"}, SetKeys: []string{"k8s.enabled", "ssh.enabled"}}
+	if got := infraNames(org, true); !slices.Equal(got, []string{"k8s_login"}) {
+		t.Fatalf("under a managed configuration setting k8s and ssh: %v", got)
 	}
 }
 
@@ -129,7 +134,7 @@ func TestManagedConfigOffersNoKeptLogin(t *testing.T) {
 		Login: &machinegrant.Login{Server: "https://personal.example:6443", Secret: "K8S_PERSONAL_TOKEN"}}); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Config{Managed: true}
+	cfg := config.Config{Managed: true, ManagedKeys: []string{"k8s.enabled"}, SetKeys: []string{"k8s.enabled"}}
 	cfg.K8s.Enabled = true
 	for _, tl := range InfraToolsFor(cfg, nil, func(string, ...any) {}, true) {
 		if strings.Contains(tl.Description(), "personal") {
@@ -179,6 +184,82 @@ func TestTheNextSessionSeesAKeptLogin(t *testing.T) {
 	for _, d := range next.Definitions() {
 		if d.Name == "k8s_login" && !strings.Contains(d.Description, "lab") {
 			t.Fatalf("the next session's k8s_login does not name the kept login: %s", d.Description)
+		}
+	}
+}
+
+// A managed file that sets other things, such as web search, leaves the
+// person's machine setup alone, kept logins included.
+func TestAManagedFileThatSetsNoK8sOrSSHKeepsMachineSetup(t *testing.T) {
+	machineHome(t)
+	cfg := config.Config{Managed: true, ManagedKeys: []string{"web_search.enabled"}, SetKeys: []string{"web_search.enabled"}}
+	cfg.WebSearch.Enabled = true
+	// Offered to the model, not only registered: the kubeconfig is in use.
+	reg := tools.NewRegistry(InfraToolsFor(cfg, nil, func(string, ...any) {}, true)...)
+	var got []string
+	for _, d := range reg.Definitions() {
+		got = append(got, d.Name)
+	}
+	slices.Sort(got)
+	if !slices.Equal(got, []string{"k8s_apply", "k8s_get", "k8s_login", "ssh", "ssh_connect"}) {
+		t.Fatalf("under a web-search-only managed file the model is offered %v", got)
+	}
+}
+
+// A managed configuration that sets k8s turns the kubeconfig and pasted
+// logins off, and a pasted login is refused with the reason, never as an
+// unknown tool; ssh, which it does not set, stays.
+func TestAManagedK8sSettingTurnsMachineK8sOffWithAReason(t *testing.T) {
+	machineHome(t)
+	cfg := config.Config{Managed: true, ManagedKeys: []string{"k8s.enabled"}, SetKeys: []string{"k8s.enabled"}}
+	ts := InfraToolsFor(cfg, nil, func(string, ...any) {}, true)
+	var names []string
+	var login tools.Tool
+	for _, tl := range ts {
+		names = append(names, tl.Name())
+		if tl.Name() == "k8s_login" {
+			login = tl
+		}
+	}
+	slices.Sort(names)
+	if !slices.Equal(names, []string{"k8s_login", "ssh", "ssh_connect"}) || login == nil {
+		t.Fatalf("under a managed k8s.enabled false: %v", names)
+	}
+	err := tools.Precheck(context.Background(), login, nil, json.RawMessage(`{"cluster":"lab","pasted":"P1"}`))
+	if err == nil || !strings.Contains(err.Error(), "organisation") || !strings.Contains(err.Error(), "administrator") {
+		t.Fatalf("the pasted login's refusal: %v", err)
+	}
+	// machine_setup false turns both off.
+	off := false
+	cfg = config.Config{Managed: true, ManagedKeys: []string{"machine_setup"}, MachineSetup: &off}
+	if got := infraNames(cfg, true); !slices.Equal(got, []string{"k8s_login"}) {
+		t.Fatalf("under a managed machine_setup false: %v", got)
+	}
+}
+
+// k8s_login names only the secrets the model may be offered: never a model
+// key or another name Abhed keeps for itself.
+func TestK8sLoginListsOnlyOfferedSecrets(t *testing.T) {
+	machineHome(t)
+	vault := secrets.Open(filepath.Join(t.TempDir(), "s.json"))
+	for name, v := range map[string]string{"DB_PASSWORD": "x", "MODEL_KEY_ANTHROPIC_API_KEY": "sk-y"} {
+		if strings.HasPrefix(name, "MODEL_KEY_") {
+			if err := vault.SetHeld(name, v); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err := vault.Set(name, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tl := range InfraToolsFor(config.Config{}, vault, func(string, ...any) {}, true) {
+		if tl.Name() != "k8s_login" {
+			continue
+		}
+		d := tl.Description()
+		if strings.Contains(d, "MODEL_KEY") || !strings.Contains(d, "DB_PASSWORD") {
+			t.Fatalf("k8s_login's description: %s", d)
 		}
 	}
 }
