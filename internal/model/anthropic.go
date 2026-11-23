@@ -66,6 +66,7 @@ type Anthropic struct {
 	Notify func(string)
 
 	profile Profile
+	limits  *Limits
 }
 
 const defaultAnthropicVersion = "2023-06-01"
@@ -90,7 +91,7 @@ func NewAnthropic(baseURL, apiKey, model string, p Profile) *Anthropic {
 }
 
 func (c *Anthropic) Name() string     { return c.profile.Name }
-func (c *Anthropic) Profile() Profile { return c.profile }
+func (c *Anthropic) Profile() Profile { return c.limits.apply(c.profile) }
 
 // ---------------------------------------------------------------- wire types
 
@@ -267,8 +268,9 @@ func (c *Anthropic) buildRequest(req Request) anthropicRequest {
 
 	maxTokens := sp.MaxTokens
 	if maxTokens <= 0 {
-		maxTokens = c.profile.MaxOutputTokens
+		maxTokens = c.Profile().MaxOutputTokens
 	}
+	maxTokens = clampOutput(maxTokens, c.Profile())
 	if maxTokens <= 0 {
 		maxTokens = 8192 // the API requires this field
 	}

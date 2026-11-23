@@ -40,6 +40,7 @@ type Gemini struct {
 	Notify func(string)
 
 	profile Profile
+	limits  *Limits
 }
 
 func NewGemini(baseURL, apiKey, model string, p Profile) *Gemini {
@@ -61,7 +62,7 @@ func NewGemini(baseURL, apiKey, model string, p Profile) *Gemini {
 }
 
 func (g *Gemini) Name() string     { return g.profile.Name }
-func (g *Gemini) Profile() Profile { return g.profile }
+func (g *Gemini) Profile() Profile { return g.limits.apply(g.profile) }
 
 type geminiPart struct {
 	Text             string          `json:"text,omitempty"`
@@ -225,7 +226,7 @@ func (g *Gemini) buildRequest(req Request) geminiRequest {
 		Temperature:     sp.Temperature,
 		TopP:            sp.TopP,
 		TopK:            sp.TopK,
-		MaxOutputTokens: sp.MaxTokens,
+		MaxOutputTokens: clampOutput(sp.MaxTokens, g.Profile()),
 		StopSequences:   sp.Stop,
 		Seed:            sp.Seed,
 	}

@@ -69,6 +69,7 @@ type OpenAICompatible struct {
 	Notify func(string)
 
 	profile Profile
+	limits  *Limits
 }
 
 func NewOpenAICompatible(baseURL, apiKey, model string, p Profile) *OpenAICompatible {
@@ -88,7 +89,7 @@ func NewOpenAICompatible(baseURL, apiKey, model string, p Profile) *OpenAICompat
 }
 
 func (c *OpenAICompatible) Name() string     { return c.profile.Name }
-func (c *OpenAICompatible) Profile() Profile { return c.profile }
+func (c *OpenAICompatible) Profile() Profile { return c.limits.apply(c.profile) }
 
 // wire types
 
@@ -325,7 +326,7 @@ func (c *OpenAICompatible) buildRequest(req Request) wireRequest {
 		Messages:          msgs,
 		Tools:             tools,
 		ParallelToolCalls: parallel,
-		MaxTokens:         sp.MaxTokens,
+		MaxTokens:         clampOutput(sp.MaxTokens, c.Profile()),
 		Temperature:       sp.Temperature,
 		TopP:              sp.TopP,
 		FrequencyPenalty:  sp.FrequencyPenalty,

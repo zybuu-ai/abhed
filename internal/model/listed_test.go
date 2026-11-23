@@ -32,7 +32,7 @@ func TestListedOrAlias(t *testing.T) {
 		}
 	}
 	// Known hosted names carry no invented price.
-	for _, n := range []string{"claude-sonnet-4-6", "gpt-4.5", "o1", "o4-mini"} {
+	for _, n := range []string{"claude-opus-4-1", "gpt-4.5", "o1", "o4-mini"} {
 		if _, ok := PriceFor(n, nil); ok {
 			t.Errorf("%q has a price", n)
 		}
