@@ -270,12 +270,18 @@ func (d *Diagnoser) server(ctx context.Context, l *agent.Loop, lang string) (s *
 	if isBash {
 		tier = Tier(b)
 	}
-	// Off with no record where no server can run: no sandbox, or none installed.
-	if !isBash || b.Sandbox == nil || tier == "" || tier == string(sandbox.TierNone) ||
-		d.opt.Find != nil && !strings.ContainsAny(argv[0], "/\\") && !d.opt.Find(argv[0]) {
+	// Off with no record where no server can run: no sandbox.
+	if !isBash || b.Sandbox == nil || tier == "" || tier == string(sandbox.TierNone) {
 		d.off[lang] = true
 		d.mu.Unlock()
 		return nil, "", false
+	}
+	// None installed: off, with nothing put to policy for a command that
+	// cannot run, and one note saying so (not a refusal).
+	if d.opt.Find != nil && !strings.ContainsAny(argv[0], "/\\") && !d.opt.Find(argv[0]) {
+		d.off[lang] = true
+		d.mu.Unlock()
+		return nil, Missing(lang, argv[0]), true
 	}
 	// The start is judged without the lock, which a model judge could hold
 	// past every other language's edits and Close; the language waits.
@@ -350,6 +356,19 @@ func (d *Diagnoser) server(ctx context.Context, l *agent.Loop, lang string) (s *
 	}
 	go s.run(b, root, watch) // #nosec G118 -- the server serves the session's later edits, not this one; Close and its 12-hour life end it
 	return s, "", true
+}
+
+// toolchainOf is the toolchain that installs a language's default server.
+var toolchainOf = map[string]string{"go": "go", "python": "python", "typescript": "node", "javascript": "node", "rust": "rust"}
+
+// Missing says that a language's server is not installed, and how to
+// install the default one.
+func Missing(lang, program string) string {
+	s := "no " + lang + " diagnostics: " + filepath.Base(program) + " is not installed where commands run"
+	if def := lsprelay.DefaultServers[lang]; len(def) > 0 && def[0] == program && toolchainOf[lang] != "" {
+		s += "; install it with: abhed toolchain install -lsp " + toolchainOf[lang]
+	}
+	return s
 }
 
 // startedNote is the start's outcome as the record and the surfaces show it.

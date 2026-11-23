@@ -20,6 +20,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -482,4 +483,49 @@ func expandHome(path string) string {
 		}
 	}
 	return path
+}
+
+// Stream runs command with the caller's streams, as the SSH host's own
+// process: nothing is forwarded (no agent, no X11, no ports) and no
+// environment is sent. It returns the command's exit status.
+func (h *Host) Stream(ctx context.Context, command string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	client, err := h.connect(ctx)
+	if err != nil {
+		return -1, err
+	}
+	session, err := client.NewSession()
+	if err != nil {
+		return -1, fmt.Errorf("open session on %s: %w", h.cfg.Name, err)
+	}
+	defer func() { _ = session.Close() }()
+	session.Stdout, session.Stderr = stdout, stderr
+	// Through a pipe, not session.Stdin: the session then ends when the remote
+	// command does, without waiting for the caller's stdin to close.
+	in, err := session.StdinPipe()
+	if err != nil {
+		return -1, fmt.Errorf("open session on %s: %w", h.cfg.Name, err)
+	}
+	go func() {
+		_, _ = io.Copy(in, stdin)
+		_ = in.Close()
+	}()
+	if err := session.Start(command); err != nil {
+		return -1, fmt.Errorf("start the command on %s: %w", h.cfg.Name, err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- session.Wait() }()
+	select {
+	case err := <-done:
+		var exitErr *ssh.ExitError
+		if err != nil && asExitError(err, &exitErr) {
+			return exitErr.ExitStatus(), nil
+		}
+		if err != nil {
+			return -1, fmt.Errorf("the command on %s ended: %w", h.cfg.Name, err)
+		}
+		return 0, nil
+	case <-ctx.Done():
+		_ = session.Signal(ssh.SIGTERM)
+		return -1, ctx.Err()
+	}
 }

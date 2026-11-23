@@ -1000,7 +1000,8 @@ interface Capabilities {
          status: "connected" | "starting" | "stopped" | "error" | "refused"; error?: string;
          tools: string[]; source: "user" | "workspace" | "managed";
          pinned: boolean;                                   // digest-pinned command or image
-         refusedTools?: string[] }[];                       // offered, not registered for their name
+         refusedTools?: string[];                           // offered, not registered for their name
+         auth?: McpAuth }[];                                // URL servers only (1.3.0, `mcp.login`)
   extensions: { name: string; events: string[];            // Abhed hook extensions
                 status: "running" | "stopped" | "not started"; error?: string; source: string }[];
   web: { search: boolean; fetch: boolean; allowed_hosts: string[]; ask: boolean };
@@ -1056,6 +1057,52 @@ interface Capabilities {
     would never start), and inside an agent's command, recorded as
     `config.refused {key: "mcp.servers", value: "<name> sha256:<hash>",
     principal}`; -32000 when the file already has a server of that name.
+- **Signing in to a URL server** (1.3.0; `mcp.login` in `features`). A
+  sign-in hands the agent a credential, so it is not an ACP method either;
+  `_abhed/mcp/login` does not exist, and no token ever crosses ACP.
+  ```ts
+  interface McpAuth {
+    state: "none" | "signed-in" | "refused" | "ended" | "other-url" | "unreadable";
+    issuer?: string; expiresAt?: number;                    // Unix seconds
+    refreshable: boolean; refusedAt?: number;               // when a refresh was refused
+    needsLogin: boolean;                                    // a 401, or a login that cannot give a token
+    error?: string }                                        // "unreadable" only, redacted
+  ```
+  On the person's Sign In, Studio asks in a modal whose default is No, then
+  its engine host process runs `abhed mcp login -confirm-fd 3 NAME` with an
+  argv array and writes `y` on descriptor 3. The command line refuses inside
+  an agent's command, fails when no yes is read, prints the authorization
+  address (`  https://…` on the line after "Sign in to MCP server NAME in
+  your browser:") and does not open a browser itself: Studio opens that
+  address, and only an `http(s)` one. The engine keeps the tokens in its
+  store and logs `by: "login -confirm-fd"`; `/mcp restart` takes the new
+  login up. Cancelling ends that process only.
+- **The editor's files from the engine** (1.3.0; `fs` in `features`), for a
+  folder on another machine (studio-remote.md). Every method takes
+  `{sessionId, path}` with `path` absolute on the engine's machine and inside
+  the session's roots; a path outside them, Abhed's state and anything the
+  read rules withhold are refused (-32001) with `data.fs` naming the kind
+  (`notFound`, `exists`, `notADirectory`, `isADirectory`, `noPermissions`).
+  - `_abhed/fs/stat` → `{type: 1 | 2, size, mtime, ctime}` (milliseconds);
+    `_abhed/fs/readDir` → `{entries: [{name, type}]}`, withheld names left
+    out; `_abhed/fs/read` → `{content: base64, sha256}` (at most 16 MiB).
+  - `_abhed/fs/write {path, content: base64, create, overwrite}`: text only,
+    through the write tool on the manual path (recorded by: user);
+    `_abhed/fs/delete {path, recursive}` through the delete rules;
+    `_abhed/fs/rename {path, to, overwrite}` judged as a delete and a write,
+    recorded `manual.edit`; `_abhed/fs/mkdir {path}` through the write rules.
+  - `_abhed/fs/search {path, query, isRegex, caseSensitive, wholeWord,
+    include, exclude, maxResults}` → `{matches: [{path, line, text,
+    ranges: [[start, end]]}], limitHit}` (0-based, UTF-16 columns);
+    `_abhed/fs/files {path, query, include, exclude, maxResults}` →
+    `{files, limitHit}`.
+  - `_abhed/fs/watch {path, recursive, id}` and `_abhed/fs/unwatch {id}`;
+    changes arrive as `_abhed/fs/changed {id, changes: [{path, type: 1
+    changed | 2 added | 3 deleted}]}`.
+  - `_abhed/fs/git {op: "status"}` → `{root, changes: [{x, y, path}]}`
+    (porcelain v1) and `{op: "original", path}` → `{content}` (HEAD's),
+    run with hooks, fsmonitor, pager and external diff off. Nothing is
+    staged or committed.
 - `_abhed/index/status {sessionId}` and `_abhed/index/rebuild {sessionId}`
   (recorded `by: user`; progress as events).
 - `_abhed/infra/status {sessionId}` is `infra` alone, for polling.
@@ -1698,15 +1745,54 @@ _abhed/complete/warm { sessionId } → { warmed: boolean, ms?: number, recent?: 
   completions endpoint, or a 400 saying it or `suffix` is not supported,
   switches the session to chat. Each request is sent once, no retries; under
   `local_only` no provider follows a redirect off the machine. Text only, no
-  tools. The answer is cleaned before it is offered: reasoning a model wrote
+  tools. The suffix sent is never empty: at the end of a file it is a
+  newline, since Ollama applies a model's fill-in-the-middle template only
+  to a request with a suffix, and without one a coder model answers the
+  prefix in prose. The answer is cleaned before it is offered: reasoning a model wrote
   into its text (`<think>`, `analysis…final` channels) is removed, a fenced
   block gives its code, code repeated from either side of the cursor is
-  trimmed, and an answer that reads as prose is dropped, with `dropped`
-  saying so.
+  trimmed (a one-line answer that ends with the rest of the cursor's line
+  loses that rest, so it is not inserted twice; a rest of brackets alone
+  only when keeping it would close more than the cursor's line opened), and
+  an answer that reads as prose is dropped, with `dropped` saying so: one
+  that opens as a chat answer does ("Here's", "Sure,", "It looks like"), or
+  as an English sentence that opens with no constant or keyword (`None`,
+  `True`, `Self`, `Some`…) and has a contraction, a pronoun, or an article
+  in six words or more ("None if x is None else x" is code), unless the
+  cursor is in a comment, a docstring or a string, or the language is
+  written in sentences (Markdown, plain text, YAML and the like). A string
+  that spans lines counts, each in the languages that have it: in Go,
+  JavaScript and TypeScript an odd count of backticks before the cursor
+  (escaped ones aside); in Rust a raw string (`r"`, `r#"`, `br#"`) left
+  open; in Ruby, shell, Perl and PHP a heredoc whose closing line has not
+  come; in any language an open triple quote. With no language named, every
+  rule applies. The counts are rough: a stray backtick in a Go comment, say,
+  keeps the prose filter quiet for the rest of the file, where Studio's
+  parse check below still applies. Studio also parses the
+  document with the suggestion inserted, where it has the language's
+  grammar and the document is at most 256 KB (larger ones are left to the
+  engine's filter), and drops one whose own text holds a syntax error or
+  that leaves more syntax errors than there were. It parses the document
+  once per version and each suggestion incrementally, on the renderer.
+- Completions go first on a model server they share with next edits and
+  agent turns: a completion waiting for one of the server's request slots
+  (`max_concurrent_requests`, one for `ollama`) is given the next free one
+  ahead of requests that waited without the mark, and fill-in-the-middle
+  requests now take a slot too, rather than waiting in the server's own
+  queue. While a completion is asked for, from its arrival to its answer,
+  next-edit model calls to that server wait, and one in flight is cancelled
+  (§7.11), on a server that queues requests only.
 - Recorded as `completion.enabled` just before the first request is sent,
   and again with `mode: "chat"` before a fallback's first chat request (if
   it cannot be recorded, nothing is sent) and `completion.summary` when
-  the session closes, which counts `superseded` (replaced before sending)
+  the session closes (also when the editor quits: when its input ends, or a
+  stop signal comes while it is still open, the completion and next-edit
+  calls in flight are cancelled and every session is closed, its summaries
+  and `session.ended` recorded once, within 3 seconds of a signal; the
+  signal's close and the input's end share one close, and the exit waits
+  for it). A call cancelled as the session closes is in the summary, as it
+  is in the budget: the summary waits up to a second for it to be counted.
+  The summary counts `superseded` (replaced before sending)
   apart from `cancelled` (after), the answer times of requests answered
   (`latency_p50_ms`, `latency_p90_ms`, `latency_max_ms`, from the request
   reaching the engine, of requests sent to the model only), and `warmups`
@@ -1780,11 +1866,29 @@ _abhed/nextEdit { sessionId, uri, cursor: { line, character },
   any function the window shows and no sites were sent.
   Studio re-parses the document with any suggestion applied before showing
   it, and drops it when the parse fails or is cut short.
+- Completions go first (§7.10): a model call waits while a completion to
+  the same server is asked for, and is cancelled when one arrives while it
+  runs, answered `cancelled: "a completion went first"`. A rename finished
+  from the file asks no model and never waits. This holds only on a server
+  that queues requests (one on this machine, `ollama`, or one with
+  `max_concurrent_requests`); a hosted server serves both side by side and
+  nothing waits or is cancelled there. A call cancelled while it waited for
+  the server's request slot was never sent and is not charged. The answer is
+  bounded by the window it rewrites: `max_tokens` is half the window's bytes
+  plus 64, at least 128 and at most 1,024. An answer cut at that bound
+  (`finish_reason` `length`, `max_tokens` or `MAX_TOKENS`) is `dropped`
+  ("the model's answer was cut short"), never read as the window, so the
+  lines it did not reach are never offered as deletions.
+- `_abhed/nextEdit/cancel { sessionId, seq? }` → `{}` (feature
+  `nextEditCancel`) ends the request in flight, as Studio sends on each
+  keystroke: with `seq`, only that one.
 - Rate limits, `seq` ordering, supersede and cancel as §7.10. Recorded as
   `next_edit.enabled` before the first request and `next_edit.summary` when
   the session closes, which counts renames finished from the file as
-  `local` and those that offered nothing as `local_dropped` (neither in the
-  answer times), and the answer times as §7.10.
+  `served` and, of those, `local`, and those that offered nothing as
+  `local_dropped` (neither in the answer times), and the answer times as
+  §7.10. The metrics keep outcomes apart: `served` there is from the model
+  only, beside `local`.
 
 ### 7.12 Commit messages
 

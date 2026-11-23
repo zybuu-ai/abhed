@@ -580,6 +580,9 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 			if d, ok := hints.observe(ev); ok {
 				fmt.Fprintf(os.Stderr, "abhed: %s\n", config.PrintableText(d.String()))
 			}
+			if note := diagnosticsNote(ev); note != "" {
+				fmt.Fprintf(os.Stderr, "abhed: %s\n", config.PrintableText(note))
+			}
 			if o.verbose && ev.Type == agent.EvModelCall {
 				fmt.Fprintf(os.Stderr, "abhed: model call %s\n", ev.Payload)
 			}

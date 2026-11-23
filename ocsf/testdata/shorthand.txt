@@ -124,4 +124,6 @@
 2026-10-19T12:00:07.123Z s-1#126 CONF:Log INFO turns.extended 25 to 50 (1 of 3) via tui
 2026-10-19T12:00:08.123Z s-1#127 API:Budget stop INFO budget.stopped
 2026-10-19T12:00:09.123Z s-1#128 BASE:Other INFO model.waiting
-2026-10-19T12:00:10.123Z s-1#129 LIFE:Stop INFO session ended: stdin_late
+2026-10-19T12:00:10.123Z s-1#129 CONF:Log INFO plugin.loaded
+2026-10-19T12:00:11.123Z s-1#130 CONF:Log INFO config.changed plugins acme-review (plugin install)
+2026-10-19T12:00:12.123Z s-1#131 LIFE:Stop INFO session ended: stdin_late

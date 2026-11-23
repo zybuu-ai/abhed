@@ -56,6 +56,9 @@ type Options struct {
 	// Models are the provider names a definition may choose. A definition
 	// naming any other is refused.
 	Models []string
+	// Plugins are the approved plugins' definitions, as hashed when they
+	// loaded. They come last: a plugin never takes a name already in use.
+	Plugins []PluginFile
 	// Session are definitions given for this run (-agents), already parsed.
 	// They win a name over the workspace's and the operator's, never over
 	// the organisation's, and none loads when only managed ones may.
@@ -103,6 +106,11 @@ func Load(o Options) ([]*agent.Definition, []error) {
 			errs = append(errs, e...)
 		}
 		levels = append(levels, level{agent.SourceOperator, op})
+		var pl []file
+		for _, f := range o.Plugins {
+			pl = append(pl, file{path: f.Path, data: f.Data})
+		}
+		levels = append(levels, level{agent.SourcePlugin, pl})
 	}
 
 	byName := map[string]*agent.Definition{}
@@ -169,6 +177,12 @@ func Load(o Options) ([]*agent.Definition, []error) {
 type file struct {
 	path string
 	data []byte
+}
+
+// PluginFile is one definition an approved plugin carries.
+type PluginFile struct {
+	Plugin, Path string
+	Data         []byte
 }
 
 // claimedName is the name a file would define: its name key when the header
