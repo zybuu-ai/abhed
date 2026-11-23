@@ -54,6 +54,8 @@ func TestStopOwnedStopsOnlyItsOwnServer(t *testing.T) {
 	// A server this process did not launch: started here only to stand for
 	// someone else's, and stopped by this test by its own pid afterwards.
 	other := exec.Command("/bin/sleep", "60")
+	// A group of its own, as a real server has, so a kill of -pid would reach it.
+	other.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := other.Start(); err != nil {
 		t.Fatal(err)
 	}

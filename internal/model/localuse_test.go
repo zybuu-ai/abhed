@@ -76,3 +76,31 @@ func TestRemoteRequestIsNotLocalUse(t *testing.T) {
 		t.Fatal("a remote endpoint counted as local use")
 	}
 }
+
+// A model endpoint's redirect to another host is not followed with the key.
+func TestModelClientRefusesCrossHostRedirect(t *testing.T) {
+	var leaked atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-api-key") != "" {
+			leaked.Add(1)
+		}
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer other.Close()
+	// 127.0.0.1 and localhost are different hosts to a client.
+	target := "http://localhost:" + other.URL[len("http://127.0.0.1:"):]
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer src.Close()
+	a := NewAnthropic(src.URL, "sk-ant-redirect-0123456789", "claude-x", Profile{})
+	a.Retry = RetryPolicy{Attempts: 1}
+	ch, err := a.Complete(context.Background(), Request{Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+	if err == nil {
+		for range ch {
+		}
+	}
+	if leaked.Load() != 0 {
+		t.Fatal("the key followed a redirect to another host")
+	}
+}

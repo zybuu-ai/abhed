@@ -117,9 +117,15 @@ A stored key is sent only where it belongs. A hosted type's key
 (`ANTHROPIC_API_KEY`, ...) goes only to that type's own endpoint, whichever
 model names it. A model a workspace's file defines is given a stored key only
 when your own (or the managed) configuration names the same key for the same
-host; otherwise the model gets no key and `abhed doctor` says why. The
+endpoint: the same https host (with no explicit port), the same watsonx token
+URL, and for a vertex type the same region and project. An endpoint with an
+explicit port, such as `https://llm.corp.example:8443`, is never shared with a
+workspace's file this way. A hosted type's key is not given to a workspace
+model away from its own endpoint from the environment either. Otherwise the
+model gets no key and `abhed doctor` says why. Model requests do not follow
+a redirect to another host, so a key never follows one there. The
 workspace trust prompt shows the `api_key_env` and `api_key_secret` names a
-file asks for. A variable in the environment is read as before.
+file asks for.
 
 A provider finds its key in this order:
 

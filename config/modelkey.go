@@ -1,8 +1,10 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/modelkeys"
 	"github.com/zybuu-ai/abhed/internal/secrets"
@@ -47,29 +49,64 @@ func (p ProviderConfig) envKeyName() string {
 // type's stored key goes only to that type's official host. A key found is
 // redacted by every redactor in this process from then on.
 func ResolveKey(p ProviderConfig) ProviderConfig {
-	return resolveKey(p, func(string) error { return nil })
+	return resolveKey(p, keyGuard{})
 }
 
-// resolveKeyNamed is ResolveKey for the configured provider name: one a
-// workspace's file defined is given a stored key only for the host the
-// person's own or the managed configuration names for that key.
+// keyGuard is what a provider's key may be taken from: workspace marks an
+// entry a workspace's file defined, mayStore judges a stored key no hosted
+// type owns.
+type keyGuard struct {
+	workspace bool
+	mayStore  func(key string) error
+}
+
+// keyDestinations are every input that decides where p's key is sent, as
+// endpointUnbound lists them: the base_url's host, watsonx's IAM token URL
+// (the field or extra.iam_url), and a vertex type's region and project.
+func keyDestinations(p ProviderConfig) [5]string {
+	d := [5]string{modelkeys.EndpointHost(p.Type, p.BaseURL), p.IAMURL, p.Extra["iam_url"]}
+	if strings.HasPrefix(p.Type, "vertex-") {
+		d[3], d[4] = p.Region, p.ProjectID
+	}
+	return d
+}
+
+// hostedKeyRefused says why a hosted type's key (ANTHROPIC_API_KEY, ...) may
+// not go to p: only to that type's official host, and never with a token URL
+// that would be sent it too. "" when it may, or name is no hosted key.
+func hostedKeyRefused(name string, p ProviderConfig) string {
+	ok, hosted := modelkeys.HostedKeyAllowed(name, p.Type, p.BaseURL)
+	if !hosted {
+		return ""
+	}
+	if ok && p.IAMURL == "" && p.Extra["iam_url"] == "" {
+		return ""
+	}
+	return fmt.Sprintf("the key %s is kept for %s's own endpoint and is not sent to %s",
+		Printable(name), modelkeys.HostedTypeOfKey(name), Printable(orHost(modelkeys.EndpointHost(p.Type, p.BaseURL), p.BaseURL)))
+}
+
+// resolveKeyNamed is ResolveKey for the configured provider name. An entry a
+// workspace's file defined gets a hosted key, stored or exported, only at the
+// type's own endpoint, and another stored key only when the person's own or
+// the managed configuration names that key for the very same destinations.
 func (c Config) resolveKeyNamed(name string, p ProviderConfig) ProviderConfig {
 	if !c.WorkspaceProviders[name] {
 		return ResolveKey(p)
 	}
-	return resolveKey(p, func(key string) error {
-		host := modelkeys.EndpointHost(p.Type, p.BaseURL)
+	return resolveKey(p, keyGuard{workspace: true, mayStore: func(key string) error {
+		want := keyDestinations(p)
 		for n, q := range c.Model.Providers {
-			if c.WorkspaceProviders[n] || host == "" {
+			if c.WorkspaceProviders[n] || want[0] == "" {
 				continue
 			}
-			if q.KeyName() == key && modelkeys.EndpointHost(q.Type, q.BaseURL) == host {
+			if q.KeyName() == key && keyDestinations(q) == want {
 				return nil
 			}
 		}
 		return fmt.Errorf("model %s comes from the workspace's file, which may not have the stored key %s sent to %s; "+
-			"only a model in your own configuration at that host can use it", Printable(name), Printable(key), Printable(orHost(host, p.BaseURL)))
-	})
+			"only a model in your own configuration with the same endpoint (and token URL) can use it", Printable(name), Printable(key), Printable(orHost(want[0], p.BaseURL)))
+	}})
 }
 
 func orHost(host, base string) string {
@@ -79,9 +116,8 @@ func orHost(host, base string) string {
 	return base
 }
 
-// resolveKey is ResolveKey with mayStore judging a stored key that no hosted
-// type owns.
-func resolveKey(p ProviderConfig, mayStore func(key string) error) ProviderConfig {
+// resolveKey is ResolveKey under g.
+func resolveKey(p ProviderConfig, g keyGuard) ProviderConfig {
 	if p.APIKey != "" {
 		p.KeySource = KeySource{Kind: modelkeys.KindConfig}
 		secrets.AlsoRedact("MODEL_KEY", p.APIKey)
@@ -89,6 +125,11 @@ func resolveKey(p ProviderConfig, mayStore func(key string) error) ProviderConfi
 	}
 	if env := p.envKeyName(); env != "" {
 		if v := os.Getenv(env); v != "" {
+			// A workspace entry is not given an exported hosted key away from its host either.
+			if why := hostedKeyRefused(env, p); g.workspace && why != "" {
+				p.KeySource = KeySource{Name: env, Err: errors.New(why)}
+				return p
+			}
 			p.APIKey, p.KeySource = v, KeySource{Kind: modelkeys.KindEnv, Name: env}
 			secrets.AlsoRedact(env, v)
 			return p
@@ -98,12 +139,12 @@ func resolveKey(p ProviderConfig, mayStore func(key string) error) ProviderConfi
 	if name == "" {
 		return p
 	}
-	if ok, hosted := modelkeys.HostedKeyAllowed(name, p.Type, p.BaseURL); !ok {
-		p.KeySource = KeySource{Name: name, Err: fmt.Errorf("the stored key %s is kept for %s's own endpoint and is not sent to %s",
-			Printable(name), modelkeys.HostedTypeOfKey(name), Printable(orHost(modelkeys.EndpointHost(p.Type, p.BaseURL), p.BaseURL)))}
+	if why := hostedKeyRefused(name, p); why != "" {
+		p.KeySource = KeySource{Name: name, Err: errors.New(why)}
 		return p
-	} else if !hosted {
-		if err := mayStore(name); err != nil {
+	}
+	if _, hosted := modelkeys.HostedByKey(name); !hosted && g.mayStore != nil {
+		if err := g.mayStore(name); err != nil {
 			p.KeySource = KeySource{Name: name, Err: err}
 			return p
 		}

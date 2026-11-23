@@ -99,8 +99,11 @@ func (s *stopper) watch(then onStop) {
 		return
 	}
 	s.cancel(stoppedBy{sig})
-	// TERM now to an Ollama this process started: an editor's kill may follow within seconds.
-	ollama.TermOwned()
+	if then == stopExits {
+		// TERM now to an Ollama this process started: an editor's kill may follow within
+		// seconds. Not while draining: the sessions draining may be using it.
+		ollama.TermOwned()
+	}
 	switch then {
 	case stopReturns:
 		signal.Stop(s.sigs)

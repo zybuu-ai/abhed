@@ -267,11 +267,10 @@ func StopOwned(why string) []int {
 	return keep.stopAll(why)
 }
 
-// OwnLaunched starts path with args as Start does, detached in its own
-// process group, and makes it this process's to stop as Own does. For a
-// program that starts a server of its own, and for tests that stand a stub
-// in for ollama.
-func OwnLaunched(path string, args []string, api, stateDir string, idle time.Duration) (int, error) {
+// OwnLaunchedForTests starts path as Start does and makes it this process's
+// to stop. Test-only: it lets another package's test stand a stub in for
+// ollama on the exit paths; nothing else calls it.
+func OwnLaunchedForTests(path string, args []string, api, stateDir string, idle time.Duration) (int, error) {
 	pid, _, err := launch(path, args, MinimalEnv(os.Environ()), nil)
 	if err != nil {
 		return 0, err
