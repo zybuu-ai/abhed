@@ -950,7 +950,11 @@ func warnReadOnlyHint(w warnSink, c Config) {
 func (c Config) MachineSetupOff(kind string) string {
 	switch {
 	case c.ManagedSets(kind) || c.FromOrg(kind):
-		return fmt.Sprintf("your organisation's configuration (%s) sets %s, so only what it configures is offered here; ask your administrator", c.managedFileName(), kind)
+		what := "only the hosts it declares (ssh.hosts) and ssh_connect are offered here, not this machine's ~/.ssh/config"
+		if kind == "k8s" {
+			what = "only the clusters it declares (k8s.clusters) are offered here, and no kubeconfig is read unless it names one; no login is kept"
+		}
+		return fmt.Sprintf("your organisation's configuration (%s) sets %s, so %s; ask your administrator", c.managedFileName(), kind, what)
 	case (c.ManagedSets("machine_setup") || c.FromOrg("machine_setup")) && c.MachineSetup != nil && !*c.MachineSetup:
 		return fmt.Sprintf("your organisation's configuration (%s) turns off the use of this machine's own cluster and SSH setup (machine_setup false); ask your administrator", c.managedFileName())
 	}

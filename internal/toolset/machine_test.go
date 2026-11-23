@@ -3,10 +3,14 @@ package toolset
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -261,5 +265,80 @@ func TestK8sLoginListsOnlyOfferedSecrets(t *testing.T) {
 		if strings.Contains(d, "MODEL_KEY") || !strings.Contains(d, "DB_PASSWORD") {
 			t.Fatalf("k8s_login's description: %s", d)
 		}
+	}
+}
+
+// personalKube writes a kubeconfig whose only context, personal, points at a
+// server that counts the requests it is sent.
+func personalKube(t *testing.T) *atomic.Int32 {
+	t.Helper()
+	var hits atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		fmt.Fprint(w, `{"kind":"PodList","items":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+	p := filepath.Join(os.Getenv("HOME"), ".kube", "config")
+	_ = os.MkdirAll(filepath.Dir(p), 0o700)
+	text := "current-context: personal\nclusters:\n- name: p\n  cluster:\n    server: " + srv.URL + "\n    insecure-skip-tls-verify: true\n" +
+		"contexts:\n- name: personal\n  context:\n    cluster: p\n    user: me\nusers:\n- name: me\n  user:\n    token: personal-token\n"
+	if err := os.WriteFile(p, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return &hits
+}
+
+// Where the organisation sets k8s with its own clusters, the person's
+// kubeconfig is neither listed nor dialled: only the org's clusters are
+// offered, and a pasted login is refused with the reason.
+func TestAnOrgsClustersAreAllThatIsOffered(t *testing.T) {
+	machineHome(t)
+	hits := personalKube(t)
+	cfg := config.Config{Managed: true, ManagedKeys: []string{"k8s.clusters", "k8s.enabled"}, SetKeys: []string{"k8s.clusters", "k8s.enabled"}}
+	cfg.K8s.Enabled = true
+	cfg.K8s.Clusters = []config.K8sClusterConfig{{Name: "orgprod", Server: "https://orgprod.example:6443"}}
+	reg := tools.NewRegistry(InfraToolsFor(cfg, nil, func(string, ...any) {}, true)...)
+	get, _ := reg.Get("k8s_get")
+	login, _ := reg.Get("k8s_login")
+	if get == nil || login == nil {
+		t.Fatalf("the org's cluster tools are missing: %v", reg.Names())
+	}
+	if strings.Contains(get.Description(), "personal") {
+		t.Fatalf("k8s_get lists the personal context: %s", get.Description())
+	}
+	if !strings.Contains(login.Description(), "orgprod") {
+		t.Fatalf("k8s_login does not offer the org's cluster: %s", login.Description())
+	}
+	sess, _ := tools.NewSession(t.TempDir())
+	for _, args := range []string{`{"resource":"pods","context":"personal"}`, `{"resource":"pods"}`} {
+		res := get.Run(context.Background(), sess, json.RawMessage(args))
+		if !res.IsError || !strings.Contains(res.Content, "no kubeconfig") {
+			t.Fatalf("%s: %+v", args, res)
+		}
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("the personal cluster was dialled %d times", hits.Load())
+	}
+	id := tools.HoldPasted(sess, tools.Pasted{Value: "tok-0123456789abcdef", Server: "https://personal.example"})
+	err := tools.Precheck(context.Background(), login, sess, json.RawMessage(`{"cluster":"lab","pasted":"`+id+`"}`))
+	if err == nil || !strings.Contains(err.Error(), "ask your administrator") {
+		t.Fatalf("a pasted login under the org's clusters: %v", err)
+	}
+}
+
+// The second route: the org sets only k8s.allow_writes false, and the
+// person's own file sets k8s.enabled true. The org has set k8s, so the
+// person's true is not taken: no kubeconfig tools, and nothing dialled.
+func TestAPersonsK8sEnabledIsNotTakenWhereTheOrgSetsK8s(t *testing.T) {
+	machineHome(t)
+	hits := personalKube(t)
+	cfg := config.Config{Managed: true, ManagedKeys: []string{"k8s.allow_writes"}, SetKeys: []string{"k8s.allow_writes", "k8s.enabled"}}
+	cfg.K8s.Enabled = true
+	got := infraNames(cfg, true)
+	if slices.Contains(got, "k8s_get") || slices.Contains(got, "k8s_apply") {
+		t.Fatalf("the person's k8s.enabled was taken under the org's k8s setting: %v", got)
+	}
+	if hits.Load() != 0 {
+		t.Fatal("the personal cluster was dialled")
 	}
 }

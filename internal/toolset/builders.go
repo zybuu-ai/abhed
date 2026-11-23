@@ -389,6 +389,19 @@ func InfraToolsFor(cfg config.Config, vault *secrets.Store, warn func(string, ..
 	// k8s_login, so a pasted `oc login` works on any machine; the other
 	// cluster tools stay hidden from the model until a login exists.
 	k8sOff := cfg.MachineSetupOff("k8s")
+	// Where the organisation sets k8s on the person's machine, only what it
+	// configures is offered: its own k8s.enabled (a lower layer's true is
+	// ignored), its clusters, and a kubeconfig only where it names one.
+	noKubeconfig, pastedOff := "", ""
+	if machine && k8sOff != "" {
+		pastedOff = k8sOff
+		if !cfg.ManagedSets("k8s.enabled") && !cfg.FromOrg("k8s.enabled") {
+			cfg.K8s.Enabled = false
+		}
+		if !cfg.ManagedSets("k8s.kubeconfig") && !cfg.FromOrg("k8s.kubeconfig") {
+			noKubeconfig = k8sOff
+		}
+	}
 	loginOnly := machine && !autoK8s && !cfg.K8s.Enabled && !cfg.Sets("k8s.enabled") && k8sOff == ""
 	if autoK8s || loginOnly {
 		cfg.K8s.Enabled = true
@@ -417,9 +430,12 @@ func InfraToolsFor(cfg config.Config, vault *secrets.Store, warn func(string, ..
 			Namespace:  cfg.K8s.Namespace,
 			// From the environment only: a token in a config file sits in a
 			// directory the agent itself can read.
-			Token:    os.Getenv("ABHED_K8S_TOKEN"),
-			Clusters: LoginClusters(cfg),
-			CAFile:   cfg.K8s.CAFile,
+			Token:        os.Getenv("ABHED_K8S_TOKEN"),
+			Clusters:     LoginClusters(cfg),
+			CAFile:       cfg.K8s.CAFile,
+			NoKubeconfig: noKubeconfig,
+			// Where the organisation sets k8s, only its clusters take a token.
+			PastedOff: pastedOff,
 			// A kubeconfig used because it is there asks before each context's
 			// first use; one the configuration turned on asks only before Abhed
 			// runs a context's credential helper.
@@ -439,7 +455,7 @@ func InfraToolsFor(cfg config.Config, vault *secrets.Store, warn func(string, ..
 			}
 		}
 		// The kubeconfig's own setting, which doctor alone used to name.
-		if name, insecure := k8s.InsecureContext(k8s.Config{Kubeconfig: cfg.K8s.Kubeconfig, Context: cfg.K8s.Context}); insecure {
+		if name, insecure := k8s.InsecureContext(k8s.Config{Kubeconfig: cfg.K8s.Kubeconfig, Context: cfg.K8s.Context, NoKubeconfig: noKubeconfig}); insecure {
 			warn("the kubeconfig skips TLS verification for context %q — "+
 				"its credentials can be read by anyone in the path", name)
 		}

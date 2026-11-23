@@ -337,4 +337,13 @@ func TestAPastedLoginRefusedByTheOrganisationSaysWhy(t *testing.T) {
 	if strings.Contains(sent, pinTok) || strings.Contains(sent, "nknown tool") || !strings.Contains(sent, "ask your administrator") {
 		t.Fatalf("the model was told: %q", sent)
 	}
+	// The note on the paste already says logins are off, and why.
+	first := ""
+	for _, m := range ad.gotRequests[0].Messages {
+		first += m.Content
+	}
+	if !strings.Contains(first, "Cluster logins are off on this machine") || !strings.Contains(first, "ask your administrator") ||
+		strings.Contains(first, "offer to log in") {
+		t.Fatalf("the paste's note: %q", first)
+	}
 }

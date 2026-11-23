@@ -252,3 +252,14 @@ func (t LoginTool) NotePasted() {
 		t.M.pasted.Store(true)
 	}
 }
+
+// LoginsOff is why a pasted login cannot be used on this machine, or "".
+func (t LoginTool) LoginsOff() string {
+	if t.M == nil {
+		return ""
+	}
+	if t.M.cfg.Off != "" {
+		return t.M.cfg.Off
+	}
+	return t.M.cfg.PastedOff
+}

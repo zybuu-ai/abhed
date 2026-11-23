@@ -94,6 +94,12 @@ type Config struct {
 	// SessionLogins lets a pasted token log this session in, stored in the
 	// person's vault but kept nowhere else: a guest's, which go when they quit.
 	SessionLogins bool
+	// NoKubeconfig, when set, is why no kubeconfig is read: the organisation
+	// sets k8s and names none, so only its clusters are offered.
+	NoKubeconfig string
+	// PastedOff, when set, is why a pasted token cannot be used here, though
+	// the organisation's own clusters can be logged in to.
+	PastedOff string
 	// Off, when set, is why the organisation's configuration keeps cluster
 	// logins from this machine: k8s_login refuses with it.
 	Off string
@@ -193,6 +199,9 @@ func KubeconfigPaths(cfg Config) []string {
 // name a context, cluster or user, or to set current-context, wins, and a
 // listed file that does not exist is skipped.
 func loadKubeconfig(cfg Config) (*kubeconfig, string, error) {
+	if cfg.NoKubeconfig != "" {
+		return nil, "", fmt.Errorf("no kubeconfig is used on this machine: %s. Name one of its clusters as cluster", cfg.NoKubeconfig)
+	}
 	paths := KubeconfigPaths(cfg)
 	if len(paths) == 0 {
 		return nil, "", fmt.Errorf("no kubeconfig configured and no home directory")

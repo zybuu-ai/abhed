@@ -164,9 +164,15 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed secret set` and name it in a `secret(NAME)` rule. Set
   `k8s.enabled` or `ssh.enabled` to `false` to turn the tools off. A
   managed configuration or org policy leaves this on unless it sets a
-  `k8s` or `ssh` key, or `machine_setup: false`; an organisation that wants
-  its laptops to keep to its own clusters and hosts sets one of those, and a
-  pasted login there is refused with that reason.
+  `k8s` or `ssh` key, or `machine_setup: false`. Where it sets any `k8s`
+  key, that is now all that counts on the laptop: a person's or
+  workspace's `k8s.enabled: true` is not taken, only the organisation's
+  `k8s.clusters` are offered, no kubeconfig is read unless the organisation
+  itself names `k8s.kubeconfig`, no login is kept, and a pasted login is
+  refused with that reason. Before, a laptop under such a configuration
+  could still reach the person's own kubeconfig contexts; an organisation
+  that relied on that names its kubeconfig in `k8s.kubeconfig`. Where it
+  sets any `ssh` key, only its `ssh.hosts` and `ssh_connect` are offered.
 - Under `-verify strict`, a statement that only explains code the session
   read and did not change ("the running total is 0 because nothing has been
   added yet"), or what changed code did before, no longer fails the
