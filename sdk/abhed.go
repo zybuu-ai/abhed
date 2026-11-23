@@ -456,9 +456,10 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		sbox = sb
 		unconfine = hostgit.Register(opts.Workspace, sb)
 		gb := hostgit.NewBroker(opts.Workspace, sb.Tier, sandboxconfig.HostGitNetwork(cfg), sb.Command).
-			HoldsGit(func() bool { return sandbox.HoldsGit(sb) }, func() bool { return sandbox.HoldsNewGit(sb) })
+			HoldsGit(func() bool { return sandbox.HoldsGit(sb) }, func() bool { return sandbox.HoldsNewGit(sb) }).
+			RemotesOff(sandboxconfig.HostGitOff(cfg))
 		bash.Sandbox = gb.Command
-		if sandbox.HoldsGit(sb) {
+		if sandbox.HoldsGit(sb) && gb.BrokersRemoteCommands() {
 			bash.HostAsk = gb.Ask
 		}
 		bash.Isolation = sandboxconfig.Isolation(cfg, string(sb.Tier()))

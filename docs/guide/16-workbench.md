@@ -529,10 +529,10 @@ usual: `add`, `commit`, `branch`, `checkout`, `fetch`, and on Linux
 worktree add`, `remove` and `prune` and `git submodule update`, given as the
 whole line, run through host git with Abhed's safety settings on the process
 tier and the fence (see [Permissions](04-permissions.md)). `git fetch`,
-`pull`, `push`, `clone` and `ls-remote` typed here have their network part
-run through your own git on the host, with your keys, where the sandbox
-holds git's configuration; a pull's merge, a clone's checkout and your own
-pre-push hook run in the sandbox, and no hook runs on the host (see
+`pull`, `push`, `clone` and `ls-remote` are not, and `git submodule update`
+is only with `--no-fetch`: here they run in the sandbox, as in 1.2.9, for every account and guest, as the server would
+otherwise reach a remote with its own account's keys. Studio and the CLI on
+your own machine broker them (see
 [Permissions](04-permissions.md#git-fetch-pull-push-and-clone-through-your-own-git)).
 `git submodule add` still fails there, and the container and vm tiers run none of them on
 the host, so run those outside Abhed. **Changes** and **Review** compare each

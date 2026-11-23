@@ -1907,6 +1907,11 @@ type SandboxConfig struct {
 	// wherever the tier can hold them; true requires it; false turns it off
 	// where no surface requires it.
 	GitProtect *bool `json:"protect_git,omitempty"`
+	// HostGit is sandbox.host_git: unset or true, git fetch, pull, push,
+	// clone and ls-remote have their network part run through the person's
+	// own git on the host (docs/guide/04-permissions.md); false keeps them
+	// in the sandbox. Any layer may turn it off; none turns it back on.
+	HostGit *bool `json:"host_git,omitempty"`
 	// MicroVMSocket is the socket of an abhed-microvm driver; when set, the
 	// control plane can choose the microvm driver by name. Managed only.
 	MicroVMSocket string `json:"microvm_socket,omitempty"`

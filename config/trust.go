@@ -978,6 +978,7 @@ var workspaceRules = map[string]fieldRule{
 	"sandbox.listen":                 {stricterListen, "only stricter: allow, then ask, then off"},
 	"sandbox.listen_ports":           {nil, "names the ports commands may listen on (an operator's setting: not from a workspace, trusted or not)"},
 	"sandbox.protect_git":            {nil, "turned off, commands can plant a hook or fsmonitor your next git command runs"},
+	"sandbox.host_git":               {hostGitOff, "only false"},
 	"sandbox.language_servers":       {nil, "a language server is a process"},
 	"sandbox.image":                  {nil, "chooses the image commands run in"},
 	"sandbox.tier":                   {nil, "chooses what confines commands, in place of the strongest available"},
@@ -1193,6 +1194,16 @@ func onlyFalse(field func(*Config) *bool) func(dst, ws *Config) bool {
 		*field(dst) = false
 		return true
 	}
+}
+
+// hostGitOff takes sandbox.host_git from a workspace only as false.
+func hostGitOff(dst, ws *Config) bool {
+	if h := ws.Sandbox.HostGit; h == nil || *h {
+		return false
+	}
+	off := false
+	dst.Sandbox.HostGit = &off
+	return true
 }
 
 func completionOff(dst, ws *Config) bool {

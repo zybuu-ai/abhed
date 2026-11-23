@@ -693,6 +693,14 @@ mount namespace); `false` turns it off for the terminal CLI, `abhed -p` and
 `abhed rpc`. Studio and `abhed serve` hold them whatever it says. A workspace
 file you have not trusted cannot set it.
 
+`"host_git": false` keeps `git fetch`, `pull`, `push`, `clone` and
+`ls-remote` in the sandbox, with no credentials, instead of running their
+network part through your own git on the host (see
+[Permissions](04-permissions.md#git-fetch-pull-push-and-clone-through-your-own-git)).
+Any file may set it false, a workspace's too; none can set it back. In the
+managed file it is the organisation's switch, and such a call is refused
+with "ask your administrator".
+
 `"terminal": "lines"` makes the workbench terminal run each line as a
 policy-checked command of its own instead of an interactive shell; the
 [workbench guide](16-workbench.md) says what each mode checks.
@@ -787,7 +795,7 @@ is used. A tier that cannot hold the proxy (a container tier on a VM without
 From the first message you send, the model is told what this session can do,
 from its real state: the tier, the network (off, open, an allowlist, what
 you opened, or the host's own where there is no sandbox), whether git remote
-operations (fetch, pull, push, clone) have their network part run through
+operations (fetch, pull, push, clone, ls-remote) have their network part run through
 your own git on the host for it (on the process tier and the fence where
 the sandbox holds git's configuration; see
 [Permissions](04-permissions.md#git-fetch-pull-push-and-clone-through-your-own-git)), the

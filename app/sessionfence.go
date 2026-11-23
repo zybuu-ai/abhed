@@ -21,17 +21,21 @@ func fenceSessionBash(cfg config.Config, workspace string) func(string, *agent.R
 	return func(_ string, rec *agent.Recorder, shared tools.Bash) (tools.Bash, func() error) {
 		sf := &sessionFence{build: func() (sandbox.Sandbox, error) { return buildSandbox(cfg, workspace) }, rec: rec}
 		fence := func() sandbox.Tier { return sandbox.TierFence }
-		gb := hostgit.NewBroker(workspace, fence, sandboxconfig.HostGitNetwork(cfg), sf.Command).HoldsGit(sf.holdsGit, func() bool { return false })
+		// A served session: remote git stays in the sandbox (serveSandbox).
+		gb := hostgit.NewBroker(workspace, fence, sandboxconfig.HostGitNetwork(cfg), sessionFenceCommand(sf)).HoldsGit(sessionFenceHolds(sf), func() bool { return false }).NoRemotes()
 		shared.Sandbox, shared.Shell, shared.HostAsk = gb.Command, sf.Shell, nil
-		// Told to the model only where the fence can hold git's files; a fence
-		// that turns out not to (landlock_only) still brokers nothing.
-		if on, _ := cfg.Sandbox.GitProtected(); on {
-			shared.HostAsk = gb.Ask
-		}
 		shared.Home = sf.CommandHome // the session's commands get its own fence's home
 		return shared, sf.Close
 	}
 }
+
+// sessionFenceCommand and sessionFenceHolds are what a served session's
+// broker runs commands with and asks whether git is held; tests stand in
+// for the fence, which needs Linux.
+var (
+	sessionFenceCommand = func(sf *sessionFence) func(ctx context.Context, cwd, line string) *exec.Cmd { return sf.Command }
+	sessionFenceHolds   = func(sf *sessionFence) func() bool { return sf.holdsGit }
+)
 
 // sessionFence is one served session's fence, with a cgroup of its own. It
 // is qualified at the session's first command, so a session opened only to
@@ -135,7 +139,7 @@ func (s *sessionFence) holdsGit() bool {
 // hostAsk is the broker's Ask where sb holds git's configuration, so the
 // bash tool tells the model of brokered git only where it is brokered.
 func hostAsk(sb sandbox.Sandbox, gb *hostgit.HostBroker) func(key, cwd, command string) (string, string, string, error) {
-	if !sandbox.HoldsGit(sb) {
+	if !sandbox.HoldsGit(sb) || !gb.BrokersRemoteCommands() {
 		return nil
 	}
 	return gb.Ask
