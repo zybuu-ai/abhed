@@ -125,3 +125,27 @@ func TestBrokersRemotes(t *testing.T) {
 		t.Fatal("the probe's own path is not the broker's")
 	}
 }
+
+// On a server, git submodule update run on the host never fetches, whatever
+// the network: the server's account would send its own .netrc and http
+// headers to URLs the agent's .gitmodules names.
+func TestServedSubmoduleUpdateNeverFetches(t *testing.T) {
+	ws := gitRepo(t)
+	t.Setenv("HOME", t.TempDir())
+	inner := func(ctx context.Context, _, _ string) *exec.Cmd { return exec.CommandContext(ctx, "true") }
+	process := func() sandbox.Tier { return sandbox.TierProcess }
+	ctx := context.Background()
+	served := NewBroker(ws, process, Network{Open: true}, inner).NoRemotes()
+	for _, line := range []string{"git submodule update --init", "git submodule update --init --recursive"} {
+		if err := served.Command(ctx, ws, line).Run(); err == nil || !strings.Contains(err.Error(), "on a server") {
+			t.Fatalf("%q fetched on a server: %v", line, err)
+		}
+	}
+	cmd := served.Command(ctx, ws, "git submodule update --init --no-fetch")
+	if cmd.Err != nil {
+		t.Fatal(cmd.Err)
+	}
+	if got := lastEnv(cmd.Env, "GIT_ALLOW_PROTOCOL"); got != noProtocol {
+		t.Fatalf("on a server, GIT_ALLOW_PROTOCOL=%q", got)
+	}
+}

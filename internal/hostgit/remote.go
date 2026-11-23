@@ -221,8 +221,14 @@ func (b *HostBroker) Command(ctx context.Context, cwd, line string) *exec.Cmd {
 		return &exec.Cmd{Err: err}
 	}
 	var env []string
-	if args[0] == "submodule" && !b.net.Open {
+	if args[0] == "submodule" && (!b.net.Open || b.noRemotes) {
 		if !slices.Contains(args, "--no-fetch") && !slices.Contains(args, "-N") {
+			if b.noRemotes {
+				// A server's account would fetch, with its own .netrc and http
+				// headers, from URLs the agent's .gitmodules names.
+				return &exec.Cmd{Err: errors.New("git submodule update: on a server, git run on the host never fetches; " +
+					"add --no-fetch to check out what is already fetched")}
+			}
 			return &exec.Cmd{Err: errors.New("git submodule update: the sandbox's network is off or held to an allowlist, " +
 				"and git run for it on the host would reach the network outside both; add --no-fetch to check out " +
 				"what is already fetched, or fetch the submodules yourself")}

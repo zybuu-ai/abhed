@@ -33,6 +33,7 @@ func TestServedSessionsNeverBrokerRemoteGit(t *testing.T) {
 		t.Skipf("no sandbox to serve with here: %v", err)
 	}
 	defer func() { _ = sandbox.Close(sb) }()
+	t.Logf("served on the %s tier, git held: %v", sb.Tier(), sandbox.HoldsGit(sb))
 	if bash.HostAsk != nil {
 		t.Fatal("a served session's bash brokers remote git")
 	}
@@ -57,10 +58,30 @@ func TestServedSessionsNeverBrokerRemoteGit(t *testing.T) {
 		}
 		sandbox.Release(c)
 	}
-	// A session with a fence of its own is not told of brokered git either.
+	// A session with a fence of its own: the broker it builds, over a stand-in
+	// fence that holds git, leaves remote lines to that fence.
+	var ran []string
+	oldCmd, oldHolds := sessionFenceCommand, sessionFenceHolds
+	sessionFenceCommand = func(*sessionFence) func(ctx context.Context, cwd, line string) *exec.Cmd {
+		return func(ctx context.Context, _, line string) *exec.Cmd {
+			ran = append(ran, line)
+			return exec.CommandContext(ctx, "true")
+		}
+	}
+	sessionFenceHolds = func(*sessionFence) func() bool { return func() bool { return true } }
+	t.Cleanup(func() { sessionFenceCommand, sessionFenceHolds = oldCmd, oldHolds })
 	b, closeFn := fenceSessionBash(cfg, ws)("s1", nil, tools.Bash{})
 	defer func() { _ = closeFn() }()
 	if b.HostAsk != nil {
 		t.Fatal("a served fence session's bash brokers remote git")
+	}
+	for _, line := range []string{"git fetch", "git push origin main", "git ls-remote origin"} {
+		c := b.Sandbox(ctx, ws, line)
+		if hostLike(c) {
+			t.Fatalf("%s reached host git in a served fence session: %v %v", line, c.Args, c.Err)
+		}
+	}
+	if len(ran) != 3 {
+		t.Fatalf("the fence ran %q", ran)
 	}
 }

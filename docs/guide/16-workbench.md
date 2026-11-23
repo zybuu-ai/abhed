@@ -529,8 +529,8 @@ usual: `add`, `commit`, `branch`, `checkout`, `fetch`, and on Linux
 worktree add`, `remove` and `prune` and `git submodule update`, given as the
 whole line, run through host git with Abhed's safety settings on the process
 tier and the fence (see [Permissions](04-permissions.md)). `git fetch`,
-`pull`, `push`, `clone` and `ls-remote` are not: here they run in the
-sandbox, as in 1.2.9, for every account and guest, as the server would
+`pull`, `push`, `clone` and `ls-remote` are not, and `git submodule update`
+is only with `--no-fetch`: here they run in the sandbox, as in 1.2.9, for every account and guest, as the server would
 otherwise reach a remote with its own account's keys. Studio and the CLI on
 your own machine broker them (see
 [Permissions](04-permissions.md#git-fetch-pull-push-and-clone-through-your-own-git)).

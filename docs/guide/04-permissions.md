@@ -1269,7 +1269,10 @@ None of this is done on `abhed serve` (the workbench, its terminal, the
 console, for every account and guest): there remote git runs in the
 sandbox, as in 1.2.9, as host git would run as the server's own account,
 with its keys, for whoever reaches it. Worktree and submodule commands are
-still brokered there.
+still brokered there, but `git submodule update` only with `--no-fetch`
+(or `-N`), whatever the network: it never fetches on the host, so the
+server account's `~/.netrc` or `http.*.extraHeader` is never sent to a URL
+a workspace's `.gitmodules` names.
 
 It is off, too, where `sandbox.host_git` is `false` (any layer may set it;
 none can set it back), and where the managed configuration holds the

@@ -22,12 +22,20 @@ func fenceSessionBash(cfg config.Config, workspace string) func(string, *agent.R
 		sf := &sessionFence{build: func() (sandbox.Sandbox, error) { return buildSandbox(cfg, workspace) }, rec: rec}
 		fence := func() sandbox.Tier { return sandbox.TierFence }
 		// A served session: remote git stays in the sandbox (serveSandbox).
-		gb := hostgit.NewBroker(workspace, fence, sandboxconfig.HostGitNetwork(cfg), sf.Command).HoldsGit(sf.holdsGit, func() bool { return false }).NoRemotes()
+		gb := hostgit.NewBroker(workspace, fence, sandboxconfig.HostGitNetwork(cfg), sessionFenceCommand(sf)).HoldsGit(sessionFenceHolds(sf), func() bool { return false }).NoRemotes()
 		shared.Sandbox, shared.Shell, shared.HostAsk = gb.Command, sf.Shell, nil
 		shared.Home = sf.CommandHome // the session's commands get its own fence's home
 		return shared, sf.Close
 	}
 }
+
+// sessionFenceCommand and sessionFenceHolds are what a served session's
+// broker runs commands with and asks whether git is held; tests stand in
+// for the fence, which needs Linux.
+var (
+	sessionFenceCommand = func(sf *sessionFence) func(ctx context.Context, cwd, line string) *exec.Cmd { return sf.Command }
+	sessionFenceHolds   = func(sf *sessionFence) func() bool { return sf.holdsGit }
+)
 
 // sessionFence is one served session's fence, with a cgroup of its own. It
 // is qualified at the session's first command, so a session opened only to
