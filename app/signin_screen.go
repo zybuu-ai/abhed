@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/identity"
@@ -208,9 +209,28 @@ func signInViaLogin(s *identity.Store, rules identity.Rules, args []string, out,
 
 // pendingSignIn is a server sign-in made but not yet kept: its token waits
 // in a file of its own until file keeps it, or discard drops it.
-type pendingServerSignIn struct{ path string }
+type pendingServerSignIn struct {
+	path  string
+	filed *bool
+}
 
-func (p pendingServerSignIn) discard() { _ = os.Remove(p.path) }
+// discard removes the pending file. A sign-in that was never kept (cancelled,
+// or refused by the rules) also has its token ended on the server, so it does
+// not stay valid there with no one holding it.
+func (p pendingServerSignIn) discard() {
+	if p.filed != nil && !*p.filed {
+		if reg, err := profiles.Load(p.path); err == nil {
+			if _, prof, err := reg.Get(""); err == nil && prof.Token != "" {
+				if c, err := prof.HTTPClient(); err == nil {
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					_ = profiles.Revoke(ctx, c, prof)
+					cancel()
+				}
+			}
+		}
+	}
+	_ = os.Remove(p.path)
+}
 
 // serverLogin is the network part of a server sign-in: abhed login, into a
 // file of this sign-in's own, so two at once never share one.
@@ -219,7 +239,7 @@ func serverLogin(ctx context.Context, s *identity.Store, args []string, out, err
 	if err != nil {
 		return pendingServerSignIn{}, err
 	}
-	pending := pendingServerSignIn{path: f.Name()}
+	pending := pendingServerSignIn{path: f.Name(), filed: new(bool)}
 	_ = f.Close()
 	_ = os.Remove(pending.path) // abhed login makes it, 0600
 	if code := loginWith("", args, out, errOut, loginOpts{open: open, file: pending.path, ctx: ctx}); code != 0 {
@@ -265,6 +285,8 @@ func (p pendingServerSignIn) file(s *identity.Store, rules identity.Rules) (iden
 	if err := profiles.Save(dest, have); err != nil {
 		return identity.Principal{}, err
 	}
+	// The token is kept in the sign-in's folder now; it is not ended.
+	*p.filed = true
 	if err := s.Remember(e.ID); err != nil {
 		return identity.Principal{}, err
 	}

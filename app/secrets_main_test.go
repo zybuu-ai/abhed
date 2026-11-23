@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"golang.org/x/crypto/bcrypt"
+
+	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/testenv"
 )
 
@@ -24,6 +27,8 @@ func TestMain(m *testing.M) {
 	inAgentCommand = func() string { return "" }
 	// Tests that predate sign-in run as before it; sign-in's own tests turn it off.
 	unresolvedIsLegacy = true
+	// Fast password hashes, set once before any test runs.
+	identity.SetHashCost(bcrypt.MinCost)
 	// No test writes the real system log; one that checks it captures it.
 	sysLogWrite = func(string) error { return nil }
 	// No test reaches the host's container engine; one that needs an engine

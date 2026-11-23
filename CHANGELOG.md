@@ -8,6 +8,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A profile's client followed a redirect from https to plain http on the
+  same host, sending the server token in clear. Such a redirect is now
+  refused.
 - A wildcard entry in `ssh.read_commands` approved more than it named.
   `*` matched any text, spaces included, so `tail -n * /var/log/app/app.log`
   also ran `tail -n 100 /etc/shadow /var/log/app/app.log` without asking,
@@ -208,7 +211,11 @@ All notable changes to Abhed are recorded here. The format follows
   Policy, the sandbox, egress and approvals are the same for all three. A
   run that cannot ask uses the remembered sign-in, or runs as guest with a
   note, and exits 10 where the organisation requires sign-in; `-guest`,
-  `ABHED_GUEST=1`, `-account` and `ABHED_ACCOUNT` choose outright. `abhed
+  `ABHED_GUEST=1`, `-account` and `ABHED_ACCOUNT` choose outright, and are
+  handed to MCP servers and process-tier commands, so an Abhed they start
+  only narrows who works; a server's `env` cannot set or clear them. A
+  server sign-in that is cancelled or refused before it is kept has its
+  token ended on the server. `abhed
   rpc` answers `auth.status`, `auth.signin`, `auth.register` and
   `auth.guest`, and ACP clients such as Studio sign in through ACP's
   `authMethods` and `authenticate`. The managed configuration and the org

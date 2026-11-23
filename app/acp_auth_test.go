@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/profiles"
 )
@@ -156,9 +158,10 @@ func TestACPAuthenticateRacesSessionNew(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
 			signInTest(t)
-			old := identity.BcryptCost
-			identity.BcryptCost = 8 // slow enough to leave a window
-			t.Cleanup(func() { identity.BcryptCost = old })
+			// Slow enough to leave a window. This test is not parallel, so
+			// no other test opens a store meanwhile.
+			identity.SetHashCost(8)
+			t.Cleanup(func() { identity.SetHashCost(bcrypt.MinCost) })
 			acpModelsEnv(t, `{}`)
 			s, _ := identity.Open()
 			if _, _, err := s.Create("a1", "correct horse", "", ""); err != nil {

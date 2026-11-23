@@ -16,6 +16,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/profiles"
 )
@@ -367,7 +368,7 @@ func TestUnavailableServerWithAnExpiredToken(t *testing.T) {
 	}
 }
 
-// A child Abhed (a hook, an MCP server, a command) is told who is working in
+// A child Abhed (an MCP server, a hook or command run unsandboxed) is told who is working in
 // selectors that only narrow: a guest's child is a guest, and an account's
 // child is that account only while it is remembered; a guest drops the
 // variables that would reach an account's sign-ins or secrets.
@@ -380,6 +381,12 @@ func TestPrincipalIsHandedDownNarrowing(t *testing.T) {
 	}
 	if os.Getenv(EnvGuest) != "1" || os.Getenv(config.ProfilesEnv) != "" || os.Getenv(secrets.EnvFile) != "" {
 		t.Fatalf("guest env: %q %q %q", os.Getenv(EnvGuest), os.Getenv(config.ProfilesEnv), os.Getenv(secrets.EnvFile))
+	}
+	// An MCP server is such a child: it gets the guest selector, and its
+	// configured env cannot clear it or name an account.
+	srv := strings.Join(mcp.ServerEnv([]string{EnvGuest + "=", EnvAccount + "=a1"}), "\n")
+	if !strings.Contains(srv, EnvGuest+"=1") || strings.Contains(srv, EnvAccount+"=") {
+		t.Fatalf("a guest's MCP server env:\n%s", srv)
 	}
 	endGuest()
 	s, _ := identity.Open()
@@ -395,5 +402,59 @@ func TestPrincipalIsHandedDownNarrowing(t *testing.T) {
 	t.Setenv(EnvAccount, "a1")
 	if code := enterPrincipal(signInFlags{}, false, os.Stdin, io.Discard); code != identity.ExitSignInRequired {
 		t.Fatalf("a child named an account no one is signed in as: exit %d", code)
+	}
+}
+
+// A server sign-in that is never kept, here refused by the organisation's
+// rules after the login, has its token ended on the server; one that is kept
+// does not.
+func TestUnkeptServerSignInIsRevoked(t *testing.T) {
+	signInTest(t)
+	revoked := make(chan string, 2)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/cli/logout" {
+			revoked <- r.Header.Get("Authorization")
+		}
+	}))
+	defer srv.Close()
+	s, _ := identity.Open()
+	pending := func(token string) pendingServerSignIn {
+		f, err := os.CreateTemp(s.Dir(), ".pending-profiles-*.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = f.Close()
+		prof := &profiles.Profile{URL: srv.URL, Token: token, RevocationEndpoint: srv.URL + "/v1/cli/logout", Username: "pat"}
+		if err := profiles.Save(f.Name(), &profiles.File{Profiles: map[string]*profiles.Profile{"org": prof}, Current: "org"}); err != nil {
+			t.Fatal(err)
+		}
+		return pendingServerSignIn{path: f.Name(), filed: new(bool)}
+	}
+	refused := pending("tok-refused")
+	if _, err := refused.file(s, identity.Rules{SignIn: config.SignInServer, Server: "https://elsewhere.example"}); err == nil {
+		t.Fatal("a server the rules refuse was kept")
+	}
+	refused.discard()
+	select {
+	case got := <-revoked:
+		if got != "Bearer tok-refused" {
+			t.Fatalf("revoked %q", got)
+		}
+	default:
+		t.Fatal("the refused sign-in's token stays valid on the server")
+	}
+	if _, err := os.Stat(refused.path); !os.IsNotExist(err) {
+		t.Fatalf("the pending file is still there: %v", err)
+	}
+
+	kept := pending("tok-kept")
+	if _, err := kept.file(s, identity.Rules{}); err != nil {
+		t.Fatal(err)
+	}
+	kept.discard()
+	select {
+	case got := <-revoked:
+		t.Fatalf("a kept sign-in's token was ended: %q", got)
+	default:
 	}
 }

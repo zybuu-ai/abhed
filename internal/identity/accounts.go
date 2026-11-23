@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -36,9 +37,24 @@ const (
 	KindServer  = "server"  // a sign-in to an Abhed server, kept as a profile
 )
 
-// BcryptCost is the cost of a password hash here. The file can be read by
-// whoever is the OS user, so it is above the library default; tests lower it.
-var BcryptCost = 12
+// DefaultBcryptCost is the cost of a password hash here. The file can be read
+// by whoever is the OS user, so it is above the library default.
+const DefaultBcryptCost = 12
+
+// processCost is the cost stores opened from now on use; 0 means the default.
+var processCost atomic.Int32
+
+// SetHashCost sets the bcrypt cost of every store this process opens after
+// the call. Tests set it once, before any test runs; a store already open
+// keeps the cost it was opened with.
+func SetHashCost(cost int) { processCost.Store(int32(cost)) }
+
+func openCost() int {
+	if c := int(processCost.Load()); c > 0 {
+		return c
+	}
+	return DefaultBcryptCost
+}
 
 // MinPassword is the fewest characters a password may have.
 const MinPassword = 10
@@ -145,8 +161,17 @@ type remembered struct {
 
 // Store is the accounts on this machine.
 type Store struct {
-	dir string
-	now func() time.Time
+	dir  string
+	now  func() time.Time
+	cost int
+}
+
+// WithCost returns the store hashing new passwords at cost, for a test that
+// owns the store and wants fast hashes without touching the process.
+func (s *Store) WithCost(cost int) *Store {
+	c := *s
+	c.cost = cost
+	return &c
 }
 
 // Open opens the store under ~/.abhed/accounts, making the folder 0700.
@@ -173,7 +198,7 @@ func OpenAt(dir string) (*Store, error) {
 	if runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 {
 		return nil, fmt.Errorf("%s holds account passwords and is open to other users (mode %o); run chmod 700 on it", dir, fi.Mode().Perm())
 	}
-	return &Store{dir: dir, now: time.Now}, nil
+	return &Store{dir: dir, now: time.Now, cost: openCost()}, nil
 }
 
 // Dir is the accounts folder.
@@ -373,8 +398,8 @@ func normalCode(c string) string {
 	return strings.ToUpper(strings.NewReplacer("-", "", " ", "").Replace(strings.TrimSpace(c)))
 }
 
-func hash(secret string) (string, error) {
-	h, err := bcrypt.GenerateFromPassword([]byte(secret), BcryptCost)
+func (s *Store) hash(secret string) (string, error) {
+	h, err := bcrypt.GenerateFromPassword([]byte(secret), s.cost)
 	return string(h), err
 }
 
@@ -388,12 +413,12 @@ func (s *Store) Create(username, password, email, name string) (Entry, string, e
 	if err := CheckPassword(password); err != nil {
 		return Entry{}, "", err
 	}
-	pw, err := hash(password)
+	pw, err := s.hash(password)
 	if err != nil {
 		return Entry{}, "", err
 	}
 	code := newRecoveryCode()
-	rh, err := hash(normalCode(code))
+	rh, err := s.hash(normalCode(code))
 	if err != nil {
 		return Entry{}, "", err
 	}
@@ -462,15 +487,18 @@ var idRe = regexp.MustCompile(`^[0-9a-f]{24}$`)
 
 func validID(id string) bool { return idRe.MatchString(id) }
 
-var (
-	dummyOnce sync.Once
-	dummy     []byte
-)
+// dummies holds, per cost, a hash no password matches.
+var dummies sync.Map
 
-// dummyHash is a hash at the store's cost that no password matches.
-func dummyHash() []byte {
-	dummyOnce.Do(func() { dummy, _ = bcrypt.GenerateFromPassword([]byte(newID()), BcryptCost) })
-	return dummy
+// dummyHash is a hash at the store's cost that no password matches, so an
+// unknown username takes as long as a wrong password.
+func (s *Store) dummyHash() []byte {
+	if h, ok := dummies.Load(s.cost); ok {
+		return h.([]byte)
+	}
+	h, _ := bcrypt.GenerateFromPassword([]byte(newID()), s.cost)
+	got, _ := dummies.LoadOrStore(s.cost, h)
+	return got.([]byte)
 }
 
 func lockFor(failed int) time.Duration {
@@ -491,7 +519,7 @@ func (s *Store) Authenticate(username, password string) (Entry, error) {
 		e := find(f, KindAccount, username)
 		if e == nil {
 			// The same work as a real account, so timing does not tell.
-			_ = bcrypt.CompareHashAndPassword(dummyHash(), []byte(password))
+			_ = bcrypt.CompareHashAndPassword(s.dummyHash(), []byte(password))
 			result = ErrBadPassword
 			return nil
 		}
@@ -568,13 +596,13 @@ func (s *Store) setPassword(username, next string, reset *Reset, code *string) e
 	if err := CheckPassword(next); err != nil {
 		return err
 	}
-	pw, err := hash(next)
+	pw, err := s.hash(next)
 	if err != nil {
 		return err
 	}
 	var rh string
 	if code != nil {
-		if rh, err = hash(normalCode(*code)); err != nil {
+		if rh, err = s.hash(normalCode(*code)); err != nil {
 			return err
 		}
 	}

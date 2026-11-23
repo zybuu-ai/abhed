@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"golang.org/x/crypto/bcrypt"
-
 	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/store"
@@ -19,9 +17,6 @@ import (
 // accountHome is a fresh home with fast hashes.
 func accountHome(t *testing.T) string {
 	t.Helper()
-	old := identity.BcryptCost
-	identity.BcryptCost = bcrypt.MinCost
-	t.Cleanup(func() { identity.BcryptCost = old })
 	h, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

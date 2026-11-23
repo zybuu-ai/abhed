@@ -17,11 +17,11 @@ const TestPassword = "tester password"
 // sign-in, so a run starts signed in, as a person's machine does after its
 // first start.
 func signInTester(osHome string) error {
-	identity.BcryptCost = bcrypt.MinCost
 	s, err := identity.OpenAt(filepath.Join(osHome, home.DirName, home.AccountsDir))
 	if err != nil {
 		return err
 	}
+	s = s.WithCost(bcrypt.MinCost)
 	e, _, err := s.Create("tester", TestPassword, "", "")
 	if err != nil {
 		return err

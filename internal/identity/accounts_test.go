@@ -14,7 +14,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/home"
 )
 
-func init() { BcryptCost = bcrypt.MinCost }
+func init() { SetHashCost(bcrypt.MinCost) }
 
 // testStore is a store under a fresh home.
 func testStore(t *testing.T) *Store {
@@ -284,5 +284,29 @@ func TestStoreRefusesLinksAndOpenFiles(t *testing.T) {
 	}
 	if _, err := other.List(); err == nil {
 		t.Error("an accounts file that is a link was read")
+	}
+}
+
+// A store's cost is its own: one test's fast store never changes the cost
+// another store, or the process, hashes at.
+func TestWithCostIsPerStore(t *testing.T) {
+	s := testStore(t)
+	fast := s.WithCost(bcrypt.MinCost + 1)
+	e, _, err := fast.Create("fast", pw, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := bcrypt.Cost([]byte(e.Hash)); c != bcrypt.MinCost+1 {
+		t.Fatalf("WithCost store hashed at %d", c)
+	}
+	e, _, err = s.Create("plain", pw, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := bcrypt.Cost([]byte(e.Hash)); c != bcrypt.MinCost {
+		t.Fatalf("the original store hashed at %d, not the process cost", c)
+	}
+	if _, err := s.Authenticate("fast", pw); err != nil {
+		t.Fatal(err)
 	}
 }

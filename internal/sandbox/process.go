@@ -1296,7 +1296,10 @@ func (s *Process) env() []string {
 	keep := []string{"PATH", "HOME", "LANG", "LC_ALL", "TERM", "TMPDIR",
 		"GOPATH", "GOROOT", "GOCACHE", "GOMODCACHE",
 		"NODE_PATH", "npm_config_cache", "CARGO_HOME", "RUSTUP_HOME",
-		"JAVA_HOME", "PYTHONPATH", "VIRTUAL_ENV"}
+		"JAVA_HOME", "PYTHONPATH", "VIRTUAL_ENV",
+		// Who is working: they only narrow, so an Abhed a command starts
+		// with the real HOME works for the same person, or a guest's.
+		"ABHED_GUEST", "ABHED_ACCOUNT"}
 	out := []string{"ABHED_SANDBOX=" + string(s.Tier()), vimInitEnv()}
 	own := map[string]string{}
 	if s.backend == "sandbox-exec" && !s.policy.SharedCaches {
