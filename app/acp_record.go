@@ -240,7 +240,6 @@ func (c *acpConn) loadSession(msg rpcMessage, replay bool) {
 		s = &acpSession{id: e.ID, cwd: cwd, trust: trust, always: map[string]string{}, agent: recordOnly{},
 			readOnly: "the record failed verification at seq " + strconv.FormatInt(rep.FirstBad, 10)}
 		if !c.addSession(s) {
-			c.shut(s)
 			c.reply(msg.ID, nil, refusal(errParams, "the editor is closing; no session is opened"))
 			return
 		}
