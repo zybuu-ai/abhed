@@ -180,6 +180,26 @@ All notable changes to Abhed are recorded here. The format follows
   streamed): "input arrived on stdin after 1.5s; rerun with - to wait for
   it, or -stdin-wait <dur>". A script piping a slow producer (a cold `go
   test ./... 2>&1 | abhed -p …`) should pass `-` or a longer `-stdin-wait`.
+- MCP servers now start together, eight at a time, each within a startup
+  deadline of 60 seconds that covers the handshake and its lists. A server
+  that needs longer to start (a container image pulled on first run) is
+  reported as failed and its tools are absent; set
+  `startup_timeout_seconds` on it.
+- A request never offers a provider more than `max_tools` tools (128 by
+  default, for every provider type). Where the always-offered tools
+  (built-ins, extensions', MCP tools offered in full) pass it, the request is
+  now refused before it is sent with an error naming the count and the
+  limit, where a provider used to answer 400; narrow an MCP server with
+  `allow_tools`, disable a server or extension, or set `max_tools` on a
+  provider that takes more.
+- An extension tool whose name begins `mcp__`, in any case, is refused with a
+  warning; rename it. A tool whose name is already registered is no longer
+  allowed to replace the first one: it is refused with a warning.
+- A skill description longer than 300 characters is cut there in the
+  listing, with a warning naming the file. Past 8 KB the skill listing, the
+  `skill` tool's names, and the agent types on `task` and `tasks` are
+  counted rather than listed, and `agent_type` drops its `enum`; any of them
+  still loads by name.
 
 ### Added
 
@@ -817,6 +837,44 @@ All notable changes to Abhed are recorded here. The format follows
   account's key.
 - `abhed login` and `abhed mcp login` honour `BROWSER`, and take
   `-no-browser` to only print the sign-in address.
+- MCP servers start in parallel, eight at a time, each within its own
+  deadline (`startup_timeout_seconds`, 60 by default): a server that hangs
+  is reported once its deadline passes, with its tools absent. One still
+  starting after 5 seconds gives its place to the next, so hung servers
+  delay the others' starts by 5 seconds for each group of eight. They used
+  to start one after another, so each hung server delayed every session by
+  a minute; now the session waits for the longest deadline, plus 5 seconds
+  for each further group of eight hung servers.
+- A tool name a provider would refuse, an MCP full name longer than 64
+  characters or one holding `.`, is sent to the provider under a short,
+  stable wire name (up to 47 plain characters, the `mcp__<server>__` prefix
+  kept whole where it fits, `_` and 16 hex digits of its SHA-256) and mapped
+  back on the call. A tool whose name or wire name is already another's is
+  not registered, with a warning, at startup and for a server added to a
+  running server alike. Permission rules, approvals, hooks
+  and the record keep the real `mcp__<server>__<tool>` name. A remote tool's
+  own name may now be up to 128 characters, as the MCP specification
+  allows.
+- `tool_search` keeps at most 100 tools loaded per session, unloading the
+  least recently loaded or called; the loop also unloads them, least
+  recently used first, to keep each request within the `max_tools` of the
+  provider serving it. Built-in tools are never unloaded. What a session
+  loads is its own: before, one session's search loaded the tool in every
+  session sharing the tool set, other users' on a server included.
+- New provider setting `max_tools`, and MCP server setting
+  `startup_timeout_seconds`.
+- The skill listing, the `skill` tool's list of names, and the agent types
+  on `task` and `tasks` are each kept within 8 KB; the rest are counted.
+  The `skill` tool and `task` answer a name they do not know with the skills
+  or types whose names or descriptions hold its words. A skill description
+  is capped at 300 characters, as an agent's is.
+- New `make test-scale`: 50 stub MCP servers of 20 tools, 300 skills and
+  100 agent types in one session, checking routing, the provider's tool
+  limit and the listing budgets; CI runs it as the integration-scale job.
+  That is the tested bound, not a ceiling the code enforces: more servers
+  have not been tested, each stdio server is a process of its own, and in
+  that run the tools and listings cost about 16,000 tokens before the first
+  message. See the MCP guide's Limits and Scale sections.
 
 ### Fixed
 
@@ -1310,6 +1368,42 @@ All notable changes to Abhed are recorded here. The format follows
   for it, or -no-stdin to silence this"). Input that starts after the wait
   stops the run with exit code 9 (see Upgrading). A lone `-`
   waits for stdin to end however late its input starts.
+- An MCP server's tool list was read as its first page only: `nextCursor`
+  was ignored, so a server that pages its tools lost the rest without a
+  word. Tool, prompt and resource lists now follow the cursor, up to a page
+  cap and a total cap (100 pages and 2,000 tools; 10 pages and 200 prompts;
+  10 pages and 500 resources), and a warning names a server past one. A
+  cursor seen before ends the list, with a warning naming the server.
+- More than 128 tools in a request, or an MCP tool whose full name was
+  longer than 64 characters or held `.`, made an OpenAI-compatible provider
+  answer 400 to every request of the session. Both are handled now (see
+  Changed).
+- Tools loaded by `tool_search` were never unloaded, so a long session
+  passed the provider's tool limit (162 tools after fifteen searches) and
+  every request after failed.
+- An extension tool could take an MCP tool's name and silently replace it,
+  and any second tool registered under a name replaced the first. Both are
+  refused with a warning.
+- A skill in a later configured directory replaced one of the same name in
+  an earlier directory without a word, and prompts past a server's 200th
+  were dropped without one. Both now warn.
+- An MCP tool's description, cut at 1,024 bytes, and its result, cut at
+  30,000, could be cut inside a character, sending invalid UTF-8 to the
+  provider. Cuts now fall on a character boundary, as does the end of a
+  server's stderr shown on a failed start.
+- A stdio MCP server's stdout line was read into memory however long it
+  was. A line past 16 MiB now ends the connection with an error naming the
+  server.
+- A call to a server whose connection had ended failed with "unexpected end
+  of JSON input". It now says the connection ended, and why.
+- The MCP guide said tool lists are fetched lazily on first use (servers
+  start with the session) and that a tool name over 64 characters is left
+  out for providers' sake; the skills guide put a listing line at about
+  fifteen tokens. All three are corrected, and the MCP guide now has a
+  table of every limit and a Scale section saying what was tested.
+- Red-team check A13 (MCP tool poisoning) skipped wherever `python3` was
+  missing, CI included. Its server is now a stub in Go, and the check fails
+  rather than skips when the server does not start.
 - A vague request for parallel work or speed under `abhed -p` (or any run
   nobody can answer) went straight to code edits: it got no note, since the
   note that asks a question cannot be answered there. A message that names

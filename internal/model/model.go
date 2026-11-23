@@ -242,6 +242,8 @@ type Profile struct {
 	// LearnedAt is when a learned window was named by the provider, in this
 	// process or, kept in the window memory, an earlier one.
 	LearnedAt time.Time `json:"learned_at,omitzero"`
+	// MaxTools caps the tools one request offers; zero is DefaultMaxTools.
+	MaxTools int `json:"max_tools,omitempty"`
 	// Sampling reports which decoding knobs this provider honours, so a
 	// config naming one it does not is rejected rather than ignored.
 	Sampling Sampling `json:"-"`

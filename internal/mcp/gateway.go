@@ -60,7 +60,19 @@ type ServerConfig struct {
 	// server a person or a workspace added is the server's own word about
 	// itself and is ignored.
 	ReadOnlyHints bool `json:"-"`
+	// StartupTimeout bounds the start, handshake and lists; zero is
+	// DefaultStartupTimeout. Past it the server fails and its tools are absent.
+	StartupTimeout time.Duration `json:"-"`
 }
+
+// Startup bounds: ConnectWorkers servers start at once, each within its
+// StartupTimeout. One still starting after SlotHold gives its slot to the
+// next, so hung servers delay the others' starts by SlotHold, not a deadline.
+const (
+	DefaultConnectWorkers = 8
+	DefaultStartupTimeout = 60 * time.Second
+	DefaultSlotHold       = 5 * time.Second
+)
 
 var errGatewayClosed = errors.New("the MCP gateway was closed while the server connected")
 
@@ -129,6 +141,12 @@ type Gateway struct {
 	calls     serverCallers
 	// reads are the read_resource tools offered, by server; under mu.
 	reads map[string]*resourceTool
+	// ConnectWorkers is how many servers Connect starts at once; zero is
+	// DefaultConnectWorkers.
+	ConnectWorkers int
+	// SlotHold is how long a starting server keeps its slot; zero is
+	// DefaultSlotHold.
+	SlotHold time.Duration
 }
 
 // NewGateway makes a gateway; Close must be called when it is done with, or
@@ -176,20 +194,23 @@ func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
 	}
 	life := g.life
 	g.mu.Unlock()
-	var errs []error
 	var enabled []string
 	for _, cfg := range configs {
 		if cfg.Enabled {
 			enabled = append(enabled, cfg.Name)
 		}
 	}
-	for _, cfg := range configs {
+	// Judged and reserved one by one, in order, so overlapping names are
+	// settled as before; then started together.
+	errs := make([][]error, len(configs))
+	var start []int
+	for i, cfg := range configs {
 		if !cfg.Enabled {
 			continue
 		}
 		if !validServerName.MatchString(cfg.Name) {
 			// Not kept even as failed: the name would reach /mcp and the panels unescaped.
-			errs = append(errs, fmt.Errorf("mcp server %+q: invalid server name (letters, digits, _ and - only, up to 64)", cfg.Name))
+			errs[i] = append(errs[i], fmt.Errorf("mcp server %+q: invalid server name (letters, digits, _ and - only, up to 64)", cfg.Name))
 			continue
 		}
 		if err := g.admit(cfg); err != nil {
@@ -199,7 +220,7 @@ func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
 				g.policyRefused[cfg.Name] = true
 			}
 			g.mu.Unlock()
-			errs = append(errs, fmt.Errorf("mcp server %q: %w", cfg.Name, err))
+			errs[i] = append(errs[i], fmt.Errorf("mcp server %q: %w", cfg.Name, err))
 			continue
 		}
 		g.mu.Lock()
@@ -208,22 +229,68 @@ func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
 		// Checked and reserved under one lock, so two servers added at once
 		// cannot both pass; the reservation ends when the connection does.
 		if err := g.reserve(cfg, enabled); err != nil {
-			errs = append(errs, err)
+			errs[i] = append(errs[i], err)
 			continue
 		}
-		err := g.connectOne(life, ctx, cfg)
-		g.mu.Lock()
-		delete(g.pending, cfg.Name)
-		if err != nil {
-			g.configs[cfg.Name], g.failed[cfg.Name] = cfg, err
-		}
-		g.mu.Unlock()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("mcp server %q: %w", cfg.Name, err))
-		}
+		start = append(start, i)
 	}
-	return errs
+	workers := g.ConnectWorkers
+	if workers <= 0 {
+		workers = DefaultConnectWorkers
+	}
+	hold := g.SlotHold
+	if hold <= 0 {
+		hold = DefaultSlotHold
+	}
+	slots := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for _, i := range start {
+		cfg := configs[i]
+		wg.Add(1)
+		slots <- struct{}{}
+		go func() {
+			defer wg.Done()
+			var once sync.Once
+			free := func() { once.Do(func() { <-slots }) }
+			defer free()
+			defer time.AfterFunc(hold, free).Stop()
+			err := g.startOne(life, ctx, cfg)
+			g.mu.Lock()
+			delete(g.pending, cfg.Name)
+			if err != nil {
+				g.configs[cfg.Name], g.failed[cfg.Name] = cfg, err
+			}
+			g.mu.Unlock()
+			if err != nil {
+				errs[i] = append(errs[i], fmt.Errorf("mcp server %q: %w", cfg.Name, err))
+			}
+		}()
+	}
+	wg.Wait()
+	var out []error
+	for _, e := range errs {
+		out = append(out, e...)
+	}
+	return out
 }
+
+// startOne connects one server within its startup deadline, saying so when
+// the deadline, not the caller, ended it.
+func (g *Gateway) startOne(life, ctx context.Context, cfg ServerConfig) error {
+	limit := cfg.StartupTimeout
+	if limit <= 0 {
+		limit = DefaultStartupTimeout
+	}
+	sctx, cancel := context.WithTimeoutCause(ctx, limit, errStartupDeadline)
+	defer cancel()
+	err := g.connectOne(life, sctx, cfg)
+	if err != nil && ctx.Err() == nil && errors.Is(context.Cause(sctx), errStartupDeadline) {
+		return fmt.Errorf("did not start within %s, so its tools are absent (startup_timeout_seconds sets the limit): %w", limit, err)
+	}
+	return err
+}
+
+var errStartupDeadline = errors.New("the server's startup deadline passed")
 
 // connectOne starts a server whose process (or connection) lives as long as
 // life, and initializes it within ctx.
@@ -333,7 +400,7 @@ func (g *Gateway) Restart(ctx context.Context, name string) error {
 	if life == nil {
 		life = context.WithoutCancel(ctx)
 	}
-	if err := g.connectOne(life, ctx, cfg); err != nil {
+	if err := g.startOne(life, ctx, cfg); err != nil {
 		g.mu.Lock()
 		g.failed[name] = err
 		g.mu.Unlock()
@@ -711,11 +778,15 @@ func (t *remoteTool) Run(ctx context.Context, _ *tools.Session, args json.RawMes
 	const maxContent = 30000
 	truncated := false
 	if len(content) > maxContent {
-		content = content[:maxContent] + "\n\n[truncated]"
+		content = CutUTF8(content, maxContent) + "\n\n[truncated]"
 		truncated = true
 	}
 	return tools.Result{Content: content, IsError: isErr, Truncated: truncated}
 }
+
+// MaxDescription bounds a remote tool's description, in bytes, cut at a
+// character boundary.
+const MaxDescription = 1024
 
 // sanitizeDescription defends against tool poisoning.
 //
@@ -747,9 +818,8 @@ func sanitizeDescription(s string) string {
 	}, s)
 	s = strings.Join(strings.Fields(s), " ")
 
-	const maxDesc = 1024
-	if len(s) > maxDesc {
-		s = s[:maxDesc] + "…"
+	if len(s) > MaxDescription {
+		s = CutUTF8(s, MaxDescription) + "…"
 	}
 	return s
 }

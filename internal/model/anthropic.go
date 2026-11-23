@@ -93,6 +93,9 @@ func NewAnthropic(baseURL, apiKey, model string, p Profile) *Anthropic {
 func (c *Anthropic) Name() string     { return c.profile.Name }
 func (c *Anthropic) Profile() Profile { return c.limits.apply(c.profile) }
 
+// SetMaxTools sets the most tools one request may offer.
+func (c *Anthropic) SetMaxTools(n int) { c.profile.MaxTools = n }
+
 // ---------------------------------------------------------------- wire types
 
 type anthropicBlock struct {
@@ -362,6 +365,10 @@ type anthropicUsage struct {
 }
 
 func (c *Anthropic) Complete(ctx context.Context, req Request) (<-chan Chunk, error) {
+	req, wire, err := toWire(req, ToolLimit(c.Profile()), c.Name())
+	if err != nil {
+		return nil, err
+	}
 	// Refuse an image the endpoint cannot read, rather than sending it and
 	// letting the provider 400 with its own wording — or silently ignore it.
 	if err := CheckVision(c.Profile(), req); err != nil {
@@ -420,7 +427,7 @@ func (c *Anthropic) Complete(ctx context.Context, req Request) (<-chan Chunk, er
 
 	out := make(chan Chunk, 32)
 	go c.stream(ctx, resp, out)
-	return out, nil
+	return fromWire(out, wire), nil
 }
 
 func (c *Anthropic) stream(ctx context.Context, resp *http.Response, out chan<- Chunk) {

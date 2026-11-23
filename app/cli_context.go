@@ -601,7 +601,7 @@ func withAutoMemory(reg *tools.Registry, cfg config.Config, workspace string, in
 	}
 	autoMemory = &tools.MemoryWrite{Path: tools.AutoMemoryPath(home, workspace)}
 	out := reg.Clone()
-	out.Add(autoMemory)
+	out.Replace(autoMemory)
 	return out
 }
 

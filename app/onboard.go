@@ -327,6 +327,9 @@ type gatedAdapter struct {
 // budget is seen.
 func (g gatedAdapter) SamplingDefaults() model.Params { return model.SamplingDefaultsOf(g.Adapter) }
 
+// ToolLimit is the wrapped adapter's.
+func (g gatedAdapter) ToolLimit() int { return model.ToolLimitOf(g.Adapter) }
+
 // CallTimeout passes the wrapped adapter's through, so the reasoning
 // backstop stays under it.
 func (g gatedAdapter) CallTimeout() time.Duration { return model.CallTimeoutOf(g.Adapter) }

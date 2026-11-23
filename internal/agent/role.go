@@ -51,7 +51,7 @@ func RoleToolsFor(reg *tools.Registry, def *Definition) *tools.Registry {
 			} else {
 				cut, _ := n.NarrowSkills(def.Skills)
 				reg = reg.Clone()
-				reg.Add(cut)
+				reg.Replace(cut)
 			}
 		}
 	}

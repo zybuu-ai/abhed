@@ -227,6 +227,15 @@ to let that many through. It applies to the OpenAI-compatible types (`ollama`,
 gateways); a value above 0 on any other type, or a negative one, is refused at
 startup on every provider, not only the default.
 
+**`max_tools` is the most tools one request to a provider offers.** 0, the
+default, is 128, the limit OpenAI-compatible endpoints set; it is used for
+every type unless set. Searched-for MCP tools are unloaded, least recently
+used first, to stay within it, and a request that the tools always offered
+still put past it is refused before it is sent, naming the count and the
+limit; see [MCP limits](08-mcp.md#limits). Set it lower for a local model
+that handles few tools well, or higher for a provider that takes more. A
+negative value is refused at startup.
+
 ## Limits
 
 ```json

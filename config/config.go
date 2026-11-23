@@ -916,6 +916,10 @@ type ProviderConfig struct {
 	// and no bound for other types. OpenAI-compatible types only.
 	MaxConcurrentRequests int `json:"max_concurrent_requests,omitempty"`
 
+	// MaxTools caps the tools one request offers; 0 is 128. Loaded MCP tools
+	// are unloaded, least recently used first, to stay under it.
+	MaxTools int `json:"max_tools,omitempty"`
+
 	// Extra passes provider-specific settings through without this struct
 	// growing a field per vendor.
 	Extra map[string]string `json:"extra,omitempty"`
@@ -1680,6 +1684,9 @@ type MCPServerConfig struct {
 	// HostFiles runs a stdio server with the host's files rather than
 	// confined to its own home and the workspace on the process tier.
 	HostFiles bool `json:"host_files,omitempty"`
+	// StartupTimeoutSeconds bounds the server's start; 0 is 60. Past it the
+	// server is reported and its tools are absent.
+	StartupTimeoutSeconds int `json:"startup_timeout_seconds,omitempty"`
 	// OAuth configures `abhed mcp login` for a URL server; a server needs it
 	// only for a client registered ahead of time or particular scopes.
 	OAuth *MCPOAuthConfig `json:"oauth,omitempty"`
@@ -2355,6 +2362,8 @@ func (c Config) Validate() error {
 		switch {
 		case pc.MaxConcurrentRequests < 0:
 			return fmt.Errorf("provider %q: max_concurrent_requests may not be negative", name)
+		case pc.MaxTools < 0:
+			return fmt.Errorf("provider %q: max_tools may not be negative", name)
 		case pc.MaxConcurrentRequests > 0 && model.Known(pc.Type) && !model.HonoursMaxConcurrent(pc.Type):
 			return fmt.Errorf("provider %q: max_concurrent_requests is honoured only by OpenAI-compatible types, not %q", name, pc.Type)
 		}

@@ -295,7 +295,7 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 	// can share one. A tool of this server it no longer offers, or one left
 	// out for its name, is taken out; another server's, perhaps mid-restart,
 	// is left alone. This server's new tools are added.
-	added := []string{}
+	added, refused, warnings := []string{}, []string{}, []string{}
 	s.state.swapTools(func(reg *tools.Registry) {
 		offered := map[string]tools.Tool{}
 		for _, t := range gw.Tools() {
@@ -317,15 +317,27 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if len(errs) > 0 {
+			// Removed tools leave tool_search's list and index too.
+			toolset.DeferMCP(reg, toolset.DeferThreshold)
 			return
 		}
+		var fresh []tools.Tool
 		for id, t := range offered {
 			if n, _ := t.(mcpNamed); n != nil && n.ServerName() == req.Name && !have[id] {
-				reg.Add(t)
-				added = append(added, t.Name())
+				fresh = append(fresh, t)
 			}
 		}
+		sort.Slice(fresh, func(i, j int) bool { return fresh[i].Name() < fresh[j].Name() })
+		// As at startup: a taken name or wire name keeps its tool, and the
+		// server's tools are deferred with the rest.
+		added, refused = toolset.AddMCPTools(reg, fresh, func(format string, a ...any) {
+			warnings = append(warnings, fmt.Sprintf(format, a...))
+		})
+		if added == nil {
+			added = []string{}
+		}
 		sort.Strings(added)
+		sort.Strings(refused)
 	})
 	if len(errs) > 0 {
 		if errors.Is(errs[0], mcp.ErrNotAdmitted) {
@@ -338,11 +350,16 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.adminAudit(r, "mcp.added", req.Name, mcpAuditDetail(req, added))
-	WriteJSON(w, http.StatusOK, map[string]any{
-		"name":  req.Name,
-		"tools": added,
-	})
+	detail := mcpAuditDetail(req, added)
+	resp := map[string]any{"name": req.Name, "tools": added}
+	if len(refused) > 0 {
+		detail["refused"], resp["refused"] = refused, refused
+	}
+	if len(warnings) > 0 {
+		detail["warnings"], resp["warnings"] = warnings, warnings
+	}
+	s.adminAudit(r, "mcp.added", req.Name, detail)
+	WriteJSON(w, http.StatusOK, resp)
 }
 
 // mcpNamed is a tool that knows its MCP server and its name there.
