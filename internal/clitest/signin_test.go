@@ -178,6 +178,9 @@ func TestInitBeforeSignInLeavesLaterRunsGuest(t *testing.T) {
 	if code := h.Wait(time.Second); code != 0 {
 		t.Fatalf("init: exit %d\n%s", code, h.Output())
 	}
+	if o := string(h.Output()); !strings.Contains(o, "for this run only; nothing is kept") || strings.Contains(o, "trusts it as written") {
+		t.Fatalf("a guest's init said its trust is kept:\n%s", h.Output())
+	}
 	next := exec.Command(Binary(t), "-p", "hi")
 	next.Dir = h.Workspace()
 	next.Env = h.env()

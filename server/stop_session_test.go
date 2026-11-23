@@ -95,7 +95,18 @@ func TestGuestLeftoversAreRemovedAtStart(t *testing.T) {
 			t.Fatal("the runs did not end")
 		}
 	}
-	if n := s.RemoveGuestLeftovers(context.Background()); n != 2 {
+	// A later sweep takes only sessions older than a guest's hours, so a
+	// guest of this process that is still signed in keeps its ended ones.
+	if n := s.RemoveGuestLeftovers(context.Background(), 8*time.Hour, false); n != 0 {
+		t.Fatalf("an hourly sweep removed %d recent guest sessions", n)
+	}
+	// The process holds its sessions, so its own sweep leaves them; the next
+	// process on the store, as after a restart, removes the guests'.
+	if n := s.RemoveGuestLeftovers(context.Background(), 8*time.Hour, true); n != 0 {
+		t.Fatalf("a sweep removed %d sessions this process still holds", n)
+	}
+	restarted := servertest.Proxy(t, func(o *server.Options) { o.Store = st })
+	if n := restarted.RemoveGuestLeftovers(context.Background(), 8*time.Hour, true); n != 2 {
 		t.Fatalf("removed %d, want the two guests' sessions", n)
 	}
 	recs, err := st.ListSessions(context.Background(), 100)

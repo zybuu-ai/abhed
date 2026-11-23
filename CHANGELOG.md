@@ -226,8 +226,9 @@ All notable changes to Abhed are recorded here. The format follows
   Continue as guest on the sign-in page. A guest is an identity of its own
   with no groups, under every rule anyone has; its sessions are stopped and
   removed when it signs out or after `auth.guest_hours` (8), a running one
-  stopped first; a restart ends every guest and the next start removes
-  their sessions. One address starts at most five guests an hour. It needs
+  stopped first; a restart ends every guest, and with guests on the server
+  removes what ended guests left at start and hourly, never another
+  server's live guests on a shared Postgres. One address starts at most five guests an hour. It needs
   `auth.mode` `local` or `oidc`.
 - `abhed serve` in a terminal, with no sign-in on an address other machines
   can reach, asks first: set up local accounts, serve on this machine only,

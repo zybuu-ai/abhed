@@ -38,7 +38,9 @@ func chooseWho(s *identity.Store, rules identity.Rules, p *prompter) (identity.P
 		}
 	}
 	_, taken, _ := s.LegacyOwner()
-	legacy := !taken && identity.LegacyData()
+	// Only offered, so any item from before sign-in is enough; an unattended
+	// run decides on LegacyData, which needs recorded work.
+	legacy := !taken && identity.LegacyItemsPresent()
 
 	var choices []whoChoice
 	add := func(label string, do func() (identity.Principal, error)) {

@@ -509,3 +509,28 @@ func TestPluginsArePerPerson(t *testing.T) {
 		}
 	}
 }
+
+// The start screen offers to bring data from before sign-in whenever any of
+// it is there (here only a trust file and secrets); a run nobody can ask
+// still needs recorded work to run as before.
+func TestBringMyDataIsOfferedForAnyEarlierItem(t *testing.T) {
+	signInTest(t)
+	m, _ := home.Machine()
+	if err := os.MkdirAll(m, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"trust.json", "secrets.json"} {
+		if err := os.WriteFile(filepath.Join(m, f), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, _ := identity.Open()
+	p, out := answers(t, "")
+	_, _ = chooseWho(s, identity.Rules{GuestAllowed: true}, p)
+	if !strings.Contains(out.String(), "bring my data") {
+		t.Fatalf("no offer to bring the earlier data:\n%s", out.String())
+	}
+	if identity.LegacyData() {
+		t.Fatal("a trust file and secrets made an unattended run legacy")
+	}
+}

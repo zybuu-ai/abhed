@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/zybuu-ai/abhed/internal/agent"
 )
 
@@ -144,32 +146,65 @@ func TestSessionNamedSetsTheTitle(t *testing.T) {
 	}
 }
 
-// OwnersWithPrefix lists each live owner with the prefix once, in one query:
-// a deleted session's owner and other owners are left out.
-func TestOwnersWithPrefix(t *testing.T) {
+// GuestLeftovers lists only console-guest sessions no live guest can hold:
+// one held by this node's earlier run, an open one whose holder stopped
+// heartbeating, an ended one older than a guest's hours. Another node's
+// live session, its recent ended one, this run's own and other owners' are
+// left out, as is anything deleted.
+func TestGuestLeftovers(t *testing.T) {
 	tenant := fmt.Sprintf("t-guests-%d", time.Now().UnixNano())
 	p := runtimeStore(t, tenant)
 	ctx := context.Background()
-	for i, u := range []string{"guest:a", "guest:a", "guest:b", "local:ana", "guest:gone"} {
-		if err := p.CreateSession(ctx, SessionRecord{ID: fmt.Sprintf("%s-%d", tenant, i), Tenant: tenant, User: u,
-			StartedAt: time.Now()}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := p.DeleteSession(fmt.Sprintf("%s-4", tenant)); err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.OwnersWithPrefix(ctx, "guest:")
+	conn, err := pgx.Connect(ctx, testDSN(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(sortedCopy(got), ",") != "guest:a,guest:b" {
-		t.Fatalf("owners %v", got)
+	defer func() { _ = conn.Close(ctx) }()
+	if _, err := conn.Exec(ctx, `SELECT set_config('app.tenant_id', $1, false)`, tenant); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func sortedCopy(in []string) []string {
-	out := append([]string(nil), in...)
-	sort.Strings(out)
-	return out
+	row := func(name, user, node, set string) string {
+		id := tenant + "-" + name
+		if err := p.CreateSession(ctx, SessionRecord{ID: id, Tenant: tenant, User: user, StartedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Exec(ctx, "UPDATE sessions SET node_id = $2, node_seen_at = now() WHERE id = $1", id, node); err != nil {
+			t.Fatal(err)
+		}
+		if set != "" {
+			if _, err := conn.Exec(ctx, "UPDATE sessions SET "+set[2:]+" WHERE id = $1", id); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return id
+	}
+	want := []string{
+		row("earlier-run", "guest:a", "node-b#before", ", ended_at = now()"),
+		row("stale-open", "guest:b", "node-c#1", ", node_seen_at = now() - interval '10 minutes'"),
+		row("old-ended", "guest:c", "node-c#1", ", ended_at = now(), started_at = now() - interval '9 hours'"),
+	}
+	sort.Strings(want)
+	row("live-elsewhere", "guest:d", "node-a#1", "")
+	row("recent-ended-elsewhere", "guest:d", "node-a#1", ", ended_at = now()")
+	row("this-run", "guest:e", "node-b#now", ", node_seen_at = now() - interval '10 minutes'")
+	row("not-a-guest", "local:ana", "node-b#before", ", ended_at = now()")
+	deleted := row("deleted", "guest:f", "node-b#before", ", ended_at = now()")
+	if err := p.DeleteSession(deleted); err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.GuestLeftovers(ctx, "guest:", "node-b#now", 2*time.Minute, 8*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, r := range got {
+		if r.Tenant != tenant || !strings.HasPrefix(r.User, "guest:") {
+			t.Errorf("row %+v", r)
+		}
+		ids = append(ids, r.ID)
+	}
+	sort.Strings(ids)
+	if strings.Join(ids, ",") != strings.Join(want, ",") {
+		t.Fatalf("leftovers %v, want %v", ids, want)
+	}
 }

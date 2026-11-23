@@ -435,6 +435,10 @@ func Main(args []string, opts ...Option) int {
 // initTrustNote says what abhed init trusted: the file it wrote, and, when a
 // local layer was already there, that it is not trusted and why.
 func initTrustNote(path string) string {
+	if currentPrincipal().Kind == identity.Guest {
+		// A guest's trust goes with its folder when the run ends.
+		return "As a guest, Abhed trusts it for this run only; nothing is kept. Sign in, then run `abhed trust` to trust it for later runs.\n"
+	}
 	local := filepath.Join(filepath.Dir(path), config.LocalConfigName)
 	if _, err := os.Lstat(local); err != nil {
 		return "Abhed trusts it as written; after an edit, run `abhed trust` to review and trust it again.\n"

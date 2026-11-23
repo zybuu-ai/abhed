@@ -45,12 +45,13 @@ in, and Studio signs you in over ACP (see the Studio contract).
 
 ### Moving data from 1.2.x
 
-If `~/.abhed` holds sessions or history from an earlier version, the first
+If `~/.abhed` holds anything an earlier version kept for you, the first
 choice is **Create my account and bring my data**. Abhed makes the account
 and moves your files into it by rename: sessions, history, memory, secrets,
 server sign-ins, trust decisions, skills and plugins (installs, approvals
-and trusted publishers) among them. A command run before anyone signed in,
-such as `abhed init`, does not by itself make this choice appear. It verifies every
+and trusted publishers) among them. A run nobody can ask keeps running as
+before only where `~/.abhed` holds sessions or history an earlier version
+recorded; otherwise it runs as guest. It verifies every
 session's chain before and after, and the heads must match; if they do not,
 everything moves back and nothing is lost. A crash part way through
 resumes at the next start. Sessions recorded before sign-in stay yours.
@@ -118,7 +119,8 @@ A guest cannot resume a session, keep a secret, add an MCP server or sign
 one in, sign in to a server, install, approve or remove a plugin or change
 whom plugins are trusted from, or change this machine's configuration. A
 guest loads no plugin: it starts with none, and its folder goes when it
-ends. A
+ends. A guest's `abhed init` writes the workspace file, but trusts it for
+that run only; sign in and run `abhed trust` to keep the trust. A
 guest uses the machine's configuration and defaults, and never an
 account's own trust decisions, grants or secrets. The machine's
 configuration (`~/.abhed/config.json`) is shared: what any account sets
@@ -241,8 +243,12 @@ no groups and in the default tenant, under every rule, sandbox and approval
 anyone has; no guest can reach another's sessions. When the guest signs out,
 or its browser session ends (`auth.guest_hours`, 8 by default), its
 sessions are stopped and removed, a run still going included. Guests are
-held in the server's memory, so a restart ends them all, and the next start
-removes what they left. With Postgres, removal crypto-shreds the session's
+held in the server's memory, so a restart ends them all. With guests on, a
+server removes what ended guests left at start and then hourly: on a shared
+Postgres, only sessions its own earlier run held, open ones whose server
+stopped heartbeating, and ended ones older than `auth.guest_hours`, so
+another server's live guests are never touched. Give every server of a
+deployment the same `auth.guest_hours`. With Postgres, removal crypto-shreds the session's
 content; each step's metadata stays, as for any deleted session. One
 address can start five guests an hour (behind a proxy, set
 `server.trust_proxy` so the client's address is the one counted). It needs

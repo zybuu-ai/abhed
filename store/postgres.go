@@ -713,22 +713,39 @@ func (p *Postgres) ListSessions(ctx context.Context, limit int) ([]SessionRecord
 	return p.listSessions(ctx, "", limit)
 }
 
-// OwnersWithPrefix lists the owners of live sessions whose name starts with
-// prefix, in one query: a server's start sweep uses it for console guests.
-func (p *Postgres) OwnersWithPrefix(ctx context.Context, prefix string) ([]string, error) {
-	rows, err := p.pool.Query(ctx, `SELECT DISTINCT user_id FROM sessions
-		WHERE deleted_at IS NULL AND starts_with(user_id, $1)`, prefix)
+// GuestLeftovers lists the sessions of owners named with prefix (console
+// guests) that no live guest can still hold, so a server may remove them
+// without touching another node's guests. A guest lives in one process's
+// memory for at most ttl, so a session qualifies when:
+//   - it was held by holder's node in an earlier run (a guest there died
+//     with that run), never by holder itself;
+//   - it is open and its holder's heartbeat is older than stale (or it has
+//     none and started longer ago than stale): its node is gone; or
+//   - it has ended and started longer ago than ttl: its guest has expired.
+//
+// An open session another node heartbeats is never listed.
+func (p *Postgres) GuestLeftovers(ctx context.Context, prefix, holder string, stale, ttl time.Duration) ([]SessionRecord, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT id, tenant_id, user_id FROM sessions
+		WHERE deleted_at IS NULL AND starts_with(user_id, $1)
+		  AND node_id IS DISTINCT FROM $2
+		  AND ((node_id IS NOT NULL AND strpos($2, '#') > 0
+		        AND split_part(node_id, '#', 1) = split_part($2, '#', 1))
+		    OR (ended_at IS NULL AND (node_seen_at <= now() - $3::interval
+		        OR (node_seen_at IS NULL AND started_at <= now() - $3::interval)))
+		    OR (ended_at IS NOT NULL AND started_at <= now() - $4::interval))`,
+		prefix, holder, stale.String(), ttl.String())
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []string
+	var out []SessionRecord
 	for rows.Next() {
-		var o string
-		if err := rows.Scan(&o); err != nil {
+		var r SessionRecord
+		if err := rows.Scan(&r.ID, &r.Tenant, &r.User); err != nil {
 			return nil, err
 		}
-		out = append(out, o)
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }

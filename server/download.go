@@ -396,39 +396,49 @@ func (s *Server) RemoveOwnerSessions(ctx context.Context, tenant, owner string) 
 	return n
 }
 
-// RemoveGuestLeftovers removes every console guest's session the store
-// still holds. A guest lives only in this process's memory, so after a
-// restart none can sign in again to reach them; they are what an end that
-// never ran (a restart, a crash) left. It returns how many it removed.
-func (s *Server) RemoveGuestLeftovers(ctx context.Context) int {
+// RemoveGuestLeftovers removes the console guests' sessions no live guest
+// can still hold: a guest lives only in one process's memory, for at most
+// ttl. On Postgres, shared by several nodes, that is a session held by this
+// node's earlier run, an open one whose node stopped heartbeating, or an
+// ended one older than ttl; another node's live guests are never touched.
+// On a store of this process alone, start is true for the sweep at start,
+// when no guest of this process exists yet: every guest session not running
+// here goes; later sweeps take only those older than ttl. It returns how
+// many it removed.
+func (s *Server) RemoveGuestLeftovers(ctx context.Context, ttl time.Duration, start bool) int {
 	prefix := auth.ProviderGuest + ":"
-	owners := map[string]bool{}
-	if ol, ok := s.under().(interface {
-		OwnersWithPrefix(context.Context, string) ([]string, error)
+	var recs []store.SessionRecord
+	if gl, ok := s.under().(interface {
+		GuestLeftovers(context.Context, string, string, time.Duration, time.Duration) ([]store.SessionRecord, error)
 	}); ok {
-		list, err := ol.OwnersWithPrefix(ctx, prefix)
+		list, err := gl.GuestLeftovers(ctx, prefix, s.holder, store.HolderStale, ttl)
 		if err != nil {
 			s.log.Error("listing console guests' leftovers", "error", err)
 			return 0
 		}
-		for _, o := range list {
-			owners[o] = true
-		}
+		recs = list
 	} else if s.sessions != nil {
-		recs, err := s.sessions.ListSessions(ctx, 100000)
+		all, err := s.sessions.ListSessions(ctx, 100000)
 		if err != nil {
 			s.log.Error("listing sessions to remove console guests' leftovers", "error", err)
 			return 0
 		}
-		for _, r := range recs {
-			if strings.HasPrefix(r.User, prefix) {
-				owners[r.User] = true
+		s.mu.RLock()
+		for _, r := range all {
+			_, running := s.running[r.ID]
+			if strings.HasPrefix(r.User, prefix) && !running && (start || time.Since(r.StartedAt) >= ttl) {
+				recs = append(recs, r)
 			}
 		}
+		s.mu.RUnlock()
 	}
 	n := 0
-	for o := range owners {
-		n += s.RemoveOwnerSessions(ctx, "", o)
+	for _, r := range recs {
+		if err := s.removeSession(ctx, r.ID, r.Tenant, r.User); err != nil {
+			s.log.Error("removing a console guest's leftover session", "owner", r.User, "session", r.ID, "error", err)
+			continue
+		}
+		n++
 	}
 	return n
 }

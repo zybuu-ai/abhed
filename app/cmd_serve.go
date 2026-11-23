@@ -374,15 +374,35 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 2
 	}
 	srv := server.New(opts)
-	// No console guest survives a restart, so what earlier ones left goes now.
-	func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-		if n := srv.RemoveGuestLeftovers(ctx); n > 0 {
-			slog.Info("removed console guests' sessions left from before this start", "sessions", n)
-		}
-	}()
 	if cfg.Auth.Guest {
+		// No console guest survives its process or its hours: what earlier
+		// ones left goes at start, then hourly, never another node's live ones.
+		ttl := time.Duration(cfg.Auth.GuestHours) * time.Hour
+		if ttl <= 0 {
+			ttl = auth.DefaultGuestTTL
+		}
+		sweep := func(start bool) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			if n := srv.RemoveGuestLeftovers(ctx, ttl, start); n > 0 {
+				slog.Info("removed console guests' leftover sessions", "sessions", n)
+			}
+		}
+		sweep(true)
+		stopSweep := make(chan struct{})
+		defer close(stopSweep)
+		go func() {
+			t := time.NewTicker(time.Hour)
+			defer t.Stop()
+			for {
+				select {
+				case <-stopSweep:
+					return
+				case <-t.C:
+					sweep(false)
+				}
+			}
+		}()
 		// What a console guest kept goes when the guest signs out or expires.
 		end := func(owner string) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
