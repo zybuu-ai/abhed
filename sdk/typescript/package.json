@@ -1,0 +1,38 @@
+{
+  "name": "abhed-sdk",
+  "version": "1.3.0-dev.0",
+  "description": "TypeScript client for Abhed, the secure harness for deep agents, over abhed rpc",
+  "license": "Apache-2.0",
+  "author": "Zybuu",
+  "homepage": "https://github.com/zybuu-ai/abhed/blob/main/docs/guide/40-sdk-typescript-python.md",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zybuu-ai/abhed.git",
+    "directory": "sdk/typescript"
+  },
+  "bugs": "https://github.com/zybuu-ai/abhed/issues",
+  "keywords": ["abhed", "agents", "harness", "rpc", "sdk"],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "LICENSE", "README.md"],
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "tsc -p . && node --test test/*.test.mjs",
+    "prepack": "tsc -p ."
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "6.0.3"
+  }
+}

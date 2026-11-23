@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -543,6 +544,11 @@ func TestShellWithholdsATypedAheadPassword(t *testing.T) {
 // Kill ends the shell's background jobs too: an interactive bash gives each
 // its own process group, which killing the shell alone left running.
 func TestShellKillEndsBackgroundJobs(t *testing.T) {
+	// It sweeps a shell's session for what it left: on macOS, only on a
+	// throwaway runner, never on a person's own machine.
+	if runtime.GOOS == "darwin" && os.Getenv("ABHED_TEST_PROCESS_KILL") != "1" {
+		t.Skip("ends real process trees: set ABHED_TEST_PROCESS_KILL=1 on a throwaway runner to run it on macOS")
+	}
 	forms := map[string]string{
 		"a job":                    `sleep 300 & echo job=$!`,
 		"a job outside its table":  `(sleep 301 & echo job=$! )`,

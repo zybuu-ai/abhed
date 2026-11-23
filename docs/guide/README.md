@@ -36,7 +36,10 @@ model you point it at, and records everything it does.
 | Guide | For |
 |---|---|
 | [The SDK](09-sdk.md) | embedding Abhed in a Go program |
+| [TypeScript and Python SDKs](40-sdk-typescript-python.md) | driving Abhed from Node.js or Python over `abhed rpc`: sessions, events, approvals, verdicts |
 | [Automation](10-automation.md) | headless runs, `resolve` for issues on GitHub, GitLab and Gitea, RPC, and editors over ACP |
+| [The GitHub Action](38-github-action.md) | a pinned, checksum-verified Abhed run in a GitHub Actions job, failing on an unverified answer, with the record as an artifact |
+| [Pull request review](39-pr-review.md) | a read-only review of each pull request, posted as one review; forks, and the threat model |
 | [Sessions and audit](11-sessions.md) | replay, forking, export, what is recorded |
 | [Sessions and the local record](12-records.md) | `-c`, `-r`, rewind, checkpoints, `abhed record verify`, what tamper-evident means |
 | [OCSF events and logs](30-ocsf-and-logs.md) | the record as OCSF 1.8 (or 1.5, 1.3, 1.1) events: `abhed logs`, the `record.ocsf` file, the logs stream; what maps to which class |

@@ -138,6 +138,8 @@ abhed -p "fix the failing tests; run go test ./..." -mode auto \
   -allow 'bash(go test*)' -verify strict -output-format json > run.jsonl
 ```
 
+The [GitHub Action](38-github-action.md) runs it this way in a GitHub Actions job.
+
 With `json` or `stream-json`, the check is the `answer.verdict` event and
 the result line's `verdict`: `verdict.outcome` is `verified` or `unverified`,
 and `verdict.claims` lists each statement with its own `verdict` and
@@ -279,7 +281,7 @@ the permissions. It only explains; nothing is granted.
 
 For a caller that is not Go, `abhed rpc` speaks line-delimited JSON on stdin and
 stdout — no server, no port, no auth for what is one process talking to its own
-child.
+child. The [TypeScript and Python SDKs](40-sdk-typescript-python.md) wrap it.
 
 ```python
 p = subprocess.Popen(["abhed", "rpc"], stdin=PIPE, stdout=PIPE, text=True, bufsize=1)
@@ -294,9 +296,10 @@ send(method="prompt", prompt="fix the failing tests")
 
 | Method | |
 |---|---|
-| `start` | open a session — `workspace`, `mode`, `allow`, `deny`, `verify` (`off`, `label` or `strict`; unset is `verify.mode`, else `label`), and `runbook` (`plan`, `runbook`, optional `sha256`), approved for the session as [Runbooks](28-runbooks.md#headless-runs) describes |
+| `start` | open a session — `workspace`, `mode`, `allow`, `deny`, `verify` (`off`, `label` or `strict`; unset is `verify.mode`, else `label`), `runbook` (`plan`, `runbook`, optional `sha256`), approved for the session as [Runbooks](28-runbooks.md#headless-runs) describes, and `approvals` (see [Approvals](#approvals)) |
 | `prompt` | send a prompt, get the final answer — `prompt`; the answer carries `verdict` (with `outcome`) unless checking is off |
 | `steer` | redirect a run in progress — the text in `prompt` |
+| `approve` | answer an approval — `request_id`, `decision` (`allow` or `deny`), optional `remember` and `approver` |
 | `usage` | tokens, turns, compactions, and cost (`CostUSD`; `Unpriced` when a call had no price) |
 | `export` | the HTML transcript |
 | `providers` | what this build supports |
@@ -333,8 +336,56 @@ order sent; up to 256 may wait, and one beyond that is answered with an error.
 trusted workspace's; an untrusted workspace can only lower it.
 
 The session has the CLI's tool set, subagents, MCP servers, skills and the
-other tools the configuration enables included. There is no approver, so a
-call that needs approval, a subagent's too, is refused.
+other tools the configuration enables included. Unless `start` sets
+`approvals`, there is no approver, so a call that needs approval, a
+subagent's too, is refused.
+
+### Approvals
+
+`{"method":"start","approvals":true}` puts each call that needs approval to
+the caller instead. The ask arrives as a line of its own, while the prompt
+runs:
+
+```json
+{"type":"approval","approval":{"request_id":"01H…","call_id":"c1","tool":"bash",
+ "args":{"command":"make deploy"},"reason":"running a command needs approval in default mode",
+ "step":"default","rule":"builtin:default","source":"mode","offer":"bash(make *)"}}
+```
+
+and is answered with
+
+```json
+{"id":"9","method":"approve","request_id":"01H…","decision":"allow","approver":"olga@example.com"}
+```
+
+which is answered at once with `{"id":"9","type":"answered"}`, or an error
+when no ask with that id is waiting. `approve` is read as it arrives, like
+`steer`, not queued behind the running prompt.
+
+- `request_id` is the id of the recorded `action.requested`, unique in the
+  session; `call_id` is the tool call's.
+- `args`, `reason` and `offer` are the copy the record holds, stored
+  secrets redacted. A request whose copy the record withheld is refused
+  without asking, since nobody can review input they cannot see.
+- `destructive` is true for a command with no undo; `args_hidden` is true
+  when the arguments hold characters that would not print as themselves, so
+  mark them before showing them to a person.
+- `subagent` and `task_id` name the subagent or background task that asked.
+- `remember: true` keeps `offer`, the scope policy offers to always allow,
+  for the rest of the session: later asks it covers are allowed without a
+  line and recorded as `by: session-scope`. It is ignored when there is no
+  `offer`, as for a deny or ask rule or a destructive command.
+- `approver` is recorded on the `action.approved` or `action.denied` as
+  your program asserts it; Abhed does not verify it. It is at most 256
+  characters, every one printing as itself, or the `approve` is refused and
+  the ask keeps waiting.
+- An ask still open when stdin ends is refused and recorded as settled by
+  the system. One open when its run is stopped (a signal, or `cancel_task`
+  for a background task's ask) ends as `interrupted`, and an answer that
+  arrives with the stop is never applied.
+
+An approval answers an ask; it cannot lift a deny rule, widen the sandbox, or
+change the mode.
 
 A tool call's arguments in the events are the model's, unescaped: a value
 can hold a right-to-left override, a terminal escape or a zero-width
@@ -446,7 +497,9 @@ the branch stays. `abhed eval` stopped the same way prints no summary, writes
 no `-json` report, and exits the same way.
 
 Not here: the bot that reacts to labels and comments. That is a multi-user
-feature and lives with the server.
+feature and lives with the server. In a GitHub Actions job, the
+[GitHub Action](38-github-action.md) runs a task and
+[reviews pull requests](39-pr-review.md).
 
 ## Editors
 
