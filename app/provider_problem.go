@@ -2,11 +2,15 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -28,11 +32,18 @@ type providerProblem struct {
 
 // explainProvider reads err from provider name's model.
 func explainProvider(cfg config.Config, name string, err error) *providerProblem {
+	pc := cfg.Model.Providers[name]
 	p := model.ProblemOf(err)
 	if p == nil {
-		return nil
+		// Nothing answered (refused, no such host, timed out): said as the
+		// command line says it, with the next step, never as a Go error.
+		why := unreachableWhy(err)
+		if why == "" {
+			return nil
+		}
+		return &providerProblem{Problem: &model.Problem{Kind: model.ProblemUnreachable, Message: why}, Provider: name, Model: pc.Model,
+			Next: friendlyModelError(err, name, pc), Others: usableModels(cfg, name)}
 	}
-	pc := cfg.Model.Providers[name]
 	out := &providerProblem{Problem: p, Provider: name, Model: pc.Model, Others: usableModels(cfg, name)}
 	instead := ""
 	if len(out.Others) > 0 {
@@ -49,6 +60,8 @@ func explainProvider(cfg config.Config, name string, err error) *providerProblem
 		out.Next = "The account has no credit or quota left: add credit or raise the quota with the provider." + instead
 	case model.ProblemRetired:
 		out.Next = fmt.Sprintf("%s is retired or not available to this account; set another model for %s, or pick another.%s", pc.Model, name, instead)
+	case model.ProblemTooLarge:
+		out.Next = tooLargeNext(pc.Model) + instead
 	case model.ProblemRateLimit:
 		out.Next = "The provider is rate limiting: wait a minute and send again." + instead
 	case model.ProblemUnavailable:
@@ -61,6 +74,9 @@ func explainProvider(cfg config.Config, name string, err error) *providerProblem
 
 // Text is the problem as said in the chat.
 func (p *providerProblem) Text() string {
+	if p.Status == 0 {
+		return fmt.Sprintf("The model could not be reached (%s): %s.\nNext: %s", p.Provider, p.Message, p.Next)
+	}
 	return fmt.Sprintf("The model provider refused the request (%s, %d): %s\nNext: %s", p.Provider, p.Status, p.Message, p.Next)
 }
 
@@ -196,4 +212,33 @@ func defaultModelWarning(cfg config.Config) string {
 		w += " Configure another model (abhed init, or the model picker)."
 	}
 	return w
+}
+
+// unreachableWhy is why nothing answered at a model's endpoint, or "" when the
+// error is not that.
+func unreachableWhy(err error) string {
+	var dns *net.DNSError
+	var ne net.Error
+	var ue *url.Error
+	switch {
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "nothing is answering at the endpoint (connection refused)"
+	case errors.As(err, &dns) && dns.IsNotFound:
+		return "the endpoint's host does not resolve"
+	case errors.As(err, &ne) && ne.Timeout():
+		return "the endpoint did not answer in time"
+	case errors.As(err, &ue):
+		return "the endpoint could not be reached"
+	}
+	return ""
+}
+
+// tooLargeNext is what to do about a request larger than a model's window.
+func tooLargeNext(modelName string) string {
+	if modelName == "" {
+		modelName = "the model"
+	}
+	return "The request is too large for " + modelName + "'s context window: shorten what you sent (fewer or smaller attachments, " +
+		"a narrower question), start a new conversation or run /compact, pick a model with a larger window (/model), " +
+		"or adjust the context settings (context.compact_at, limits.max_tokens)."
 }

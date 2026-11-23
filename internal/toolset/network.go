@@ -187,6 +187,11 @@ func (n *Network) Open(scope, host string, keep bool) (string, error) {
 		}
 		host = h
 	}
+	// A host named opens that host alone, whatever the scope: "workspace"
+	// with a host keeps the host for the workspace, never the whole network.
+	if host != "" && scope == "workspace" {
+		scope = "host"
+	}
 	pol := n.policy()
 	kept := func(all bool, h string) string {
 		if !keep {

@@ -610,6 +610,7 @@ func mergeKnown(old, found []string) []string {
 // in the workspace's git folders as configuration (protect_git, held), so
 // what Abhed reads there before a command still holds when the command runs.
 func HoldsGit(sb Sandbox) bool {
+	sb = resolvedSandbox(sb)
 	h, ok := sb.(interface{ holdsGit() bool })
 	return ok && h.holdsGit()
 }
@@ -627,6 +628,18 @@ func (f *Fence) holdsGit() bool { return f.policy.ProtectGit && f.mounts }
 // namespace) leaves a command started before the folder was made able to
 // write it.
 func HoldsNewGit(sb Sandbox) bool {
-	p, ok := sb.(*Process)
+	p, ok := resolvedSandbox(sb).(*Process)
 	return ok && p.holdsGit() && p.backend == "sandbox-exec"
+}
+
+// resolvedSandbox is the sandbox sb stands for: one chosen in the background
+// (the command line's, so its prompt shows at once) once chosen, waiting
+// for it; sb itself otherwise, or when the choice failed.
+func resolvedSandbox(sb Sandbox) Sandbox {
+	if r, ok := sb.(interface{ Resolve() (Sandbox, error) }); ok {
+		if inner, err := r.Resolve(); err == nil && inner != nil {
+			return inner
+		}
+	}
+	return sb
 }

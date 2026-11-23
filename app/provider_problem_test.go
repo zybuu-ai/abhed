@@ -1,15 +1,20 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/model"
 )
 
@@ -124,5 +129,91 @@ func TestDoctorProbeHandsOnTheFailure(t *testing.T) {
 	}
 	if p := model.ProblemOf(got); p == nil || p.Kind != model.ProblemRetired {
 		t.Fatalf("handed on %v", got)
+	}
+}
+
+// In Studio, a model endpoint where nothing answers is said as the command
+// line says it, with the next step, and never as a Go error.
+func TestStudioSaysAnUnreachableModel(t *testing.T) {
+	acpModelsEnv(t, `{"model":{"default":"down","providers":{"down":`+stubProvider("http://127.0.0.1:9/v1", "m-down")+`}}}`)
+	ws := t.TempDir()
+	r := &studioRig{t: t, ws: ws}
+	r.cl = newStudioClient(t, ws, true)
+	r.cl.ok("initialize", map[string]any{"protocolVersion": 1}, nil)
+	id := r.open()
+	from := r.cl.mark()
+	var res struct {
+		StopReason string         `json:"stopReason"`
+		Meta       map[string]any `json:"_meta"`
+	}
+	r.cl.ok("session/prompt", map[string]any{"sessionId": id, "prompt": []any{map[string]any{"type": "text", "text": "hi"}}}, &res)
+	said := ""
+	for _, u := range updates(r.cl.since(from)) {
+		if c, ok := u["content"].(map[string]any); ok && u["sessionUpdate"] == "agent_message_chunk" {
+			said += fmt.Sprint(c["text"])
+		}
+	}
+	if !strings.Contains(said, "The model could not be reached (down)") || !strings.Contains(said, "Nothing is answering at http://127.0.0.1:9/v1") || !strings.Contains(said, "Next:") ||
+		strings.Contains(said, "model call failed") || strings.Contains(said, "dial tcp") {
+		t.Fatalf("said %q", said)
+	}
+	pe, _ := res.Meta[acpMetaKey].(map[string]any)["providerError"].(map[string]any)
+	if pe["kind"] != model.ProblemUnreachable {
+		t.Fatalf("meta %v", res.Meta)
+	}
+}
+
+// A request larger than the model's window is said as that, with what to do,
+// and never as "run abhed doctor".
+func TestTooLargeIsSaidAsTooLarge(t *testing.T) {
+	p := config.ProviderConfig{Type: "openai-compatible", BaseURL: "http://127.0.0.1:9/v1", Model: "m-small"}
+	for _, body := range []string{
+		`{"error":{"message":"This model's maximum context length is 8192 tokens. However, your messages resulted in 9000 tokens.","code":"context_length_exceeded"}}`,
+		`{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}`,
+	} {
+		err := fmt.Errorf("model call failed: %w", &model.StatusError{Status: 400, Body: body, Attempts: 1})
+		got := friendlyModelError(err, "small", p)
+		if !strings.Contains(got, "too large for m-small's context window") || !strings.Contains(got, "larger window") || strings.Contains(got, "abhed doctor") {
+			t.Fatalf("%s:\n%s", body, got)
+		}
+		cfg := config.Default()
+		cfg.Model.Providers = map[string]config.ProviderConfig{"small": p}
+		if pp := explainProvider(cfg, "small", err); pp == nil || pp.Kind != model.ProblemTooLarge || !strings.Contains(pp.Next, "shorten") {
+			t.Fatalf("explained %+v", pp)
+		}
+	}
+	over := &agent.ContextOverflowError{Model: "m-small", Limit: 8192, Err: &model.StatusError{Status: 400, Body: "context_length_exceeded"}}
+	if got := friendlyModelError(fmt.Errorf("x: %w", over), "small", p); !strings.Contains(got, "too long for m-small") || strings.Contains(got, "abhed doctor") {
+		t.Fatalf("overflow: %s", got)
+	}
+}
+
+// A base URL's user, password and query never reach the text Studio shows,
+// nor the reply's _meta.
+func TestUnreachableTextStripsTheEndpointsSecrets(t *testing.T) {
+	for _, base := range []string{
+		"http://bob:hunter2pw@127.0.0.1:9/v1?api_key=sk-abcdefghijklmnop&x=1#frag",
+		"http://tok3n-only@127.0.0.1:9/v1?key=AIzaSyAbcdefghijklmnopqrstuvwxyz0123456",
+		"127.0.0.1:9/v1?token=abcdef123456",
+	} {
+		p := config.ProviderConfig{Type: "openai-compatible", BaseURL: base, Model: "m"}
+		err := fmt.Errorf("model call failed: %w", &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)})
+		cfg := config.Default()
+		cfg.Model.Providers = map[string]config.ProviderConfig{"down": p}
+		pp := explainProvider(cfg, "down", err)
+		if pp == nil {
+			t.Fatalf("%s: not explained", base)
+		}
+		b, _ := json.Marshal(pp)
+		for _, s := range []string{pp.Text(), string(b), friendlyModelError(err, "down", p)} {
+			for _, secret := range []string{"bob", "hunter2pw", "sk-abcdefghijklmnop", "tok3n-only", "AIzaSy", "abcdef123456", "frag", "api_key", "token="} {
+				if strings.Contains(s, secret) {
+					t.Fatalf("%s: %q shows %q", base, s, secret)
+				}
+			}
+		}
+		if !strings.Contains(pp.Text(), "127.0.0.1:9/v1") {
+			t.Fatalf("%s: the host is gone too: %s", base, pp.Text())
+		}
 	}
 }

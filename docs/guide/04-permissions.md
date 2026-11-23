@@ -1104,19 +1104,19 @@ out fails inside the sandbox too, as git rewrites `core.worktree` in the
 submodule's protected config.
 
 So on the process tier and the fence, a command that is exactly `git
-worktree add`, `git worktree remove`, `git worktree prune` or `git submodule
-update` (and, below, the network part of `git fetch`, `pull`, `push`,
-`clone` and `ls-remote`) (plain words, the usual options only, no second command), already
-approved as any command is, runs through host git instead, with the settings
-Abhed's own git uses: hooks, fsmonitor, filters and every transport but https
-off. A path it names outside the workspace refuses it. Host git is not
-held by the sandbox's network rules, so with `allow_network` off or the
-egress allowlist on, `git submodule update` is brokered only with
-`--no-fetch` (or `-N`) and runs with no transport at all: it checks out
-commits already fetched and fails on a submodule not yet cloned. Without
-`--no-fetch` it is refused; fetch the submodules yourself, outside Abhed. Another spelling, an
-option outside the usual ones or a line with more on it runs in the sandbox
-and may fail there. The container and vm tiers do not broker them; run them
+worktree add`, `git worktree remove` or `git worktree prune` (and, below,
+the network part of `git fetch`, `pull`, `push`, `clone` and `ls-remote`)
+(plain words, the usual options only, no second command), already approved
+as any command is, runs through host git instead, with the settings Abhed's
+own git uses: hooks, fsmonitor, filters and every transport but https off.
+A path it names outside the workspace refuses it. `git submodule update` is
+not brokered: a submodule's own configuration and attributes can name
+programs git runs (a smudge filter, an update command such as
+`submodule.<name>.update = !cmd`), and no list of settings switched off
+could be shown to cover them all, so it runs in the sandbox, where it may
+fail as above; run it yourself outside Abhed. Another spelling, an option
+outside the usual ones or a line with more on it runs in the sandbox and
+may fail there. The container and vm tiers do not broker them; run them
 yourself there. `git worktree remove --force` deletes the worktree's files as
 you asked, then its folder under `.git/worktrees`, instead of deleting the
 files and then failing.
@@ -1268,11 +1268,8 @@ during the session are asked each time everywhere.
 None of this is done on `abhed serve` (the workbench, its terminal, the
 console, for every account and guest): there remote git runs in the
 sandbox, as in 1.2.9, as host git would run as the server's own account,
-with its keys, for whoever reaches it. Worktree and submodule commands are
-still brokered there, but `git submodule update` only with `--no-fetch`
-(or `-N`), whatever the network: it never fetches on the host, so the
-server account's `~/.netrc` or `http.*.extraHeader` is never sent to a URL
-a workspace's `.gitmodules` names.
+with its keys, for whoever reaches it. Worktree commands are still brokered
+there; `git submodule update` is not, anywhere.
 
 It is off, too, where `sandbox.host_git` is `false` (any layer may set it;
 none can set it back), and where the managed configuration holds the

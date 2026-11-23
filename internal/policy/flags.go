@@ -22,10 +22,16 @@ type flagForm struct {
 
 var shortCluster = regexp.MustCompile(`^-[A-Za-z0-9]+$`)
 
+// shortClusterStar is a cluster a rule's glob ends with a star: -rf*.
+var shortClusterStar = regexp.MustCompile(`^-[A-Za-z0-9]+\*$`)
+
 // longFlag reports a long option with no value glued to it.
 func longFlag(w string) bool {
-	return len(w) > 2 && strings.HasPrefix(w, "--") && !strings.Contains(w, "=")
+	return len(w) > 2 && strings.HasPrefix(w, "--") && !strings.ContainsAny(w, "=*?")
 }
+
+// longFlagStar is a long flag a rule's glob ends with a star: --force*.
+var longFlagStar = regexp.MustCompile(`^--[A-Za-z0-9][A-Za-z0-9-]*\*$`)
 
 // parseFlagForm reads glob as a flag form, or nil when it names no flag after
 // literal words, or has a wildcard before its flags.
@@ -35,11 +41,11 @@ func parseFlagForm(glob string) *flagForm {
 	i := 0
 	for ; i < len(fields); i++ {
 		w := fields[i]
-		if strings.ContainsAny(w, "*?") {
-			return nil
-		}
 		if strings.HasPrefix(w, "-") {
 			break
+		}
+		if strings.ContainsAny(w, "*?") {
+			return nil
 		}
 		f.prefix = append(f.prefix, w)
 	}
@@ -56,6 +62,19 @@ flags:
 			}
 		case longFlag(w):
 			f.long[w] = true
+		case longFlagStar.MatchString(w):
+			// --force* in bash(git push --force*): the flag, then anything.
+			f.long[w[:len(w)-1]] = true
+			fields[i] = "*"
+			break flags
+		case shortClusterStar.MatchString(w):
+			// -rf* in bash(rm -rf*): the flags, then anything; the star
+			// stands for the rest, which may be more flags or operands.
+			for j := 1; j < len(w)-1; j++ {
+				f.short[w[j]] = true
+			}
+			fields[i] = "*"
+			break flags
 		default:
 			break flags
 		}
@@ -76,7 +95,7 @@ flags:
 // whose flags anywhere before -- include the form's, and whose other words,
 // in order, match the form's rest.
 func (f *flagForm) matches(command string) bool {
-	fields := strings.Fields(command)
+	fields := skipGitGlobals(strings.Fields(command))
 	if len(fields) < len(f.prefix) || tools.CommandName(path.Base(fields[0])) != f.prefix[0] {
 		return false
 	}
@@ -85,7 +104,8 @@ func (f *flagForm) matches(command string) bool {
 			return false
 		}
 	}
-	short, long := map[byte]bool{}, map[string]bool{}
+	eq := flagSynonyms[strings.Join(f.prefix, " ")]
+	have := map[string]bool{}
 	var operands []string
 	ended := false
 	for _, w := range fields[len(f.prefix):] {
@@ -96,25 +116,81 @@ func (f *flagForm) matches(command string) bool {
 			ended = true
 		case shortCluster.MatchString(w):
 			for j := 1; j < len(w); j++ {
-				short[w[j]] = true
+				have[canonFlag(eq, "-"+string(w[j]))] = true
 			}
 		case longFlag(w):
-			long[w] = true
+			have[canonFlag(eq, w)] = true
+		case strings.HasPrefix(w, "--") && strings.Contains(w, "=") && eq[w[:strings.IndexByte(w, '=')]] != "":
+			// --force-with-lease=main is the flag its table names.
+			have[canonFlag(eq, w[:strings.IndexByte(w, '=')])] = true
+		case len(w) > 1 && w[0] == '+' && eq[forceRefspec] != "":
+			// git push origin +main forces that ref, as -f does.
+			have[eq[forceRefspec]] = true
+			operands = append(operands, w)
 		default:
 			operands = append(operands, w)
 		}
 	}
 	for c := range f.short {
-		if !short[c] {
+		if !have[canonFlag(eq, "-"+string(c))] {
 			return false
 		}
 	}
 	for w := range f.long {
-		if !long[w] {
+		if !have[canonFlag(eq, w)] {
 			return false
 		}
 	}
 	return f.rest.MatchString(strings.Join(operands, " "))
+}
+
+// flagSynonyms are, for common destructive commands, flags that do the same
+// as another, each mapped to one spelling: a deny or ask rule naming one
+// also holds for the others. Read for deny and ask matching only.
+var flagSynonyms = map[string]map[string]string{
+	"rm":        {"-R": "-r", "--recursive": "-r", "--force": "-f"},
+	"chmod":     {"--recursive": "-R"},
+	"chown":     {"--recursive": "-R"},
+	"chgrp":     {"--recursive": "-R"},
+	"git push":  {"--force": "-f", "--force-with-lease": "-f", forceRefspec: "-f"},
+	"git clean": {"--force": "-f"},
+}
+
+// forceRefspec stands in the table for a refspec that forces (+main).
+const forceRefspec = "+refspec"
+
+// canonFlag is flag as its command's synonym table spells it.
+func canonFlag(eq map[string]string, flag string) string {
+	if c, ok := eq[flag]; ok {
+		return c
+	}
+	return flag
+}
+
+// gitGlobalWithValue are git's options before the subcommand that take the
+// next word as their value when it is not glued on with =.
+var gitGlobalWithValue = map[string]bool{"-C": true, "-c": true, "--git-dir": true, "--work-tree": true, "--namespace": true,
+	"--config-env": true, "--exec-path": true, "--attr-source": true, "--super-prefix": true}
+
+// skipGitGlobals drops git's options between git and its subcommand, so
+// git -C dir --no-pager push -f is read as git push -f: every word starting
+// with - goes, and one of gitGlobalWithValue takes the next word with it.
+// For deny and ask matching only.
+func skipGitGlobals(fields []string) []string {
+	if len(fields) == 0 || tools.CommandName(path.Base(fields[0])) != "git" {
+		return fields
+	}
+	i := 1
+	for i < len(fields) && strings.HasPrefix(fields[i], "-") {
+		if gitGlobalWithValue[fields[i]] {
+			i++
+		}
+		i++
+	}
+	if i > len(fields) {
+		i = len(fields)
+	}
+	return append([]string{fields[0]}, fields[i:]...)
 }
 
 // matchesFlagsAny reports a bash deny or ask rule whose flag form matches

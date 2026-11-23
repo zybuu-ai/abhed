@@ -1021,6 +1021,7 @@ var workspaceRules = map[string]fieldRule{
 	"web_fetch.max_chars":      {lower(func(c *Config) *int { return &c.WebFetch.MaxChars }, zeroIs(20000)), "only lower"},
 	"web_fetch":                {nil, "names the hosts the agent may fetch from"},
 	"k8s.enabled":              {onlyFalse(func(c *Config) *bool { return &c.K8s.Enabled }), "only false"},
+	"machine_setup":            {machineSetupOff, "only false"},
 	"k8s.allow_writes":         {onlyFalse(func(c *Config) *bool { return &c.K8s.AllowWrites }), "only false"},
 	"k8s":                      {nil, "names which cluster and credentials the agent reaches"},
 	"ssh.enabled":              {onlyFalse(func(c *Config) *bool { return &c.SSH.Enabled }), "only false"},
@@ -1194,6 +1195,17 @@ func onlyFalse(field func(*Config) *bool) func(dst, ws *Config) bool {
 		*field(dst) = false
 		return true
 	}
+}
+
+// machineSetupOff takes machine_setup only as false. Only the managed
+// configuration's or an org policy's turns anything off (MachineSetupOff).
+func machineSetupOff(dst, ws *Config) bool {
+	if m := ws.MachineSetup; m == nil || *m {
+		return false
+	}
+	off := false
+	dst.MachineSetup = &off
+	return true
 }
 
 // hostGitOff takes sandbox.host_git from a workspace only as false.

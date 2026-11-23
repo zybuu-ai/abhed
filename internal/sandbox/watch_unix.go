@@ -10,6 +10,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"weak"
 )
 
 // Watch follows the processes a command starts, from its Start to its end, so
@@ -418,40 +419,46 @@ func (w *Watch) end() {
 	// Wait's to end or report once the root has exited.
 }
 
-// commandSet is the commands one sandbox made, ended when it closes.
+// commandSet is the commands one sandbox made, ended when it closes. It
+// holds them weakly: a command nothing else holds has ended and leaves the
+// set, so it never needs to read a command's state, which the command's own
+// Wait writes.
 type commandSet struct {
 	mu   sync.Mutex
-	cmds map[*exec.Cmd]bool
+	cmds map[weak.Pointer[exec.Cmd]]struct{}
 }
 
-// owners maps a command to the set that holds it, so its end removes it.
-var owners sync.Map
+// owners maps a command, weakly, to the set that holds it, so its end
+// removes it.
+var owners sync.Map // weak.Pointer[exec.Cmd] -> *commandSet
 
 func (c *commandSet) add(cmd *exec.Cmd) {
 	if cmd == nil {
 		return
 	}
+	k := weak.Make(cmd)
 	c.mu.Lock()
 	if c.cmds == nil {
-		c.cmds = map[*exec.Cmd]bool{}
+		c.cmds = map[weak.Pointer[exec.Cmd]]struct{}{}
 	}
-	// One reaped by another path than a Watch is done with.
+	// One collected is done with.
 	for old := range c.cmds {
-		if old.ProcessState != nil {
+		if old.Value() == nil {
 			delete(c.cmds, old)
 			owners.Delete(old)
 		}
 	}
-	c.cmds[cmd] = true
+	c.cmds[k] = struct{}{}
 	c.mu.Unlock()
-	owners.Store(cmd, c)
+	owners.Store(k, c)
 }
 
 func forgetCommand(cmd *exec.Cmd) {
-	if v, ok := owners.LoadAndDelete(cmd); ok {
+	k := weak.Make(cmd)
+	if v, ok := owners.LoadAndDelete(k); ok {
 		c := v.(*commandSet)
 		c.mu.Lock()
-		delete(c.cmds, cmd)
+		delete(c.cmds, k)
 		c.mu.Unlock()
 	}
 }
@@ -462,13 +469,15 @@ func forgetCommand(cmd *exec.Cmd) {
 func (c *commandSet) end() {
 	c.mu.Lock()
 	cmds := make([]*exec.Cmd, 0, len(c.cmds))
-	for cmd := range c.cmds {
-		cmds = append(cmds, cmd)
+	for k := range c.cmds {
+		owners.Delete(k)
+		if cmd := k.Value(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	}
 	c.cmds = nil
 	c.mu.Unlock()
 	for _, cmd := range cmds {
-		owners.Delete(cmd)
 		if v, ok := runningWatches.Load(cmd); ok {
 			v.(*Watch).end()
 		}

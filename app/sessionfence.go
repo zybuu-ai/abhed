@@ -144,3 +144,12 @@ func hostAsk(sb sandbox.Sandbox, gb *hostgit.HostBroker) func(key, cwd, command 
 	}
 	return gb.Ask
 }
+
+// lazyHostAsk is the broker's Ask where the sandbox may still be being
+// chosen: the broker asks whether git is held as each call is judged.
+func lazyHostAsk(gb *hostgit.HostBroker) func(key, cwd, command string) (string, string, string, error) {
+	if !gb.BrokersRemoteCommands() {
+		return nil
+	}
+	return gb.Ask
+}

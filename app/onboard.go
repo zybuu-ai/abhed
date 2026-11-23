@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/defaults"
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -344,7 +345,7 @@ func (g gatedAdapter) Complete(ctx context.Context, req model.Request) (<-chan m
 // friendlyModelError says what went wrong with a model call and what to do
 // about it, in place of a Go dial error or an upstream JSON body.
 func friendlyModelError(err error, name string, p config.ProviderConfig) string {
-	where := p.BaseURL
+	where := endpointShown(p.BaseURL)
 	if where == "" {
 		where = "the " + p.Type + " endpoint"
 	}
@@ -371,7 +372,10 @@ func friendlyCause(err error, name string, p config.ProviderConfig, where, next 
 	var dns *net.DNSError
 	var se *model.StatusError
 	var ne net.Error
+	var overflow *agent.ContextOverflowError
 	switch {
+	case errors.As(err, &overflow):
+		return overflow.Error()
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return fmt.Sprintf("Nothing is answering at %s (model %q). Start the model server there. %s", where, name, next)
 	case errors.As(err, &dns) && dns.IsNotFound:
@@ -381,6 +385,9 @@ func friendlyCause(err error, name string, p config.ProviderConfig, where, next 
 		// users" says more than a status.
 		if p := model.ProblemOf(err); p != nil && se.Status < 500 && p.Message != "" && p.Message != http.StatusText(se.Status) {
 			where = fmt.Sprintf("%s (%q)", where, p.Message)
+		}
+		if pp := model.ProblemOf(err); pp != nil && pp.Kind == model.ProblemTooLarge {
+			return fmt.Sprintf("%s refused the request (%d). %s", where, se.Status, tooLargeNext(p.Model))
 		}
 		switch {
 		case se.Status == http.StatusUnauthorized || se.Status == http.StatusForbidden:
@@ -1031,4 +1038,26 @@ func proxiedFailure(err error, name string, p config.ProviderConfig, where, next
 	}
 	return fmt.Sprintf("The upstream proxy %s answered %d %s for %s (model %q): it did not reach the model server, or would not. "+
 		"Check that the server is up and that the proxy lets this machine reach it. %s", up, status, http.StatusText(status), host, name, next), true
+}
+
+// endpointShown is a base URL as a message may show it: scheme, host and
+// path only. Its user, password, query (a ?key=) and fragment never reach a
+// terminal, Studio's chat or a reply's _meta.
+func endpointShown(base string) string {
+	u, err := url.Parse(base)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		if i := strings.IndexAny(base, "?#"); i >= 0 {
+			base = base[:i]
+		}
+		if at := strings.LastIndex(base, "@"); at >= 0 {
+			if s := strings.Index(base, "://"); s >= 0 && s < at {
+				base = base[:s+3] + base[at+1:]
+			} else {
+				base = base[at+1:]
+			}
+		}
+		return config.Printable(base)
+	}
+	u.User, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = nil, "", false, "", ""
+	return config.Printable(u.String())
 }

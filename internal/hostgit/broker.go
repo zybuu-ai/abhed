@@ -24,7 +24,8 @@ func Brokered(line string) bool {
 // clone) are run on the host for sb, as the broker decides: on the process
 // tier and the fence, where sb holds git's configuration against commands.
 func BrokersRemotes(sb sandbox.Sandbox) bool {
-	if sb == nil || sb.Tier() != sandbox.TierProcess && sb.Tier() != sandbox.TierFence || !sandbox.HoldsGit(sb) {
+	// HoldsGit first: it waits for a sandbox still being chosen, whose tier is then known.
+	if sb == nil || !sandbox.HoldsGit(sb) || sb.Tier() != sandbox.TierProcess && sb.Tier() != sandbox.TierFence {
 		return false
 	}
 	for _, l := range []string{"git fetch origin", "git pull origin main", "git push origin main", "git clone https://example.com/r.git"} {
@@ -36,9 +37,6 @@ func BrokersRemotes(sb sandbox.Sandbox) bool {
 }
 
 func init() { tools.HostGitLine = Brokered }
-
-// noProtocol names no transport git has, so git reaches no remote.
-const noProtocol = "abhed-none"
 
 // brokered is the git arguments of a line that is one of the brokered
 // commands, in plain words: no quoting, expansion or second command.
@@ -56,7 +54,7 @@ func brokered(line string) ([]string, bool) {
 	}
 	args := f[1:]
 	switch args[0] + " " + args[1] {
-	case "worktree add", "worktree remove", "worktree prune", "submodule update":
+	case "worktree add", "worktree remove", "worktree prune":
 	default:
 		return nil, false
 	}
@@ -75,10 +73,9 @@ func brokered(line string) ([]string, bool) {
 // brokerFlags are the options each brokered command takes; any other is
 // left to the sandbox, which may refuse it.
 var brokerFlags = map[string]map[string]bool{
-	"worktree add":     {"-b": true, "-B": true, "--detach": true, "-f": true, "--force": true, "-q": true, "--quiet": true, "--no-checkout": true, "--checkout": true},
-	"worktree remove":  {"-f": true, "--force": true},
-	"worktree prune":   {"-n": true, "--dry-run": true, "-v": true, "--verbose": true},
-	"submodule update": {"--init": true, "--recursive": true, "-q": true, "--quiet": true, "--checkout": true, "--no-fetch": true, "-N": true},
+	"worktree add":    {"-b": true, "-B": true, "--detach": true, "-f": true, "--force": true, "-q": true, "--quiet": true, "--no-checkout": true, "--checkout": true},
+	"worktree remove": {"-f": true, "--force": true},
+	"worktree prune":  {"-n": true, "--dry-run": true, "-v": true, "--verbose": true},
 }
 
 // brokerPaths refuses a brokered command naming a path outside the
