@@ -1,16 +1,12 @@
 package hostgit
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net/url"
 	"os/exec"
-	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,15 +18,23 @@ import (
 // The sandbox keeps the person's SSH keys, SSH agent and credential helpers
 // from commands, so git fetch, pull, push and clone cannot authenticate
 // there. A command that is exactly one of them, in plain words with the usual
-// options, runs through host git instead: as the person, with their SSH agent,
-// keychain and credential helpers, while the sandboxed agent never reads a key.
+// options, has its network part run through host git instead: as the person,
+// with their SSH agent, keychain and credential helpers, while the sandboxed
+// agent never reads a key. Only the network part: a pull's merge or rebase
+// and a clone's checkout run in the sandbox, so no filter, driver or hook a
+// repository names ever runs on the host.
 //
-// Host git reaches only the remotes the repository had when the session
-// started (a remote added or changed since is asked about each time), or a
-// clone URL a person approved. The repository's own configuration cannot name
-// a program for it to run: the safety settings stay on, the SSH command, askpass
-// and credential helpers are the person's global ones, and a repository that
-// names a hook or remote helper in its configuration is not brokered.
+// The repository's configuration is input the agent may have written, so
+// host git is given only what it needs from it: fetch and ls-remote go to
+// the remote's URL, read when the call was judged, with its fetch refspecs on
+// the command line; the SSH command, askpass, proxy and credential helpers
+// are the person's global ones; the safety settings, the pager and the
+// upload and receive programs are pinned on the command line; and a
+// repository whose own configuration names a hook, a remote helper, a proxy,
+// an http setting, an upload or receive program or a URL rewrite is not
+// brokered. Nor is any repository unless the sandbox holds git's
+// configuration against its commands (protect_git, held), so what was read
+// when the call was judged is what host git reads when it runs.
 
 // EvBrokered is one git command run through host git for the sandbox:
 // recorded when it starts and again, with the refs it changed, when it ends.
@@ -61,14 +65,24 @@ type HostBroker struct {
 	tier      func() sandbox.Tier
 	net       Network
 	command   func(ctx context.Context, cwd, line string) *exec.Cmd
+	// holds reports whether the sandbox holds git's configuration against
+	// its commands; nil, or false, brokers no remote command.
+	holds func() bool
 
 	mu sync.Mutex
 	// known are the repositories whose remotes host git may reach, by their
 	// real top folder: the workspace's own, as at the session's start, and
 	// those cloned for it, as they were cloned.
-	known map[string]string
-	// judged are the remote settings each call was judged on, by call id.
+	known map[string]repoState
+	// judged are the remote settings each call was judged on, by session and call.
 	judged map[string]judgement
+}
+
+// repoState is what a known repository was when it became known.
+type repoState struct {
+	settings string
+	// common is the real common git folder, inside the workspace.
+	common string
 }
 
 type judgement struct {
@@ -77,28 +91,64 @@ type judgement struct {
 }
 
 // NewBroker is a Broker for workspace. It reads the remote settings of the
-// workspace's repository now, as the ones the session starts with.
+// workspace's repository now, as the ones the session starts with. No
+// remote command is brokered until HoldsGit says the sandbox holds git's
+// configuration.
 func NewBroker(workspace string, tier func() sandbox.Tier, network Network, command func(ctx context.Context, cwd, line string) *exec.Cmd) *HostBroker {
 	b := &HostBroker{workspace: workspace, tier: tier, net: network, command: command,
-		known: map[string]string{}, judged: map[string]judgement{}}
+		known: map[string]repoState{}, judged: map[string]judgement{}}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if root := b.repoIn(workspace); root != "" {
-		if s, err := remoteSettings(ctx, root); err == nil {
-			b.known[root] = s
-		}
+		b.learn(ctx, root)
 	}
 	return b
 }
 
+// HoldsGit sets what says whether the sandbox holds git's configuration in
+// the workspace against its commands (sandbox.HoldsGit).
+func (b *HostBroker) HoldsGit(holds func() bool) *HostBroker {
+	b.holds = holds
+	return b
+}
+
+// learn makes root a known repository, as it is now.
+func (b *HostBroker) learn(ctx context.Context, root string) {
+	s, err := remoteSettings(ctx, root)
+	if err != nil {
+		return
+	}
+	common := b.commonOf(ctx, root)
+	if common == "" {
+		return
+	}
+	b.mu.Lock()
+	b.known[root] = repoState{settings: s, common: common}
+	b.mu.Unlock()
+}
+
+// commonOf is root's real common git folder when it is inside the
+// workspace, "" otherwise.
+func (b *HostBroker) commonOf(ctx context.Context, root string) string {
+	r := New(ctx, root)
+	if r.unknown != nil || r.common == "" {
+		return ""
+	}
+	c := sandbox.RealPath(r.common)
+	if !b.inWorkspace(c) {
+		return ""
+	}
+	return c
+}
+
 // Broker wraps a sandbox's Command so the git commands the sandbox keeps from
 // working run through host git: worktree add, remove and prune and submodule
-// update (the sandbox holds git's folders), and fetch, pull, push, clone,
-// ls-remote and remote -v (it hides the person's keys). Each must be the
-// whole command line, in plain words. Anything else goes to command as it
-// was. Only the process tier and the fence are brokered, as only they run
+// update (the sandbox holds git's folders). Anything else goes to command as
+// it was. Only the process tier and the fence are brokered, as only they run
 // commands on this host. Unless netOpen (network on, no allowlist), a
-// submodule update must say --no-fetch and can only check out what is there.
+// submodule update must say --no-fetch and can only check out what is
+// there. Remote commands need NewBroker, told the sandbox holds git's
+// configuration.
 func Broker(workspace string, tier func() sandbox.Tier, netOpen bool, command func(ctx context.Context, cwd, line string) *exec.Cmd) func(ctx context.Context, cwd, line string) *exec.Cmd {
 	return NewBroker(workspace, tier, Network{Open: netOpen}, command).Command
 }
@@ -115,11 +165,14 @@ func (b *HostBroker) onHost() bool {
 	return false
 }
 
+// held reports whether the sandbox holds git's configuration now.
+func (b *HostBroker) held() bool { return b.holds != nil && b.holds() }
+
 // Command builds line's process: through host git for a brokered command,
 // else as command builds it.
 func (b *HostBroker) Command(ctx context.Context, cwd, line string) *exec.Cmd {
 	if op, err, ok := parseRemote(line); ok {
-		if !b.onHost() {
+		if !b.onHost() || !b.held() {
 			return b.command(ctx, cwd, line)
 		}
 		if err != nil {
@@ -148,25 +201,27 @@ func (b *HostBroker) Command(ctx context.Context, cwd, line string) *exec.Cmd {
 	return New(ctx, cwd).commandWith(ctx, nil, env, true, args...)
 }
 
-// Ask is why the call callID, running line in cwd, needs a person's approval
-// before host git runs it, and the step to ask it under; "" when policy
+// Ask is why the call key (sandbox.Launch.Key: the session and the call's
+// id), running line in cwd, needs a person's approval before host git runs
+// it, the step to ask it under, and what a grant for it is bound to (the
+// repository's real folder and its remotes as judged); "" when policy
 // decides alone. An error refuses it before anyone is asked. The remote
 // settings it judged are kept for the call, and it runs only on those.
-func (b *HostBroker) Ask(callID, cwd, line string) (reason, step string, err error) {
+func (b *HostBroker) Ask(key, cwd, line string) (reason, step, bind string, err error) {
 	op, perr, ok := parseRemote(line)
-	if !ok || !b.onHost() {
-		return "", "", nil
+	if !ok || !b.onHost() || !b.held() {
+		return "", "", "", nil
 	}
 	if perr != nil {
-		return "", "", perr
+		return "", "", "", perr
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	plan, err := b.plan(ctx, cwd, op)
 	if err != nil || plan.sandboxed {
-		return "", "", err
+		return "", "", "", err
 	}
-	if callID != "" {
+	if key != "" {
 		b.mu.Lock()
 		// Calls refused or declined leave theirs; the oldest go first.
 		if len(b.judged) >= 256 {
@@ -178,10 +233,10 @@ func (b *HostBroker) Ask(callID, cwd, line string) (reason, step string, err err
 			}
 			delete(b.judged, oldest)
 		}
-		b.judged[callID] = judgement{settings: plan.settings, at: time.Now()}
+		b.judged[key] = judgement{settings: plan.settings, at: time.Now()}
 		b.mu.Unlock()
 	}
-	return plan.ask, plan.step, nil
+	return plan.ask, plan.step, plan.bind, nil
 }
 
 // remoteCommand builds a brokered remote command, or says why it is not run.
@@ -195,9 +250,9 @@ func (b *HostBroker) remoteCommand(ctx context.Context, cwd, line string, op rem
 	}
 	launch := sandbox.LaunchOf(ctx)
 	b.mu.Lock()
-	j, judged := b.judged[launch.CallID]
+	j, judged := b.judged[launch.Key()]
 	if judged {
-		delete(b.judged, launch.CallID)
+		delete(b.judged, launch.Key())
 	}
 	b.mu.Unlock()
 	switch {
@@ -207,6 +262,12 @@ func (b *HostBroker) remoteCommand(ctx context.Context, cwd, line string, op rem
 	case !judged && plan.ask != "":
 		// Built outside a judged call (a hook's command), nothing asked a person.
 		return &exec.Cmd{Err: fmt.Errorf("git %s: %s, so it needs your approval as an agent's call", op.verb, plan.ask)}
+	}
+	switch op.verb {
+	case "pull":
+		return b.pull(ctx, cwd, op, plan)
+	case "clone":
+		return b.clone(ctx, cwd, op, plan)
 	}
 	cmd := b.hostCommand(ctx, cwd, op, plan)
 	if cmd.Err != nil {
@@ -228,6 +289,8 @@ type remoteOp struct {
 	url, dir string
 	// force is a push that can lose commits on the remote: a force or a delete.
 	force bool
+	// opts are the options as given, positional the other words, after the verb.
+	opts, positional []string
 }
 
 // remoteVerbs are the brokered remote commands, with the options each takes
@@ -245,9 +308,13 @@ var remoteVerbs = map[string]map[string]bool{
 		"-f", "--force", "--force-with-lease", "--force-if-includes", "--no-force-with-lease", "-d", "--delete"),
 	"ls-remote": set("-q", "--quiet", "-h", "--heads", "-b", "--branches", "-t", "--tags", "--refs", "--symref", "--exit-code"),
 	"clone": set("-q", "--quiet", "-v", "--verbose", "--depth", "--single-branch", "--no-single-branch", "--no-tags",
-		"-b", "--branch", "-n", "--no-checkout", "--filter", "--progress", "--no-progress"),
-	"remote": set("-v", "--verbose"),
+		"-b", "--branch", "-n", "--no-checkout", "--progress", "--no-progress"),
 }
+
+// pullFetch are a pull's options for its fetch, run on the host; the rest
+// are for its merge or rebase, run in the sandbox, as are -q and -v too.
+var pullFetch = set("-q", "--quiet", "-v", "--verbose", "-p", "--prune", "-t", "--tags", "--no-tags", "--depth",
+	"--unshallow", "--progress", "--no-progress")
 
 // globalValued are git's options before the verb that take the next word.
 var globalValued = set("-c", "-C", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix", "--exec-path")
@@ -257,7 +324,7 @@ var globalValued = set("-c", "-C", "--git-dir", "--work-tree", "--namespace", "-
 var cloneValueFlags = set("-b", "--branch")
 
 // valued are options whose value must come with =.
-var valued = set("--depth", "--deepen", "--filter")
+var valued = set("--depth", "--deepen")
 
 // forceFlags make a push one that can lose commits on the remote.
 var forceFlags = set("-f", "--force", "--force-with-lease", "--force-if-includes", "-d", "--delete")
@@ -350,6 +417,7 @@ func parseRemote(line string) (op remoteOp, err error, ok bool) {
 	for _, a := range args {
 		if expect {
 			expect = false // the option's value
+			op.opts = append(op.opts, a)
 			continue
 		}
 		if a == "--" {
@@ -378,6 +446,8 @@ func parseRemote(line string) (op remoteOp, err error, ok bool) {
 		}
 		if verb == "fetch" && name == "--all" {
 			op.all = true
+		} else {
+			op.opts = append(op.opts, a)
 		}
 		if verb == "push" && forceFlags[name] {
 			op.force = true
@@ -386,11 +456,8 @@ func parseRemote(line string) (op remoteOp, err error, ok bool) {
 	if expect {
 		return op, nil, false
 	}
+	op.positional = positional
 	switch verb {
-	case "remote":
-		if len(args) != 1 || len(positional) != 0 {
-			return op, nil, false
-		}
 	case "clone":
 		if len(positional) < 1 || len(positional) > 2 {
 			return op, nil, false
@@ -408,6 +475,9 @@ func parseRemote(line string) (op remoteOp, err error, ok bool) {
 			return op, nil, false
 		}
 	default:
+		if verb == "pull" && len(positional) > 2 {
+			return op, nil, false // an octopus merge
+		}
 		if len(positional) > 0 {
 			op.remote = positional[0]
 			if op.all {
@@ -518,538 +588,3 @@ func anonymize(raw string) string {
 	}
 	return u.String()
 }
-
-// plan is what a brokered command will do.
-type plan struct {
-	// sandboxed is a line left to the sandbox: a repository Abhed has not
-	// read the remotes of, or a remote it does not have.
-	sandboxed bool
-	root      string
-	// settings are the repository's remote settings now.
-	settings string
-	// remotes are the remotes reached, each with its URLs.
-	remotes map[string][]string
-	hosts   []string
-	// ask is why a person must approve it; step how.
-	ask, step string
-}
-
-// plan reads what op in cwd would reach, and why it is refused or asked.
-func (b *HostBroker) plan(ctx context.Context, cwd string, op remoteOp) (plan, error) {
-	if !b.inWorkspace(cwd) {
-		return plan{}, fmt.Errorf("git %s: the command runs outside the workspace, so Abhed does not run it on the host", op.verb)
-	}
-	if op.verb == "clone" {
-		return b.planClone(cwd, op)
-	}
-	root := b.repoIn(cwd)
-	b.mu.Lock()
-	start, known := b.known[root]
-	b.mu.Unlock()
-	if root == "" || !known {
-		// Not a repository Abhed read at the start, or one it cloned.
-		return plan{sandboxed: true}, nil
-	}
-	settings, err := remoteSettings(ctx, root)
-	if err != nil {
-		return plan{}, fmt.Errorf("git %s: the repository's settings could not be read (%v), so Abhed does not run it on the host", op.verb, err)
-	}
-	if why := plantedProgram(settings); why != "" {
-		return plan{}, fmt.Errorf("git %s: the repository's configuration %s, which host git would run as you; "+
-			"Abhed does not run git %s on the host while it does", op.verb, why, op.verb)
-	}
-	p := plan{root: root, settings: settings, remotes: map[string][]string{}}
-	if op.verb == "remote" {
-		return p, nil
-	}
-	names, err := b.remotesOf(ctx, cwd, op)
-	if err != nil {
-		return plan{}, err
-	}
-	if len(names) == 0 {
-		return plan{sandboxed: true}, nil
-	}
-	push := op.verb == "push"
-	for _, n := range names {
-		urls, err := remoteURLs(ctx, cwd, n, push)
-		if err != nil || len(urls) == 0 {
-			return plan{}, fmt.Errorf("git %s: the remote %s has no URL host git could read", op.verb, n)
-		}
-		p.remotes[n] = urls
-		for _, u := range urls {
-			host, port, err := remoteHost(u)
-			if err != nil {
-				return plan{}, fmt.Errorf("git %s: the remote %s: %v", op.verb, n, err)
-			}
-			if b.net.Allows != nil {
-				if ok, why := b.net.Allows(host, port); !ok {
-					return plan{}, fmt.Errorf("git %s: the egress allowlist does not allow %s:%d (%s), the remote %s's host, "+
-						"so host git does not reach it either; add it to the allowlist", op.verb, host, port, why, n)
-				}
-			}
-			if !slices.Contains(p.hosts, host) {
-				p.hosts = append(p.hosts, host)
-			}
-		}
-	}
-	sort.Strings(p.hosts)
-	where := strings.Join(p.hosts, ", ")
-	who := "runs through host git as you, with your SSH agent, keychain and credential helpers,"
-	switch {
-	case settings != start:
-		p.ask, p.step = fmt.Sprintf("git %s %s and the repository's remote settings changed during this session, "+
-			"so host git reaches %s only with your approval, asked each time", op.verb, who, where), StepHostGitEach
-	case push && op.force:
-		p.ask, p.step = fmt.Sprintf("git %s %s and can replace or delete commits on %s; this exact form is asked each time", op.verb, who, where), StepHostGitEach
-	case b.net.Off():
-		p.ask, p.step = fmt.Sprintf("git %s %s and reaches %s although the sandbox's network is off; "+
-			"only this repository's configured remote is reached, and only with your approval", op.verb, who, where), StepHostGit
-	}
-	return p, nil
-}
-
-// planClone is a clone's plan: the URL is the person's to approve, every time.
-func (b *HostBroker) planClone(cwd string, op remoteOp) (plan, error) {
-	host, port, err := remoteHost(op.url)
-	if err != nil {
-		return plan{}, fmt.Errorf("git clone: %v", err)
-	}
-	dir := op.dir
-	if !filepath.IsAbs(dir) {
-		dir = filepath.Join(cwd, dir)
-	}
-	if !b.inWorkspace(filepath.Dir(filepath.Clean(dir))) || filepath.Clean(dir) == filepath.Clean(b.workspace) {
-		return plan{}, fmt.Errorf("git clone: %s is outside the workspace, so Abhed does not run it on the host", op.dir)
-	}
-	if b.net.Allows != nil {
-		if ok, why := b.net.Allows(host, port); !ok {
-			return plan{}, fmt.Errorf("git clone: the egress allowlist does not allow %s:%d (%s), so host git does not reach it either; add it to the allowlist", host, port, why)
-		}
-	}
-	p := plan{root: filepath.Clean(dir), hosts: []string{host}, remotes: map[string][]string{"origin": {op.url}}, step: StepHostGitEach}
-	p.ask = fmt.Sprintf("git clone runs through host git as you, with your SSH agent, keychain and credential helpers, "+
-		"and copies %s into %s; a clone is asked each time", anonymize(op.url), op.dir)
-	if b.net.Off() {
-		p.ask += ", and reaches " + host + " although the sandbox's network is off"
-	}
-	return p, nil
-}
-
-// remotesOf are the remotes op reaches: the one named, every one for fetch
-// --all, or the current branch's (origin when it has none). None when the
-// remote named is not one the repository has, which leaves the line to the
-// sandbox, as a URL does.
-func (b *HostBroker) remotesOf(ctx context.Context, cwd string, op remoteOp) ([]string, error) {
-	have, err := configured(ctx, cwd)
-	if err != nil {
-		return nil, fmt.Errorf("git %s: the repository's remotes could not be read: %v", op.verb, err)
-	}
-	switch {
-	case op.all:
-		return have, nil
-	case op.remote != "":
-		if slices.Contains(have, op.remote) {
-			return []string{op.remote}, nil
-		}
-		return nil, nil
-	}
-	name := "origin"
-	if branch, err := gitOut(ctx, cwd, "symbolic-ref", "-q", "--short", "HEAD"); err == nil && branch != "" {
-		key := "branch." + branch + ".remote"
-		if op.verb == "push" {
-			if r, err := gitOut(ctx, cwd, "config", "--get", "branch."+branch+".pushRemote"); err == nil && r != "" {
-				name = r
-			} else if r, err := gitOut(ctx, cwd, "config", "--get", "remote.pushDefault"); err == nil && r != "" {
-				name = r
-			} else if r, err := gitOut(ctx, cwd, "config", "--get", key); err == nil && r != "" {
-				name = r
-			}
-		} else if r, err := gitOut(ctx, cwd, "config", "--get", key); err == nil && r != "" {
-			name = r
-		}
-	}
-	if !slices.Contains(have, name) {
-		return nil, nil
-	}
-	return []string{name}, nil
-}
-
-// configured are the repository's remotes.
-func configured(ctx context.Context, cwd string) ([]string, error) {
-	out, err := gitOut(ctx, cwd, "remote")
-	if err != nil {
-		return nil, err
-	}
-	return strings.Fields(out), nil
-}
-
-// remoteURLs are the URLs git reaches for remote, with insteadOf applied.
-func remoteURLs(ctx context.Context, cwd, remote string, push bool) ([]string, error) {
-	args := []string{"remote", "get-url", "--all"}
-	if push {
-		args = append(args, "--push")
-	}
-	out, err := gitOut(ctx, cwd, append(args, remote)...)
-	if err != nil {
-		return nil, err
-	}
-	return strings.Fields(out), nil
-}
-
-// gitOut is git's output in cwd, read on the host: reading configuration
-// and refs runs nothing.
-func gitOut(ctx context.Context, cwd string, args ...string) (string, error) {
-	out, err := gitCmd(ctx, cwd, true, append(Env(), configEnv(safety)...), append([]string{"-C", cwd}, args...)...).Output()
-	return strings.TrimSpace(string(out)), err
-}
-
-// settingKeys are the configuration a fetch, pull or push reads to choose
-// where it goes and how it authenticates, or that names a program.
-var settingKeys = []string{"remote.", "url.", "http.", "credential.", "ssh.", "protocol.", "include.", "includeif.",
-	"hook.", "core.sshcommand", "core.gitproxy", "core.askpass", "core.worktree", "core.alternaterefscommand", "uploadpack."}
-
-// remoteSettings are the repository's settings among settingKeys, from
-// every file git reads (includes followed), in order, as one string.
-func remoteSettings(ctx context.Context, root string) (string, error) {
-	out, err := gitCmd(ctx, root, true, append(Env(), configEnv(safety)...), "-C", root, "config", "--includes", "-z", "--show-scope", "--list").Output()
-	if err != nil {
-		return "", err
-	}
-	var b strings.Builder
-	parts := bytes.Split(out, []byte{0})
-	for i := 0; i+1 < len(parts); i += 2 {
-		scope := string(parts[i])
-		if scope == "command" {
-			continue
-		}
-		kv := string(parts[i+1])
-		key, _, _ := strings.Cut(kv, "\n")
-		lower := strings.ToLower(key)
-		for _, k := range settingKeys {
-			if strings.HasPrefix(lower, k) {
-				fmt.Fprintf(&b, "%s\x00%s\x00", scope, kv)
-				break
-			}
-		}
-	}
-	return b.String(), nil
-}
-
-// plantedProgram says what of settings names a program host git would run
-// whatever the command line sets: a hook or a remote helper in the
-// repository's own configuration. "" when nothing does.
-func plantedProgram(settings string) string {
-	parts := strings.Split(settings, "\x00")
-	for i := 0; i+1 < len(parts); i += 2 {
-		scope := parts[i]
-		if scope != "local" && scope != "worktree" {
-			continue
-		}
-		key, _, _ := strings.Cut(parts[i+1], "\n")
-		lower := strings.ToLower(key)
-		switch {
-		case strings.HasPrefix(lower, "hook."):
-			return "names a hook (" + key + ")"
-		case strings.HasPrefix(lower, "remote.") && strings.HasSuffix(lower, ".vcs"):
-			return "names a remote helper (" + key + ")"
-		case lower == "core.worktree":
-			return "moves the work tree elsewhere (" + key + ")"
-		}
-	}
-	return ""
-}
-
-// repoIn is the real top folder of the repository holding dir, when it is
-// inside the workspace; "" otherwise.
-func (b *HostBroker) repoIn(dir string) string {
-	root := repoRoot(dir)
-	if root == "" || !b.inWorkspace(root) {
-		return ""
-	}
-	return sandbox.RealPath(root)
-}
-
-// inWorkspace reports whether p is the workspace or inside it, by its
-// spelling and where its links lead.
-func (b *HostBroker) inWorkspace(p string) bool {
-	p = filepath.Clean(p)
-	for _, w := range sandbox.PathForms(b.workspace) {
-		if _, ok := sandbox.Within(p, w); ok {
-			if _, ok := sandbox.Within(sandbox.RealPath(p), sandbox.RealPath(w)); ok {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// remoteConfig is the configuration host git runs a remote command with,
-// after safety: the person's own SSH command, askpass, proxy and credential
-// helpers, read from their global and system files, and never the
-// repository's; ssh and https only; no editor, signature check or submodule.
-func remoteConfig(ctx context.Context, cwd string) [][2]string {
-	global := func(key string) []string {
-		var vals []string
-		for _, v := range personValues(ctx, cwd, key) {
-			vals = append(vals, v[1])
-		}
-		return vals
-	}
-	last := func(key, fallback string) string {
-		if v := global(key); len(v) > 0 {
-			return v[len(v)-1]
-		}
-		return fallback
-	}
-	cfg := [][2]string{
-		// The person's SSH, which checks host keys against known_hosts and never
-		// writes it; BatchMode, as no one is there to type a passphrase.
-		{"core.sshCommand", last("core.sshcommand", "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UpdateHostKeys=no")},
-		{"ssh.variant", last("ssh.variant", "auto")},
-		{"core.askPass", last("core.askpass", "")},
-		{"core.gitProxy", last("core.gitproxy", "")},
-		{"core.alternateRefsCommand", ""},
-		{"protocol.ssh.allow", "always"},
-		{"merge.verifySignatures", "false"},
-		{"fetch.recurseSubmodules", "false"},
-		{"push.recurseSubmodules", "no"},
-		{"core.editor", ":"},
-		{"sequence.editor", ":"},
-	}
-	// Each credential helper key any file names is emptied, then given the
-	// person's global and system helpers for it, in order.
-	keys := []string{"credential.helper"}
-	if out, err := gitCmd(ctx, cwd, true, append(Env(), configEnv(safety)...), "-C", cwd, "config", "--includes", "-z", "--name-only",
-		"--get-regexp", `^credential\..*\.helper$`).Output(); err == nil {
-		sc := bufio.NewScanner(bytes.NewReader(out))
-		sc.Split(splitNUL)
-		for sc.Scan() {
-			if k := sc.Text(); !slices.Contains(keys, k) {
-				keys = append(keys, k)
-			}
-		}
-	}
-	for _, k := range keys {
-		cfg = append(cfg, [2]string{k, ""})
-		for _, v := range global(k) {
-			cfg = append(cfg, [2]string{k, v})
-		}
-	}
-	return cfg
-}
-
-// personValues are key's values in the person's own configuration, each
-// with its scope: system, global, and the files git ships with ("unknown",
-// such as the keychain helper), never the repository's.
-func personValues(ctx context.Context, cwd, key string) [][2]string {
-	out, err := gitCmd(ctx, cwd, true, append(Env(), configEnv(safety)...), "-C", cwd, "config", "--includes", "-z", "--show-scope", "--get-all", key).Output()
-	if err != nil {
-		return nil
-	}
-	var vals [][2]string
-	parts := bytes.Split(out, []byte{0})
-	for i := 0; i+1 < len(parts); i += 2 {
-		switch scope := string(parts[i]); scope {
-		case "system", "global", "unknown":
-			vals = append(vals, [2]string{scope, string(parts[i+1])})
-		}
-	}
-	return vals
-}
-
-// hooksNotRun are the hook folders the person's own configuration names
-// (core.hooksPath, such as a machine's secret-scanning pre-push hook), which
-// host git does not run for a brokered command: hooks stay off on the host,
-// as for every git Abhed runs there. Recorded, so a reviewer sees it.
-func hooksNotRun(ctx context.Context, cwd string) []map[string]string {
-	var out []map[string]string
-	for _, v := range personValues(ctx, cwd, "core.hooksPath") {
-		if v[1] != "" && v[1] != "/dev/null" {
-			out = append(out, map[string]string{"scope": v[0], "path": v[1]})
-		}
-	}
-	return out
-}
-
-// remoteEnv is the environment a remote command adds: ssh and https, no
-// prompt, and no editor.
-var remoteEnv = []string{"GIT_ALLOW_PROTOCOL=ssh:https", "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=:", "GIT_SEQUENCE_EDITOR=:", "GIT_MERGE_AUTOEDIT=no"}
-
-// hostCommand is op's process on the host.
-func (b *HostBroker) hostCommand(ctx context.Context, cwd string, op remoteOp, p plan) *exec.Cmd {
-	cfg := remoteConfig(ctx, cwd)
-	if op.verb != "clone" {
-		return New(ctx, cwd).commandWith(ctx, cfg, remoteEnv, true, op.args...)
-	}
-	// A clone is no command on cwd's repository: its git folders are not named.
-	r := New(ctx, cwd)
-	if r.unknown != nil {
-		return &exec.Cmd{Err: r.unknown}
-	}
-	all := append(append(append([][2]string(nil), safety...), r.drivers...), cfg...)
-	return gitCmd(ctx, cwd, true, append(append(Env(), configEnv(all)...), remoteEnv...), append([]string{"-C", cwd}, op.args...)...)
-}
-
-// refs are a repository's refs and HEAD, name to object, for what a command changed.
-func refs(ctx context.Context, root string) map[string]string {
-	out, err := gitOut(ctx, root, "for-each-ref", "--format=%(refname) %(objectname)")
-	if err != nil {
-		return nil
-	}
-	m := map[string]string{}
-	for _, line := range strings.Split(out, "\n") {
-		if name, obj, ok := strings.Cut(line, " "); ok {
-			m[name] = obj
-		}
-	}
-	if head, err := gitOut(ctx, root, "rev-parse", "-q", "--verify", "HEAD"); err == nil {
-		m["HEAD"] = head
-	}
-	return m
-}
-
-// changedRefs are the refs that differ between before and after, at most 200.
-func changedRefs(before, after map[string]string) []map[string]string {
-	var names []string
-	for n := range after {
-		if before[n] != after[n] {
-			names = append(names, n)
-		}
-	}
-	for n := range before {
-		if _, ok := after[n]; !ok {
-			names = append(names, n)
-		}
-	}
-	sort.Strings(names)
-	var out []map[string]string
-	for _, n := range names {
-		if len(out) == 200 {
-			out = append(out, map[string]string{"ref": "(more not listed)"})
-			break
-		}
-		c := map[string]string{"ref": n}
-		if v := before[n]; v != "" {
-			c["from"] = v
-		}
-		if v := after[n]; v != "" {
-			c["to"] = v
-		}
-		out = append(out, c)
-	}
-	return out
-}
-
-// recordStart records the brokered command before it runs and, once it has
-// run, what it changed; a clone's repository is then one host git may reach.
-func (b *HostBroker) recordStart(ctx context.Context, cwd string, op remoteOp, p plan, cmd *exec.Cmd) {
-	launch := sandbox.LaunchOf(ctx)
-	remotes := map[string][]string{}
-	for n, urls := range p.remotes {
-		for _, u := range urls {
-			remotes[n] = append(remotes[n], anonymize(u))
-		}
-	}
-	network := "open"
-	switch {
-	case b.net.Allows != nil:
-		network = "allowlist"
-	case b.net.Off():
-		network = "off"
-	}
-	hooks := hooksNotRun(ctx, cwd)
-	base := func() map[string]any {
-		pay := map[string]any{"command": "git " + op.verb, "workspace": b.workspace, "cwd": cwd, "network": network}
-		if len(hooks) > 0 {
-			pay["hooks_not_run"] = hooks
-		}
-		if launch.CallID != "" {
-			pay["call_id"] = launch.CallID
-		}
-		if len(remotes) > 0 {
-			pay["remotes"] = remotes
-		}
-		if len(p.hosts) > 0 {
-			pay["hosts"] = p.hosts
-		}
-		if p.step != "" {
-			pay["asked"] = p.step
-		}
-		if op.force {
-			pay["force"] = true
-		}
-		return pay
-	}
-	var before map[string]string
-	if op.verb != "clone" && op.verb != "remote" && op.verb != "ls-remote" {
-		before = refs(ctx, p.root)
-	}
-	if launch.Record != nil {
-		pay := base()
-		pay["stage"] = "started"
-		_ = launch.Record(EvBrokered, pay)
-	}
-	sandbox.OnExit(cmd, func(err error) {
-		after := context.WithoutCancel(ctx)
-		pay := base()
-		pay["stage"] = "exited"
-		code := 0
-		if err != nil {
-			code = -1
-			var ee *exec.ExitError
-			if errors.As(err, &ee) {
-				code = ee.ExitCode()
-			}
-		}
-		pay["exit_code"] = code
-		switch {
-		case op.verb == "clone" && code == 0:
-			pay["repository"] = p.root
-			if s, err := remoteSettings(after, p.root); err == nil {
-				if root := b.repoIn(p.root); root != "" {
-					b.mu.Lock()
-					b.known[root] = s
-					b.mu.Unlock()
-				}
-			}
-		case before != nil:
-			if changed := changedRefs(before, refs(after, p.root)); len(changed) > 0 {
-				pay["changed"] = changed
-			}
-		}
-		if launch.Record != nil {
-			_ = launch.Record(EvBrokered, pay)
-		}
-	})
-}
-
-// RemoteFamily is the grant family a brokered remote line belongs to, for a
-// person's "always for this repository": git fetch/pull for fetch, pull,
-// ls-remote and remote -v naming a remote by name, git push for a push that
-// neither forces nor deletes. "" for any other line, a clone among them.
-func RemoteFamily(line string) string {
-	op, err, ok := parseRemote(line)
-	if !ok || err != nil {
-		return ""
-	}
-	if op.remote != "" {
-		if _, _, err := remoteHost(op.remote); err == nil || strings.ContainsAny(op.remote, "/:@") {
-			return ""
-		}
-	}
-	switch op.verb {
-	case "fetch", "pull", "ls-remote", "remote":
-		return FamilyFetch
-	case "push":
-		if !op.force {
-			return FamilyPush
-		}
-	}
-	return ""
-}
-
-// The grant families of brokered remote commands.
-const (
-	FamilyFetch = "git fetch/pull"
-	FamilyPush  = "git push"
-)

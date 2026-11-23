@@ -605,3 +605,17 @@ func mergeKnown(old, found []string) []string {
 	}
 	return out
 }
+
+// HoldsGit reports whether sb keeps its commands from writing what git reads
+// in the workspace's git folders as configuration (protect_git, held), so
+// what Abhed reads there before a command still holds when the command runs.
+func HoldsGit(sb Sandbox) bool {
+	h, ok := sb.(interface{ holdsGit() bool })
+	return ok && h.holdsGit()
+}
+
+// The process tier holds them by profile or by binding them read-only.
+func (s *Process) holdsGit() bool { return s.policy.ProtectGit }
+
+// The fence holds them only in a mount namespace; landlock_only cannot.
+func (f *Fence) holdsGit() bool { return f.policy.ProtectGit && f.mounts }

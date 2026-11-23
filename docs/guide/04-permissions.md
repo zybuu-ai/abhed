@@ -1127,28 +1127,63 @@ from commands, so git inside it cannot authenticate to a remote such as
 `git@github.example.com:team/app.git`, even with `allow_network` on. Nothing
 needs setting up for that: on the process tier and the fence, a command that
 is exactly one of these, in plain words with the usual options and no second
-command, already approved as any command is, runs through git on the host
-instead, as you, with your SSH agent, keychain and credential helpers:
+command, already approved as any command is, has its network part run
+through git on the host instead, as you, with your SSH agent, keychain and
+credential helpers:
 
-| Command | Usual options |
-|---|---|
-| `git fetch [remote [refspec…]]` | `--prune`, `--tags`, `--no-tags`, `--all`, `--dry-run`, `--force`, `--depth=N`, `--unshallow`, `-q`, `-v` |
-| `git pull [remote [branch]]` | `--ff-only`, `--rebase` (or `=true`, `=false`, `=merges`), `--no-rebase`, `--ff`, `--no-ff`, `--autostash`, `--prune`, `--tags`, `-q`, `-v` |
-| `git push [remote [refspec…]]` | `-u`, `--tags`, `--follow-tags`, `--dry-run`, `--atomic`, `--no-verify`, `-q`, `-v`; `--force`, `--force-with-lease`, `--delete`, a `+` or `:` refspec are asked each time |
-| `git clone <url> [folder]` | `--depth=N`, `-b <branch>`, `--single-branch`, `--no-tags`, `--no-checkout`, `--filter=…`, `-q` |
-| `git ls-remote [remote]` | `--heads`, `--tags`, `--refs`, `--symref`, `-q` |
-| `git remote -v` | |
+| Command | Usual options | On the host | In the sandbox |
+|---|---|---|---|
+| `git fetch [remote [refspec…]]` | `--prune`, `--tags`, `--no-tags`, `--all`, `--dry-run`, `--force`, `--depth=N`, `--unshallow`, `-q`, `-v` | the fetch | |
+| `git pull [remote [branch]]` | `--ff-only`, `--rebase` (or `=true`, `=false`, `=merges`), `--no-rebase`, `--ff`, `--no-ff`, `--autostash`, `--prune`, `--tags`, `-q`, `-v` | the fetch | the merge or rebase |
+| `git push [remote [refspec…]]` | `-u`, `--tags`, `--follow-tags`, `--dry-run`, `--atomic`, `--no-verify`, `-q`, `-v`; `--force`, `--force-with-lease`, `--delete`, a `+` or `:` refspec are asked each time | the push | |
+| `git clone <url> [folder]` | `--depth=N`, `-b <branch>`, `--single-branch`, `--no-tags`, `--no-checkout`, `-q` | the clone, without checkout | the checkout |
+| `git ls-remote [remote]` | `--heads`, `--tags`, `--refs`, `--symref`, `-q` | all of it | |
+
+Only the part that needs your credentials runs on the host. A pull fetches
+there, then merges or rebases in the sandbox from what it fetched (`git pull
+… . refs/remotes/<remote>/<branch>`), with your options and `pull.*`
+settings; the merge commit reads "Merge remote-tracking branch
+'origin/main'". A clone is made, without checkout, in a folder of Abhed's
+own (`~/.abhed/clone`) that commands cannot reach, moved into the workspace
+folder by folder with no link followed, then checked out in the sandbox. So
+no filter, merge driver, hook or editor the repository names ever runs on
+the host. A pull or clone shows its host part's output when that part ends,
+not as it goes. `git remote -v` is not brokered: it reads the repository's
+own settings, in the sandbox.
 
 The agent never reads a key: host git authenticates and only its output comes
-back. It runs with the safety settings Abhed's own git uses: hooks (a
-machine's own `core.hooksPath` too), fsmonitor, filters, merge drivers,
-external diff and signing off, no submodule, no editor. The SSH command,
-askpass, proxy and credential helpers are your own, from your global and
-system git configuration (`~/.gitconfig`), never the repository's; with no
-`core.sshCommand` of yours it is `ssh -o BatchMode=yes -o
-StrictHostKeyChecking=yes -o UpdateHostKeys=no`, which checks the host's key
-against `~/.ssh/known_hosts` and never writes it. Only `ssh` and `https`
-remotes are reached.
+back, with any user name, password or token in a URL removed. It runs with
+the safety settings Abhed's own git uses: hooks (but a push's own, below),
+fsmonitor, filters, merge drivers, external diff, signing, the pager and
+automatic gc off, no submodule, no editor. The SSH
+command, askpass, proxy, TLS check and credential helpers are your own, from
+your global and system git configuration (`~/.gitconfig`), never the
+repository's; with no `core.sshCommand` of yours it is `ssh -o BatchMode=yes
+-o StrictHostKeyChecking=yes -o UpdateHostKeys=no`, which checks the host's
+key against `~/.ssh/known_hosts` and never writes it. The program run on the
+remote is git's own (`git-upload-pack`, `git-receive-pack`). Only `ssh` and
+`https` remotes are reached.
+
+The repository's configuration is input the agent may have written, so it
+cannot steer host git:
+
+- Nothing is brokered unless the sandbox holds git's configuration against
+  its commands: `sandbox.protect_git` on, on the process tier or a fence in
+  a mount namespace. With `protect_git` off, or the fence's `landlock_only`
+  mode, the line runs in the sandbox, which has no credentials, so what was
+  read when the call was judged is what host git reads when it runs.
+- A fetch, a pull's fetch and `ls-remote` go to the remote's URL as it was
+  when the call was judged, with its fetch refspecs, on the command line.
+  A push goes by the remote's name; its URL is held by the sandbox.
+- A repository whose own configuration names a hook (`hook.*`), a remote
+  helper (`remote.<name>.vcs`), another work tree (`core.worktree`), the
+  program run on the remote (`remote.<name>.uploadpack`, `receivepack`), a
+  proxy (`remote.<name>.proxy`), any `http.*` setting (proxy, TLS, extra
+  headers, cookies, address overrides) or a URL rewrite (`url.*.insteadOf`)
+  is not brokered while it does, and the reason is given.
+- The repository's git folder must be the one it was when the session
+  started, inside the workspace: a `.git` swapped for a link to another
+  repository is refused.
 
 Host git reaches only the remotes the repository had when the session
 started, or a clone URL you approve:
@@ -1157,14 +1192,14 @@ started, or a clone URL you approve:
   a path, or a remote the repository does not have is not brokered: the line
   runs in the sandbox, which has no credentials.
 - A remote added or changed during the session (its URL, `insteadOf`, the
-  `http.*`, `credential.*` or `include` settings) is asked about each time,
-  and the call runs only on the settings it was approved on; changed after
-  the approval, it is refused.
-- `git clone` is asked each time and writes only into the workspace; the
-  clone's own `origin` is then one host git reaches.
-- A repository whose own configuration names a hook (`hook.*`), a remote
-  helper (`remote.<name>.vcs`) or another work tree (`core.worktree`) is not
-  brokered while it does.
+  `credential.*` or `include` settings) is asked about each time, and the
+  call runs only on the settings it was approved on; changed after the
+  approval and before the call is built, it is refused.
+- `git clone` is asked each time and writes only a new folder of the
+  workspace: one that is a link, is reached through a link, is already
+  there, or lies in a git folder (`.git`, in any case) is refused. The
+  clone's own `origin` is then one host git reaches. A `host:path` that
+  names a local folder is refused as a local path.
 
 Refused before anyone is asked: an option before the command (`git -c …
 fetch`, `git -C …`), a variable in front (`GIT_SSH_COMMAND=… git fetch`),
@@ -1180,40 +1215,56 @@ The network policy holds host git too:
 
 - `allow_network` on, no allowlist: approved as any command.
 - The egress allowlist: the remote's host and port (22 for SSH, 443 for
-  HTTPS) must be allowed, or the call is refused before anyone is asked.
-- `allow_network` off: host git still reaches the repository's own
-  configured remote, and nothing else, but only after you approve, even
-  where an allow rule would let the command run. The question says so:
-  "git fetch runs through host git as you … and reaches github.example.com
-  although the sandbox's network is off".
+  HTTPS), and your proxy's where an https remote goes through one, must be
+  allowed, or the call is refused before anyone is asked.
+- `allow_network` off: host git still reaches this remote of the
+  repository, through your own proxy if you set one, and nothing else, but
+  only after you approve, even where an allow rule would let the command
+  run. The question says so: "git fetch runs through host git as you … and
+  reaches github.example.com although the sandbox's network is off".
 
 In Abhed Studio and the CLI that question offers *Always allow git fetch,
-pull and ls-remote to this repository's remotes* (and *Always allow git push,
-without force, …* for a push), so you are asked once. It is kept with the
-workspace's other scopes in your own `~/.abhed/state/workspace-grants.json`,
-never in the workspace, shared by Studio and the CLI, and revoked like them;
-an exact-command grant does not answer this question. Where the managed
-configuration holds the permissions it is neither offered nor kept. A forced
-push, a clone and a remote changed during the session are asked each time
-everywhere.
+pull and ls-remote from this remote of this repository, while its URL stays
+the same* (and *Always allow git push, without force, …* for a push), so you
+are asked once. The grant is bound to the repository's real folder and to a
+digest of the remote's name and URLs: a repository cloned into the
+workspace, or this one with its remote changed, is asked again. It is kept
+with the workspace's other scopes in your own
+`~/.abhed/state/workspace-grants.json`, never in the workspace, shared by
+Studio and the CLI, and revoked like them; an exact-command grant does not
+answer this question. Where the managed configuration holds the permissions
+it is neither offered nor kept. A forced push, a clone and a remote changed
+during the session are asked each time everywhere.
 
-System and global hooks do not run on brokered calls: a `core.hooksPath`
-set in `/etc/gitconfig` or `~/.gitconfig`, such as a machine's
-secret-scanning pre-commit or pre-push hook, is not run by a brokered `git
-push`, `pull` or `clone`, as no hook runs in git Abhed runs on the host. Each
-call's record names the hook folders it did not run (`hooks_not_run`, with
-their scope), so a reviewer can see it.
+A line you type yourself on the workbench terminal is yours to run: it is
+not asked about again, the network-off question included, but it is still
+refused where an agent's would be, runs on the same terms and is recorded
+the same way.
+
+A brokered `git push` runs your own push hooks: the folder a
+`core.hooksPath` in your system or global configuration (`/etc/gitconfig`,
+`~/.gitconfig`) names, such as a machine's secret-scanning pre-push hook,
+when that folder, and every hook in it, lies outside the workspace and
+outside every folder the sandbox's commands can write (its temp and cache
+folders), links followed. Where it does not, or the path is relative, the
+push is refused rather than made without your hooks: "your core.hooksPath
+(…) lies in …, so Abhed does not run its hooks, and does not push without
+them". The repository's own hooks, in `.git/hooks` or a `core.hooksPath` the
+repository sets, never run on the host. A fetch, a pull's fetch, a clone and
+`ls-remote` run no hook at all. Each call's record names the hook folder a
+push ran (`hooks_run`, with its scope) or, for the others, the one it did
+not run (`hooks_not_run`).
 
 Each brokered call is recorded as `hostgit.brokered`, once when it starts
 (`stage: started`, the command, the remotes and their URLs without any
-password or token, the hosts, the network setting, the question it was
-asked under, and `hooks_not_run`) and once when it ends (`stage: exited`,
-the exit code, and `changed`: each ref it moved, with the object before and
-after, or the clone's repository). The end is recorded whichever way the
-line ran: a call of the agent's, in the foreground or the background, a
-hook's command, or a line typed on the workbench terminal; one that never
-started ends with exit code -1. The container and vm tiers do not broker these; they
-run in the container as written.
+password or token, the hosts, your proxy if one is used, the network
+setting, the question it was asked under, and `hooks_run` or `hooks_not_run`) and once when
+its host part ends (`stage: exited`, the exit code, and `changed`: each ref
+it moved, with the object before and after). The end is recorded whichever
+way the line ran: a call of the agent's, in the foreground or the
+background, a hook's command, or a line typed on the workbench terminal; one
+that never started ends with exit code -1. The container and vm tiers do not
+broker these; they run in the container as written.
 
 Under bubblewrap and in a container (the vm tier too) it is by binding
 read-only those found when each command starts; an empty hooks folder or
@@ -1407,8 +1458,8 @@ offers more than *Allow once*:
 | Always allow exactly `go test ./...` in this workspace | this exact command, in every session of this workspace |
 | Always allow `go test …` in `orders` | any command of the family, run with the session in that folder or below it, in every session of this workspace (offered when the session is in a folder below the workspace's root) |
 | Always allow `go test …` in this workspace | any command of the family, anywhere in this workspace, in every session of it |
-| Always allow git fetch, pull and ls-remote to this repository's remotes | `git fetch`, `git pull`, `git ls-remote` and `git remote -v` naming a remote by name, run through host git, in every session of this workspace; the only scope that answers host git's question with the network off ([above](#git-fetch-pull-push-and-clone-through-your-own-git)) |
-| Always allow git push, without force, to this repository's remotes | `git push` that neither forces nor deletes, likewise |
+| Always allow git fetch, pull and ls-remote from this remote of this repository, while its URL stays the same | `git fetch`, `git pull` and `git ls-remote` naming a remote by name, run through host git, to that repository's remote as approved, in every session of this workspace; the only scope that answers host git's question with the network off ([above](#git-fetch-pull-push-and-clone-through-your-own-git)) |
+| Always allow git push, without force, to this remote of this repository, while its URL stays the same | `git push` that neither forces nor deletes, likewise |
 
 A family is a program and its subcommand: `go test`, `go build`, `go vet`,
 `go run`, `cargo test` (and `build`, `check`, `clippy`, `fmt`, `run`),

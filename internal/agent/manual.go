@@ -351,7 +351,7 @@ func (l *Loop) manualDecide(call, id string, args json.RawMessage, decision poli
 	// what it is judged on is kept for it, and a refusal holds as for the model's.
 	if tool, ok := l.Tools.Get(call); ok {
 		if hs, ok := tool.(tools.HostAsker); ok {
-			if _, _, err := hs.AskHost(l.Session, id, args); err != nil {
+			if _, _, _, err := hs.AskHost(l.Session, l.launchKey(id), args); err != nil {
 				l.record(EvActionDenied, ActorSystem, map[string]string{"call_id": id, "reason": err.Error(), "step": "precheck", "by": BySystem})
 				return &tools.Result{Content: "Not run: " + err.Error(), IsError: true}, nil
 			}

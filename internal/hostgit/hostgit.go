@@ -428,8 +428,12 @@ func Env() []string {
 	}
 	// Only https, whatever protocol.<name>.allow a configuration sets: a
 	// transport such as ext:: runs a program, with the push token in view.
-	return append(out, "GIT_TERMINAL_PROMPT=0", "GIT_ALLOW_PROTOCOL=https")
+	return append(append(out, "GIT_TERMINAL_PROMPT=0", "GIT_ALLOW_PROTOCOL=https"), testEnv...)
 }
+
+// testEnv is added to Env by tests, to keep host git off the machine's own
+// system configuration.
+var testEnv []string
 
 // drivers clears the command of every filter and merge driver the
 // repository's configuration names.

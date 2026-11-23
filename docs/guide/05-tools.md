@@ -174,12 +174,15 @@ instead of retrying.
 ### git remotes and your credentials
 
 The sandbox hides your SSH keys, SSH agent and credential helpers from
-commands, yet `git fetch`, `git pull`, `git push`, `git clone`, `git
-ls-remote` and `git remote -v` work on the process tier and the fence with
-nothing to configure: run alone, in plain words, each goes through git on the
-host, as you, with your own SSH agent, keychain, credential helpers and
-`~/.gitconfig`, to the repository's configured remotes or a clone URL you
-approve. The agent sees git's output, never a key. With the network off it is
+commands, yet `git fetch`, `git pull`, `git push`, `git clone` and `git
+ls-remote` work on the process tier and the fence with nothing to configure,
+where the sandbox holds git's configuration (`sandbox.protect_git`, the
+default): run alone, in plain words, each has its network part go through
+git on the host, as you, with your own SSH agent, keychain, credential
+helpers and `~/.gitconfig`, to the repository's configured remotes or a
+clone URL you approve; a pull's merge and a clone's checkout run in the
+sandbox. The agent sees git's output, with any token in a URL removed, never
+a key. With the network off it is
 asked first and reaches only the repository's own remote; a forced push, a
 clone and a remote added during the session are asked each time. bash's
 description tells the model so from its first turn. Details, what is refused

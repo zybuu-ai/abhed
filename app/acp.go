@@ -1569,7 +1569,11 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	// never a rule's, the destructive check's, the supervisor's or a screen's.
 	command, grantable := s.grantable(tool, args, d)
 	if grantable {
-		if g, ok := s.grantFor(command, d.Step == hostgit.StepHostGit); ok {
+		hostBind := ""
+		if d.Step == hostgit.StepHostGit {
+			hostBind = d.Scope
+		}
+		if g, ok := s.grantFor(command, hostBind); ok {
 			by := abhed.BySessionScope
 			if !g.Session {
 				by = abhed.ByWorkspaceGrant
@@ -1647,7 +1651,7 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	var grantOpts []grantOption
 	// Offered only when the card shows the command as it runs.
 	if grantable && bashCommandOf(shown) == command {
-		grantOpts = bashGrantOptions(command, s.workDir(), s.workRoot(), bind, d.Step)
+		grantOpts = bashGrantOptions(command, s.workDir(), s.workRoot(), bind, d)
 		for _, g := range grantOpts {
 			kind := "allow_always"
 			if g.grant.Session {

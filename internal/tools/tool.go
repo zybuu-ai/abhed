@@ -105,11 +105,12 @@ type ContextArgResolver interface {
 }
 
 // HostAsker is a tool some of whose calls run on the host as the person,
-// such as bash's brokered git fetch: why one needs the person's approval
-// and the step it is asked under, or why it is refused before anyone is
-// asked. callID ties what it judged to the call that runs.
+// such as bash's brokered git fetch: why one needs the person's approval,
+// the step it is asked under and what a grant for it is bound to, or why it
+// is refused before anyone is asked. key, the call's sandbox.Launch.Key,
+// ties what it judged to the call that runs.
 type HostAsker interface {
-	AskHost(sess *Session, callID string, args json.RawMessage) (reason, step string, err error)
+	AskHost(sess *Session, key string, args json.RawMessage) (reason, step, bind string, err error)
 }
 
 // Targeter names where a call sends what it carries, such as the server a

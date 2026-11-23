@@ -21,7 +21,7 @@ func fenceSessionBash(cfg config.Config, workspace string) func(string, *agent.R
 	return func(_ string, rec *agent.Recorder, shared tools.Bash) (tools.Bash, func() error) {
 		sf := &sessionFence{build: func() (sandbox.Sandbox, error) { return buildSandbox(cfg, workspace) }, rec: rec}
 		fence := func() sandbox.Tier { return sandbox.TierFence }
-		gb := hostgit.NewBroker(workspace, fence, sandboxconfig.HostGitNetwork(cfg), sf.Command)
+		gb := hostgit.NewBroker(workspace, fence, sandboxconfig.HostGitNetwork(cfg), sf.Command).HoldsGit(sf.holdsGit)
 		shared.Sandbox, shared.Shell, shared.HostAsk = gb.Command, sf.Shell, gb.Ask
 		shared.Home = sf.CommandHome // the session's commands get its own fence's home
 		return shared, sf.Close
@@ -118,4 +118,20 @@ func (s *sessionFence) Close() error {
 		return nil
 	}
 	return s.fence.Close()
+}
+
+// holdsGit reports whether the session's fence holds git's configuration
+// against its commands; one that cannot be built holds nothing.
+func (s *sessionFence) holdsGit() bool {
+	f, err := s.get()
+	return err == nil && sandbox.HoldsGit(f)
+}
+
+// hostAsk is the broker's Ask where sb holds git's configuration, so the
+// bash tool tells the model of brokered git only where it is brokered.
+func hostAsk(sb sandbox.Sandbox, gb *hostgit.HostBroker) func(key, cwd, command string) (string, string, string, error) {
+	if !sandbox.HoldsGit(sb) {
+		return nil
+	}
+	return gb.Ask
 }

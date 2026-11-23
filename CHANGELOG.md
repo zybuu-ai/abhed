@@ -176,42 +176,55 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
-- git fetch, pull, push, clone, ls-remote and remote -v work in Abhed Studio
-  and the CLI on the process tier and the fence with nothing to configure,
-  for a remote such as `git@github.example.com:team/app.git`. The sandbox still
-  hides `~/.ssh`, the SSH agent and credential helpers from commands; a line
-  that is exactly one of these commands, in plain words with the usual
-  options, now runs through git on the host, as the person, with their SSH
+- git fetch, pull, push, clone and ls-remote work in Abhed Studio and the
+  CLI on the process tier and the fence with nothing to configure, for a
+  remote such as `git@github.example.com:team/app.git`, wherever the sandbox
+  holds git's configuration (`sandbox.protect_git`, the default; not the
+  fence's `landlock_only` mode). The sandbox still hides `~/.ssh`, the SSH
+  agent and credential helpers from commands; a line that is exactly one of
+  these commands, in plain words with the usual options, now has its
+  network part run through git on the host, as the person, with their SSH
   agent, keychain, credential helpers and `~/.gitconfig`, and only git's
-  output reaches the agent. Host git runs with hooks, fsmonitor, filters,
-  external diff, signing, submodules and editors off; its SSH command,
-  askpass and credential helpers are the person's global ones, never the
-  repository's, and the default SSH checks `known_hosts` without writing
-  it. It reaches only the remotes the repository had when the session
-  started, by name, or a clone URL the person approves; a remote added or
-  changed since, a forced or deleting push and a clone are asked each time,
-  and a call runs only on the remote settings it was approved on. With
-  `allow_network` off it still reaches the repository's own remote, only
-  after the person approves, and the question says so; under the egress
-  allowlist the remote's host must be allowed. Abhed Studio offers "always
-  for this repository" for fetch, pull and ls-remote, and for push without
-  force, and so does the CLI, both keeping it in the person's
-  `~/.abhed/state/workspace-grants.json`, never the workspace. Refused
-  before anyone is asked: `git -c …` or `-C` before the command, a variable
-  such as `GIT_SSH_COMMAND` in front, `--upload-pack`, `--receive-pack`,
-  `--exec`, clone's `-u`, `-c` and `--config`, `--template`,
-  `--separate-git-dir`, `--reference`, `--bundle-uri`, a word naming
-  `core.sshCommand`, and `ext::`, `fd::`, `file://` or a local path. A
-  repository whose own configuration names a hook or remote helper is not
-  brokered. Each call is recorded as `hostgit.brokered` when it starts and
-  when it ends, with the remote (no password or token), the hosts, the
-  network setting and the refs it changed, whether the agent ran it in the
-  foreground or the background, a hook ran it or a person typed it on the
-  workbench terminal; OCSF maps it to Process Activity. System and global
-  hooks (a `core.hooksPath` in `/etc/gitconfig` or `~/.gitconfig`) do not
-  run on brokered calls, as no hook runs in host git; each call's record
-  names them as `hooks_not_run`. bash's description tells the model these
-  need no setup.
+  output, with any token in a URL removed, reaches the agent. A pull
+  fetches on the host and merges or rebases in the sandbox; a clone is made
+  without checkout in `~/.abhed/clone`, moved into a new workspace folder
+  with no link followed and never into a git folder, and checked out in the
+  sandbox; so no filter, driver, hook, pager or editor a repository names
+  runs on the host. Host git takes its SSH command, askpass, proxy, TLS
+  check and credential helpers from the person's global configuration only;
+  fetch and ls-remote go to the URL judged, with its refspecs, on the
+  command line; the remote programs are git's own. A repository whose own
+  configuration names a hook, a remote helper, another work tree, an upload
+  or receive program, a proxy, an `http.*` setting or a URL rewrite is not
+  brokered, nor is one whose git folder moved since the session started. It
+  reaches only the remotes the repository had when the session started, by
+  name, or a clone URL the person approves; a remote added or changed since,
+  a forced or deleting push and a clone are asked each time, and a call runs
+  only on the remote settings it was approved on. With `allow_network` off
+  it still reaches that remote, only after the person approves, and the
+  question says so; under the egress allowlist the remote's host, and the
+  person's proxy, must be allowed. Abhed Studio and the CLI offer "always
+  for this remote of this repository" for fetch, pull and ls-remote, and for
+  push without force, bound to the repository's real folder and the
+  remote's URLs, kept in the person's `~/.abhed/state/workspace-grants.json`,
+  never the workspace. Refused before anyone is asked: `git -c …` or `-C`
+  before the command, a variable such as `GIT_SSH_COMMAND` in front,
+  `--upload-pack`, `--receive-pack`, `--exec`, clone's `-u`, `-c` and
+  `--config`, `--template`, `--separate-git-dir`, `--reference`,
+  `--bundle-uri`, a word naming `core.sshCommand`, and `ext::`, `fd::`,
+  `file://` or a local path. Each call is recorded as `hostgit.brokered`
+  when it starts and when its host part ends, with the remote (no password
+  or token), the hosts, the proxy, the network setting and the refs it
+  changed, whether the agent ran it in the foreground or the background, a
+  hook ran it or a person typed it on the workbench terminal; OCSF maps it
+  to Process Activity. A brokered push runs the person's own push hooks (a
+  `core.hooksPath` in `/etc/gitconfig` or `~/.gitconfig`, such as a
+  machine's secret-scanning pre-push hook) when that folder and its hooks
+  lie outside the workspace and anything the sandbox can write, and is
+  refused otherwise; the repository's own hooks never run on the host, and
+  fetch, pull and clone run none. The record says which hooks ran
+  (`hooks_run`) or were not run (`hooks_not_run`).
+  bash's description tells the model these need no setup.
 
 - Commits made on the fence and container tiers carry the person's git
   name and email: their commands' home holds none of the person's

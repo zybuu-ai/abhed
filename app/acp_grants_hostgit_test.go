@@ -12,9 +12,10 @@ import (
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
-// Host git's ask offers "always for this repository" alone; the grant then
-// answers fetch, pull and ls-remote, not push, a forced push or a clone, and
-// no exact or folder grant answers host git's ask.
+// Host git's ask offers "always for this repository's remote" alone; the
+// grant then answers fetch, pull and ls-remote to that repository's remote
+// as approved, not push, a forced push, another repository or the remote
+// changed, and no exact or folder grant answers host git's ask.
 func TestACPHostGitGrant(t *testing.T) {
 	var seen []string
 	c, asked := answeringConn(t, func(params json.RawMessage) any {
@@ -36,7 +37,7 @@ func TestACPHostGitGrant(t *testing.T) {
 		return map[string]any{"outcome": map[string]any{"outcome": "cancelled"}}
 	})
 	s := &acpSession{id: "s1", cwd: "/ws", cancel: func() {}, always: map[string]string{}}
-	host := abhed.Decision{Decision: policy.Ask, Step: hostgit.StepHostGit}
+	host := abhed.Decision{Decision: policy.Ask, Step: hostgit.StepHostGit, Scope: "/ws\x00aaaa"}
 	// An exact grant kept before does not answer host git's ask.
 	s.addGrant(bashGrant{Command: "git fetch", Session: true})
 	ctx, answer := agent.ExpectAnswer(context.Background())
@@ -47,10 +48,10 @@ func TestACPHostGitGrant(t *testing.T) {
 		t.Fatalf("asked %d times", asked.Load())
 	}
 	labels := strings.Join(seen, " | ")
-	if !strings.Contains(labels, "Always allow git fetch, pull and ls-remote to this repository's remotes") || strings.Contains(labels, "exactly") {
+	if !strings.Contains(labels, "Always allow git fetch, pull and ls-remote from this remote of this repository") || strings.Contains(labels, "exactly") {
 		t.Fatalf("options %s", labels)
 	}
-	if answer.Granted != "bash(git fetch/pull *)" {
+	if answer.Granted != "bash(git fetch/pull *) to /ws's remote aaaa" {
 		t.Fatalf("answer %+v", answer)
 	}
 	for line, want := range map[string]bool{"git pull --ff-only": false, "git ls-remote origin": false, "git push origin main": true,
@@ -60,6 +61,19 @@ func TestACPHostGitGrant(t *testing.T) {
 		if got := asked.Load() != n; got != want {
 			t.Errorf("%s: asked %v, want %v", line, got, want)
 		}
+	}
+	// Another repository, or this one with its remote changed, is asked again.
+	for _, bind := range []string{"/other\x00aaaa", "/ws\x00bbbb"} {
+		n := asked.Load()
+		_, _ = c.askEditor(context.Background(), s, "bash", json.RawMessage(`{"command":"git fetch"}`),
+			abhed.Decision{Decision: policy.Ask, Step: hostgit.StepHostGit, Scope: bind})
+		if asked.Load() != n+1 {
+			t.Errorf("the grant answered for %q", bind)
+		}
+	}
+	// Nor does it answer a default ask for the same line.
+	if _, ok := s.grantFor("git pull --ff-only", ""); ok {
+		t.Error("a repository grant answered a default ask")
 	}
 	// Asked each time: never answered by a grant.
 	n := asked.Load()

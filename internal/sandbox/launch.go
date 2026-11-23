@@ -24,6 +24,10 @@ type Launch struct {
 	Record func(event string, payload map[string]any) error
 }
 
+// Key names the call across sessions: one server's sessions number their
+// calls alike.
+func (l Launch) Key() string { return l.Session + "\x00" + l.CallID }
+
 type launchKey struct{}
 
 // WithLaunch carries l to the backend that builds the command, and to

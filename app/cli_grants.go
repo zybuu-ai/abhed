@@ -23,11 +23,7 @@ func (k cliKeeper) grantOf(tool string, args json.RawMessage, res policy.Result)
 	if k.locked || k.workspace == "" || tool != "bash" || res.Decision != policy.Ask || res.Step != hostgit.StepHostGit {
 		return bashGrant{}, false
 	}
-	fam := hostgit.RemoteFamily(bashCommandOf(args))
-	if fam == "" {
-		return bashGrant{}, false
-	}
-	return bashGrant{Family: fam}, true
+	return hostGitGrant(hostgit.RemoteFamily(bashCommandOf(args)), res.Scope)
 }
 
 func (k cliKeeper) Kept(tool string, args json.RawMessage, res policy.Result) (string, bool) {

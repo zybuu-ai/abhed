@@ -24,7 +24,7 @@ func TestCLIKeepsHostGitGrantForTheRepository(t *testing.T) {
 	grantsFile = func() string { return file }
 	defer func() { grantsFile = old }()
 	ws := t.TempDir()
-	host := policy.Result{Decision: policy.Ask, Step: hostgit.StepHostGit, Reason: "git fetch runs through host git as you"}
+	host := policy.Result{Decision: policy.Ask, Step: hostgit.StepHostGit, Reason: "git fetch runs through host git as you", Scope: ws + "\x00aaaa"}
 	ask := func(k ui.Keeper, line, input string, res policy.Result) (bool, string) {
 		var out bytes.Buffer
 		ap := &ui.Approver{In: strings.NewReader(input), Out: &out, Style: ui.NewStyle(&out), Session: ui.NewAllowList(), Keep: k}
@@ -37,10 +37,10 @@ func TestCLIKeepsHostGitGrantForTheRepository(t *testing.T) {
 	k := cliKeeper{workspace: ws}
 	// Yes, keep, No: the second keeps it.
 	ok, shown := ask(k, "git fetch", "2\n", host)
-	if !ok || !strings.Contains(shown, "Always allow git fetch, pull and ls-remote to this repository's remotes") {
+	if !ok || !strings.Contains(shown, "Always allow git fetch, pull and ls-remote from this remote of this repository") {
 		t.Fatalf("ok %v:\n%s", ok, shown)
 	}
-	if b, err := os.ReadFile(file); err != nil || !strings.Contains(string(b), `"family": "git fetch/pull"`) {
+	if b, err := os.ReadFile(file); err != nil || !strings.Contains(string(b), `"family": "git fetch/pull"`) || !strings.Contains(string(b), `"remotes": "aaaa"`) {
 		t.Fatalf("kept %s %v", b, err)
 	}
 	// A new approver, as a new session: answered with no input.
@@ -57,6 +57,14 @@ func TestCLIKeepsHostGitGrantForTheRepository(t *testing.T) {
 	}
 	if ok, _ := ask(cliKeeper{workspace: t.TempDir()}, "git fetch", "", host); ok {
 		t.Error("a grant kept for one workspace answered in another")
+	}
+	// A repository cloned into the workspace, or this one's remote changed.
+	for _, bind := range []string{ws + "/clone\x00aaaa", ws + "\x00bbbb"} {
+		other := host
+		other.Scope = bind
+		if ok, _ := ask(k, "git fetch", "", other); ok {
+			t.Errorf("the grant answered for %q", bind)
+		}
 	}
 	if ok, _ := ask(cliKeeper{workspace: ws, locked: true}, "git fetch", "", host); ok {
 		t.Error("a kept grant answered where the permissions are managed")
