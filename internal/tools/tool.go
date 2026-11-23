@@ -111,6 +111,13 @@ type Targeter interface {
 	Target(sess *Session, args json.RawMessage) string
 }
 
+// CertificatePinner is a tool whose call, once approved, pins the
+// certificate a server presented: its SHA-256 and subject, for the person
+// approving it to check. ok is false when the call pins none.
+type CertificatePinner interface {
+	PinnedCertificate(sess *Session, args json.RawMessage) (sha256, subject string, ok bool)
+}
+
 // precheckPath is the shared check for tools whose target is a "path" argument.
 func precheckPath(s *Session, raw json.RawMessage) error {
 	var a struct {

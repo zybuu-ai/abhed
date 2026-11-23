@@ -326,3 +326,31 @@ func TestFirstUseOffTheMachineKeepsNothing(t *testing.T) {
 		t.Fatalf("kept %v off the person's machine", gs)
 	}
 }
+
+// pinTool is a mutating tool that says which certificate approving it pins.
+type pinTool struct{}
+
+func (pinTool) Name() string            { return "pin_tool" }
+func (pinTool) Description() string     { return "pins" }
+func (pinTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (pinTool) Mutates() bool           { return true }
+func (pinTool) Run(context.Context, *tools.Session, json.RawMessage) tools.Result {
+	return tools.Result{Content: "ok"}
+}
+func (pinTool) PinnedCertificate(*tools.Session, json.RawMessage) (string, string, bool) {
+	return "AB:CD", "CN=signer", true
+}
+
+// The certificate an approval pins reaches the approver apart from the text.
+func TestApproverIsToldThePinnedCertificate(t *testing.T) {
+	sess, _ := tools.NewSession(t.TempDir())
+	appr := &firstUseApprover{}
+	l := NewLoop(&scriptedAdapter{turns: []scriptedTurn{{calls: []model.ToolCall{{ID: "c1", Name: "pin_tool", Args: json.RawMessage(`{}`)}}}, {text: "ok"}}},
+		tools.NewRegistry(pinTool{}), policy.New(policy.ModeDefault), appr, sess, NewRecorder(NewMemStore(), "s", ""), DefaultConfig())
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if appr.count() != 1 || appr.asks[0].PinSHA256 != "AB:CD" || appr.asks[0].PinSubject != "CN=signer" {
+		t.Fatalf("asks %+v", appr.asks)
+	}
+}

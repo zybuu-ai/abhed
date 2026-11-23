@@ -2118,6 +2118,11 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 			decision.Reason = strings.TrimPrefix(decision.Reason+"; "+target, "; ")
 		}
 	}
+	if pc, ok := tool.(tools.CertificatePinner); ok && doomed == nil {
+		if sum, subject, pins := pc.PinnedCertificate(l.Session, call.Args); pins {
+			decision.PinSHA256, decision.PinSubject = sum, subject
+		}
+	}
 	// An approved runbook answers the ask of the call that is its next step,
 	// and makes any other change ask.
 	var planned *planHit

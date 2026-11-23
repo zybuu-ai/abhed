@@ -175,7 +175,7 @@ func (d *deferredTool) Hidden() bool { return !d.loaded.Load() }
 func deferrable(t tools.Tool) bool {
 	switch t.(type) {
 	case tools.SecretArgs, tools.SecretPaths, tools.SecretWithholder, tools.ModeScoped, tools.FixedArgs, tools.StoreBound, tools.PlanPrechecker,
-		tools.FirstUser, tools.BoundSecrets:
+		tools.FirstUser, tools.BoundSecrets, tools.CertificatePinner:
 		return false
 	}
 	return true

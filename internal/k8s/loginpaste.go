@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net"
@@ -38,7 +39,7 @@ import (
 type pastePlan struct {
 	server, cluster, storeAs, namespace string
 	caPEM                               []byte
-	fingerprint                         string
+	fingerprint, subject                string
 	how                                 string // how TLS will be verified, for the person
 	kind                                string
 }
@@ -176,7 +177,7 @@ func (p *pastePlan) readTLS(ctx context.Context, m *Manager) error {
 		return fmt.Errorf("the certificate %s presents does not name %s, so no token is sent to it", displayURL(p.server), host)
 	}
 	sum := sha256.Sum256(top.Raw)
-	p.fingerprint = colonHex(sum[:])
+	p.fingerprint, p.subject = colonHex(sum[:]), top.Subject.String()
 	p.caPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: top.Raw})
 	p.how = fmt.Sprintf("no public CA vouches for this server; approving pins the certificate it presents now, %q, "+
 		"SHA-256 %s: check it matches your cluster's before you approve", top.Subject.CommonName, p.fingerprint)
@@ -292,4 +293,18 @@ func (t LoginTool) runPasted(ctx context.Context, sess *tools.Session, a loginAr
 		"Logged in to cluster %s at %s (namespace %s, %s). The token is stored as secret %s and the cluster is %s. "+
 			"Name it as cluster %q in k8s_get and k8s_apply; later sessions sign in to it without a paste.",
 		p.cluster, displayURL(p.server), c.Namespace, lc.Verification(""), p.storeAs, kept, p.cluster)}
+}
+
+// PinnedCertificate names the certificate a pasted login will pin, for the
+// approval to show apart from its text; none when a CA vouches for the server.
+func (t LoginTool) PinnedCertificate(sess *tools.Session, raw json.RawMessage) (string, string, bool) {
+	var a loginArgs
+	if json.Unmarshal(raw, &a) != nil || a.Pasted == "" {
+		return "", "", false
+	}
+	p, ok := t.plan(sess, a)
+	if !ok || p.fingerprint == "" {
+		return "", "", false
+	}
+	return p.fingerprint, p.subject, true
 }

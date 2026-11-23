@@ -781,10 +781,17 @@ interface AskMeta {
   session keeps that approval. `-32602` for an unknown kind or a grant that
   is not kept; refused inside an agent's command. A permission request for
   a first use carries `meta.firstUse = {what, kept: "person"}`, and its
-  "always" option is named for what is kept; a user message that held a
-  pasted credential is followed by a note whose `meta.pastedCredentials` is
-  `[{id, kind}]`, so the editor can redraw the message as recorded, with
-  `[pasted:ID]` in place of the value.
+  "always" option is named for what is kept. A permission request whose
+  approval pins a server's certificate (a pasted login to a server no public
+  CA or kubeconfig CA vouches for) carries `meta.pinnedCertificate =
+  {sha256, subject}`: the SHA-256 as colon-separated upper-case hex pairs,
+  the same value the request's reason names, and the certificate's subject
+  as a distinguished name, for the card to show apart from the text. A user
+  message that held a pasted credential is followed, once, as the turn
+  starts, by a note whose `meta` has `pastedCredentials: [{id, kind}]`,
+  `text`, the message as recorded with `[pasted:ID]` in place of each value,
+  and `seq`, the `seq` of its `user.message` event, so the editor redraws
+  the bubble it drew as typed. No update carries a pasted value.
 - An answer of "always" is recorded `approval.scope_granted {scope, by:
   "user"}` (**not implemented in 1.2.2**) so `session/load` can restore it.
 - A call whose input the record withheld is refused without asking, with a

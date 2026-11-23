@@ -131,7 +131,7 @@ func TestACPFirstUseOffersAlwaysForThePerson(t *testing.T) {
 	s := &acpSession{id: "s1", cancel: func() {}, always: map[string]string{}}
 	ctx, answer := agent.ExpectAnswer(context.Background())
 	d := abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "k8s_context(lab)", Keeps: "kubeconfig context lab at https://lab.example:6443",
-		Reason: "first use of kubeconfig context lab"}
+		Reason: "first use of kubeconfig context lab", PinSHA256: "AB:CD", PinSubject: "CN=kube-apiserver-lb-signer"}
 	if ok, err := c.askEditor(ctx, s, "k8s_get", json.RawMessage(`{"resource":"pods","context":"lab"}`), d); err != nil || !ok {
 		t.Fatalf("ok %v err %v", ok, err)
 	}
@@ -140,7 +140,8 @@ func TestACPFirstUseOffersAlwaysForThePerson(t *testing.T) {
 	}
 	text := string(params)
 	if !strings.Contains(text, "Always for kubeconfig context lab at https://lab.example:6443 (kept for you, not in the workspace)") ||
-		!strings.Contains(text, `"firstUse"`) {
+		!strings.Contains(text, `"firstUse"`) ||
+		!strings.Contains(text, `"pinnedCertificate":{"sha256":"AB:CD","subject":"CN=kube-apiserver-lb-signer"}`) {
 		t.Fatalf("the request: %s", text)
 	}
 }

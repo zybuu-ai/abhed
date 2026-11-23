@@ -1693,6 +1693,10 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	if d.Keeps != "" {
 		meta["firstUse"] = map[string]any{"what": d.Keeps, "kept": "person"}
 	}
+	// The certificate approving pins, for the card to show beside the text.
+	if d.PinSHA256 != "" {
+		meta["pinnedCertificate"] = map[string]any{"sha256": d.PinSHA256, "subject": d.PinSubject}
+	}
 	if held {
 		meta["held"] = true
 	}

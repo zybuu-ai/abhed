@@ -289,6 +289,9 @@ func TestPastedLoginPinsStoresKeepsAndServesLaterSessions(t *testing.T) {
 	if strings.Contains(target, token) {
 		t.Fatal("the approval shows the token")
 	}
+	if sum, subject, pins := login.PinnedCertificate(sess, raw); !pins || !strings.Contains(target, sum) || subject == "" {
+		t.Fatalf("pinned certificate %q %q %v", sum, subject, pins)
+	}
 	mu.Lock()
 	if len(auth) != 0 {
 		t.Fatalf("a request was sent before approval: %v", auth)

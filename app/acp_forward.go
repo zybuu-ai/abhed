@@ -65,6 +65,9 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 					pasted = append(pasted, map[string]string{"id": id, "kind": kind})
 				}
 				meta["pastedCredentials"] = pasted
+				// The message as recorded, placeholders in place, and its event's
+				// seq, so the editor redraws the bubble it drew as typed.
+				meta["text"], meta["seq"] = p.Text, ev.Seq
 			}
 			update(map[string]any{"sessionUpdate": "agent_message_chunk", "content": text(strings.ToUpper(note[:1]) + note[1:] + ".\n\n"),
 				"_meta": map[string]any{acpMetaKey: meta}})
