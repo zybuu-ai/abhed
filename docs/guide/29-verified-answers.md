@@ -655,7 +655,8 @@ counts (`12 tests`, `replicas: 3`). Then:
   that ends in the test run. With `||`, `;` or a pipe (`pytest || true`,
   `npm test | tail -5`) the exit is another command's, so a success is not
   shown. The output must hold no failure: FAIL, a count such as "1
-  failed", "2 failing", "1 failures" or "Failed: 1", or make's "Error 1
+  failed", "2 failing", "1 failures", "1 test failed", "Failed: 1",
+  "ℹ fail 1" or `failures="1"`, TAP's "not ok", or make's "Error 1
   (ignored)". A test command must be a whole run by the same rules as a
   test claim: only `cd` before it in the chain (no `trap`), in the
   workspace, no variable that may filter it (`PYTEST_ADDOPTS`, `env
@@ -1150,9 +1151,14 @@ makes them.
   `-pytest -q >test.log` or a `package.json` script `"test": "jest >
   out.log || true"` exits 0 and prints nothing to read, so "Running
   `make test` resulted in OK" is verified after it. A change this
-  session made to a Makefile or `package.json` before the run makes
-  `make` or `npm` (`pnpm`, `yarn`, `bun`) not a whole run, but a runner
-  that hid its failures before the session is not seen.
+  session made to a Makefile or `package.json` (including `npm pkg set`
+  or `npm set-script`) before the run makes `make` or `npm` (`pnpm`,
+  `yarn`, `bun`) not a whole run, as a change to `pytest.ini`,
+  `pyproject.toml`, `setup.cfg` or `tox.ini` does for pytest; a pytest
+  run that reports tests "deselected" is never a whole run. A runner
+  that hid its failures before the session is not seen, nor is one of
+  these files written by a script that does not name it
+  (`python3 -c "open('package.json','w')…"`).
 - Labels do not stop a reply from streaming; the banner follows it, and
   strict mode's exit code is the gate for a script.
 - The checks lean to "unverified": most shell work (builds, scripts, test

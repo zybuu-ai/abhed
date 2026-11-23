@@ -642,6 +642,16 @@ var (
 	cargoOKRe    = regexp.MustCompile(`test result: ok\. [1-9]\d* passed`)
 )
 
+// pyDeselectedRe is pytest's count of tests a -k, -m or config filter left out.
+var pyDeselectedRe = regexp.MustCompile(`\b[1-9]\d* deselected\b`)
+
+// deselected reports a pytest run that left tests out by a filter, from
+// the line or from config (addopts in pytest.ini, pyproject.toml, setup.cfg
+// or tox.ini): not a whole run, whatever its command says.
+func deselected(o *obsRec) bool {
+	return len(o.line.final) > 0 && runnerKey(o.line.final) == "pytest" && pyDeselectedRe.MatchString(o.content)
+}
+
 // ranNothing reports a test run that passed without running a test: go
 // test with no test files or none matched, unittest's "Ran 0 tests" or every
 // test skipped, pytest with only skipped or deselected tests, cargo with

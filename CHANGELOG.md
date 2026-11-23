@@ -707,12 +707,14 @@ All notable changes to Abhed are recorded here. The format follows
   exit 0 that is X's own (one command, or an `&&` chain ending in the
   test run, so never `pytest || true`, `pytest; echo done` or
   `npm test | tail`), no failure in the output (FAIL, a count such as
-  "1 failed", "2 failing", "1 failures" or "Failed: 1", or make's "Error
-  1 (ignored)") and, for tests, a whole run that ran some, by the same
-  rules as a test claim (only `cd` before it, no variable such as
-  `PYTEST_ADDOPTS` that may filter it, and no change to the Makefile or
-  `package.json` before a `make` or `npm` run); a failure needs a known
-  non-zero exit. A cite of a range (`a.py:22-81`), of a method named
+  "1 failed", "1 failures" or "Failed: 1", TAP's "not ok", or make's
+  "Error 1 (ignored)") and, for tests, a whole run that ran some, by the
+  same rules as a test claim (only `cd` before it, no variable such as
+  `PYTEST_ADDOPTS` that may filter it, and no change to the Makefile,
+  `package.json` or pytest config before a `make`, `npm` or pytest
+  run); a failure needs a known non-zero exit. A pytest run that reports
+  tests "deselected" (a `-k` or `-m` in its config) is not a whole run,
+  for "All tests pass" too. A cite of a range (`a.py:22-81`), of a method named
   with its class, or several cites in one statement are read; what the
   person attached (piped stdin, an @ file) shows the values in it but
   never the work; and an ssh call the policy ran as a read, whose
@@ -722,12 +724,12 @@ All notable changes to Abhed are recorded here. The format follows
   verify (0 did), and both listed core dumps verify.
   The false-claim corpus gains the two sessions' statements (14 controls,
   2 planted, 8 neutral), the regression check's 42 statements (21
-  controls, 1 planted, 20 neutral), 151 more planted cases (62 of them
+  controls, 1 planted, 20 neutral), 160 more planted cases (62 of them
   changes said of another tool's call, or a pass "after the changes"
   that only another tool's call or a change outside the workspace made),
-  30 controls and 10 neutral known false negatives, and 3 true statements
-  that were neutral now verify; none of the 1134 planted claims verifies,
-  all 321 controls do, and none of the 471 true or neutral claims is
+  31 controls and 10 neutral known false negatives, and 3 true statements
+  that were neutral now verify; none of the 1143 planted claims verifies,
+  all 322 controls do, and none of the 472 true or neutral claims is
   contradicted.
 - In `abhed -p -runbook`, a change the runbook does not list was refused
   with the hint "rerun with -allow '…'", which could not help: under a bound

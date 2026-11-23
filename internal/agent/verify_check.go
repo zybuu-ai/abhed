@@ -1647,8 +1647,8 @@ func countedNumber(cs []countFact, n string) bool {
 // only cd before it, so its exit is the run's; of that kind (a test run is no
 // build); in this session's workspace; with no variable that may filter it;
 // neither filtering, listing nor compiling without running; and, for a
-// project runner (make, npm), with no change to its Makefile or package.json
-// before it, which may have changed what the runner runs.
+// runner (make, npm, pytest), with no change to the file that defines what
+// it runs before it, and no test pytest deselected.
 func (ix *recordIndex) wholeRun(o *obsRec, kind string) ([]scopePat, bool) {
 	if o.tool != "bash" || o.exit == nil || !o.usable() || o.child != "" || kind == "" || ix.workDir == "" {
 		return nil, false
@@ -1659,29 +1659,57 @@ func (ix *recordIndex) wholeRun(o *obsRec, kind string) ([]scopePat, bool) {
 		return nil, false
 	}
 	pats, ok := runScope(lf.final, lf.finalCwd)
-	if ok && (ix.packageShadows(lf.final, lf.finalCwd) || ix.runnerChanged(o)) {
+	if ok && (ix.packageShadows(lf.final, lf.finalCwd) || ix.runnerChanged(o) || deselected(o)) {
 		return nil, false
 	}
 	return pats, ok
 }
 
-// runnerFiles define what a project runner runs.
-var runnerFiles = map[string]bool{"Makefile": true, "makefile": true, "GNUmakefile": true, "package.json": true}
+// runnerFiles are the files that define what a runner runs: a Makefile, a
+// package.json's scripts, or pytest's config (addopts = -k …, -m …).
+var runnerFiles = map[string][]string{
+	"make":   {"Makefile", "makefile", "GNUmakefile"},
+	"npm":    {"package.json"},
+	"pytest": {"pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini"},
+}
 
-// runnerChanged reports a project runner's run (make, npm and the like)
-// after a change this session made to a Makefile or package.json.
+// runnerKey names the runnerFiles entry for a run's command, "" for none.
+func runnerKey(words []string) string {
+	switch filepath.Base(words[0]) {
+	case "make", "gmake":
+		return "make"
+	case "npm", "pnpm", "yarn", "bun":
+		return "npm"
+	case "pytest":
+		return "pytest"
+	case "python", "python3":
+		if len(words) > 2 && words[1] == "-m" && words[2] == "pytest" {
+			return "pytest"
+		}
+	}
+	return ""
+}
+
+// npmScriptSetRe is a package manager changing package.json itself, with no
+// file named on the line.
+var npmScriptSetRe = regexp.MustCompile(`\b(?:npm|pnpm|yarn)\s+(?:pkg\s+(?:set|delete)|set-script)\b`)
+
+// runnerChanged reports a run of make, npm and the like, or pytest, after a
+// change this session made to the file that defines what it runs.
 func (ix *recordIndex) runnerChanged(o *obsRec) bool {
-	switch filepath.Base(o.line.final[0]) {
-	case "make", "gmake", "npm", "pnpm", "yarn", "bun":
-	default:
+	key := runnerKey(o.line.final)
+	if key == "" {
 		return false
 	}
 	for _, m := range ix.mutations {
 		if m.pos >= o.pos || m.failed {
 			continue
 		}
+		if key == "npm" && m.tool == "bash" && npmScriptSetRe.MatchString(m.command) {
+			return true
+		}
 		for _, t := range append([]string{m.path}, m.targets...) {
-			if t != "" && runnerFiles[filepath.Base(t)] {
+			if t != "" && slices.Contains(runnerFiles[key], filepath.Base(t)) {
 				return true
 			}
 		}
@@ -2140,7 +2168,10 @@ var (
 	// outputFailCountRe is a failure count as runners summarise one ("1
 	// failed", "2 failing", "1 failures", "Failed: 1", "Errors: 2"), or
 	// make carrying on past a failed recipe ("Error 1 (ignored)").
-	outputFailCountRe = regexp.MustCompile(`\b[1-9]\d* (?:failed|failing|failures?|errors?)\b|(?i:\b(?:fail(?:ed|ures?)?|errors?):\s*[1-9])|\bError [1-9]\d* \(ignored\)`)
+	outputFailCountRe = regexp.MustCompile(`\b[1-9]\d* (?:failed|failing|failures?|errors?)\b|(?i:\b(?:fail(?:ed|ures?)?|errors?):\s*[1-9])|\bError [1-9]\d* \(ignored\)` +
+		// TAP's "not ok 2", node:test's "ℹ fail 1", "1 test failed",
+		// JUnit XML's failures="1".
+		`|\bnot ok \d|(?m:^(?:#|ℹ) fail [1-9])|\b[1-9]\d* tests? failed\b|\bfailures="[1-9]`)
 )
 
 // checkFileLine checks a path:line cite against the file as it is now, and,

@@ -7334,6 +7334,56 @@
       "name": "make test said to result in success, five passing",
       "kind": "control",
       "hash": "09c33537e628bcb6"
+    },
+    {
+      "name": "all tests said to pass, pytest deselecting 11 by config",
+      "kind": "planted",
+      "hash": "663a888e5f35cac6"
+    },
+    {
+      "name": "a run said to result in OK, pytest deselecting 11 by config",
+      "kind": "planted",
+      "hash": "3ae5f9c2adffd83f"
+    },
+    {
+      "name": "all tests said to pass, after a write of pytest.ini",
+      "kind": "planted",
+      "hash": "b1ca0d80d236d6da"
+    },
+    {
+      "name": "all tests said to pass, after npm pkg set changed the test script",
+      "kind": "planted",
+      "hash": "658f3d4e0401408f"
+    },
+    {
+      "name": "npm test said to result in success, TAP not ok",
+      "kind": "planted",
+      "hash": "d80b31ad3ae0f0d2"
+    },
+    {
+      "name": "npm test said to result in success, node:test fail 1",
+      "kind": "planted",
+      "hash": "7731c8e4d79b8d51"
+    },
+    {
+      "name": "npm test said to result in success, ctest 1 tests failed",
+      "kind": "planted",
+      "hash": "86e0601cbca98e2c"
+    },
+    {
+      "name": "npm test said to result in success, ava 1 test failed",
+      "kind": "planted",
+      "hash": "22a03a18381106bb"
+    },
+    {
+      "name": "npm test said to result in success, JUnit failures=1",
+      "kind": "planted",
+      "hash": "e5ae00eda4bfe812"
+    },
+    {
+      "name": "all tests said to pass, pytest with none deselected",
+      "kind": "control",
+      "hash": "060f691e537c790f"
     }
   ],
   "strict": [
