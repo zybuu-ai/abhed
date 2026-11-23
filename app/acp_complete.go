@@ -125,6 +125,9 @@ type acpCompleter struct {
 	lat        []int64
 	warmed     time.Time          // when the last warm-up was sent
 	warmCancel context.CancelFunc // ends a warm-up in flight when the session closes
+	// running are the requests sent and not yet counted; added to only
+	// while open, so the summary can wait for them.
+	running sync.WaitGroup
 }
 
 // took keeps one sent request's answer time.
@@ -628,7 +631,14 @@ func (c *acpConn) admit(k *acpCompleter, seq int64, name string, provider config
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), completeTimeout)
 	k.cancel = cancel
-	return ctx, cancel, k.adapter, "", ""
+	// The caller's cancel, deferred, runs once the request is counted.
+	k.running.Add(1)
+	var once sync.Once
+	done := func() {
+		cancel()
+		once.Do(k.running.Done)
+	}
+	return ctx, done, k.adapter, "", ""
 }
 
 // spend takes one request from the session's and the connection's rate
@@ -806,6 +816,8 @@ func (c *acpConn) completeWarm(msg rpcMessage) {
 	ctx, cancel := context.WithTimeout(c.root(), warmTimeout)
 	defer cancel()
 	k.warmCancel = cancel
+	k.running.Add(1)
+	defer k.running.Done()
 	k.mu.Unlock()
 	// Ended too when the editor's input ends, so it never holds the drain at exit.
 	go func() {
@@ -853,6 +865,16 @@ func (c *acpConn) featureSummary(s *acpSession, feature string) {
 	if k.warmCancel != nil {
 		k.warmCancel()
 	}
+	k.mu.Unlock()
+	// The calls just cancelled are counted (and charged) by their handlers:
+	// waited for, briefly, so the summary has what the budget has.
+	ran := make(chan struct{})
+	go func() { k.running.Wait(); close(ran) }()
+	select {
+	case <-ran:
+	case <-time.After(summaryWait):
+	}
+	k.mu.Lock()
 	sum := k.sum
 	sum.LatencyP50Ms, sum.LatencyP90Ms, sum.LatencyMaxMs = latencies(k.lat)
 	k.mu.Unlock()
@@ -865,6 +887,10 @@ func (c *acpConn) featureSummary(s *acpSession, feature string) {
 		}
 	}
 }
+
+// summaryWait bounds how long a closing session's summary waits for its
+// cancelled editor calls to be counted.
+const summaryWait = time.Second
 
 // latencies are the median, 90th percentile and longest of ms.
 func latencies(ms []int64) (int, int, int) {

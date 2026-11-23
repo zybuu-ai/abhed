@@ -111,9 +111,80 @@ func TestRefresh(t *testing.T) {
 	if tok, err := a.Refresh(context.Background(), "access-2"); err != nil || tok != "access-3" {
 		t.Fatalf("refresh after a 401: %q %v", tok, err)
 	}
+	if st, err := State(store, "corp", s.MCP.URL+"/mcp"); err != nil || !st.Usable(time.Now()) || !st.RefreshRefused.IsZero() {
+		t.Fatalf("a live login reads as %+v %v", st, err)
+	}
 	s.SetDenyRefresh(true)
 	if _, err := a.Refresh(context.Background(), "access-3"); err == nil || !strings.Contains(err.Error(), "abhed mcp login corp") {
 		t.Fatalf("a refused refresh: %v", err)
+	}
+	// The refusal is kept: the login reads as dead, and the refused token is
+	// not sent again, by this process or another.
+	st, err := State(store, "corp", s.MCP.URL+"/mcp")
+	if err != nil || !st.Held || st.RefreshRefused.IsZero() || st.Usable(time.Now()) {
+		t.Fatalf("after a refused refresh the login reads as %+v %v", st, err)
+	}
+	other, _ := Load(store, "corp", s.MCP.URL+"/mcp", noRedirect())
+	if _, err := other.Refresh(context.Background(), "access-3"); err == nil || !strings.Contains(err.Error(), "refused at refresh") {
+		t.Fatalf("a second refresh: %v", err)
+	}
+	if n := s.RefreshesRefused(); n != 1 {
+		t.Fatalf("a refused refresh token was sent %d times", n)
+	}
+	// Signing in again clears it.
+	s.SetDenyRefresh(false)
+	if err := login(t, s, store, nil); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := State(store, "corp", s.MCP.URL+"/mcp"); err != nil || !st.Usable(time.Now()) || !st.RefreshRefused.IsZero() {
+		t.Fatalf("a new login reads as %+v %v", st, err)
+	}
+}
+
+// A refusal the store could not keep is said, and still never sent again by this process.
+func TestRefusalKeptInMemoryWhenTheStoreFails(t *testing.T) {
+	s := mcpauthtest.New(t)
+	store := testStore(t)
+	if err := login(t, s, store, nil); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := Load(store, "corp", s.MCP.URL+"/mcp", noRedirect())
+	old := keepRefusal
+	keepRefusal = func(*secrets.Store, Record) error { return errors.New("disk full") }
+	t.Cleanup(func() { keepRefusal = old })
+	s.SetDenyRefresh(true)
+	if _, err := a.Refresh(context.Background(), "access-1"); err == nil || !strings.Contains(err.Error(), "could not be kept") || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("a lost refusal was not said: %v", err)
+	}
+	if _, err := a.Refresh(context.Background(), "access-1"); err == nil || !strings.Contains(err.Error(), "refused at refresh") {
+		t.Fatalf("second refresh: %v", err)
+	}
+	if n := s.RefreshesRefused(); n != 1 {
+		t.Fatalf("the refused token was sent %d times", n)
+	}
+}
+
+// State says apart a login for another URL, one ended with no refresh
+// token, and none.
+func TestLoginState(t *testing.T) {
+	s := mcpauthtest.New(t)
+	store := testStore(t)
+	if st, err := State(store, "corp", s.MCP.URL+"/mcp"); err != nil || st.Held {
+		t.Fatalf("no login: %+v %v", st, err)
+	}
+	if err := login(t, s, store, nil); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := State(store, "corp", s.MCP.URL+"/other"); err != nil || !st.OtherURL || st.Usable(time.Now()) {
+		t.Fatalf("another URL: %+v %v", st, err)
+	}
+	ended := LoginState{Held: true, Expiry: time.Now().Add(-time.Minute)}
+	if ended.Usable(time.Now()) {
+		t.Fatal("an ended login with no refresh token reads as usable")
+	}
+	ended.Refreshable = true
+	if !ended.Usable(time.Now()) {
+		t.Fatal("an ended login with a refresh token reads as dead")
 	}
 }
 

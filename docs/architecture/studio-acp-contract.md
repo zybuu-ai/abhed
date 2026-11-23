@@ -1000,7 +1000,8 @@ interface Capabilities {
          status: "connected" | "starting" | "stopped" | "error" | "refused"; error?: string;
          tools: string[]; source: "user" | "workspace" | "managed";
          pinned: boolean;                                   // digest-pinned command or image
-         refusedTools?: string[] }[];                       // offered, not registered for their name
+         refusedTools?: string[];                           // offered, not registered for their name
+         auth?: McpAuth }[];                                // URL servers only (1.3.0, `mcp.login`)
   extensions: { name: string; events: string[];            // Abhed hook extensions
                 status: "running" | "stopped" | "not started"; error?: string; source: string }[];
   web: { search: boolean; fetch: boolean; allowed_hosts: string[]; ask: boolean };
@@ -1056,6 +1057,52 @@ interface Capabilities {
     would never start), and inside an agent's command, recorded as
     `config.refused {key: "mcp.servers", value: "<name> sha256:<hash>",
     principal}`; -32000 when the file already has a server of that name.
+- **Signing in to a URL server** (1.3.0; `mcp.login` in `features`). A
+  sign-in hands the agent a credential, so it is not an ACP method either;
+  `_abhed/mcp/login` does not exist, and no token ever crosses ACP.
+  ```ts
+  interface McpAuth {
+    state: "none" | "signed-in" | "refused" | "ended" | "other-url" | "unreadable";
+    issuer?: string; expiresAt?: number;                    // Unix seconds
+    refreshable: boolean; refusedAt?: number;               // when a refresh was refused
+    needsLogin: boolean;                                    // a 401, or a login that cannot give a token
+    error?: string }                                        // "unreadable" only, redacted
+  ```
+  On the person's Sign In, Studio asks in a modal whose default is No, then
+  its engine host process runs `abhed mcp login -confirm-fd 3 NAME` with an
+  argv array and writes `y` on descriptor 3. The command line refuses inside
+  an agent's command, fails when no yes is read, prints the authorization
+  address (`  https://…` on the line after "Sign in to MCP server NAME in
+  your browser:") and does not open a browser itself: Studio opens that
+  address, and only an `http(s)` one. The engine keeps the tokens in its
+  store and logs `by: "login -confirm-fd"`; `/mcp restart` takes the new
+  login up. Cancelling ends that process only.
+- **The editor's files from the engine** (1.3.0; `fs` in `features`), for a
+  folder on another machine (studio-remote.md). Every method takes
+  `{sessionId, path}` with `path` absolute on the engine's machine and inside
+  the session's roots; a path outside them, Abhed's state and anything the
+  read rules withhold are refused (-32001) with `data.fs` naming the kind
+  (`notFound`, `exists`, `notADirectory`, `isADirectory`, `noPermissions`).
+  - `_abhed/fs/stat` → `{type: 1 | 2, size, mtime, ctime}` (milliseconds);
+    `_abhed/fs/readDir` → `{entries: [{name, type}]}`, withheld names left
+    out; `_abhed/fs/read` → `{content: base64, sha256}` (at most 16 MiB).
+  - `_abhed/fs/write {path, content: base64, create, overwrite}`: text only,
+    through the write tool on the manual path (recorded by: user);
+    `_abhed/fs/delete {path, recursive}` through the delete rules;
+    `_abhed/fs/rename {path, to, overwrite}` judged as a delete and a write,
+    recorded `manual.edit`; `_abhed/fs/mkdir {path}` through the write rules.
+  - `_abhed/fs/search {path, query, isRegex, caseSensitive, wholeWord,
+    include, exclude, maxResults}` → `{matches: [{path, line, text,
+    ranges: [[start, end]]}], limitHit}` (0-based, UTF-16 columns);
+    `_abhed/fs/files {path, query, include, exclude, maxResults}` →
+    `{files, limitHit}`.
+  - `_abhed/fs/watch {path, recursive, id}` and `_abhed/fs/unwatch {id}`;
+    changes arrive as `_abhed/fs/changed {id, changes: [{path, type: 1
+    changed | 2 added | 3 deleted}]}`.
+  - `_abhed/fs/git {op: "status"}` → `{root, changes: [{x, y, path}]}`
+    (porcelain v1) and `{op: "original", path}` → `{content}` (HEAD's),
+    run with hooks, fsmonitor, pager and external diff off. Nothing is
+    staged or committed.
 - `_abhed/index/status {sessionId}` and `_abhed/index/rebuild {sessionId}`
   (recorded `by: user`; progress as events).
 - `_abhed/infra/status {sessionId}` is `infra` alone, for polling.
@@ -1774,7 +1821,14 @@ _abhed/complete/warm { sessionId } → { warmed: boolean, ms?: number, recent?: 
 - Recorded as `completion.enabled` just before the first request is sent,
   and again with `mode: "chat"` before a fallback's first chat request (if
   it cannot be recorded, nothing is sent) and `completion.summary` when
-  the session closes, which counts `superseded` (replaced before sending)
+  the session closes (also when the editor quits: when its input ends, or a
+  stop signal comes while it is still open, the completion and next-edit
+  calls in flight are cancelled and every session is closed, its summaries
+  and `session.ended` recorded once, within 3 seconds of a signal; the
+  signal's close and the input's end share one close, and the exit waits
+  for it). A call cancelled as the session closes is in the summary, as it
+  is in the budget: the summary waits up to a second for it to be counted.
+  The summary counts `superseded` (replaced before sending)
   apart from `cancelled` (after), the answer times of requests answered
   (`latency_p50_ms`, `latency_p90_ms`, `latency_max_ms`, from the request
   reaching the engine, of requests sent to the model only), and `warmups`
@@ -1867,8 +1921,10 @@ _abhed/nextEdit { sessionId, uri, cursor: { line, character },
 - Rate limits, `seq` ordering, supersede and cancel as §7.10. Recorded as
   `next_edit.enabled` before the first request and `next_edit.summary` when
   the session closes, which counts renames finished from the file as
-  `local` and those that offered nothing as `local_dropped` (neither in the
-  answer times), and the answer times as §7.10.
+  `served` and, of those, `local`, and those that offered nothing as
+  `local_dropped` (neither in the answer times), and the answer times as
+  §7.10. The metrics keep outcomes apart: `served` there is from the model
+  only, beside `local`.
 
 ### 7.12 Commit messages
 
