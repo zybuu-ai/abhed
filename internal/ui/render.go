@@ -821,6 +821,10 @@ func PastedNote(pasted string) string {
 	var what []string
 	for _, p := range strings.Split(pasted, ",") {
 		id, kind, _ := strings.Cut(p, ":")
+		if id == "" {
+			what = append(what, VisibleLine(kind))
+			continue
+		}
 		what = append(what, VisibleLine(kind)+" ("+VisibleLine(id)+")")
 	}
 	return "your message held " + strings.Join(what, ", ") + "; it was not sent to the model or kept in the " +

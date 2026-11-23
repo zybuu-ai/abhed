@@ -13,7 +13,7 @@ func TestACPMachineListAndForget(t *testing.T) {
 	r := newStudioRig(t, "")
 	if err := machinegrant.Keep(machinegrant.Grant{Kind: machinegrant.KindK8sLogin, Name: "lab", Identity: "i",
 		What:  "cluster lab at https://lab.example:6443 with secret K8S_LAB_TOKEN",
-		Login: &machinegrant.Login{Server: "https://lab.example:6443", CAPEM: "-----BEGIN CERTIFICATE-----x", Secret: "K8S_LAB_TOKEN"}}); err != nil {
+		Login: &machinegrant.Login{Server: "https://lab.example:6443", CAPEM: "-----BEGIN CERTIFICATE-----x", CAFingerprint: "AB:CD", Secret: "K8S_LAB_TOKEN"}}); err != nil {
 		t.Fatal(err)
 	}
 	var list struct {
@@ -24,6 +24,9 @@ func TestACPMachineListAndForget(t *testing.T) {
 		t.Fatalf("list: %+v %s", m.Error, m.Result)
 	}
 	r.cl.ok("_abhed/machine/list", map[string]any{}, &list)
+	if !strings.Contains(string(m.Result), `"login":{"caFingerprint":"AB:CD","secret":"K8S_LAB_TOKEN","server":"https://lab.example:6443"}`) {
+		t.Fatalf("the login's secret name and fingerprint are missing: %s", m.Result)
+	}
 	if len(list.Grants) != 1 || list.Grants[0].Kind != "k8s-login" || list.Grants[0].Name != "lab" {
 		t.Fatalf("list %+v", list)
 	}

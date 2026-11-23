@@ -694,9 +694,9 @@ func (l *Loop) deliverQueuedCount() (int, error) {
 	n := 0
 	for _, q := range l.takeSteering() {
 		if why := l.promptRefused(context.Background(), q.Text); why != "" {
-			l.record(EvMessageDropped, ActorSystem, DroppedMessage{
-				QueueID: q.ID, ClientID: q.ClientID, Text: withheldDropped(l, q.Text), QueuedAt: q.At, Reason: why,
-			})
+			l.record(EvMessageDropped, ActorSystem, l.dropped(DroppedMessage{
+				QueueID: q.ID, ClientID: q.ClientID, Text: q.Text, Steered: q.Steered, QueuedAt: q.At, Reason: why,
+			}))
 			continue
 		}
 		// A steer that cannot be recorded is not applied: the record is the
@@ -905,13 +905,13 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	if why == "" && l.Hooks != nil && ctx.Err() != nil {
 		// Stopped while the hooks decided: not screened, so never sent, and
 		// recorded as dropped rather than kept for the next prompt.
-		l.record(EvMessageDropped, ActorSystem, DroppedMessage{ClientID: m.ClientID, Text: withheldDropped(l, m.Text), QueuedAt: time.Now(),
-			Reason: "stopped before it was screened"})
+		l.record(EvMessageDropped, ActorSystem, l.dropped(DroppedMessage{ClientID: m.ClientID, Text: m.Text, Steered: m.Steered, QueuedAt: time.Now(),
+			Reason: "stopped before it was screened"}))
 		return l.finishStopped(ctx, terminalForCancel(ctx)), nil
 	}
 	if why != "" {
 		// Said in the session, where its surface shows it, as a steer refused is.
-		l.record(EvMessageDropped, ActorSystem, DroppedMessage{ClientID: m.ClientID, Text: withheldDropped(l, m.Text), QueuedAt: time.Now(), Reason: why})
+		l.record(EvMessageDropped, ActorSystem, l.dropped(DroppedMessage{ClientID: m.ClientID, Text: m.Text, Steered: m.Steered, QueuedAt: time.Now(), Reason: why}))
 		l.setRefused(why)
 		// Those delivered are answered now, as RunQueued would, not left
 		// recorded and unanswered until a later message.
@@ -2658,10 +2658,10 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 	// but not yet delivered is recorded as dropped rather than lost unseen.
 	if reason == TermShutdown {
 		for _, q := range l.takeSteering() {
-			l.record(EvMessageDropped, ActorSystem, DroppedMessage{
-				QueueID: q.ID, ClientID: q.ClientID, Text: withheldDropped(l, q.Text), QueuedAt: q.At,
+			l.record(EvMessageDropped, ActorSystem, l.dropped(DroppedMessage{
+				QueueID: q.ID, ClientID: q.ClientID, Text: q.Text, Steered: q.Steered, QueuedAt: q.At,
 				Reason: "server shut down before it was delivered",
-			})
+			}))
 		}
 	}
 	// Children the end takes with it are stopped before it is recorded, so

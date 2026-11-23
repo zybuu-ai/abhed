@@ -324,6 +324,13 @@ type DroppedMessage struct {
 	Text     string    `json:"text"`
 	QueuedAt time.Time `json:"queued_at"`
 	Reason   string    `json:"reason"`
+	// Steered marks a message sent while a run was working.
+	Steered bool `json:"steered,omitempty"`
+	// SecretsWithheld and Pasted are as on a user message: what the text,
+	// as recorded, has in place of a stored secret's value or a pasted
+	// credential. A dropped message holds none of them for use.
+	SecretsWithheld string `json:"secrets_withheld,omitempty"`
+	Pasted          string `json:"pasted,omitempty"`
 }
 
 // Delta is one streamed fragment of an agent message.

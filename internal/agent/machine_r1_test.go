@@ -211,3 +211,19 @@ func TestWithheldTextHoldsNoPastedShape(t *testing.T) {
 		t.Fatalf("%q", got)
 	}
 }
+
+// A message that was not delivered is kept with what it held withheld and
+// named, and a paste with no session to hold it is still named.
+func TestDroppedAndUnheldPastesAreNamed(t *testing.T) {
+	sess, _ := tools.NewSession(t.TempDir())
+	l := NewLoop(&scriptedAdapter{}, tools.NewRegistry(), policy.New(policy.ModeDefault), AutoApprove{}, sess, NewRecorder(NewMemStore(), "s", ""), DefaultConfig())
+	d := l.dropped(DroppedMessage{Text: "oc login --token=" + pinTok + " --server=https://a.example", Steered: true})
+	if strings.Contains(d.Text, pinTok) || d.Pasted != ":an OpenShift token" || !d.Steered {
+		t.Fatalf("dropped %+v", d)
+	}
+	nobody := &Loop{}
+	text, pasted, _ := nobody.withholdPasted("oc login --token=" + pinTok + " --server=https://a.example")
+	if strings.Contains(text, pinTok) || pasted != ":an OpenShift token" {
+		t.Fatalf("unheld: %q %q", text, pasted)
+	}
+}

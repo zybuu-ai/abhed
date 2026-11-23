@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 
+	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/machinegrant"
 )
 
@@ -26,7 +27,17 @@ func (c *acpConn) machineList(msg rpcMessage) {
 	out := []map[string]any{}
 	for _, g := range gs {
 		// Where a kept login goes and which secret it reads, never the token or its certificate.
-		out = append(out, map[string]any{"kind": g.Kind, "name": g.Name, "what": g.What, "grantedAt": g.GrantedAt})
+		item := map[string]any{"kind": g.Kind, "name": g.Name, "what": g.What, "grantedAt": g.GrantedAt}
+		if g.Login != nil {
+			// The secret's name, so the person can be told it stays stored
+			// after a forget; the pinned certificate's fingerprint, if any.
+			login := map[string]any{"server": k8s.DisplayURL(g.Login.Server), "secret": g.Login.Secret}
+			if g.Login.CAFingerprint != "" {
+				login["caFingerprint"] = g.Login.CAFingerprint
+			}
+			item["login"] = login
+		}
+		out = append(out, item)
 	}
 	c.reply(msg.ID, map[string]any{"grants": out}, nil)
 }

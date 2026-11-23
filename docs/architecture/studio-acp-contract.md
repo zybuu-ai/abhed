@@ -786,12 +786,23 @@ interface AskMeta {
   CA or kubeconfig CA vouches for) carries `meta.pinnedCertificate =
   {sha256, subject}`: the SHA-256 as colon-separated upper-case hex pairs,
   the same value the request's reason names, and the certificate's subject
-  as a distinguished name, for the card to show apart from the text. A user
-  message that held a pasted credential is followed, once, as the turn
-  starts, by a note whose `meta` has `pastedCredentials: [{id, kind}]`,
-  `text`, the message as recorded with `[pasted:ID]` in place of each value,
-  and `seq`, the `seq` of its `user.message` event, so the editor redraws
-  the bubble it drew as typed. No update carries a pasted value.
+  as a distinguished name, for the card to show apart from the text. Every
+  message that held a stored secret's value or a pasted credential is
+  followed, once, by a note (`agent_message_chunk`) whose `meta` has `text`,
+  the message as recorded (`[secret:NAME]`, `[pasted:ID]` or, where nothing
+  is held for use, `[pasted credential]` in place of each value), `seq`, the
+  `seq` of its event, and `steered`, whether it was sent while a run was
+  working; with `secretsWithheld: [NAME…]` and `pastedCredentials: [{id,
+  kind}]` as they apply. A paste held with no session to keep it has `id`
+  `""`. A message that was not delivered (a hook refused it, a stop, a
+  shutdown or a hand-over) gets the note too, for its `message.dropped`
+  event, with `dropped: true`, so the editor redraws the bubble it drew as
+  typed in every case. No update carries a value.
+- `_abhed/machine/list` items for a `k8s-login` also carry `login: {server,
+  secret, caFingerprint?}`: the server as displayed (no user, query or
+  fragment), the stored secret's name (never its value), which stays stored
+  after a forget until `abhed secret rm`, and the SHA-256 of the pinned
+  certificate when one was pinned.
 - An answer of "always" is recorded `approval.scope_granted {scope, by:
   "user"}` (**not implemented in 1.2.2**) so `session/load` can restore it.
 - A call whose input the record withheld is refused without asking, with a

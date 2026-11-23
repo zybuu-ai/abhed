@@ -28,8 +28,10 @@ func (l *Loop) withholdPasted(text string) (string, string, string) {
 		id := tools.HoldPasted(l.Session, tools.Pasted{Kind: p.Kind, Value: p.Value(text), Server: p.Server, Namespace: p.Namespace})
 		b.WriteString(text[last:p.Start])
 		if id == "" {
-			// No session to hold it in: withheld all the same, and unusable.
+			// No session to hold it in: withheld all the same, unusable, and
+			// named with no id so the sender is still told.
 			b.WriteString("[pasted credential]")
+			ids = append(ids, ":"+p.Kind)
 		} else {
 			b.WriteString("[pasted:" + id + "]")
 			ids = append(ids, id+":"+p.Kind)
@@ -49,7 +51,7 @@ func (l *Loop) withholdPasted(text string) (string, string, string) {
 	b.WriteString(text[last:])
 	out := l.withholdHeld(b.String())
 	if len(lines) == 0 {
-		return out, "", ""
+		return out, strings.Join(ids, ","), ""
 	}
 	note := "[Abhed: the user pasted a credential, which was withheld from you and from the record: " +
 		strings.Join(lines, "; ") + ". Never ask them to paste it again, and never repeat or guess it. "
@@ -83,11 +85,20 @@ func (l *Loop) withholdHeld(text string) string {
 	return text
 }
 
-// withheldDropped is a message that was not delivered, as the record keeps
-// it: stored secrets and pasted credentials withheld, none held for use.
-func withheldDropped(l *Loop, text string) string {
-	text, _ = l.withholdSecrets(text)
-	return withholdShapes(l.withholdHeld(text))
+// dropped is d, a message that was not delivered, as the record keeps it:
+// stored secrets and pasted credentials withheld, none held for use, and
+// what was withheld named so the sender can be told.
+func (l *Loop) dropped(d DroppedMessage) DroppedMessage {
+	text, secrets := l.withholdSecrets(d.Text)
+	text = l.withholdHeld(text)
+	found := secretfiles.FindPasted(text)
+	var kinds []string
+	for i := len(found) - 1; i >= 0; i-- {
+		kinds = append([]string{":" + found[i].Kind}, kinds...)
+		text = text[:found[i].Start] + "[pasted credential]" + text[found[i].End:]
+	}
+	d.Text, d.SecretsWithheld, d.Pasted = text, secrets, strings.Join(kinds, ",")
+	return d
 }
 
 // withholdShapes is text with every pasted credential's shape replaced by
