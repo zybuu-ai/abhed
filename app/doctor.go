@@ -21,7 +21,6 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/agentdefs"
 	"github.com/zybuu-ai/abhed/internal/egress"
-	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -259,30 +258,8 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		fmt.Printf("skills      %d loaded: %s\n", reg.Len(),
 			ui.VisibleLine(strings.Join(reg.Names(), ", ")))
 	}
-	if cfg.K8s.Enabled {
-		writes := "read-only"
-		if cfg.K8s.AllowWrites {
-			writes = "reads + writes (every write needs approval)"
-		}
-		fmt.Printf("kubernetes  %s\n", writes)
-		if c, err := k8s.Open(k8s.Config{Kubeconfig: cfg.K8s.Kubeconfig,
-			Context: cfg.K8s.Context, Namespace: cfg.K8s.Namespace,
-			Token: os.Getenv("ABHED_K8S_TOKEN")}); err != nil {
-			fmt.Printf("            UNAVAILABLE — %v\n", err)
-		} else {
-			fmt.Printf("            context %s\n            namespace %s · server %s\n",
-				c.Name, c.Namespace, c.Server)
-			if c.Insecure() {
-				fmt.Printf("            ⚠ the kubeconfig skips TLS verification for this cluster\n")
-			}
-		}
-		for _, lc := range toolset.LoginClusters(cfg) {
-			warn := ""
-			if lc.InsecureSkipTLSVerify {
-				warn = "  ⚠ TLS verification disabled"
-			}
-			fmt.Printf("k8s login   %s → %s%s\n", lc.Name, lc.Server, warn)
-		}
+	for _, line := range k8sDoctor(cfg) {
+		fmt.Println(line)
 	}
 	if cfg.SSH.Enabled && len(cfg.SSH.Hosts) > 0 {
 		for _, h := range cfg.SSH.Hosts {
