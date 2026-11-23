@@ -14,10 +14,11 @@ import (
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
-// Over https, the credential helpers the repository's configuration names,
-// for every URL or for this one, never run on the host: the person's own
-// helper answers, and only to the remote's own server.
-func TestBrokerHTTPSIgnoresTheRepositorysHelpers(t *testing.T) {
+// Over https, host git asks the person's own credential helpers, in their
+// order: emptying each helper key comes before any of their helpers, as one
+// empty value clears the list every key adds to. A helper the repository's
+// own configuration names stops the broker.
+func TestBrokerHTTPSUsesThePersonsHelpers(t *testing.T) {
 	r := newRemoteRig(t)
 	var mu sync.Mutex
 	var seen []string
@@ -41,50 +42,34 @@ func TestBrokerHTTPSIgnoresTheRepositorysHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _ = f.WriteString("[http]\n\tsslCAInfo = " + ca + "\n[credential]\n\thelper = \"!f() { echo username=person; echo password=PERSON-TOKEN; }; f\"\n")
+	// A generic helper that answers, and one for this server that says nothing.
+	_, _ = f.WriteString("[http]\n\tsslCAInfo = " + ca + "\n[credential]\n\thelper = \"!f() { echo username=person; echo password=PERSON-TOKEN; }; f\"\n" +
+		"[credential \"" + ts.URL + "\"]\n\thelper = \"!true\"\n")
 	_ = f.Close()
-	origin := ts.URL + "/team/app.git"
-	run(t, r.ws, "remote", "set-url", "origin", origin)
-	planted := filepath.Join(r.home, "helper-ran")
-	run(t, r.ws, "config", "credential."+ts.URL+".helper", "!touch "+planted+"-url; echo password=PLANTED")
-	run(t, r.ws, "config", "credential.helper", "!touch "+planted+"; echo password=PLANTED")
+	run(t, r.ws, "remote", "set-url", "origin", ts.URL+"/team/app.git")
 	b := r.broker(Network{Open: true})
 	out, ferr := runCmd(t, b.Command(r.ctx("c"), r.ws, "git fetch"))
 	t.Logf("fetch: %v\n%s", ferr, out)
-	for _, m := range []string{planted, planted + "-url"} {
-		if _, err := os.Stat(m); err == nil {
-			t.Fatalf("the repository's credential helper ran on the host (%s)\n%s", m, out)
-		}
-	}
 	mu.Lock()
-	defer mu.Unlock()
-	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("person:PERSON-TOKEN"))
 	got := strings.Join(seen, " | ")
-	if !strings.Contains(got, want) || strings.Contains(got, base64.StdEncoding.EncodeToString([]byte("person:PLANTED"))) {
-		t.Fatalf("the server saw %q", got)
+	mu.Unlock()
+	if want := "Basic " + base64.StdEncoding.EncodeToString([]byte("person:PERSON-TOKEN")); !strings.Contains(got, want) {
+		t.Fatalf("the person's helper did not answer; the server saw %q", got)
 	}
 	if strings.Contains(out, "PERSON-TOKEN") {
 		t.Fatalf("the token reached the output:\n%s", out)
 	}
-	seen = nil
-	mu.Unlock()
-	// The person's helper gives no password: git asks the next helper in the
-	// list, which must never be one the repository names.
-	gc, _ := os.ReadFile(filepath.Join(r.home, ".gitconfig"))
-	if err := os.WriteFile(filepath.Join(r.home, ".gitconfig"), []byte(strings.Replace(string(gc), "echo password=PERSON-TOKEN; ", "", 1)), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	b = r.broker(Network{Open: true})
-	out, ferr = runCmd(t, b.Command(r.ctx("c2"), r.ws, "git fetch"))
-	t.Logf("fetch without a password: %v\n%s", ferr, out)
-	for _, m := range []string{planted, planted + "-url"} {
-		if _, err := os.Stat(m); err == nil {
-			t.Fatalf("the repository's credential helper ran on the host once the person's gave no password (%s)", m)
+	planted := filepath.Join(r.home, "helper-ran")
+	for _, key := range []string{"credential." + ts.URL + ".helper", "credential.helper"} {
+		run(t, r.ws, "config", key, "!touch "+planted)
+		b = r.broker(Network{Open: true})
+		if _, err := runCmd(t, b.Command(r.ctx("c2"), r.ws, "git fetch")); err == nil || !strings.Contains(err.Error(), "with your credentials") {
+			t.Fatalf("%s: %v", key, err)
 		}
+		run(t, r.ws, "config", "--unset-all", key)
 	}
-	mu.Lock()
-	if got := strings.Join(seen, " | "); strings.Contains(got, base64.StdEncoding.EncodeToString([]byte("person:PLANTED"))) {
-		t.Fatalf("the server saw %q", got)
+	if _, err := os.Stat(planted); err == nil {
+		t.Fatal("the repository's credential helper ran on the host")
 	}
 }
 

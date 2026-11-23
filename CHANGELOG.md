@@ -243,8 +243,8 @@ All notable changes to Abhed are recorded here. The format follows
   fetch and ls-remote go to the URL judged, with its refspecs, on the
   command line; the remote programs are git's own. A repository whose own
   configuration names a hook, a remote helper, another work tree, an upload
-  or receive program, a proxy, an `http.*` setting or a URL rewrite is not
-  brokered, nor is one whose git folder moved since the session started. It
+  or receive program, a proxy, an `http.*` setting, a URL rewrite, an SSH
+  command, askpass or credential helper is not brokered, nor is one whose git folder moved since the session started. It
   reaches only the remotes the repository had when the session started, by
   name, or a clone URL the person approves; a remote added or changed since,
   a forced or deleting push and a clone are asked each time, and a call runs
@@ -273,7 +273,7 @@ All notable changes to Abhed are recorded here. The format follows
   pull and clone run none. The record says which hook ran and its exit
   (`hooks_run`, `pre_push_exit_code`) or which were not run
   (`hooks_not_run`). On Linux's bind-mount tiers a repository cloned during
-  the session is brokered from the next session.
+  the session is not brokered in that session.
   bash's description tells the model these need no setup.
 
 - Commits made on the fence and container tiers carry the person's git

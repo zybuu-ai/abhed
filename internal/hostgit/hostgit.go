@@ -227,6 +227,12 @@ func (r *Repo) commandWith(ctx context.Context, config [][2]string, env []string
 		}
 	}
 	all := append(append(append([][2]string(nil), safety...), r.drivers...), config...)
+	// More configuration goes in config: a second block in env would replace this one.
+	for _, kv := range env {
+		if name, _, _ := strings.Cut(kv, "="); configBlock(name) {
+			return &exec.Cmd{Err: fmt.Errorf("git was given %s outside its one configuration block", name)}
+		}
+	}
 	// Checked before a sandbox's command is built, which would hold what it made for one never started.
 	if r.unknown != nil {
 		return &exec.Cmd{Err: r.unknown}

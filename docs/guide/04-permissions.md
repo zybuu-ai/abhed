@@ -1179,18 +1179,23 @@ cannot steer host git:
   helper (`remote.<name>.vcs`), another work tree (`core.worktree`), the
   program run on the remote (`remote.<name>.uploadpack`, `receivepack`), a
   proxy (`remote.<name>.proxy`), any `http.*` setting (proxy, TLS, extra
-  headers, cookies, address overrides) or a URL rewrite (`url.*.insteadOf`)
-  is not brokered while it does, and the reason is given.
+  headers, cookies, address overrides), a URL rewrite (`url.*.insteadOf`),
+  an SSH command, askpass, git proxy or credential helper
+  (`core.sshCommand`, `core.askPass`, `core.gitProxy`, `credential.*helper`)
+  is not brokered while it does, and the reason is given. The person's own
+  settings for these are pinned on the command line as well, in one block,
+  so nothing of the repository's could take their place.
 - The repository's git folder must be the one it was when the session
   started, inside the workspace: a `.git` swapped for a link to another
   repository is refused.
 - On Linux, the process tier (bubblewrap) and the fence hold git's files by
   binding them read-only as each command starts, so a command started
   before a clone could still write the clone's configuration. There, a
-  repository cloned during the session is not brokered until the next
-  session: "this repository was cloned during this session … from the next
-  session; until then run it yourself". macOS's process tier holds every
-  `.git` by pattern, so a clone is brokered at once.
+  repository cloned during the session is not brokered in that session. A
+  later session brokers it when it is opened as that session's workspace; a
+  repository nested in another workspace is never learnt at a session's
+  start, so run git there yourself. macOS's process tier holds every `.git`
+  by pattern, so a clone is brokered at once.
 
 Host git reaches only the remotes the repository had when the session
 started, or a clone URL you approve:
@@ -1262,8 +1267,12 @@ why it runs in the sandbox: with no key, no SSH agent and no credential
 helper. The sandbox must be able to read and run your hook and what it calls
 (system folders such as `/opt` are readable on the process tier and the
 fence; most of your home folder is not); a hook it cannot run stops the push
-with the error, never skipped unseen. The repository's own hooks, in `.git/hooks` or a
-`core.hooksPath` the repository sets, never run. A fetch, a pull's fetch, a
+with the error, never skipped unseen. Because it runs in the sandbox, the agent can shape what
+the hook sees there, as it can the work tree and its temp folders: a scanner
+that skips its check on a marker file in a folder commands can write, for
+instance, can be told to skip. That was as true when such hooks ran on the
+host, where the temp folders are writable too. The repository's own hooks,
+in `.git/hooks` or a `core.hooksPath` the repository sets, never run. A fetch, a pull's fetch, a
 clone and `ls-remote` run no hook at all. Each call's record names the hook a
 push ran in the sandbox (`hooks_run`, with its scope, and
 `pre_push_exit_code` when it ends) or, for the others, the folder it did not

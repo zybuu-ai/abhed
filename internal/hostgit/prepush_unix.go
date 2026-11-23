@@ -106,6 +106,10 @@ func (r *prePushRelay) serve(ctx context.Context, b *HostBroker, p plan) {
 	line := "exec " + shellQuote(hook) + " " + shellQuote(remote) + " " + shellQuote(url) +
 		" <<'ABHED_PRE_PUSH'\n" + strings.Join(input, "\n") + "\nABHED_PRE_PUSH\n"
 	cmd := b.command(ctx, p.root, line)
+	if cmd.Err == nil {
+		sandbox.EndWithCommand(cmd)
+		cmd.WaitDelay = 5 * time.Second
+	}
 	var out bytes.Buffer
 	code := 0
 	switch {
@@ -127,6 +131,9 @@ func (r *prePushRelay) serve(ctx context.Context, b *HostBroker, p plan) {
 			code = exitCode(err)
 		}
 	}
+	if ctx.Err() != nil && code == 0 {
+		code = 1 // stopped: the push does not go on
+	}
 	r.mu.Lock()
 	r.ran, r.code = true, code
 	r.mu.Unlock()
@@ -143,6 +150,13 @@ func (r *prePushRelay) serve(ctx context.Context, b *HostBroker, p plan) {
 		_, _ = unix.Write(fd, []byte("go\n"))
 		_ = unix.Close(fd)
 		return
+	}
+	// Stopped before the hook took its answer: opened for reading and writing,
+	// so the hook's open returns, it reads the failing exit and ends.
+	if fd, err := unix.Open(filepath.Join(r.dir, "resp"), unix.O_RDWR|unix.O_NONBLOCK|unix.O_CLOEXEC, 0); err == nil {
+		_, _ = unix.Write(fd, []byte("go\n"))
+		time.Sleep(200 * time.Millisecond)
+		_ = unix.Close(fd)
 	}
 }
 

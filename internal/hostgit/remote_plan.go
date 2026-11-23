@@ -62,8 +62,8 @@ func (b *HostBroker) plan(ctx context.Context, cwd string, op remoteOp) (plan, e
 	// before the clone could still write the clone's configuration.
 	if start.cloned && (b.holdsNew == nil || !b.holdsNew()) {
 		return plan{}, fmt.Errorf("git %s: this repository was cloned during this session, and on this sandbox tier a command "+
-			"started before the clone can still write its configuration, so Abhed runs git %s on the host for it from the next session; "+
-			"until then run it yourself", op.verb, op.verb)
+			"started before the clone can still write its configuration, so Abhed does not run git %s on the host for it in this session. "+
+			"A later session brokers it when it is that session's workspace (open it there); otherwise run git %s yourself", op.verb, op.verb, op.verb)
 	}
 	// The git folder git would use must be the one known: a .git swapped for
 	// a link to another repository is not reached.
@@ -324,7 +324,7 @@ func configured(ctx context.Context, cwd string) ([]string, error) {
 
 // configValues are key's values as git reads them in cwd, in order.
 func configValues(ctx context.Context, cwd, key string) []string {
-	out, err := gitCmd(ctx, cwd, true, append(Env(), configEnv(safety)...), "-C", cwd, "config", "--includes", "-z", "--get-all", key).Output()
+	out, err := gitCmd(ctx, cwd, true, readEnv(), "-C", cwd, "config", "--includes", "-z", "--get-all", key).Output()
 	if err != nil {
 		return nil
 	}
@@ -353,7 +353,7 @@ func remoteURLs(ctx context.Context, cwd, remote string, push bool) ([]string, e
 // gitOut is git's output in cwd, read on the host: reading configuration
 // and refs runs nothing.
 func gitOut(ctx context.Context, cwd string, args ...string) (string, error) {
-	out, err := gitCmd(ctx, cwd, true, append(Env(), configEnv(safety)...), append([]string{"-C", cwd}, args...)...).Output()
+	out, err := gitCmd(ctx, cwd, true, readEnv(), append([]string{"-C", cwd}, args...)...).Output()
 	return strings.TrimSpace(string(out)), err
 }
 
@@ -366,7 +366,7 @@ var settingKeys = []string{"remote.", "url.", "http.", "credential.", "ssh.", "p
 // remoteSettings are the repository's settings among settingKeys, from
 // every file git reads (includes followed), in order, as one string.
 func remoteSettings(ctx context.Context, root string) (string, error) {
-	out, err := gitCmd(ctx, root, true, append(Env(), configEnv(safety)...), "-C", root, "config", "--includes", "-z", "--show-scope", "--list").Output()
+	out, err := gitCmd(ctx, root, true, readEnv(), "-C", root, "config", "--includes", "-z", "--show-scope", "--list").Output()
 	if err != nil {
 		return "", err
 	}
@@ -422,6 +422,10 @@ func plantedProgram(settings string) string {
 			return "sets how https is reached (" + key + ")"
 		case strings.HasPrefix(lower, "url."):
 			return "rewrites remote URLs (" + key + ")"
+		case lower == "core.sshcommand", lower == "core.askpass", lower == "core.gitproxy",
+			strings.HasPrefix(lower, "credential.") && strings.HasSuffix(lower, ".helper"):
+			// Overridden on the command line too; refused so a lost pin could not run it.
+			return "names a program for git to run with your credentials (" + key + ")"
 		}
 	}
 	return ""

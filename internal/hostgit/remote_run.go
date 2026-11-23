@@ -75,7 +75,7 @@ func remoteConfig(ctx context.Context, cwd string, remotes []string) [][2]string
 	// first, as an empty value clears the one list every key adds to; then
 	// the person's global and system helpers are given again, in order.
 	keys := []string{"credential.helper"}
-	if out, err := gitCmd(ctx, cwd, true, append(Env(), configEnv(safety)...), "-C", cwd, "config", "--includes", "-z", "--name-only",
+	if out, err := gitCmd(ctx, cwd, true, readEnv(), "-C", cwd, "config", "--includes", "-z", "--name-only",
 		"--get-regexp", `^credential\..*\.helper$`).Output(); err == nil {
 		for _, k := range bytes.Split(out, []byte{0}) {
 			if k := string(k); k != "" && !slices.Contains(keys, k) {
@@ -98,7 +98,7 @@ func remoteConfig(ctx context.Context, cwd string, remotes []string) [][2]string
 // with its scope: system, global, and the files git ships with ("unknown",
 // such as the keychain helper), never the repository's.
 func personValues(ctx context.Context, cwd, key string) [][2]string {
-	out, err := gitCmd(ctx, cwd, true, append(Env(), configEnv(safety)...), "-C", cwd, "config", "--includes", "-z", "--show-scope", "--get-all", key).Output()
+	out, err := gitCmd(ctx, cwd, true, readEnv(), "-C", cwd, "config", "--includes", "-z", "--show-scope", "--get-all", key).Output()
 	if err != nil {
 		return nil
 	}
@@ -214,9 +214,18 @@ func redactSed() string {
 	return "sed " + flag + ` -E 's#([A-Za-z][A-Za-z0-9+.-]*://)[^/@[:space:]]+@#\1#g'`
 }
 
+// seenEnv, when set, is given each host command's environment; tests set it.
+var seenEnv func(env []string)
+
 // hostScript is a host process running git (each of runs in dir, its exit
 // the first failure's) with env, its output merged and redacted.
 func hostScript(ctx context.Context, dir string, env []string, runs [][]string) *exec.Cmd {
+	if err := checkEnv(env); err != nil {
+		return &exec.Cmd{Err: err}
+	}
+	if seenEnv != nil {
+		seenEnv(env)
+	}
 	path, err := GitPath(dir)
 	if err != nil {
 		return &exec.Cmd{Err: err}
@@ -234,6 +243,10 @@ func hostScript(ctx context.Context, dir string, env []string, runs [][]string) 
 	cmd := exec.CommandContext(ctx, "/bin/bash", "-c", b.String(), path) // #nosec G204 -- fixed shell; every word quoted
 	cmd.Dir = dir
 	cmd.Env = env
+	// Its own session: a cancel ends git, ssh and a relayed hook with it, and
+	// nothing else; a pipe a leftover holds does not keep Wait waiting.
+	sandbox.EndWithCommand(cmd)
+	cmd.WaitDelay = 5 * time.Second
 	return cmd
 }
 
@@ -248,8 +261,61 @@ func repoEnv(ctx context.Context, cwd string, cfg [][2]string) ([]string, error)
 	if err := r.redirected(); err != nil {
 		return nil, err
 	}
-	all := append(append(append([][2]string(nil), safety...), r.drivers...), cfg...)
-	return append(append(r.env(nil), configEnv(all)...), remoteEnv...), nil
+	return hostEnv(r.env(nil), append(append(append([][2]string(nil), safety...), r.drivers...), cfg...), remoteEnv...)
+}
+
+// hostEnv is the one way host git's environment for a remote command is
+// built: base and then overrides, each variable once (the later value
+// kept), then cfg as the only block of command-line configuration. git reads
+// one GIT_CONFIG_COUNT, and the environment keeps the last of a name, so a
+// second block would replace every pin before it: base or overrides naming
+// any GIT_CONFIG_ variable is refused.
+func hostEnv(base []string, cfg [][2]string, overrides ...string) ([]string, error) {
+	var out []string
+	at := map[string]int{}
+	for _, kv := range append(append([]string(nil), base...), overrides...) {
+		name, _, _ := strings.Cut(kv, "=")
+		if configBlock(name) {
+			return nil, fmt.Errorf("host git's environment was given %s outside its one configuration block", name)
+		}
+		if i, ok := at[name]; ok {
+			out[i] = kv
+			continue
+		}
+		at[name] = len(out)
+		out = append(out, kv)
+	}
+	return append(out, configEnv(cfg)...), nil
+}
+
+// readEnv is host git's environment for reading configuration and refs:
+// git's own dropped and the safety settings as its one block.
+func readEnv() []string {
+	env, err := hostEnv(Env(), safety)
+	if err != nil {
+		return append(Env(), configEnv(safety)...) // Env holds no block: not reached
+	}
+	return env
+}
+
+// configBlock reports a variable of git's command-line configuration block.
+func configBlock(name string) bool {
+	return name == "GIT_CONFIG_COUNT" || name == "GIT_CONFIG_PARAMETERS" ||
+		strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_")
+}
+
+// checkEnv says why env is not one host git may run with: a variable named
+// twice, or more than one block of command-line configuration.
+func checkEnv(env []string) error {
+	seen := map[string]bool{}
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if seen[name] {
+			return fmt.Errorf("host git's environment names %s twice, so Abhed does not run it", name)
+		}
+		seen[name] = true
+	}
+	return nil
 }
 
 // fetchRuns are the git runs a fetch of p's remotes is, each to the URL it
@@ -310,7 +376,18 @@ func mapRef(specs []string, src string) (string, string) {
 // hostCommand is the process of a fetch, ls-remote or push on the host,
 // and p with what it set up for it.
 func (b *HostBroker) hostCommand(ctx context.Context, cwd string, op remoteOp, p plan) (*exec.Cmd, plan) {
-	env, err := repoEnv(ctx, cwd, remoteConfig(ctx, cwd, p.names))
+	cfg := remoteConfig(ctx, cwd, p.names)
+	if op.verb == "push" && p.hooks != "" {
+		// Host git calls Abhed's own pre-push, which runs the person's in the
+		// sandbox; last in the one configuration block, over safety's none.
+		relay, err := b.prePushRelay(ctx, p)
+		if err != nil {
+			return &exec.Cmd{Err: fmt.Errorf("git push: your pre-push hook could not be set up to run in the sandbox (%v), so Abhed does not push without it", err)}, p
+		}
+		cfg = append(cfg, [2]string{"core.hooksPath", relay.dir})
+		p.relay = relay
+	}
+	env, err := repoEnv(ctx, cwd, cfg)
 	if err != nil {
 		return &exec.Cmd{Err: err}, p
 	}
@@ -324,15 +401,6 @@ func (b *HostBroker) hostCommand(ctx context.Context, cwd string, op remoteOp, p
 	default:
 		// A push goes by the remote's name: its URLs are held by the sandbox.
 		runs = [][]string{append(append([]string{"--no-pager", "push"}, op.opts...), op.positional...)}
-		if p.hooks != "" {
-			// Host git calls Abhed's own pre-push, which runs the person's in the sandbox.
-			relay, err := b.prePushRelay(ctx, p)
-			if err != nil {
-				return &exec.Cmd{Err: fmt.Errorf("git push: your pre-push hook could not be set up to run in the sandbox (%v), so Abhed does not push without it", err)}, p
-			}
-			env = append(env, configEnv([][2]string{{"core.hooksPath", relay.dir}})...)
-			p.relay = relay
-		}
 	}
 	return hostScript(ctx, cwd, env, runs), p
 }
@@ -413,7 +481,10 @@ func (b *HostBroker) clone(ctx context.Context, cwd string, op remoteOp, p plan)
 	}
 	args = append(args, op.url, staged)
 	// Run outside every repository: no configuration but the person's is read.
-	env := append(append(Env(), configEnv(append(append([][2]string(nil), safety...), remoteConfig(ctx, tmp, []string{"origin"})...))...), remoteEnv...)
+	env, err := hostEnv(Env(), append(append([][2]string(nil), safety...), remoteConfig(ctx, tmp, []string{"origin"})...), remoteEnv...)
+	if err != nil {
+		return &exec.Cmd{Err: fmt.Errorf("git clone: %w", err)}
+	}
 	host := hostScript(ctx, tmp, env, [][]string{args})
 	out, err := b.runNow(ctx, cwd, op, p, host)
 	out = strings.ReplaceAll(out, staged, op.dir)

@@ -395,18 +395,29 @@ func TestBrokerRefusesDangerousLines(t *testing.T) {
 func TestBrokerIgnoresTheRepositorysPrograms(t *testing.T) {
 	r := newRemoteRig(t)
 	planted := filepath.Join(r.home, "planted-ran")
-	run(t, r.ws, "config", "core.sshCommand", "touch "+planted+";")
-	run(t, r.ws, "config", "credential.helper", "!touch "+planted)
-	run(t, r.ws, "config", "core.askPass", "touch "+planted)
+	hooks := filepath.Join(r.home, "hooks")
+	writeHook(t, hooks, "pre-push", filepath.Join(r.home, "hook-ran"))
+	// The person has a pre-push hook: the push's configuration must still be whole.
+	run(t, r.home, "config", "--global", "core.hooksPath", hooks)
 	b := r.broker(Network{Open: true})
-	if out, err := runCmd(t, b.Command(r.ctx("c"), r.ws, "git fetch origin")); err != nil {
-		t.Fatalf("fetch: %v\n%s", err, out)
+	r.pushReady(t, b)
+	for _, kv := range [][2]string{{"core.sshCommand", "touch " + planted + ";"}, {"credential.helper", "!touch " + planted},
+		{"credential.https://git.example.helper", "!touch " + planted}, {"core.askPass", "touch " + planted},
+		{"core.gitProxy", "touch " + planted}} {
+		run(t, r.ws, "config", kv[0], kv[1])
+		b := r.broker(Network{Open: true})
+		for _, line := range []string{"git fetch origin", "git push origin main"} {
+			if _, err := runCmd(t, b.Command(r.ctx("c"), r.ws, line)); err == nil || !strings.Contains(err.Error(), "with your credentials") {
+				t.Fatalf("%s with %s set: %v", line, kv[0], err)
+			}
+		}
+		run(t, r.ws, "config", "--unset-all", kv[0])
 	}
 	if _, err := os.Stat(planted); err == nil {
 		t.Fatal("host git ran the repository's ssh command or helper")
 	}
-	if log, _ := os.ReadFile(r.sshLog); !strings.Contains(string(log), "git.example agent=set") {
-		t.Fatalf("the person's ssh did not run:\n%s", log)
+	if log, _ := os.ReadFile(r.sshLog); strings.Count(string(log), "git.example agent=set") != 1 {
+		t.Fatalf("host ssh ran for a refused line:\n%s", log)
 	}
 
 	run(t, r.ws, "config", "hook.x.command", "touch "+planted)
@@ -794,7 +805,7 @@ func TestBrokerWaitsOnASessionsCloneWhereBound(t *testing.T) {
 		t.Fatalf("clone: %v\n%s", err, out)
 	}
 	copyDir := filepath.Join(r.ws, "copy")
-	if _, _, _, err := b.Ask(r.key("c-2"), copyDir, "git fetch"); err == nil || !strings.Contains(err.Error(), "from the next session") {
+	if _, _, _, err := b.Ask(r.key("c-2"), copyDir, "git fetch"); err == nil || !strings.Contains(err.Error(), "when it is that session's workspace") {
 		t.Fatalf("a fetch in this session's clone: %v", err)
 	}
 	// The next session's broker knows it from its start.
