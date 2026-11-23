@@ -494,14 +494,22 @@ func TestBashTimeoutEndsADaemon(t *testing.T) {
 			if sid, err := unix.Getsid(pid); err != nil || sid != pid {
 				t.Fatalf("the daemon did not start a session of its own: sid %d, %v", sid, err)
 			}
+			var res Result
 			select {
-			case <-done:
+			case res = <-done:
 			case <-time.After(10 * time.Second):
 				t.Fatal("the command held the call past its timeout")
 			}
 			for deadline := time.Now().Add(2 * time.Second); alive(pid); time.Sleep(20 * time.Millisecond) {
 				if time.Now().After(deadline) {
-					t.Fatalf("the daemon %d outlived the timeout", pid)
+					// Off macOS a process keeps no record of the parent that forked
+					// it, so one that left the session and lost its parent before a
+					// read saw it is not proven the command's: the result names it,
+					// and it is never ended by its marker alone.
+					if runtime.GOOS != "darwin" && strings.Contains(res.Content, "carrying the command's marker were left running") {
+						return
+					}
+					t.Fatalf("the daemon %d outlived the timeout, and the result does not say so: %q", pid, res.Content)
 				}
 			}
 		})

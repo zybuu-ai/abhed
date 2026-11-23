@@ -93,7 +93,7 @@ var reflectCalls = map[string]bool{"Call": true, "CallSlice": true, "Method": tr
 
 // signalHelperNames are this package's names for sending a signal.
 var signalHelperNames = map[string]bool{
-	"sysKill": true, "killGroup": true, "killGroupNow": true, "endTree": true, "endMarked": true, "EndLeft": true,
+	"sysKill": true, "killGroup": true, "killGroupNow": true, "endTree": true, "endMarked": true, "inSession": true, "EndLeft": true,
 	"EndWithCommand": true, "stopMember": true, "signalMember": true, "treeMember": true,
 }
 

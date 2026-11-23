@@ -55,16 +55,7 @@ else
 fi
 home="$HOME"
 made_home=""
-# run_group is the process group the agent's run leads, ended with the step.
-run_group=""
-end_group() {
-  # Only the group the run led, and only once: its leader was this script's
-  # own child, just waited for.
-  if [ -n "$run_group" ]; then kill -KILL -- "-$run_group" 2>/dev/null || true; fi
-  run_group=""
-  return 0
-}
-cleanup() { end_group; [ -n "$made_home" ] && rm -rf "$made_home" 2>/dev/null; return 0; }
+cleanup() { [ -n "$made_home" ] && rm -rf "$made_home" 2>/dev/null; return 0; }
 trap cleanup EXIT
 if [ "${ABHED_ISOLATE_HOME:-true}" = "true" ]; then
   mkdir -p "$HOME"
@@ -137,15 +128,37 @@ version > "$ev/abhed-version.txt" || true
 code=0
 # The run leads a process group of its own; whatever stayed in it is ended
 # when it exits. Abhed itself ends what each command started; this is the
-# second net for anything left in the run's own group.
-# A simple command, not a function, so $! is the process that leads the group.
+# second net for anything left in the run's own group. The group is ended
+# while its leader, the helper's child, is exited but not yet reaped, so its
+# id cannot have been taken by another process; a stop of the step (a signal
+# to the helper) ends it the same way.
 stdin="${ABHED_STDIN_FILE:-/dev/null}"
 check_bin
-python3 -c 'import os, sys; os.setpgid(0, 0); os.execvp(sys.argv[1], sys.argv[1:])' \
-  env -i "${envs[@]}" "$bin" "${args[@]}" < "$stdin" > "$ev/run.jsonl" 2> "$ev/stderr.log" &
-run_group=$!
-wait "$run_group" || code=$?
-end_group
+python3 -I -c '
+import os, signal, sys
+pid = os.fork()
+if pid == 0:
+    try:
+        os.setpgid(0, 0)
+        os.execvp(sys.argv[1], sys.argv[1:])
+    finally:
+        os._exit(127)
+try:
+    os.setpgid(pid, pid)
+except OSError:
+    pass  # the child has set it, or has already exec-ed
+def end(*_):
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except OSError:
+        pass
+for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(s, end)
+os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+end()
+code = os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])
+sys.exit(128 - code if code < 0 else code)
+' env -i "${envs[@]}" "$bin" "${args[@]}" < "$stdin" > "$ev/run.jsonl" 2> "$ev/stderr.log" || code=$?
 # stderr holds Abhed's notes (each refusal and what would allow it), never the key.
 cat "$ev/stderr.log" >&2 || true
 

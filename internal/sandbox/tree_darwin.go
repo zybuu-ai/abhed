@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"syscall"
 	"unsafe"
@@ -124,4 +125,53 @@ func procArgs(pid int32) ([]byte, bool) {
 		return nil, false
 	}
 	return buf[:size], true
+}
+
+// processStarts maps each live process to its start time, in one read of the
+// process table.
+func processStarts() map[int]uint64 {
+	procs, err := unix.SysctlKinfoProcSlice("kern.proc.all")
+	if err != nil {
+		return nil
+	}
+	out := make(map[int]uint64, len(procs))
+	for _, p := range procs {
+		if pid := int(p.Proc.P_pid); pid > 1 && p.Proc.P_stat != 5 {
+			t := p.Proc.P_starttime
+			out[pid] = uint64(t.Sec)*1_000_000 + uint64(t.Usec) // #nosec G115 -- a time since 1970 is positive
+		}
+	}
+	return out
+}
+
+// proc_info(2)'s PROC_INFO_CALL_PIDINFO and PROC_PIDT_BSDINFOWITHUNIQID, from
+// <sys/proc_info.h>: a proc_bsdinfo (136 bytes) then a proc_uniqidentifierinfo,
+// whose p_uniqueid and p_puniqueid follow its 16-byte uuid.
+const (
+	procInfoCallPidInfo  = 2
+	procPidTBSDUniqID    = 18
+	procBSDInfoSize      = 136
+	procBSDUniqIDSize    = procBSDInfoSize + 56
+	procUniqIDOffset     = procBSDInfoSize + 16
+	procParentUniqOffset = procBSDInfoSize + 24
+	procPidOffset        = 12  // pbi_pid
+	procStartOffset      = 120 // pbi_start_tvsec, then pbi_start_tvusec
+)
+
+// processOrigin reads, in one call, pid's unique id, its start time, and the
+// unique id its parent had when it forked pid. Unique ids are never reused
+// while the system runs, and the parent's is kept when the process is
+// reparented to launchd, so a process that lost its parent still names it.
+func processOrigin(pid int) (o procOrigin, ok bool) {
+	var buf [procBSDUniqIDSize]byte
+	// #nosec G103 -- the proc_info(2) call needs the buffer's address
+	n, _, errno := syscall.Syscall6(unix.SYS_PROC_INFO, procInfoCallPidInfo, uintptr(pid), procPidTBSDUniqID, 0,
+		uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	if errno != 0 || n != uintptr(len(buf)) || int(binary.LittleEndian.Uint32(buf[procPidOffset:])) != pid {
+		return procOrigin{}, false
+	}
+	o.uniq = binary.LittleEndian.Uint64(buf[procUniqIDOffset:])
+	o.parent = binary.LittleEndian.Uint64(buf[procParentUniqOffset:])
+	o.start = binary.LittleEndian.Uint64(buf[procStartOffset:])*1_000_000 + binary.LittleEndian.Uint64(buf[procStartOffset+8:])
+	return o, o.uniq != 0
 }

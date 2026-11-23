@@ -26,7 +26,8 @@ import (
 type Process struct {
 	policy  Policy
 	backend string // "sandbox-exec" | "bwrap"
-	// cmds are the commands and shells made, ended when the sandbox closes.
+	// cmds are the commands made; a followed one still running is ended when
+	// the sandbox closes.
 	cmds commandSet
 	// listen is SetListen's: commands may listen on loopback from now on.
 	listen atomic.Bool
@@ -950,9 +951,10 @@ func (s *Process) Shell(ctx context.Context, cwd string) *exec.Cmd {
 			env = append(env, "ZDOTDIR="+*z)
 		}
 	}
-	cmd := hangUp(s.wrapEgress(ctx, cwd, env, eg, choice.argv...))
-	s.cmds.add(cmd)
-	return cmd
+	// A shell is not in cmds: it ends with its terminal (hang-up, then the
+	// session sweep), never with the sandbox, which could reach an app the
+	// person started from it.
+	return hangUp(s.wrapEgress(ctx, cwd, env, eg, choice.argv...))
 }
 
 // shell is the terminal's shell: the person's preferred one on macOS, where
@@ -1552,12 +1554,13 @@ const vimInit = `if 1 | if has('nvim') | let g:abhed_rc = stdpath('config') . (f
 // refuses selection when isolation is required.
 type None struct {
 	policy Policy
-	// cmds are the commands and shells made, ended when the sandbox closes.
+	// cmds are the commands made; a followed one still running is ended when
+	// the sandbox closes.
 	cmds commandSet
 }
 
-// Close ends every command and shell made here that still runs, with what
-// each started: nothing of a session outlives it.
+// Close ends every followed command made here that still runs, with what it
+// was seen to start. Shells end with their terminals.
 func (n *None) Close() error {
 	n.cmds.end()
 	return nil
@@ -1614,7 +1617,7 @@ func HostCommandEnv() []string {
 }
 
 func hostDropped(kv string) bool {
-	for _, p := range []string{"BASH_ENV=", "CDPATH=", "SHELLOPTS=", "BASHOPTS=", "BASH_FUNC_", "ZDOTDIR=", "ENV=", "ABHED_TRUST_WORKSPACE="} {
+	for _, p := range []string{"BASH_ENV=", "CDPATH=", "SHELLOPTS=", "BASHOPTS=", "BASH_FUNC_", "ZDOTDIR=", "ENV=", "ABHED_TRUST_WORKSPACE=", markerName + "="} {
 		if strings.HasPrefix(kv, p) {
 			return true
 		}
@@ -1628,8 +1631,7 @@ func (n *None) Shell(ctx context.Context, cwd string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, shellArgv[0], shellArgv[1:]...) // #nosec G204 -- a fixed argv
 	cmd.Dir = cwd
 	cmd.Env = append(append(hostEnv(), "ABHED_SANDBOX=none"), shellEnv(TierNone)...)
-	n.cmds.add(cmd)
-	return hangUp(cmd)
+	return hangUp(cmd) // not in cmds: see Process.Shell
 }
 
 // Backend says there is none.

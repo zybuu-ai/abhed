@@ -607,15 +607,22 @@ All notable changes to Abhed are recorded here. The format follows
   it. It used to keep running, and writing the workspace and the shared
   temp folders, after the command, the session and its record had ended
   (bubblewrap on Linux always ended it). When a foreground command ends, Abhed now
-  ends the processes in the session it leads, those carrying its random
-  marker, and every descendant it followed while the command ran, and
-  waits for them to go before the command is reported finished; closing a
-  sandbox ends what its commands still run. Only processes shown to be the
-  command's own are signalled. A process that empties its environment,
-  takes a session of its own and loses its parent within one 20 ms read of
-  the process table can still escape; see the Sandbox section of the
-  configuration guide. Commands on that tier also get an `xcrun_db` of the
-  sandbox's own.
+  ends the processes in the session it leads and every descendant it
+  followed while the command ran, and waits for them to go before the
+  command is reported finished; closing a sandbox ends what its foreground
+  commands still run. Only processes proven to descend from the command are
+  signalled. Its random marker (`ABHED_COMMAND_ID`) is no such proof, since
+  an app started from a command's terminal inherits it and `launchctl
+  setenv` can plant it, so a marked process that is neither followed nor in
+  the session is named in the command's result and left running. A process
+  handed to launchd before a read saw it is still ended when the process
+  that forked it was followed (macOS keeps the parent's unique id). One that
+  takes a session of its own and whose parent was born and gone within one
+  20 ms read of the process table escapes (on Linux's `none` tier, one that
+  loses its parent within one read); see the Sandbox section of the
+  configuration guide. Terminal shells are not ended when a sandbox closes:
+  they end with their terminal. Commands on that tier also get an
+  `xcrun_db` of the sandbox's own.
 
 - On macOS, the process sandbox keeps the account's own home unreadable to
   commands when `HOME` names another folder, as well as `$HOME`: its state

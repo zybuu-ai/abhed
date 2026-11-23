@@ -1134,6 +1134,7 @@ class EndToEnd(Tmp):
                            env={"PATH": os.environ["PATH"], "HOME": self.path("home2")})
         self.assertEqual(v.returncode, 0, v.stdout + v.stderr)
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "ends real process trees: Linux only")
     @unittest.skipUnless(os.environ.get("ABHED_TEST_PROCESS_KILL") == "1",
                          "starts and ends real processes: set ABHED_TEST_PROCESS_KILL=1 on a throwaway runner")
     def test_a_detached_process_does_not_outlive_the_step(self):

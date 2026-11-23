@@ -491,8 +491,8 @@ func (s *Process) EndSession(id string) error {
 // Close stops every session's egress proxy and removes their sockets' folders,
 // and the sandbox's own caches. Later commands are refused.
 func (s *Process) Close() error {
-	// Nothing a command started outlives the session: on macOS nothing else
-	// ends a process that left the command (bubblewrap's PID namespace does).
+	// A followed command still running ends with what it was seen to start:
+	// on macOS nothing else ends those (bubblewrap's PID namespace does).
 	s.cmds.end()
 	unwatchListeners(s)
 	ss := &s.egress

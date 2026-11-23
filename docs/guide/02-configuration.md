@@ -348,22 +348,35 @@ sessions started after it. See [Agent definitions](17-agent-definitions.md).
 every process it started is ended with it, before the command is reported
 as finished; a background shell's are ended by `shell_kill` or the session
 ending ([Background commands](05-tools.md#background-commands)); and a
-session's sandbox closing ends whatever its commands still run. On Linux, bubblewrap does this itself: each command has a process
-namespace of its own that dies with it. On macOS, which has no such
-namespace, Abhed ends only processes it can show are the command's own,
-and never one found otherwise:
+session's sandbox closing ends whatever its foreground commands still run.
+A terminal's shell ends with its terminal, never with the sandbox. On
+Linux's process tier, bubblewrap does this itself: each command has a
+process namespace of its own that dies with it. On macOS, which has no such
+namespace, and on the `none` tier, Abhed ends only processes it can show
+are the command's own, and never one found otherwise:
 
 - those in the session the command leads;
-- those carrying the command's own random marker in their environment;
 - those seen as its descendants while it ran: the process table is read
   every 20 ms, and a process is followed when its parent is followed, even
-  after it leaves the session or its parent exits.
+  after it leaves the session or its parent exits;
+- on macOS, one handed to launchd before a read saw it, when the process
+  that forked it was followed: the kernel keeps the unique id of the
+  parent that forked a process, and unique ids are never reused.
 
-A process can still escape on macOS, and keep writing what the sandbox lets
+Every process a command starts also carries its random marker,
+`ABHED_COMMAND_ID`, but a marker is not proof: an app started from a
+command's terminal inherits it, and `launchctl setenv` can plant it in any
+app. A marked process that is neither in the session nor followed is named
+in the command's result and left running, never ended.
+
+A process can still escape, and keep writing what the sandbox lets
 commands write (the workspace, `/private/tmp`, the account's temp folder)
-after the command and the session have ended: one that empties its
-environment, starts a session of its own, and is born and loses its parent
-within one 20 ms read, as a fast double fork does. The command line, the
+after the command and the session have ended. On macOS: one that starts a
+session of its own and whose parent was itself born and gone within one
+20 ms read, as a fast double fork does. On Linux's `none` tier, which has no
+such parent record: one that starts a session of its own and loses its
+parent within one read. Either is named in the command's result if it kept
+the marker. The command line, the
 server and the GitHub Action all run on this; on a Mac that is a person's
 own, use the container or vm tier for code you do not trust.
 

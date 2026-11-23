@@ -18,14 +18,18 @@ import (
 // setsid, a double fork) would otherwise keep writing to the workspace and the
 // temp folders after the command, the run and its record had ended.
 //
-// Three nets catch them. The command leads a session of its own
-// (EndWithCommand), whose members are swept while the exited command is still
-// unreaped. Every process inherits the command's marker, found by reading the
-// process table. And while the command runs, the process table is read every
-// watchPoll for every process whose parent is followed, a session it made with
-// setsid or an emptied environment included. A process forked, which forked
-// again and exited, all between two reads, with its environment emptied and a
-// session of its own, escapes all three: see the residual risk in the docs.
+// Only processes proven to descend from the command are ended. The command
+// leads a session of its own (EndWithCommand), whose members are swept while
+// the exited command is still unreaped. And while the command runs, the
+// process table is read every watchPoll for every process whose parent is
+// followed, a session it made with setsid included. Every process also
+// inherits the command's marker, but a marker is no proof (an app started from
+// a terminal inherits it; launchctl setenv can plant it), so a marked process
+// neither followed nor in the session is reported, never ended. On macOS a
+// child handed to launchd before a read saw it is still followed, by the
+// unique id of the parent that forked it. A process with a session of its own
+// whose parent was born and gone between two reads escapes (off macOS, one
+// that loses its parent between two reads): see the residual risk in the docs.
 type Watch struct {
 	cmd    *exec.Cmd
 	root   int
@@ -33,7 +37,12 @@ type Watch struct {
 
 	mu   sync.Mutex
 	seen map[int]uint64 // pid -> start time, the root included
-	done bool
+	// uniq holds the unique ids of followed processes (macOS), and origins
+	// what was read of launchd's children: a process reparented before a read
+	// saw it is still followed if the parent that forked it was.
+	uniq    map[uint64]bool
+	origins map[int]origin
+	done    bool
 
 	stop   chan struct{}
 	polled chan struct{}
@@ -48,12 +57,27 @@ var (
 	watchParents = processParents
 	watchStart   = startTime
 	watchKill    = syscall.Kill
+	watchStarts  = processStarts
+	watchOrigin  = processOrigin
 )
+
+// procOrigin is what processOrigin reads of a process: its unique id, its
+// start time (as startTime gives it), and the unique id of the parent that
+// forked it.
+type procOrigin struct{ uniq, start, parent uint64 }
+
+// origin is what was read of a process at one start time; ok is false when
+// it could not be read.
+type origin struct {
+	procOrigin
+	ok bool
+}
 
 // StartWatch begins following cmd's processes. Call it right after Start, and
 // Wait on it instead of cmd.
 func StartWatch(cmd *exec.Cmd) *Watch {
-	w := &Watch{cmd: cmd, seen: map[int]uint64{}, stop: make(chan struct{}), polled: make(chan struct{})}
+	w := &Watch{cmd: cmd, seen: map[int]uint64{}, uniq: map[uint64]bool{}, origins: map[int]origin{},
+		stop: make(chan struct{}), polled: make(chan struct{})}
 	if cmd.Process == nil {
 		close(w.polled)
 		return w
@@ -64,6 +88,7 @@ func StartWatch(cmd *exec.Cmd) *Watch {
 	}
 	if st, ok := watchStart(w.root); ok {
 		w.seen[w.root] = st
+		w.noteUniq(w.root)
 	}
 	runningWatches.Store(cmd, w)
 	go w.follow()
@@ -89,12 +114,14 @@ func (w *Watch) follow() {
 }
 
 // poll adds every live process whose parent is followed and is still the
-// process seen at that pid.
+// process seen at that pid, and, on macOS, every child of launchd forked by a
+// followed process: its parent exited before a read saw it.
 func (w *Watch) poll() {
 	parents := watchParents()
 	if parents == nil {
 		return
 	}
+	starts := watchStarts()
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	same := map[int]bool{}
@@ -114,13 +141,53 @@ func (w *Watch) poll() {
 				continue
 			}
 			if _, ok := w.seen[ppid]; !ok || !isSame(ppid) {
+				// launchd's child, forked by a followed process: its start
+				// time is the one read with its origin.
+				if ppid == 1 {
+					if o, ok := w.forkedByFollowed(pid, starts[pid]); ok {
+						w.seen[pid], same[pid], grew = o.start, true, true
+						w.uniq[o.uniq] = true
+					}
+				}
 				continue
 			}
 			if st, ok := watchStart(pid); ok {
 				w.seen[pid], same[pid], grew = st, true, true
+				w.noteUniq(pid)
 			}
 		}
 	}
+}
+
+// noteUniq records pid's unique id as followed, where the system has one.
+func (w *Watch) noteUniq(pid int) {
+	if w.uniq == nil {
+		w.uniq = map[uint64]bool{}
+	}
+	if o, ok := watchOrigin(pid); ok && o.start == w.seen[pid] {
+		w.uniq[o.uniq] = true
+	}
+}
+
+// forkedByFollowed reports whether pid, a child of launchd that started at
+// start (from the table's read), was forked by a followed process. Its origin
+// is read once per process, a reused pid told by its start time, so a poll
+// costs a map lookup for each launchd child already read.
+func (w *Watch) forkedByFollowed(pid int, start uint64) (procOrigin, bool) {
+	if start == 0 {
+		return procOrigin{}, false
+	}
+	if w.origins == nil {
+		w.origins = map[int]origin{}
+	}
+	o, known := w.origins[pid]
+	if !known || o.start != start {
+		po, ok := watchOrigin(pid)
+		// Read at another start time: the pid was reused in between.
+		o = origin{procOrigin: procOrigin{start: start, uniq: po.uniq, parent: po.parent}, ok: ok && po.start == start}
+		w.origins[pid] = o
+	}
+	return o.procOrigin, o.ok && w.uniq[o.parent]
 }
 
 // Wait waits for the command to exit and, before reaping it (so its pid and
@@ -143,8 +210,12 @@ func (w *Watch) Wait() (left string, err error) {
 	if r := w.endFollowed(); r != "" {
 		notes = append(notes, r)
 	}
+	// The marker narrows what is proven, never widens it: one carrying it
+	// that was never followed nor is in the session is reported, not ended.
 	if m := markerIn(w.cmd.Env); m != "" {
-		endMarked(m)
+		if r := unprovenNote(endMarked(m, w.owns)); r != "" {
+			notes = append(notes, r)
+		}
 	}
 	err = w.cmd.Wait()
 	w.mu.Lock()
@@ -244,6 +315,16 @@ func (w *Watch) signal(pid int, sig syscall.Signal) error {
 	return watchKill(pid, sig)
 }
 
+// owns signals pid only if it is proven the command's own: followed from the
+// command's start (see signal), or a member of the session the command
+// created, while the exited command is unreaped and holds its id (Wait).
+func (w *Watch) owns(pid int, sig syscall.Signal) bool {
+	if w.signal(pid, sig) == nil {
+		return true
+	}
+	return w.leader.ok && inSession(w.root)(pid, sig)
+}
+
 // end stops the command and everything it started, for a sandbox closing
 // while the command still runs.
 func (w *Watch) end() {
@@ -261,9 +342,8 @@ func (w *Watch) end() {
 	}
 	w.poll()
 	_ = w.endFollowed()
-	if m := markerIn(w.cmd.Env); m != "" {
-		endMarked(m)
-	}
+	// What is left in the session, and what the marker finds unproven, is
+	// Wait's to end or report once the root has exited.
 }
 
 // commandSet is the commands one sandbox made, ended when it closes.
@@ -304,8 +384,9 @@ func forgetCommand(cmd *exec.Cmd) {
 	}
 }
 
-// end ends every command of the set still running, and whatever each left
-// that carries its marker.
+// end ends every followed command of the set still running, with what it
+// was seen to start. A command without a Watch is left to its own cancel: a
+// marker alone would not prove anything it found the command's own.
 func (c *commandSet) end() {
 	c.mu.Lock()
 	cmds := make([]*exec.Cmd, 0, len(c.cmds))
@@ -318,10 +399,6 @@ func (c *commandSet) end() {
 		owners.Delete(cmd)
 		if v, ok := runningWatches.Load(cmd); ok {
 			v.(*Watch).end()
-			continue
-		}
-		if m := markerIn(cmd.Env); m != "" {
-			endMarked(m)
 		}
 	}
 }

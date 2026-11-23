@@ -195,10 +195,11 @@ away from anything private.
 - **Nothing the run starts outlives the step.** Abhed ends every process a
   command started when the command ends, and what is left when the session
   ends; the action also starts the run in a process group of its own and
-  ends that group after it. On Linux, bubblewrap ends every process with
-  its command. On macOS one case remains: a process that empties its
-  environment, takes a session of its own and loses its parent within one
-  20 ms read of the process table (a fast double fork) can keep running
+  ends that group when the run exits, before its leader is reaped, so the
+  group's id is still the run's. On Linux, bubblewrap ends every process with
+  its command. On macOS one case remains: a process that takes a session
+  of its own and whose parent was born and gone within one 20 ms read of
+  the process table (a fast double fork) can keep running
   and writing the workspace and the shared temp folders after the evidence
   was taken ([Sandbox](02-configuration.md#sandbox)). Run untrusted tasks
   on a Linux runner.

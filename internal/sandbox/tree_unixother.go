@@ -10,3 +10,9 @@ func stopMember(int, map[int]bool) (treeMember, bool) { return treeMember{}, fal
 func (treeMember) kill() {}
 
 func marked(string) []int { return nil }
+
+// processStarts and processOrigin are macOS's: here a process that lost its
+// parent names no origin, and is followed only through its parent.
+func processStarts() map[int]uint64 { return nil }
+
+func processOrigin(int) (procOrigin, bool) { return procOrigin{}, false }
