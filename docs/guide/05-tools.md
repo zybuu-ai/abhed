@@ -284,6 +284,9 @@ for the organisation:
   wants its laptops read-only sets it explicitly: where it says nothing of
   writes, a person's own `k8s.allow_writes: true` offers `k8s_apply` (each
   write still asks, after a dry run).
+- A managed file that sets only `k8s.context`, `k8s.namespace` or
+  `k8s.ca_file` does not decide for the organisation either: your own
+  kubeconfig stays in use, with those values applied.
 - `k8s.enabled: false` turns Kubernetes off: no cluster tool is offered,
   and a pasted login is still withheld, the model is told logins are off
   and why, and a login it tries anyway is refused with the reason, never as
