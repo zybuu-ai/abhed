@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -388,6 +389,9 @@ func (f *fallbackAdapter) ToolLimit() int {
 func (f *fallbackAdapter) SamplingDefaults() model.Params {
 	return model.SamplingDefaultsOf(f.current())
 }
+
+// CallTimeout is the model now answering's.
+func (f *fallbackAdapter) CallTimeout() time.Duration { return model.CallTimeoutOf(f.current()) }
 func (f *fallbackAdapter) CountTokens(req model.Request) (int, error) {
 	return f.current().CountTokens(req)
 }

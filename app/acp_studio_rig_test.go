@@ -53,12 +53,19 @@ func newStudioClient(t *testing.T, ws string, durable bool, trust ...config.Trus
 	if durable {
 		c.useRecord(ws, "")
 	}
+	return startStudioClient(t, c, inW, outR, func() { _ = c.serve(inR) })
+}
+
+// startStudioClient serves c with serve (c.serve, or c.run as acpCmd does)
+// and reads what it writes.
+func startStudioClient(t *testing.T, c *acpConn, inW *io.PipeWriter, outR *io.PipeReader, serve func()) *studioClient {
+	t.Helper()
 	cl := &studioClient{t: t, conn: c, in: inW}
 	cl.cond = sync.NewCond(&cl.mu)
 	cl.answer = func(string, json.RawMessage) any {
 		return map[string]any{"outcome": map[string]any{"outcome": "cancelled"}}
 	}
-	go func() { _ = c.serve(inR) }()
+	go serve()
 	go func() {
 		sc := bufio.NewScanner(outR)
 		sc.Buffer(make([]byte, 0, 64<<10), 16<<20)

@@ -60,7 +60,8 @@ type CompletionEnabled struct {
 type CompletionSummary struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
-	// Requests were sent to the provider; Served answered with text; Failed
+	// Requests were sent to the provider; Served answered with a suggestion
+	// (for next edits, renames finished from the file too: Local of them); Failed
 	// erred; Cancelled were sent and then cancelled. Refused were not sent (a
 	// file a rule keeps, the rate limit), nor Superseded (replaced by a newer
 	// request before they went).

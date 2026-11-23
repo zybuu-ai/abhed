@@ -190,8 +190,11 @@ limit](04-permissions.md#turn-limit).
 `reasoning_stall_tokens` (8000 by default) cuts a model reply that has only
 reasoned, with no text or tool call, past that many reasoning tokens
 (counted at about four characters a token), instead of holding it to the
-call's ten-minute cap. `reasoning_stall_seconds` (600 by default) is a time
-backstop for the same. Neither cuts a reply whose reasoning is still within
+call's ten-minute cap. `reasoning_stall_seconds` (300 by default) is a time
+backstop for the same, held to half the provider's `call_timeout_seconds`
+(which wins over the 30-second floor)
+so that it, not the call's cap, ends a slow reasoning reply and the turn
+can ask again. Neither cuts a reply whose reasoning is still within
 the request's own thinking budget (`thinking_budget`), which raises the token
 bound to it. Values under 1000 tokens or 30 seconds are raised to those
 floors, so a repository's configuration cannot cut every thinking reply. A
@@ -204,7 +207,9 @@ set a Gemini reply rarely reaches the bound and is held by the call's
 timeouts instead.
 
 A cut reply is charged as any cut call is (see below), and the turn asks once
-more, with thinking off (no effort, and no thinking budget sent) and a nudge
+more, with thinking off (no effort, and no thinking budget sent; for
+Ollama, whose `/v1` endpoint ignores `think`, `reasoning_effort: "none"` as
+well) and a nudge
 to answer or make the one tool call it needs. If an answer arrives just as
 the cut comes, it is kept; a text answer cut part way is kept and the model
 asked to finish it (`-p` returns the two parts as one answer), and a second
@@ -252,7 +257,10 @@ raised is marked `estimated` on the call:
   back.
 - A cut call (cancelled, timed out, or ended by an error once its stream
   opened) is charged at least its prompt and what came back. Under a dollar
-  cap, or for a model that reasons out of sight, it is charged at the most
+  cap, or for a model that may reason out of sight (the official OpenAI
+  API's o-series and gpt-5, or any server with a `think` switch other than
+  a local one known to stream its reasoning: Ollama, llama.cpp, or vLLM,
+  TGI or SGLang on a loopback address), it is charged at the most
   the request allowed: the provider took the request and worked, and bills
   what it produced whether or not it arrived, so interrupting a run, or a
   connection that drops, does not save money under a cap.

@@ -856,7 +856,7 @@ func printCommandsTrust(out io.Writer, ct commandsTrust) {
 	fmt.Fprintf(out, "sha256      %s\n", ct.sum)
 	fmt.Fprintf(out, "trust       %s\n", label)
 	for _, f := range ct.files {
-		first := strings.TrimSpace(strings.SplitN(strings.TrimSpace(string(f.Data)), "\n", 2)[0])
+		first := commandSummary(f)
 		fmt.Fprintf(out, "  %s  %s  %s\n", config.Printable(f.Key), shortSum(config.HashOf(f.Data)), config.PrintableText(first))
 	}
 	if !ct.trusted {

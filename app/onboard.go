@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -329,6 +330,10 @@ func (g gatedAdapter) SamplingDefaults() model.Params { return model.SamplingDef
 // ToolLimit is the wrapped adapter's.
 func (g gatedAdapter) ToolLimit() int { return model.ToolLimitOf(g.Adapter) }
 
+// CallTimeout passes the wrapped adapter's through, so the reasoning
+// backstop stays under it.
+func (g gatedAdapter) CallTimeout() time.Duration { return model.CallTimeoutOf(g.Adapter) }
+
 func (g gatedAdapter) Complete(ctx context.Context, req model.Request) (<-chan model.Chunk, error) {
 	if err := g.probe.check(ctx); err != nil {
 		return nil, err
@@ -513,6 +518,9 @@ func listModels(ctx context.Context, base, key string) ([]string, error) {
 			out = append(out, d.ID)
 		}
 	}
+	// The server's order varies between calls (Ollama's follows use), and
+	// the first is the default choice: sorted, the same list each time.
+	sort.Strings(out)
 	return out, nil
 }
 
