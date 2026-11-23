@@ -76,4 +76,13 @@ func TestModelsForgetWindow(t *testing.T) {
 	if modelsCmd(cfg, []string{"forget-window", "nope"}, &out, &errb) != 1 || modelsCmd(cfg, []string{"bogus"}, &out, &errb) != 2 {
 		t.Fatal("bad arguments accepted")
 	}
+	// An extra name is refused, not ignored: nothing is forgotten.
+	fresh, _ := cfg.Model.Providers["claude"].Adapter()
+	model.LearnWindow(fresh, 300_000, true)
+	if modelsCmd(cfg, []string{"forget-window", "claude", "extra"}, &out, &errb) != 2 {
+		t.Fatal("forget-window with an extra argument was taken")
+	}
+	if b, _ := cfg.Model.Providers["claude"].Adapter(); b.Profile().ContextWindow != 300_000 {
+		t.Fatal("an extra argument still forgot the limit")
+	}
 }

@@ -210,6 +210,9 @@ func (m mapMemory) Recall(k string) (int, time.Time) {
 }
 func (m mapMemory) Remember(k string, w int) { m[k] = w }
 func (m mapMemory) Forget(k string)          { delete(m, k) }
+func (m mapMemory) Secret() []byte           { return testSecret }
+
+var testSecret = []byte("0123456789abcdef0123456789abcdef")
 
 // A limit a provider named is kept for the next process, which starts with
 // it; a limit Abhed only inferred is not kept.
@@ -235,7 +238,7 @@ func TestLearnedWindowIsRemembered(t *testing.T) {
 	if d, _ := New(Spec{Type: "openai", Model: "gpt-4.1", APIKey: "k"}); d.Profile().ContextWindow != 1_047_576 {
 		t.Fatal("an inferred limit was kept")
 	}
-	mem[WindowKey("openai", "https://api.openai.com/v1", "gpt-4o", "k")] = 10 // below the floor
+	mem[WindowKey(testSecret, "openai", "https://api.openai.com/v1", "gpt-4o", "k")] = 10 // below the floor
 	if e, _ := New(Spec{Type: "openai", Model: "gpt-4o", APIKey: "k"}); e.Profile().ContextWindow != 128_000 {
 		t.Fatal("a remembered window under the floor was taken")
 	}
@@ -278,18 +281,59 @@ func TestLearnedWindowIsRemembered(t *testing.T) {
 }
 
 // The key keeps nothing of the endpoint's credentials: user, password and
-// query are left out, and the key is a hash.
+// query are left out, and the key is a keyed hash, so another secret gives
+// another key and the file alone confirms no guess of a credential.
 func TestWindowKeyHidesCredentials(t *testing.T) {
-	k := WindowKey("openai-compatible", "http://user:sk-secret@gateway.example/v1?api-key=sk-secret2#frag", "m", "sk-secret3")
+	k := WindowKey(testSecret, "openai-compatible", "http://user:sk-secret@gateway.example/v1?api-key=sk-secret2#frag", "m", "sk-secret3")
 	for _, leak := range []string{"user", "sk-secret", "gateway", "api-key", "frag"} {
 		if strings.Contains(k, leak) {
 			t.Fatalf("key %q holds %q", k, leak)
 		}
 	}
-	if k != WindowKey("openai-compatible", "HTTP://gateway.EXAMPLE/v1/", "m", "sk-secret3") {
+	if k != WindowKey(testSecret, "openai-compatible", "HTTP://gateway.EXAMPLE/v1/", "m", "sk-secret3") {
 		t.Fatal("the same endpoint without its credentials is another key")
 	}
-	if k == WindowKey("openai-compatible", "http://gateway.example/v1", "m", "another") {
+	if k == WindowKey(testSecret, "openai-compatible", "http://gateway.example/v1", "m", "another") {
 		t.Fatal("two accounts share a key")
 	}
+	other := []byte("fedcba9876543210fedcba9876543210")
+	if k == WindowKey(other, "openai-compatible", "http://gateway.example/v1", "m", "sk-secret3") {
+		t.Fatal("two secrets give the same key: the hash is not keyed")
+	}
+	// Each part is length prefixed: parts that run together differently are
+	// different keys.
+	if WindowKey(testSecret, "a", "http://h/", "bc", "") == WindowKey(testSecret, "ab", "http://h/", "c", "") ||
+		WindowKey(testSecret, "t", "http://h/", "m", "xy") == WindowKey(testSecret, "t", "http://h/", "mx", "y") {
+		t.Fatal("parts run together")
+	}
 }
+
+// A kept entry under the floor is never applied, whoever wrote it.
+func TestRecallFloor(t *testing.T) {
+	mem := mapMemory{}
+	SetWindowMemory(mem)
+	t.Cleanup(func() { SetWindowMemory(nil) })
+	mem[WindowKey(testSecret, "anthropic", "https://api.anthropic.com", "claude-sonnet-5-5", "k")] = 4096
+	if a, _ := New(Spec{Type: "anthropic", Model: "claude-sonnet-5-5", APIKey: "k"}); a.Profile().ContextWindow != 1_000_000 {
+		t.Fatalf("a kept 4,096 was applied: %d", a.Profile().ContextWindow)
+	}
+	mem[WindowKey(testSecret, "anthropic", "https://api.anthropic.com", "claude-sonnet-5-5", "k")] = MinRememberedWindow
+	if a, _ := New(Spec{Type: "anthropic", Model: "claude-sonnet-5-5", APIKey: "k"}); a.Profile().ContextWindow != MinRememberedWindow {
+		t.Fatalf("a kept limit at the floor was not applied: %d", a.Profile().ContextWindow)
+	}
+}
+
+// A memory with no secret is not used: nothing recalled, nothing kept.
+func TestMemoryWithoutSecretIsUnused(t *testing.T) {
+	mem := noSecret{mapMemory{}}
+	SetWindowMemory(mem)
+	t.Cleanup(func() { SetWindowMemory(nil) })
+	a, _ := New(Spec{Type: "anthropic", Model: "claude-sonnet-5-5", APIKey: "k"})
+	if !LearnWindow(a, 200_000, true) || len(mem.mapMemory) != 0 || ForgetWindow(a) {
+		t.Fatalf("used without a secret: %v", mem.mapMemory)
+	}
+}
+
+type noSecret struct{ mapMemory }
+
+func (noSecret) Secret() []byte { return nil }

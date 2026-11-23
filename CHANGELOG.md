@@ -231,7 +231,9 @@ All notable changes to Abhed are recorded here. The format follows
   refusal of the reply cap rather than the prompt is not compacted for. A
   limit of 16,384 or more that the provider named is kept in
   `~/.abhed/context-windows.json` for 30 days, per provider type, endpoint,
-  model and account under a hash (no URL, credential or query is written),
+  model and account under an HMAC keyed by a random secret in
+  `~/.abhed/context-windows.key` (no URL, credential or query is written,
+  and the file alone confirms no guess of a credential),
   so a restarted session starts within it rather than being refused once
   more. A kept limit never lowers a configured `context_window`; `abhed
   models` and `abhed doctor` show it with its date, and `abhed models

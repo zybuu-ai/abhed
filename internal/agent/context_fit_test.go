@@ -653,6 +653,7 @@ type keptWindows map[string]int
 func (k keptWindows) Recall(key string) (int, time.Time) { return k[key], time.Time{} }
 func (k keptWindows) Remember(key string, w int)         { k[key] = w }
 func (k keptWindows) Forget(key string)                  { delete(k, key) }
+func (k keptWindows) Secret() []byte                     { return []byte("agent-test-secret-32-bytes-long!") }
 
 // Through a run: a limit the provider named is kept for later sessions; one
 // inferred below a refusal that named none is not.

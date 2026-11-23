@@ -1,10 +1,13 @@
 package config
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,7 +50,104 @@ type WindowMemory struct {
 	// Now overrides time.Now, for tests.
 	Now func() time.Time
 
-	mu sync.Mutex
+	mu     sync.Mutex
+	secret []byte
+}
+
+// secretPath is the key file beside the windows file:
+// ~/.abhed/context-windows.key.
+func (m *WindowMemory) secretPath() (string, error) {
+	path, err := m.path()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(path, filepath.Ext(path)) + ".key", nil
+}
+
+// Secret is the random 32-byte secret the memory's keys are made under
+// (model.WindowKey), made once and kept in its own file, mode 0600. Without
+// it the windows file confirms nothing about the credentials in its keys.
+// nil when it cannot be read or made, or the file is a link or the wrong
+// size: then the memory is not used, and limits are learned per process.
+func (m *WindowMemory) Secret() []byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.secret != nil {
+		return m.secret
+	}
+	path, err := m.secretPath()
+	if err != nil {
+		return nil
+	}
+	s, err := loadOrMakeSecret(path)
+	if err != nil {
+		return nil
+	}
+	m.secret = s
+	return s
+}
+
+const secretSize = 32
+
+func readSecret(path string) ([]byte, error) {
+	if n, err := nlink.Linked(path); err != nil {
+		return nil, err
+	} else if n > 0 {
+		return nil, nlink.Refusal(path, n)
+	}
+	s, err := os.ReadFile(path) // #nosec G304 -- the user's own state under their home
+	if err != nil {
+		return nil, err
+	}
+	if len(s) != secretSize {
+		return nil, fmt.Errorf("%s is not a %d-byte secret", path, secretSize)
+	}
+	return s, nil
+}
+
+// loadOrMakeSecret reads the secret, or makes it: written to a temporary
+// file and linked into place, so no reader sees a partial one and two
+// processes making it at once end with the same.
+func loadOrMakeSecret(path string) ([]byte, error) {
+	if s, err := readSecret(path); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return s, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	unlock, err := LockFile(path + ".lock")
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	if s, err := readSecret(path); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return s, err
+	}
+	s := make([]byte, secretSize)
+	if _, err := rand.Read(s); err != nil {
+		return nil, err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".context-windows-key-*")
+	if err != nil {
+		return nil, err
+	}
+	name := tmp.Name()
+	defer func() { _ = os.Remove(name) }()
+	if _, err := tmp.Write(s); err != nil {
+		_ = tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(name, 0o600); err != nil {
+		return nil, err
+	}
+	if err := os.Link(name, path); err != nil {
+		return nil, err
+	}
+	_ = os.Remove(name)
+	return readSecret(path)
 }
 
 func (m *WindowMemory) path() (string, error) {
@@ -128,6 +228,9 @@ func (m *WindowMemory) change(key string, window int) error {
 		return errors.New("context-windows.json is a link; not written")
 	}
 	f := m.read(path)
+	if _, ok := f.Windows[key]; window == 0 && !ok {
+		return nil // nothing kept to forget: the file is left as it is
+	}
 	now := m.now()
 	for k, w := range f.Windows {
 		if now.Sub(w.At) > LearnedWindowTTL {

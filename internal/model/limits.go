@@ -1,6 +1,7 @@
 package model
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -81,6 +82,9 @@ type Limits struct {
 // again. The program installs the person's own (SetWindowMemory); without
 // one, learned limits last as long as the process.
 type WindowMemory interface {
+	// Secret is the random secret keys are made under (WindowKey); nil
+	// when it cannot be read or made, and then the memory is not used.
+	Secret() []byte
 	// Recall is the window remembered for key and when it was named, or 0.
 	Recall(key string) (window int, at time.Time)
 	// Remember keeps window for key.
@@ -115,15 +119,17 @@ func memory() WindowMemory {
 	return nil
 }
 
-// WindowKey names an endpoint's model for one account in the window memory,
-// as a hash: the provider type, the endpoint without its user, password,
-// query or fragment (where a credential may be written), the model id, and
-// the credential itself, so two accounts on one endpoint keep their own
-// limits. Nothing of them can be read back from the key; a credential is a
-// long random string, so the hash cannot be searched for it either.
-func WindowKey(typ, base, model, credential string) string {
-	h := sha256.New()
-	for _, part := range []string{"abhed-window-v1", strings.ToLower(typ), endpointOnly(base), model, credential} {
+// WindowKey names an endpoint's model for one account in the window memory:
+// an HMAC-SHA256, under the memory's own random secret, of the provider
+// type, the endpoint without its user, password, query or fragment (where a
+// credential may be written), the model id and the credential, each length
+// prefixed so no two sets of parts run together. The credential is there so
+// two accounts on one endpoint keep their own limits; under a keyed hash the
+// file alone confirms nothing about it, however short or guessable it is (a
+// gateway's "sk-1234"), since checking a guess needs the secret too.
+func WindowKey(secret []byte, typ, base, model, credential string) string {
+	h := hmac.New(sha256.New, secret)
+	for _, part := range []string{"abhed-window-v2", strings.ToLower(typ), endpointOnly(base), model, credential} {
 		fmt.Fprintf(h, "%d:%s|", len(part), part)
 	}
 	return hex.EncodeToString(h.Sum(nil))
@@ -157,7 +163,12 @@ func credentialOf(a Adapter) string {
 // resolveLimits is the starting window for a spec: the configuration's,
 // else the table's, else the fallback.
 func resolveLimits(s Spec, base, credential string) *Limits {
-	l := &Limits{typ: s.Type, base: base, local: isLocalEndpoint(s.Type, base), key: WindowKey(s.Type, base, s.Model, credential)}
+	l := &Limits{typ: s.Type, base: base, local: isLocalEndpoint(s.Type, base)}
+	if m := memory(); m != nil {
+		if secret := m.Secret(); len(secret) > 0 {
+			l.key = WindowKey(secret, s.Type, base, s.Model, credential)
+		}
+	}
 	l.silentTruncation = isOllama(s.Type, base)
 	_, out, known := LookupLimits(s.Model)
 	l.output = out
@@ -180,7 +191,7 @@ func resolveLimits(s Spec, base, credential string) *Limits {
 	// earlier process. It does not override a configured window: the
 	// operator's statement outranks a relayed error from another day, while
 	// a refusal in this process still lowers it.
-	if m := memory(); m != nil && l.source != WindowConfig {
+	if m := memory(); m != nil && l.key != "" && l.source != WindowConfig {
 		if w, at := m.Recall(l.key); w >= MinRememberedWindow && w < l.window {
 			l.window, l.source, l.learnedAt = w, WindowLearned, at
 		}
@@ -314,7 +325,7 @@ func LearnWindow(a Adapter, limit int, named bool) bool {
 	if !l.learn(limit) {
 		return false
 	}
-	if m := memory(); named && m != nil && limit >= MinRememberedWindow {
+	if m := memory(); named && m != nil && l.key != "" && limit >= MinRememberedWindow {
 		m.Remember(l.key, limit)
 	}
 	return true
@@ -388,7 +399,7 @@ func commaInt(n int) string {
 // or the table again. It reports whether a memory is installed.
 func ForgetWindow(a Adapter) bool {
 	l, m := limitsOf(a), memory()
-	if l == nil || m == nil {
+	if l == nil || m == nil || l.key == "" {
 		return false
 	}
 	m.Forget(l.key)

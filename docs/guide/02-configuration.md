@@ -160,8 +160,12 @@ down to about half the refused size. A limit under 2,048 tokens is not
 believed. A limit of 16,384 tokens or more that the provider named is kept in
 `~/.abhed/context-windows.json`, so the next session, after a restart too,
 starts within it instead of paying a refused call to learn it again. It is
-kept per provider type, endpoint, model and account, under a hash of them: the
-file holds no URL, user, password, query or key. It lowers the table's or the
+kept per provider type, endpoint, model and account, under a keyed hash of
+them (HMAC-SHA256 under a random secret made once in
+`~/.abhed/context-windows.key`, mode 0600): the file holds no URL, user,
+password, query or key, and without the secret it cannot confirm a guess of a
+credential, however short. When the secret cannot be read or made, nothing is
+kept and limits are learned per process. It lowers the table's or the
 endpoint's window but never a configured `context_window` (a refusal within a
 session still lowers that one for the session), and is learned again after 30
 days, since accounts are moved to larger windows. A smaller limit, which a
