@@ -423,6 +423,12 @@ func managedConfigFile() string { return managed.ConfigFile }
 // a yes on -confirm-fd; -check only says whether it would be.
 func modelsDefault(name string, f modelsFlags, mio modelsIO) (modelsResult, error) {
 	res := modelsResult{Name: name}
+	// Held across the judgement, the question and the write.
+	unlock, err := lockUserConfig()
+	if err != nil {
+		return res, err
+	}
+	defer unlock()
 	own, mgd, err := modelLayers()
 	if err != nil {
 		return res, err
@@ -487,11 +493,6 @@ func modelsDefault(name string, f modelsFlags, mio modelsIO) (modelsResult, erro
 			return res, errors.New("the default was not changed")
 		}
 	}
-	unlock, err := lockUserConfig()
-	if err != nil {
-		return res, err
-	}
-	defer unlock()
 	if file, err = writeUserSetting("model.default", name); err != nil {
 		return res, err
 	}

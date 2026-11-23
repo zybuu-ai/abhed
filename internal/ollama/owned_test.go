@@ -159,3 +159,25 @@ func TestNoAutoStartIsNeverAlways(t *testing.T) {
 		t.Fatal("auto_start false still starts without asking")
 	}
 }
+
+// A request still running counts as use however long it takes.
+func TestIdleStopWaitsForARequestInFlight(t *testing.T) {
+	now := freshKeep(t)
+	pid := stubServer(t)
+	Own(pid, "http://127.0.0.1:1", t.TempDir(), 10*time.Minute, func(string) {})
+	end := Using("http://127.0.0.1:1/v1")
+	*now = now.Add(30 * time.Minute)
+	if !keep.check() || !alive(pid) {
+		t.Fatal("stopped while a request was running")
+	}
+	end()
+	*now = now.Add(9 * time.Minute)
+	if !keep.check() || !alive(pid) {
+		t.Fatal("stopped too soon after the request ended")
+	}
+	*now = now.Add(2 * time.Minute)
+	if keep.check() {
+		t.Fatal("not stopped once idle")
+	}
+	waitGone(t, pid)
+}

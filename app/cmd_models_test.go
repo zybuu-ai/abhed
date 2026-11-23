@@ -225,3 +225,38 @@ func TestKeyMismatchHintOnlyOnRefusal(t *testing.T) {
 		t.Errorf("hint with the same key: %s", h)
 	}
 }
+
+// A file with something after its object is refused, not cut short by a write.
+func TestModelsRefusesTrailingContent(t *testing.T) {
+	file := modelsHome(t, `{"model":{}} {"extra":1}`, 0o600)
+	if code, _, errs := runModels(t, "", false, "add", "anthropic", "claude-opus-5-5"); code == 0 {
+		t.Fatalf("%d %s", code, errs)
+	}
+	if _, _, err := readUserDoc(); err == nil || !strings.Contains(err.Error(), "more than one JSON value") {
+		t.Fatalf("readUserDoc took it: %v", err)
+	}
+	if b, _ := os.ReadFile(file); string(b) != `{"model":{}} {"extra":1}` {
+		t.Fatalf("the file was changed: %s", b)
+	}
+}
+
+// A custom model's key is stored under its own name, as Studio passes it.
+func TestProviderLoginByKeyName(t *testing.T) {
+	file := modelsHome(t, `{"model":{"providers":{"corp":{"type":"openai","base_url":"https://llm.corp.example/v1","model":"c","api_key_secret":"CORP_KEY"}}}}`, 0o600)
+	chain := memKeychain{}
+	defer modelkeys.Use(chain, filepath.Join(filepath.Dir(file), "secrets.json"))()
+	var out, errb bytes.Buffer
+	pio := providerIO{out: &out, err: &errb, readKey: func(string) (string, error) { return testKey, nil }}
+	for _, arg := range []string{"CORP_KEY", "corp"} {
+		if code := providerCmd([]string{"login", "--", arg}, pio); code != 0 {
+			t.Fatalf("%s: %s", arg, errb.String())
+		}
+		if chain["CORP_KEY"] != testKey || chain["OPENAI_API_KEY"] != "" {
+			t.Fatalf("%s stored under %v", arg, chain)
+		}
+		delete(chain, "CORP_KEY")
+	}
+	if code := providerCmd([]string{"login", "NOBODY_KEY"}, pio); code == 0 {
+		t.Fatal("a key no model reads was stored")
+	}
+}

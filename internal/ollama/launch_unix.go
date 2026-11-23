@@ -3,11 +3,9 @@
 package ollama
 
 import (
-	"errors"
 	"os"
 	"os/exec"
 	"syscall"
-	"time"
 )
 
 // launch starts path detached: its own process group, so a Ctrl-C at the
@@ -40,28 +38,17 @@ func launch(path string, args, env []string, log *os.File) (int, <-chan error, e
 // reaped, so the id cannot have been given to another process.
 func signalGroup(pid int, sig syscall.Signal) error { return syscall.Kill(-pid, sig) }
 
-// stopLaunched stops a server launch started in this process: TERM to its
-// process group, then KILL after grace. false when pid is not such a child
-// or it has already exited.
-func stopLaunched(pid int, grace time.Duration) (bool, error) {
+// termLaunched asks a server launch started in this process to stop: TERM to
+// its process group. false when pid is not such a child or has exited.
+func termLaunched(pid int) bool { return signalLaunched(pid, syscall.SIGTERM) }
+
+// killLaunched kills such a server's process group.
+func killLaunched(pid int) bool { return signalLaunched(pid, syscall.SIGKILL) }
+
+func signalLaunched(pid int, sig syscall.Signal) bool {
 	c, ok := childOf(pid)
 	if !ok {
-		return false, nil
+		return false
 	}
-	if err := c.signal(func() error { return signalGroup(pid, syscall.SIGTERM) }); errors.Is(err, errGone) {
-		return false, nil
-	} else if err != nil {
-		return false, err
-	}
-	select {
-	case <-c.done:
-		return true, nil
-	case <-time.After(grace):
-	}
-	_ = c.signal(func() error { return signalGroup(pid, syscall.SIGKILL) })
-	select {
-	case <-c.done:
-	case <-time.After(5 * time.Second):
-	}
-	return true, nil
+	return c.signal(func() error { return signalGroup(pid, sig) }) == nil
 }

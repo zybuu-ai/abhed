@@ -34,6 +34,8 @@ type keeper struct {
 	stateDir string
 	notify   func(string)
 	running  bool
+	// inflight counts requests to a local model still running.
+	inflight int
 	// lastMark is when the shared use file was last touched.
 	lastMark time.Time
 }
@@ -43,12 +45,15 @@ var keep = &keeper{servers: map[int]Owned{}}
 // Seams for tests.
 var (
 	nowFunc  = time.Now
-	stopFunc = stopLaunched
+	termFunc = termLaunched
+	killFunc = killLaunched
 	// tickFor is how often the idle check runs for an idle time.
 	tickFor = func(idle time.Duration) time.Duration {
 		return min(max(idle/4, time.Second), 30*time.Second)
 	}
-	stopGrace = 10 * time.Second
+	// stopGrace is how long TERM is given before KILL: well inside the 3
+	// seconds Studio gives its engine to exit before it kills it.
+	stopGrace = 1500 * time.Millisecond
 )
 
 // useFile is touched whenever a local model is used, by any Abhed process.
@@ -84,6 +89,24 @@ func OwnedServers() []Owned {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PID < out[j].PID })
 	return out
+}
+
+// Using records a request to a local model starting now, and returns what
+// records its end: while it runs the server is in use, however long it takes.
+func Using(baseURL string) (end func()) {
+	keep.mu.Lock()
+	keep.inflight++
+	keep.mu.Unlock()
+	NoteUse(baseURL)
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			keep.mu.Lock()
+			keep.inflight--
+			keep.mu.Unlock()
+			NoteUse(baseURL)
+		})
+	}
 }
 
 // NoteUse records that a session used a local model now: in this process,
@@ -159,6 +182,10 @@ func (k *keeper) check() bool {
 		k.mu.Unlock()
 		return false
 	}
+	if k.inflight > 0 {
+		k.mu.Unlock()
+		return true
+	}
 	last := k.lastUse
 	if s := lastSharedUse(k.stateDir); s.After(last) {
 		last = s
@@ -178,30 +205,46 @@ func (k *keeper) check() bool {
 	return left
 }
 
-// stopAll stops every owned server and says so.
+// stopAll stops every owned server and says so: TERM to each process
+// group at once, a shared wait of stopGrace, then KILL to any left.
 func (k *keeper) stopAll(why string) []int {
 	k.mu.Lock()
 	servers := make([]Owned, 0, len(k.servers))
 	for _, o := range k.servers {
 		servers = append(servers, o)
 	}
+	k.servers = map[int]Owned{}
 	notify := k.notify
 	k.mu.Unlock()
-	var stopped []int
+	var signalled []Owned
 	for _, o := range servers {
-		ok, err := stopFunc(o.PID, stopGrace)
-		k.mu.Lock()
-		delete(k.servers, o.PID)
-		k.mu.Unlock()
-		switch {
-		case err != nil:
-			say(notify, fmt.Sprintf("Abhed could not stop the Ollama it started (pid %d): %v", o.PID, err))
-		case ok:
-			stopped = append(stopped, o.PID)
-			say(notify, fmt.Sprintf("Abhed stopped the Ollama it started (pid %d): %s.", o.PID, why))
+		if termFunc(o.PID) {
+			signalled = append(signalled, o)
 		}
 	}
+	deadline := nowReal().Add(stopGrace)
+	var stopped []int
+	for _, o := range signalled {
+		if !waitLaunched(o.PID, deadline) {
+			killFunc(o.PID)
+			waitLaunched(o.PID, nowReal().Add(time.Second))
+		}
+		stopped = append(stopped, o.PID)
+		say(notify, fmt.Sprintf("Abhed stopped the Ollama it started (pid %d): %s.", o.PID, why))
+	}
 	return stopped
+}
+
+// nowReal is the wall clock, for waits, whatever nowFunc says.
+func nowReal() time.Time { return time.Now() }
+
+// TermOwned sends TERM to every server this process started, without
+// waiting: the first thing done on a stop signal, so a kill that follows
+// soon after still leaves no server running.
+func TermOwned() {
+	for _, o := range OwnedServers() {
+		termFunc(o.PID)
+	}
 }
 
 func say(notify func(string), msg string) {
@@ -222,4 +265,17 @@ func StopOwned(why string) []int {
 		return nil
 	}
 	return keep.stopAll(why)
+}
+
+// OwnLaunched starts path with args as Start does, detached in its own
+// process group, and makes it this process's to stop as Own does. For a
+// program that starts a server of its own, and for tests that stand a stub
+// in for ollama.
+func OwnLaunched(path string, args []string, api, stateDir string, idle time.Duration) (int, error) {
+	pid, _, err := launch(path, args, MinimalEnv(os.Environ()), nil)
+	if err != nil {
+		return 0, err
+	}
+	Own(pid, api, stateDir, idle, nil)
+	return pid, nil
 }

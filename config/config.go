@@ -2191,7 +2191,7 @@ func (c Config) providerNamed(name string) (ProviderConfig, error) {
 			"model %q is not defined. Available: %s",
 			name, strings.Join(providerNames(c.Model.Providers), ", "))
 	}
-	p = ResolveKey(p)
+	p = c.resolveKeyNamed(name, p)
 	if err := ValidateProvider(p); err != nil {
 		return p, fmt.Errorf("model %q: %w", name, err)
 	}

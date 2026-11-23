@@ -101,7 +101,7 @@ func modelKeyCheck(p config.ProviderConfig) (status, detail string, ok bool) {
 	ks := p.KeySource
 	switch {
 	case ks.Err != nil:
-		return "warn", "the stored key could not be read: " + ks.Err.Error(), true
+		return "warn", ks.Err.Error(), true
 	case ks.Kind == modelkeys.KindEnv:
 		return "ok", "from $" + config.Printable(ks.Name) + " in the environment (it wins over a stored key)", true
 	case ks.Kind == modelkeys.KindKeychain || ks.Kind == modelkeys.KindFile:
@@ -114,9 +114,11 @@ func modelKeyCheck(p config.ProviderConfig) (status, detail string, ok bool) {
 	return "", "", false
 }
 
-// noteLocalModelUse has each request to a model on this machine count as
-// use of the Ollama server Abhed may have started, so it is not stopped idle.
+// noteLocalModelUse has each request to a model on this machine (chat,
+// completion, next edit, commit message, embedding) count as use of the
+// Ollama server Abhed may have started, from its start to its end, so the
+// server is not stopped while in use.
 func noteLocalModelUse() {
-	f := ollama.NoteUse
+	f := ollama.Using
 	model.LocalUse.Store(&f)
 }

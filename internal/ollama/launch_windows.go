@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
-	"time"
 )
 
 // launch starts path detached in a process group of its own, no input,
@@ -33,18 +32,15 @@ func launch(path string, args, env []string, log *os.File) (int, <-chan error, e
 	return pid, exited, nil
 }
 
-// stopLaunched kills a server launch started in this process.
-func stopLaunched(pid int, grace time.Duration) (bool, error) {
+// termLaunched kills a server launch started in this process; Windows has
+// no TERM for it. false when pid is not such a child or has exited.
+func termLaunched(pid int) bool {
 	c, ok := childOf(pid)
 	if !ok || c.proc == nil {
-		return false, nil
+		return false
 	}
-	if err := c.signal(c.proc.Kill); err != nil {
-		return false, err
-	}
-	select {
-	case <-c.done:
-	case <-time.After(grace):
-	}
-	return true, nil
+	return c.signal(c.proc.Kill) == nil
 }
+
+// killLaunched is termLaunched.
+func killLaunched(pid int) bool { return termLaunched(pid) }

@@ -47,6 +47,9 @@ func (s Security) run(stdin string, args ...string) (string, int, error) {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
 	err := cmd.Run()
+	if ctx.Err() != nil {
+		return out.String(), -1, fmt.Errorf("the Keychain did not answer within %s; it may be locked (unlock it, or run abhed doctor)", t)
+	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
 		return out.String(), ee.ExitCode(), fmt.Errorf("%s", firstLine(errb.String(), ee.Error()))

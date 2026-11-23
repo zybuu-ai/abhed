@@ -45,12 +45,13 @@ func providerUsage(w io.Writer) int {
 	for _, h := range modelkeys.HostedTypes() {
 		types = append(types, h.Type)
 	}
-	fmt.Fprintln(w, "usage: abhed provider login TYPE|NAME\n"+
-		"       abhed provider logout TYPE|NAME\n"+
+	fmt.Fprintln(w, "usage: abhed provider login TYPE|MODEL|KEY\n"+
+		"       abhed provider logout TYPE|MODEL|KEY\n"+
 		"       abhed provider status [-json]\n"+
 		"  login asks for the key without echo and keeps it in the macOS Keychain, or where there is none in\n"+
 		"  Abhed's secret store (mode 600). It is never written to config, shown, sent to the model or recorded.\n"+
-		"  TYPE is one of "+strings.Join(types, ", ")+"; NAME a configured model, whose key name is used.\n"+
+		"  TYPE is one of "+strings.Join(types, ", ")+"; MODEL a configured model, whose key name is used;\n"+
+		"  KEY a key name a configured model reads (api_key_secret or api_key_env), as provider status lists it.\n"+
 		"  A variable set in the environment (ANTHROPIC_API_KEY, ...) still wins; abhed doctor says which was used.")
 	return 2
 }
@@ -94,9 +95,22 @@ func keyTarget(arg string) (name, typ string, err error) {
 	if h, ok := modelkeys.HostedType(arg); ok {
 		return h.Key, h.Type, nil
 	}
+	if h, ok := modelkeys.HostedByKey(arg); ok {
+		return h.Key, h.Type, nil
+	}
 	own, mgd, err := modelLayers()
 	if err != nil {
 		return "", "", err
+	}
+	// A key name a configured model reads, as provider status lists it.
+	for _, c := range []config.Config{mgd, own} {
+		for _, p := range c.Model.Providers {
+			if p.KeyName() == arg && modelkeys.ValidName(arg) {
+				if _, named := c.Model.Providers[arg]; !named {
+					return arg, p.Type, nil
+				}
+			}
+		}
 	}
 	for _, c := range []config.Config{mgd, own} {
 		if p, ok := c.Model.Providers[arg]; ok {

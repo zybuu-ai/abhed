@@ -108,7 +108,18 @@ secret set` cannot overwrite it. The key is never written to configuration,
 printed, sent to the model or recorded: once read, it is redacted from tool
 output, messages and the record like any stored secret. `ABHED_KEYCHAIN=off`
 keeps keys in the store instead; the Keychain is also not used inside an
-agent's command or under a temporary home.
+agent's command or under a temporary home. Either way the key is protected as
+your own files are: the agent's commands cannot read the Keychain or the
+store, but any program you run yourself, outside Abhed, can read the item
+with `security find-generic-password`, as it could read the file.
+
+A stored key is sent only where it belongs. A hosted type's key
+(`ANTHROPIC_API_KEY`, ...) goes only to that type's own endpoint, whichever
+model names it. A model a workspace's file defines is given a stored key only
+when your own (or the managed) configuration names the same key for the same
+host; otherwise the model gets no key and `abhed doctor` says why. The
+workspace trust prompt shows the `api_key_env` and `api_key_secret` names a
+file asks for. A variable in the environment is read as before.
 
 A provider finds its key in this order:
 

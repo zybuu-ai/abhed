@@ -353,7 +353,6 @@ func (c *OpenAICompatible) Complete(ctx context.Context, req Request) (<-chan Ch
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	noteLocalUse(c.BaseURL)
 	newRequest := func() (*http.Request, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 			c.BaseURL+"/chat/completions", bytes.NewReader(body))
@@ -406,7 +405,15 @@ func (c *OpenAICompatible) Complete(ctx context.Context, req Request) (<-chan Ch
 }
 
 // acquire waits for a request slot, when requests are bounded.
-func (c *OpenAICompatible) acquire(ctx context.Context) (func(), error) { return c.slots.acquire(ctx) }
+// A request to a model on this machine counts as using it until it is released.
+func (c *OpenAICompatible) acquire(ctx context.Context) (func(), error) {
+	release, err := c.slots.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	end := LocalRequest(c.BaseURL)
+	return func() { end(); release() }, nil
+}
 
 // offered is the tool set from the request, used only to validate a tool
 // call recovered from prose — see salvage.go.

@@ -156,3 +156,31 @@ if [ "$1" = "delete-generic-password" ]; then [ -s "` + dir + `/item" ] || exit 
 		t.Fatal("a value that would break the command was accepted")
 	}
 }
+
+func TestKeychainOffReasons(t *testing.T) {
+	env := func(kv ...string) func(string) string {
+		m := map[string]string{}
+		for i := 0; i+1 < len(kv); i += 2 {
+			m[kv[i]] = kv[i+1]
+		}
+		return func(k string) string { return m[k] }
+	}
+	for _, c := range []struct {
+		getenv func(string) string
+		temp   bool
+		want   string
+	}{
+		{env(), false, ""},
+		{env("ABHED_SANDBOX", "1"), false, "inside an agent's command"},
+		{env("ABHED_SANDBOX", ""), false, ""},
+		{env("ABHED_TESTENV", "1"), false, "under a test"},
+		{env("ABHED_KEYCHAIN", "OFF"), false, "ABHED_KEYCHAIN is off"},
+		{env("ABHED_KEYCHAIN", "on"), false, ""},
+		{env(), true, "temporary"},
+	} {
+		got := keychainOff(c.getenv, c.temp)
+		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
+			t.Errorf("keychainOff = %q, want %q", got, c.want)
+		}
+	}
+}

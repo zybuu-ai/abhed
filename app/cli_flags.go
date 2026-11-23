@@ -14,8 +14,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/zybuu-ai/abhed/internal/ollama"
-	"golang.org/x/term"
 	"io"
 	"math"
 	"os"
@@ -30,6 +28,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandboxcli"
+	"golang.org/x/term"
 )
 
 // usage prints the synopsis, the subcommands and then the flags.
@@ -260,10 +259,8 @@ func (f *cliFlags) task() string {
 // Main runs the command with the given arguments and options and returns
 // the exit code. It is what every edition's main calls.
 func Main(args []string, opts ...Option) int {
-	// No background shell outlives the process that started it.
+	// No background shell, nor an Ollama server it started itself, outlives the process.
 	defer endAtExit()
-	// Nor an Ollama server it started itself; one it did not start is never stopped.
-	defer ollama.StopOwned("the Abhed that started it exited")
 	noteLocalModelUse()
 	a := newApp(opts...)
 	recordAnchors = a.anchors

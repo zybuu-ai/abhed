@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"sync"
+	"time"
 )
 
 // child is a server launch started in this process and has not seen exit.
@@ -60,4 +61,19 @@ func (c *child) signal(send func() error) error {
 		return errGone
 	}
 	return send()
+}
+
+// waitLaunched waits until pid, a child launch started, has exited, or until
+// deadline; true when it is gone (or was never such a child).
+func waitLaunched(pid int, deadline time.Time) bool {
+	c, ok := childOf(pid)
+	if !ok {
+		return true
+	}
+	select {
+	case <-c.done:
+		return true
+	case <-time.After(time.Until(deadline)):
+		return false
+	}
 }

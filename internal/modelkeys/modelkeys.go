@@ -86,6 +86,52 @@ func DefaultName(typ, baseURL string) string {
 	return h.Key
 }
 
+// HostedByKey is the hosted type whose own key name is name.
+func HostedByKey(name string) (Hosted, bool) {
+	i := slices.IndexFunc(hosted, func(h Hosted) bool { return h.Key == name })
+	if i < 0 {
+		return Hosted{}, false
+	}
+	return hosted[i], true
+}
+
+// EndpointHost is the host a provider of type typ at baseURL sends to: the
+// type's official host when baseURL is empty, else baseURL's host when it is
+// https with no port; "" when it is neither.
+func EndpointHost(typ, baseURL string) string {
+	if strings.TrimSpace(baseURL) == "" {
+		if h, ok := HostedType(typ); ok {
+			return strings.ToLower(h.Host)
+		}
+		return ""
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Scheme != "https" || u.Port() != "" || u.Hostname() == "" {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
+}
+
+// HostedKeyAllowed reports whether the stored key name may go to a provider
+// of type typ at baseURL, as far as the hosted types decide: a hosted type's
+// own key (ANTHROPIC_API_KEY, ...) only to that type's official host, whoever
+// names it. hosted is false for any other name, which the caller judges.
+func HostedKeyAllowed(name, typ, baseURL string) (ok, hosted bool) {
+	h, isHosted := HostedByKey(name)
+	if !isHosted {
+		return true, false
+	}
+	return EndpointHost(typ, baseURL) == strings.ToLower(h.Host), true
+}
+
+// HostedTypeOfKey is the type whose own key name is name, or name.
+func HostedTypeOfKey(name string) string {
+	if h, ok := HostedByKey(name); ok {
+		return h.Type
+	}
+	return name
+}
+
 // ValidName reports whether name can be a stored key's name.
 func ValidName(name string) bool {
 	return secrets.ValidName(secrets.ModelKeyPrefix+name) && !strings.HasPrefix(name, secrets.ModelKeyPrefix)
@@ -152,22 +198,33 @@ func keychain() Keychain {
 }
 
 // NoKeychain says why the system Keychain is not used in this process, or "".
-// Never in a test binary, under a temporary home (a test's or a harness's),
-// inside an agent's command, or with ABHED_KEYCHAIN=off.
+// Never in a test binary, whatever else holds; otherwise as keychainOff says.
 func NoKeychain() string {
-	switch {
-	case testing.Testing():
+	if testing.Testing() {
 		return "this is a test"
-	case os.Getenv("ABHED_TESTENV") != "":
-		return "this runs under a test"
-	case os.Getenv("ABHED_SANDBOX") != "":
-		return "this runs inside an agent's command"
-	case strings.EqualFold(os.Getenv("ABHED_KEYCHAIN"), "off"):
-		return "ABHED_KEYCHAIN is off"
-	case tempHome():
-		return "the home folder is a temporary one"
-	case systemKeychain() == nil:
+	}
+	if why := keychainOff(os.Getenv, tempHome()); why != "" {
+		return why
+	}
+	if systemKeychain() == nil {
 		return "this system has no Keychain Abhed uses"
+	}
+	return ""
+}
+
+// keychainOff says why the environment rules the Keychain out: under a test,
+// inside an agent's command, with ABHED_KEYCHAIN=off, or under a temporary
+// home (a test's or a harness's).
+func keychainOff(getenv func(string) string, tempHome bool) string {
+	switch {
+	case getenv("ABHED_TESTENV") != "":
+		return "this runs under a test"
+	case getenv("ABHED_SANDBOX") != "":
+		return "this runs inside an agent's command"
+	case strings.EqualFold(getenv("ABHED_KEYCHAIN"), "off"):
+		return "ABHED_KEYCHAIN is off"
+	case tempHome:
+		return "the home folder is a temporary one"
 	}
 	return ""
 }
@@ -258,7 +315,7 @@ func Lookup(name string) (value, kind string, err error) {
 	if ok && v != "" {
 		return remember(name, v, KindFile), KindFile, nil
 	}
-	remember(name, "", "")
+	// A miss is not kept: a key stored a moment later is found at once.
 	return "", "", nil
 }
 

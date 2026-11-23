@@ -515,6 +515,10 @@ func readUserDoc() (map[string]any, string, error) {
 	if err := dec.Decode(&doc); err != nil {
 		return nil, file, fmt.Errorf("%s is not valid JSON, so it was not changed: %w", file, err)
 	}
+	// Anything after the object would be dropped by a write, so it is refused as Unmarshal did.
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, file, fmt.Errorf("%s holds more than one JSON value, so it was not changed", file)
+	}
 	if doc == nil {
 		doc = map[string]any{}
 	}
