@@ -280,13 +280,17 @@ A managed configuration or org policy changes this only where it decides
 for the organisation:
 
 - `k8s.allow_writes: false` alone only tightens: your own kubeconfig stays
-  in use, read-only, and `k8s_apply` is not offered.
+  in use, read-only, and `k8s_apply` is not offered. An organisation that
+  wants its laptops read-only sets it explicitly: where it says nothing of
+  writes, a person's own `k8s.allow_writes: true` offers `k8s_apply` (each
+  write still asks, after a dry run).
 - `k8s.enabled: false` turns Kubernetes off: no cluster tool is offered,
   and a pasted login is still withheld, the model is told logins are off
   and why, and a login it tries anyway is refused with the reason, never as
   an unknown tool.
 - Where the organisation sets Kubernetes up itself, by declaring
-  `k8s.clusters` or `k8s.kubeconfig` in its managed file or turning
+  `k8s.clusters` or `k8s.kubeconfig` in its managed file (which turns
+  Kubernetes on for them, with no `k8s.enabled` needed) or turning
   `k8s.enabled` on, only that counts on the machine: a person's or
   workspace's `k8s.enabled: true` is not taken, only its `k8s.clusters` are
   offered (they take a token through `k8s_login`), and no kubeconfig is

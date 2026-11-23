@@ -356,7 +356,14 @@ func OrgK8s(cfg config.Config) (enabled bool, noKubeconfig string) {
 		return cfg.K8s.Enabled, ""
 	}
 	orgSets := func(key string) bool { return cfg.ManagedSets(key) || cfg.FromOrg(key) }
-	enabled = cfg.K8s.Enabled && orgSets("k8s.enabled")
+	switch {
+	case orgSets("k8s.enabled"):
+		enabled = cfg.K8s.Enabled // the organisation's own value; managed wins
+	default:
+		// Clusters or a kubeconfig the organisation declares turn Kubernetes
+		// on for them; a person's or workspace's own k8s.enabled is not taken.
+		enabled = orgSets("k8s.clusters") || orgSets("k8s.kubeconfig")
+	}
 	if !orgSets("k8s.kubeconfig") {
 		noKubeconfig = off
 	}

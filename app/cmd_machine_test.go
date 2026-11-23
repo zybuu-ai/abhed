@@ -126,8 +126,14 @@ func TestDoctorK8sFollowsTheOrgRule(t *testing.T) {
 	// read-only; one that turns k8s off shows nothing.
 	tight := config.Config{Managed: true, ManagedKeys: []string{"k8s.allow_writes"}, SetKeys: []string{"k8s.allow_writes", "k8s.enabled"}}
 	tight.K8s.Enabled = true
-	if out := strings.Join(k8sDoctor(tight), "\n"); !strings.Contains(out, "read-only") || !strings.Contains(out, "context personal") {
+	if out := strings.Join(k8sDoctor(tight), "\n"); !strings.Contains(out, "read-only: writes off by your organisation") || !strings.Contains(out, "context personal") {
 		t.Fatalf("doctor under the org's allow_writes false:\n%s", out)
+	}
+	// An org that declares clusters only: Kubernetes on for them, no kubeconfig.
+	declared := config.Config{Managed: true, ManagedKeys: []string{"k8s.clusters"}, SetKeys: []string{"k8s.clusters"}}
+	declared.K8s.Clusters = []config.K8sClusterConfig{{Name: "orgprod", Server: "https://orgprod.example:6443"}}
+	if out := strings.Join(k8sDoctor(declared), "\n"); !strings.Contains(out, "no kubeconfig read") || !strings.Contains(out, "orgprod") || strings.Contains(out, "personal") {
+		t.Fatalf("doctor under the org's declared clusters:\n%s", out)
 	}
 	off := config.Config{Managed: true, ManagedKeys: []string{"k8s.enabled"}, SetKeys: []string{"k8s.enabled"}}
 	if out := k8sDoctor(off); len(out) != 0 {
