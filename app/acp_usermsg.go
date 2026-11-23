@@ -99,6 +99,17 @@ func (p *msgPairing) settleSteer(queueID string, out msgOutcome) {
 	}
 }
 
+// settleAll answers every steer still waiting, when the session closes.
+func (p *msgPairing) settleAll(reason string) {
+	p.mu.Lock()
+	waiting := p.steers
+	p.steers = nil
+	p.mu.Unlock()
+	for _, ch := range waiting {
+		ch <- msgOutcome{reason: reason}
+	}
+}
+
 func (p *msgPairing) forgetSteer(queueID string) {
 	p.mu.Lock()
 	delete(p.steers, queueID)

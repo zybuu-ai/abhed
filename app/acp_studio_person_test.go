@@ -507,7 +507,7 @@ func TestStudioSteerAndQueue(t *testing.T) {
 	}
 	r.cl.refused(errParams, "_abhed/queue/cancel", map[string]any{"sessionId": id, "id": "q_x"})
 	// While a prompt runs, a steer waits in the queue and is delivered marked steered.
-	// The steer's reply waits for the message's seq; cancelled, it says so.
+	// The steer's reply waits for the message's seq; withdrawn, it says so.
 	s := r.cl.conn.session(id)
 	s.beginTurn(context.Background(), func() {})
 	replied := make(chan rpcMessage, 1)
@@ -527,7 +527,7 @@ func TestStudioSteerAndQueue(t *testing.T) {
 	item := q.Items[0].(map[string]any)
 	r.cl.ok("_abhed/queue/cancel", map[string]any{"sessionId": id, "id": item["id"]}, nil)
 	m := <-replied
-	if m.Error != nil || !strings.Contains(string(m.Result), `"userMessageSeq":null`) || !strings.Contains(string(m.Result), "cancelled") ||
+	if m.Error != nil || !strings.Contains(string(m.Result), `"userMessageSeq":null`) || !strings.Contains(string(m.Result), "withdrawn") ||
 		!strings.Contains(string(m.Result), `"queueId":"`+item["id"].(string)+`"`) {
 		t.Fatalf("steer reply: %+v %s", m.Error, m.Result)
 	}

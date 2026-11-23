@@ -958,6 +958,8 @@ func (c *acpConn) shutNow(s *acpSession, counted time.Time) {
 	if cancel != nil {
 		cancel()
 	}
+	// A steer still waiting for its message's seq is answered now.
+	s.pairing.settleAll("the session closed before it was delivered")
 	// The terminals' last lines are recorded before the end is.
 	c.killTerminals(s.id)
 	c.killDebugs(s.id)

@@ -1071,18 +1071,14 @@ func (c *acpConn) steer(msg rpcMessage) {
 		c.reply(msg.ID, nil, e)
 		return
 	}
-	if idle(s) == nil {
+	// Whether a prompt runs, and its turn, are read together: a turn that
+	// ends between two reads would leave the reply waiting on nothing.
+	s.mu.Lock()
+	running, turn, closed := s.cancel != nil, s.turn, s.closed
+	s.mu.Unlock()
+	if !running || closed {
 		c.reply(msg.ID, nil, refusal(errRefused, "no prompt is running; send it as a prompt"))
 		return
-	}
-	// The reply waits for the message to be recorded, at the turn's next
-	// boundary, or dropped, so it can name the seq the editor pairs it by.
-	s.mu.Lock()
-	turn := s.turn
-	s.mu.Unlock()
-	var turnDone <-chan struct{}
-	if turn != nil {
-		turnDone = turn.Done()
 	}
 	qid := parts.Loop.QueueMessage(agent.Message{Text: p.Text, Typed: p.Text, Steered: true})
 	if qid == "" {
@@ -1091,15 +1087,31 @@ func (c *acpConn) steer(msg rpcMessage) {
 	}
 	ch := s.pairing.awaitSteer(qid)
 	var out msgOutcome
-	select {
-	case out = <-ch:
-	case <-turnDone:
-		// The turn ended with it still waiting: it goes with the next prompt.
+	if turn == nil {
+		// No turn to take it now (it is ending, or not yet open): it goes with
+		// the next prompt, and the reply says so at once.
 		s.pairing.forgetSteer(qid)
 		select {
 		case out = <-ch:
 		default:
-			out = msgOutcome{reason: "the turn ended before it was delivered; it waits for the next prompt"}
+			out = msgOutcome{reason: "no turn is open to take it; it waits for the next prompt"}
+		}
+	} else {
+		// The reply waits for the message to be recorded, at the turn's next
+		// boundary, or dropped, withdrawn, or for the turn, the session or the
+		// connection to end.
+		select {
+		case out = <-ch:
+		case <-turn.Done():
+			s.pairing.forgetSteer(qid)
+			select {
+			case out = <-ch:
+			default:
+				out = msgOutcome{reason: "the turn ended before it was delivered; it waits for the next prompt"}
+			}
+		case <-c.goneCh():
+			s.pairing.forgetSteer(qid)
+			out = msgOutcome{reason: "the connection closed before it was delivered"}
 		}
 	}
 	res := map[string]any{"queueId": qid}
@@ -1147,6 +1159,6 @@ func (c *acpConn) queueCancel(msg rpcMessage) {
 		return
 	}
 	// A steer still waiting for its seq is answered: it will never be recorded.
-	s.pairing.settleSteer(p.ID, msgOutcome{reason: "the person cancelled it before it was delivered"})
+	s.pairing.settleSteer(p.ID, msgOutcome{reason: "withdrawn"})
 	c.reply(msg.ID, map[string]any{}, nil)
 }

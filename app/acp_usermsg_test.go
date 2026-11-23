@@ -174,3 +174,53 @@ func TestACPMessageSeqContract(t *testing.T) {
 		}
 	}
 }
+
+// The steer reply never waits on nothing: with an MCP restart busy and no
+// prompt running it is refused at once, and a steer waiting when its session
+// closes is answered.
+func TestACPSteerReplyNeverHangs(t *testing.T) {
+	r := newStudioRig(t, "")
+	id := r.open()
+	s := r.cl.conn.session(id)
+	s.mu.Lock()
+	s.mcpRestart = true
+	s.mu.Unlock()
+	done := make(chan rpcMessage, 1)
+	go func() { done <- r.cl.call("_abhed/session/steer", map[string]any{"sessionId": id, "text": "faster"}) }()
+	select {
+	case m := <-done:
+		if m.Error == nil {
+			t.Fatalf("a steer with no prompt running was taken: %s", m.Result)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the steer's reply hung with no turn open")
+	}
+	s.mu.Lock()
+	s.mcpRestart = false
+	s.mu.Unlock()
+
+	// Waiting in an open turn, then the session closes.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.beginTurn(ctx, func() {})
+	go func() { done <- r.cl.call("_abhed/session/steer", map[string]any{"sessionId": id, "text": "slower"}) }()
+	parts, e := innerOf(s)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for i := 0; len(parts.Loop.Queued()) == 0; i++ {
+		if i > 200 {
+			t.Fatal("the steer was not queued")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	r.cl.ok("session/close", map[string]any{"sessionId": id}, nil)
+	select {
+	case m := <-done:
+		if m.Error != nil || !strings.Contains(string(m.Result), `"userMessageSeq":null`) || !strings.Contains(string(m.Result), "session closed") {
+			t.Fatalf("reply %+v %s", m.Error, m.Result)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the steer's reply hung after its session closed")
+	}
+}
