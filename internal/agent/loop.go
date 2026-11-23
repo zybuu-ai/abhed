@@ -1462,6 +1462,8 @@ func (l *Loop) SetAdapter(a model.Adapter) {
 	l.Adapter = a
 	if l.Compactor != nil {
 		l.Compactor.Adapter = a
+		// Another model counts tokens its own way: learned again from its replies.
+		l.Compactor.SetScale(1)
 	}
 }
 
