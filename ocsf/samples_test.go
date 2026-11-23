@@ -156,6 +156,8 @@ var samples = []sample{
 	{agent.EvPluginLoaded, agent.ActorSystem, `{"plugins":[{"name":"acme-review","version":"1.0.0","digest":"ab12","basis":"signature","signer":"release@acme.example (https://issuer.acme.example)"}]}`},
 	{agent.EvConfigChanged, agent.ActorSystem, `{"time":"2026-11-17T05:00:00Z","by":"plugin install","key":"plugins","name":"acme-review","kind":"signature","sha256":"ab12"}`},
 	{agent.EvSessionEnded, agent.ActorSystem, `{"reason":"stdin_late","turns":1,"tokens_in":1,"tokens_out":1,"tokens_cached":0,"compactions":0}`},
+	{agent.EvConfigApplied, agent.ActorSystem, `{"models_added":["claude"],"switched_to":"claude"}`},
+	{agent.EvSessionFacts, agent.ActorSystem, `{"text":"True now; don't probe or dispute; trust what the user reports. Sandbox: process. Network: off, only the user can open it. Git remotes not brokered."}`},
 }
 
 // sampleLines are the samples as one session's lines, seq from 1.

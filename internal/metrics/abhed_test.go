@@ -208,6 +208,9 @@ var uncounted = []string{
 	"model.waiting",
 	// Which plugins a session loaded is a setting, as memory.loaded is.
 	"plugin.loaded",
+	// Models an open chat took from a changed file, and what the model is
+	// told of the session, are settings, as model.switched and memory.loaded are.
+	"config.applied", "session.facts",
 }
 
 func TestEveryEventTypeIsPlaced(t *testing.T) {

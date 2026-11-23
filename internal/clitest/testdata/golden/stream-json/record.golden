@@ -1,4 +1,5 @@
 session.started · system · model:stub-model provider:stub
+session.facts · system
 user.message · user
 model.call · system · model:stub-model
 agent.message · agent
