@@ -1190,11 +1190,16 @@ cannot steer host git:
   started, inside the workspace: a `.git` swapped for a link to another
   repository is refused.
 - Your own git configuration must be yours alone: if your global or system
-  file, a file either includes, or the file `~/.gitconfig` links to lies in
+  file (or the file `GIT_CONFIG_GLOBAL` or `GIT_CONFIG_SYSTEM` names, which
+  host git then uses, as yours does), or a file either includes (every
+  `include` and `includeIf`, whatever its condition, as a branch or folder
+  can change after the check), or the file one of them links to, lies in
   the workspace or a folder commands can write (a dotfiles checkout opened
   as the workspace, say), nothing is brokered, as the agent could name the
-  SSH command or credential helper host git runs. The same check stops an
-  issue's push.
+  SSH command or credential helper host git runs. Nor is it while such a
+  file is a hard link (another name for it could lie in reach), is owned by
+  another user, is writable by other users or sits in a folder they can
+  write, or cannot be read. The same check stops an issue's push.
 - A brokered line is given no vault secret (`secrets`): git run on the host
   as you needs none.
 - On Linux, the process tier (bubblewrap) and the fence hold git's files by

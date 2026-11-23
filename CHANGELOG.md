@@ -270,8 +270,10 @@ All notable changes to Abhed are recorded here. The format follows
   or receive program, a proxy, an `http.*` setting, a URL rewrite, an SSH
   command, askpass or credential helper is not brokered, nor is one whose
   git folder moved since the session started, nor anything while the
-  person's global or system git configuration, a file it includes or the
-  file `~/.gitconfig` links to lies where commands can write. It
+  person's global or system git configuration (`GIT_CONFIG_GLOBAL`
+  honoured), a file it includes under any condition or the file one links
+  to lies where commands can write, is a hard link, is another user's or
+  others can write it. It
   reaches only the remotes the repository had when the session started, by
   name, or a clone URL the person approves; a remote added or changed since,
   a forced or deleting push and a clone are asked each time, and a call runs

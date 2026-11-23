@@ -260,7 +260,7 @@ func repoEnv(ctx context.Context, cwd string, cfg [][2]string) ([]string, error)
 	if err := r.redirected(); err != nil {
 		return nil, err
 	}
-	return hostEnv(r.env(nil), append(append(append([][2]string(nil), safety...), r.drivers...), cfg...), remoteEnv...)
+	return hostEnv(r.env(nil), append(append(append([][2]string(nil), safety...), r.drivers...), cfg...), append(personEnv(), remoteEnv...)...)
 }
 
 // hostEnv is the one way host git's environment for a remote command is
@@ -288,9 +288,10 @@ func hostEnv(base []string, cfg [][2]string, overrides ...string) ([]string, err
 }
 
 // readEnv is host git's environment for reading configuration and refs:
-// git's own dropped and the safety settings as its one block.
+// git's own dropped but for the person's choice of configuration files
+// (personEnv), and the safety settings as its one block.
 func readEnv() []string {
-	env, err := hostEnv(Env(), safety)
+	env, err := hostEnv(Env(), safety, personEnv()...)
 	if err != nil {
 		return append(Env(), configEnv(safety)...) // Env holds no block: not reached
 	}
@@ -480,7 +481,7 @@ func (b *HostBroker) clone(ctx context.Context, cwd string, op remoteOp, p plan)
 	}
 	args = append(args, op.url, staged)
 	// Run outside every repository: no configuration but the person's is read.
-	env, err := hostEnv(Env(), append(append([][2]string(nil), safety...), remoteConfig(ctx, tmp, []string{"origin"})...), remoteEnv...)
+	env, err := hostEnv(Env(), append(append([][2]string(nil), safety...), remoteConfig(ctx, tmp, []string{"origin"})...), append(personEnv(), remoteEnv...)...)
 	if err != nil {
 		return &exec.Cmd{Err: fmt.Errorf("git clone: %w", err)}
 	}

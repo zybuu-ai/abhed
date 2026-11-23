@@ -884,8 +884,53 @@ func TestBrokerNeedsThePersonsConfigOutOfReach(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(inc, 0o600) })
-		if _, _, _, err := b.Ask(r.key("c"), r.ws, "git fetch"); err == nil || !strings.Contains(err.Error(), "could not be read in full") {
+		if _, _, _, err := b.Ask(r.key("c"), r.ws, "git fetch"); err == nil || !strings.Contains(err.Error(), "could not be read") {
 			t.Fatalf("an unreadable include: %v", err)
+		}
+	}
+}
+
+// A GIT_CONFIG_GLOBAL the person set is the configuration host git uses,
+// as their own git would, once it is checked as theirs.
+func TestBrokerHonoursGitConfigGlobal(t *testing.T) {
+	r := newRemoteRig(t)
+	gc := filepath.Join(r.home, ".gitconfig")
+	own := filepath.Join(r.home, "own.gitconfig")
+	if err := os.Rename(gc, own); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", own)
+	b := r.broker(Network{Open: true})
+	if out, err := runCmd(t, b.Command(r.ctx("c"), r.ws, "git fetch")); err != nil {
+		t.Fatalf("fetch with GIT_CONFIG_GLOBAL: %v\n%s", err, out)
+	}
+	if log, _ := os.ReadFile(r.sshLog); !strings.Contains(string(log), "git.example agent=set") {
+		t.Fatalf("the person's ssh, from GIT_CONFIG_GLOBAL, did not run:\n%s", log)
+	}
+}
+
+// A configuration file, or its folder, other users can write is not the
+// person's alone.
+func TestBrokerRefusesAConfigOthersCanWrite(t *testing.T) {
+	r := newRemoteRig(t)
+	gc := filepath.Join(r.home, ".gitconfig")
+	for _, c := range []struct {
+		path string
+		mode os.FileMode
+		why  string
+	}{{gc, 0o622, "writable by other users"}, {r.home, 0o777, "folder other users can write"}} {
+		info, err := os.Stat(c.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(c.path, c.mode); err != nil {
+			t.Fatal(err)
+		}
+		b := r.broker(Network{Open: true})
+		_, _, _, err = b.Ask(r.key("c"), r.ws, "git fetch")
+		_ = os.Chmod(c.path, info.Mode().Perm())
+		if err == nil || !strings.Contains(err.Error(), c.why) {
+			t.Fatalf("%s mode %o: %v", c.path, c.mode, err)
 		}
 	}
 }
