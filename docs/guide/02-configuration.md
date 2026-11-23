@@ -1656,6 +1656,21 @@ cursor is in the database and goes back with it; lines the file already
 holds for events after the backup point stay in the file, though those
 events are not in the restored database.
 
+## Names the server answers to
+
+```json
+"server": { "allowed_hosts": ["abhed.internal.example"] }
+```
+
+`abhed serve` answers a request only when its `Host` names it by a name it
+was given, so a web page whose own name an attacker points at your machine
+(DNS rebinding) cannot use the API from your browser. Loopback
+(`localhost`, `127.0.0.1`, `[::1]`) always passes. With sign-in on, so do IP
+addresses, `server.canonical_host`, and the hosts of
+`server.allowed_origins` and `auth.redirect_url`. With `auth.mode` `none`,
+where the API is anyone's who reaches it, only loopback and
+`server.allowed_hosts` pass. Any other name gets `421` with what to set.
+
 ## Stopping the server
 
 ```json

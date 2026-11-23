@@ -5443,8 +5443,10 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 // accepted, even into the backlog, before it has finished.
 func (s *Server) serve(ctx context.Context, listen func() (net.Listener, error)) error {
 	srv := &http.Server{
-		Addr:              s.opts.Addr,
-		Handler:           s.Handler(),
+		Addr: s.opts.Addr,
+		// A Host this server was not given is refused (DNS rebinding); the
+		// guard is on the network listener, where browsers reach it.
+		Handler:           hostGuard(s.opts.Config, s.log, s.Handler()),
 		ReadHeaderTimeout: 10 * time.Second,
 		// A slow body is the other half of slowloris: headers arrive promptly,
 		// then the body trickles in a byte at a time and holds the connection

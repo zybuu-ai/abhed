@@ -618,6 +618,13 @@ func CheckOrgPolicy(doc []byte) error {
 	}
 	cfg.ManagedKeys = managedKeys(b)
 	cfg.Managed = true
+	// An org policy always comes from a server, and sign_in "server" in it
+	// names that one (SignInServer falls back to org_policy.url, which a
+	// laptop sets to where it took the policy from). The document alone does
+	// not carry it, so it is judged with a stand-in.
+	if cfg.Auth.Client.SignIn == SignInServer && cfg.SignInServer() == "" {
+		cfg.OrgPolicy.URL = "https://org-policy-server.invalid"
+	}
 	return cfg.Validate()
 }
 
