@@ -14,9 +14,9 @@
 | `skill` | load a procedure on demand |
 | `web_search` | five providers: duckduckgo, brave, tavily, serper, searxng; off by default, and only the managed configuration turns it on ([Web search](02-configuration.md#web-search)) |
 | `web_fetch` | read one web page as text, through Abhed rather than the shell; off by default |
-| `ssh`, `ssh_connect` | remote execution, off by default |
+| `ssh`, `ssh_connect` | remote execution, off by default except for your own `~/.ssh/config` hosts ([below](#your-own-clusters-and-machines)) |
 | `ssh_put`, `ssh_get` | file transfer over SFTP, off by default (`ssh.transfers`) |
-| `k8s_get`, `k8s_apply`, `k8s_login` | Kubernetes, read-only by default |
+| `k8s_get`, `k8s_apply`, `k8s_login` | Kubernetes: your own kubeconfig contexts on your machine, each first use asked once; otherwise off by default and read-only |
 
 A path given to `read`, `write`, `edit`, `glob` or `grep` may be absolute or
 relative to the workspace root (never to where a `cd` left `bash`). Either
@@ -171,6 +171,104 @@ the sandbox has none and a command fails because of it, the result ends with
 a note that says so, so the model reports the reason or uses a web tool
 instead of retrying.
 
+### Your own clusters and machines
+
+On your own machine, in the terminal and in Abhed Studio, the cluster and SSH
+tools work with the setup you already have, with nothing to configure:
+
+- **Kubeconfig contexts.** `k8s_get` and `k8s_apply` reach the contexts in
+  your kubeconfig (`KUBECONFIG`, every file it lists merged as `kubectl`
+  merges them, or `~/.kube/config`). Their descriptions list the contexts by
+  name, and the model names one as `context`, or as `cluster`: a name that is
+  no cluster in `k8s.clusters` or kept login is that context, and
+  `k8s.clusters` wins a clash. The server, the CA and the credential (a token,
+  a token file, a client certificate, or a credential helper's token) are
+  read in Abhed's own process. None of them reaches the sandbox, the record
+  or the model; the approval names the context, its server and how it signs
+  in, never the credential.
+- **First use asks once.** The first call to each context asks, in every
+  mode but bypass, plan and auto included, even for a read. Approving it
+  covers the rest of the session; *always for this cluster* keeps it for
+  you in `~/.abhed/state/machine-grants.json`, outside every workspace, so
+  later sessions do not ask. A grant covers the context as it was approved:
+  if its server, CA, user or credential helper changes, it is asked about
+  again. An allow rule such as `k8s_get(context:lab/*)` answers the ask as
+  it answers any; a deny rule still refuses. Writes (`apply`, `delete`,
+  `scale`, `restart`, `rollback`) ask every time, after a dry run, as before.
+- **Credential helpers.** A context whose user has an `exec` plugin (cloud
+  sign-in helpers such as `gke-gcloud-auth-plugin` or `kubelogin`) makes
+  Abhed run that program to get a token. Its first use names the program
+  and its arguments and asks, even where `k8s.enabled` turned the tools on,
+  and nothing runs until you approve it.
+- **Refused sign-ins.** A context that signs in with a legacy
+  `auth-provider` (`gcp`, `azure`, `oidc`) is refused with the reason: that
+  flow refreshes tokens by writing them back into your kubeconfig, and
+  Abhed never writes to it. Switch the context to its exec plugin, or log in
+  with a token. A user name and password (basic auth) is refused too.
+- **`~/.ssh/config` hosts.** `ssh`, `ssh_put` and `ssh_get` reach the hosts
+  your `~/.ssh/config` names by their `Host` alias, with its `HostName`,
+  `User`, `Port`, `IdentityFile`, `ProxyJump` and `UserKnownHostsFile`, and
+  the files it `Include`s. The first value for a keyword wins and
+  `IdentityFile` adds, as OpenSSH reads them; a `Match` block is not
+  evaluated. They sign in with your ssh-agent (`SSH_AUTH_SOCK`) and the keys
+  `IdentityFile` names that need no passphrase (add one that does to the
+  agent), in Abhed's process only. Each hop of `ProxyJump` (at most four) is
+  reached the same way, and each host's key, hops included, must already be
+  in `known_hosts`: Abhed never adds one, and an unknown or changed key is
+  refused with the `ssh` command to record it yourself. A host that needs
+  `ProxyCommand` is listed as not usable, with the reason. The first use of
+  each host asks once, as for a context, and every command still asks as
+  `ssh` always does. `ssh_connect` naming one of these hosts says it is
+  ready by name. An operator's `ssh.hosts` name wins a clash, and
+  `ssh.connect_hosts`, when set, bounds these hosts too.
+
+This is on when no configuration file sets `k8s.enabled` (or `ssh.enabled`)
+and no managed configuration is in force, and the machine has a kubeconfig
+or kept logins (or an `~/.ssh/config` naming a host). `k8s_apply` is offered
+unless a file sets `k8s.allow_writes`. Setting `k8s.enabled` or
+`ssh.enabled` to `false`, in any file a workspace's included, turns it off;
+an organisation's managed configuration decides for its machines, and
+setting them to `true` there keeps the kubeconfig and `~/.ssh/config`
+offered with each first use asked. `abhed serve` never offers its operator's
+own setup to the sessions it runs.
+
+`abhed machine list` shows what is kept for you, and
+`abhed machine forget KIND NAME` (`k8s-context`, `ssh-host` or `k8s-login`)
+drops one, so its next use asks again.
+
+### A pasted login
+
+When you paste a credential into a message, such as
+`oc login --token=sha256~… --server=https://api.lab.example:6443`, a
+`Bearer` token, or a key of a known shape (a private key block, a GitHub,
+GitLab, Slack, AWS or cloud API key, a JSON web token), the model and the
+record get `[pasted:P1]` in its place, and you are told it was withheld. The
+value is held in the session's memory only. The model is told what was
+pasted (an OpenShift token for that server), never the value, and offers to
+log in: `k8s_login` with `pasted: "P1"` and a short cluster name. That one
+approval:
+
+1. reads the server's certificate, sending nothing: one a public CA vouches
+   for is verified as any site is; otherwise the CA your kubeconfig holds for
+   that server; otherwise the approval shows the certificate the server
+   presents now by its SHA-256 fingerprint, and approving pins it, as
+   `oc login` asks you to;
+2. sends the token to that server only after that check, and stores nothing
+   if the server refuses it;
+3. stores the token as a secret (`store_as`, by default `K8S_<CLUSTER>_TOKEN`),
+   keeps the cluster with its server, its pinned certificate and that secret
+   for you, outside every workspace, and logs the session in.
+
+The server is the one you pasted the token with; the model cannot name
+another. A later session reaches the cluster by name in `k8s_get` and
+`k8s_apply`, which sign in with the kept token themselves: no paste, no
+`token_secret` and no `secret(NAME)` rule, since you bound that secret to
+that cluster when you approved it. A deny rule on the secret still refuses
+it. A name `k8s.clusters` declares, or that is a kubeconfig context, cannot be
+taken by a pasted login. Where Abhed does not run on your own machine
+(`abhed serve`), a pasted token is withheld the same way and cannot be kept:
+store it with `abhed secret set`.
+
 ### Cluster and machine logins
 
 `k8s_login` and `ssh_connect` take credentials the same way: by name, from
@@ -179,8 +277,9 @@ the store, under a `secret(NAME)` rule. `k8s_login` takes `cluster` and
 takes a token or password, so none is recorded, shown for approval, or sent
 back to the model; one sent anyway is dropped.
 
-Where a credential goes is the operator's choice, not the model's.
-`k8s_login` sends a token only to a cluster named in `k8s.clusters`, over TLS
+Where a credential goes is the operator's or the person's choice, not the
+model's. `k8s_login` sends a token only to a cluster named in `k8s.clusters`,
+or one you kept from a pasted login, over TLS
 verified against the system roots and the configured CA; a URL is refused
 before any request, and the approval prompt names the cluster and its server.
 `k8s_get` and `k8s_apply` then take `cluster` to use that login.

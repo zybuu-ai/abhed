@@ -176,6 +176,44 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Configure once: the cluster and SSH tools work with the setup a developer
+  already has. On your own machine (the terminal and Abhed Studio, never
+  `abhed serve`), `k8s_get` and `k8s_apply` reach your kubeconfig contexts
+  (`KUBECONFIG`'s files merged as `kubectl` merges them, or `~/.kube/config`)
+  by name, and `ssh`, `ssh_put` and `ssh_get` reach the hosts your
+  `~/.ssh/config` names, with their `HostName`, `User`, `Port`,
+  `IdentityFile`, `ProxyJump`, `UserKnownHostsFile` and `Include`s, signing
+  in with your ssh-agent. Every credential is read in Abhed's own process
+  and never reaches the sandbox, the record or the model. The first use of
+  each context or host asks once, in every mode but bypass; *always for this
+  cluster* (or host) keeps it for you in `~/.abhed/state/machine-grants.json`,
+  outside every workspace, until its server, CA, credential helper, address
+  or user changes. A context whose credential helper Abhed would run names
+  the program and asks before it runs, even where `k8s.enabled` turned the
+  tools on; a legacy `auth-provider` or basic auth is refused with the
+  reason. `known_hosts` is checked for every host and jump, never written.
+  Cluster writes still ask each time. It is on where no file sets
+  `k8s.enabled` or `ssh.enabled` and no managed configuration is in force;
+  setting either to `false`, a workspace included, turns it off.
+  `abhed machine list` and `abhed machine forget KIND NAME` show and drop
+  what is kept.
+- A pasted login works in one approval. A credential pasted into a message
+  (an `oc login --token=… --server=…` command, an OpenShift or `Bearer` token,
+  a key of a known shape) reaches neither the model nor the record: both get
+  `[pasted:P1]`, you are told, and the value is held in the session's memory.
+  The agent is told what was pasted and offers `k8s_login` with
+  `pasted: "P1"`; one approval verifies the server (the system roots, the CA
+  your kubeconfig holds for it, or the certificate it presents, shown by its
+  SHA-256 fingerprint and pinned), checks the token there, stores it as a
+  secret and keeps the cluster for your later sessions, which reach it by
+  name with no `secret(NAME)` rule. The server is the one pasted with the
+  token; the model cannot choose another. ACP editors get
+  `pastedCredentials` in the note's `_meta`, and a first use's permission
+  request carries `firstUse` in its `_meta`.
+- The agent no longer turns down cluster or remote-machine work as outside
+  its role: with the cluster or SSH tools offered, the system prompt says to
+  use them, explains the approvals to expect, and never to run `kubectl`, `oc`
+  or `ssh` through `bash`.
 - Plugin bundles: `abhed plugin install|approve|list|show|remove|publishers|
   trusted-root|pack`. A plugin bundles agent definitions, skills, custom
   commands, simple hooks and MCP servers under one manifest. The manifest lists
