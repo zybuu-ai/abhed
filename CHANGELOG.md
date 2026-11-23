@@ -149,6 +149,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.9
 
+- `-verify strict` may now refuse to complete where 1.2.9 completed: a
+  report of work the record does not prove ("Pulled, branched and
+  pushed." after the push failed) is a claim it checks. See
+  docs/guide/29-verified-answers.md.
 - `abhed serve` reached by a DNS name now needs that name configured: set
   `server.allowed_hosts` (or `server.canonical_host`, or name it in
   `server.allowed_origins` or `auth.redirect_url`). Loopback and, with
