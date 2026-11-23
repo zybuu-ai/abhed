@@ -1,7 +1,9 @@
 package model
 
 import (
+	"strings"
 	"testing"
+	"time"
 )
 
 // Each known model resolves to its published window and output cap, by the
@@ -130,7 +132,7 @@ func TestOutputClamp(t *testing.T) {
 // A learned limit only lowers the window, the configured one included, and
 // discovery never overrides the configuration or a learned limit.
 func TestLimitsLearnAndDiscover(t *testing.T) {
-	l := resolveLimits(Spec{Type: "anthropic", Model: "claude-sonnet-5-5"}, "https://api.anthropic.com")
+	l := resolveLimits(Spec{Type: "anthropic", Model: "claude-sonnet-5-5"}, "https://api.anthropic.com", "")
 	if !l.learn(200_000) {
 		t.Fatal("a smaller limit is learned")
 	}
@@ -143,14 +145,14 @@ func TestLimitsLearnAndDiscover(t *testing.T) {
 	if w, _, src := l.snapshot(); w != 200_000 || src != WindowLearned {
 		t.Fatalf("%d %s", w, src)
 	}
-	c := resolveLimits(Spec{Type: "anthropic", Model: "x", ContextWindow: 500_000}, "")
+	c := resolveLimits(Spec{Type: "anthropic", Model: "x", ContextWindow: 500_000}, "", "")
 	if c.discovered(100_000, 0) {
 		t.Fatal("discovery overrode the configuration")
 	}
 	if !c.learn(100_000) {
 		t.Fatal("the server's limit lowers a configured window")
 	}
-	f := resolveLimits(Spec{Type: "ollama", Model: "qwen3:8b"}, "http://127.0.0.1:11434/v1")
+	f := resolveLimits(Spec{Type: "ollama", Model: "qwen3:8b"}, "http://127.0.0.1:11434/v1", "")
 	if !f.discovered(8192, 0) {
 		t.Fatal("discovery replaces an assumed window")
 	}
@@ -189,7 +191,7 @@ func TestLookupLimitsIgnoresRowOrder(t *testing.T) {
 
 // A window below MinWindow, learned or discovered, is not believed.
 func TestWindowFloor(t *testing.T) {
-	l := resolveLimits(Spec{Type: "anthropic", Model: "claude-sonnet-5-5"}, "https://api.anthropic.com")
+	l := resolveLimits(Spec{Type: "anthropic", Model: "claude-sonnet-5-5"}, "https://api.anthropic.com", "")
 	if l.learn(5) || l.learn(MinWindow-1) || l.discovered(100, 0) {
 		t.Fatal("a tiny window was taken")
 	}
@@ -203,8 +205,11 @@ func TestWindowFloor(t *testing.T) {
 
 type mapMemory map[string]int
 
-func (m mapMemory) Recall(k string) int      { return m[k] }
+func (m mapMemory) Recall(k string) (int, time.Time) {
+	return m[k], time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC)
+}
 func (m mapMemory) Remember(k string, w int) { m[k] = w }
+func (m mapMemory) Forget(k string)          { delete(m, k) }
 
 // A limit a provider named is kept for the next process, which starts with
 // it; a limit Abhed only inferred is not kept.
@@ -230,8 +235,61 @@ func TestLearnedWindowIsRemembered(t *testing.T) {
 	if d, _ := New(Spec{Type: "openai", Model: "gpt-4.1", APIKey: "k"}); d.Profile().ContextWindow != 1_047_576 {
 		t.Fatal("an inferred limit was kept")
 	}
-	mem[WindowKey("openai", "https://api.openai.com/v1", "gpt-4o")] = 10 // below the floor
+	mem[WindowKey("openai", "https://api.openai.com/v1", "gpt-4o", "k")] = 10 // below the floor
 	if e, _ := New(Spec{Type: "openai", Model: "gpt-4o", APIKey: "k"}); e.Profile().ContextWindow != 128_000 {
 		t.Fatal("a remembered window under the floor was taken")
+	}
+	// A small named limit lowers this process's window but is not kept: one
+	// relayed error must not pin every later session.
+	g, _ := New(Spec{Type: "openai-compatible", BaseURL: "http://gateway.example/v1", Model: "claude-sonnet-5-5", APIKey: "k"})
+	keptBefore := len(mem)
+	if !LearnWindow(g, 2048, true) || g.Profile().ContextWindow != 2048 {
+		t.Fatal("the small limit was not learned for the session")
+	}
+	if len(mem) != keptBefore {
+		t.Fatal("a limit under MinRememberedWindow was written to the memory")
+	}
+	if h, _ := New(Spec{Type: "openai-compatible", BaseURL: "http://gateway.example/v1", Model: "claude-sonnet-5-5", APIKey: "k"}); h.Profile().ContextWindow == 2048 {
+		t.Fatal("a limit under MinRememberedWindow was kept")
+	}
+	// A remembered limit does not lower a configured window; a live refusal does.
+	conf := Spec{Type: "anthropic", Model: "claude-sonnet-5-5", APIKey: "k", ContextWindow: 1_000_000}
+	cfgd, _ := New(conf)
+	if p := cfgd.Profile(); p.ContextWindow != 1_000_000 || p.WindowSource != WindowConfig {
+		t.Fatalf("remembered limit overrode the configuration: %+v", p)
+	}
+	if !LearnWindow(cfgd, 300_000, true) || cfgd.Profile().ContextWindow != 300_000 {
+		t.Fatal("a refusal in this process did not lower the configured window")
+	}
+	// Another account on the same endpoint keeps its own limit.
+	if o, _ := New(Spec{Type: "anthropic", Model: "claude-sonnet-5-5", APIKey: "other-key"}); o.Profile().ContextWindow != 1_000_000 {
+		t.Fatal("another account took this account's limit")
+	}
+	// The learned date shows; Forget drops it.
+	if b.Profile().LearnedAt.IsZero() {
+		t.Fatal("no date on a remembered limit")
+	}
+	if !ForgetWindow(b) {
+		t.Fatal("no memory to forget in")
+	}
+	if f, _ := New(spec); f.Profile().ContextWindow != 1_000_000 {
+		t.Fatal("still remembered after Forget")
+	}
+}
+
+// The key keeps nothing of the endpoint's credentials: user, password and
+// query are left out, and the key is a hash.
+func TestWindowKeyHidesCredentials(t *testing.T) {
+	k := WindowKey("openai-compatible", "http://user:sk-secret@gateway.example/v1?api-key=sk-secret2#frag", "m", "sk-secret3")
+	for _, leak := range []string{"user", "sk-secret", "gateway", "api-key", "frag"} {
+		if strings.Contains(k, leak) {
+			t.Fatalf("key %q holds %q", k, leak)
+		}
+	}
+	if k != WindowKey("openai-compatible", "HTTP://gateway.EXAMPLE/v1/", "m", "sk-secret3") {
+		t.Fatal("the same endpoint without its credentials is another key")
+	}
+	if k == WindowKey("openai-compatible", "http://gateway.example/v1", "m", "another") {
+		t.Fatal("two accounts share a key")
 	}
 }

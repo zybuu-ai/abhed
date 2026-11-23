@@ -1,10 +1,15 @@
 package model
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Where a profile's context window came from, from most to least trusted.
@@ -64,8 +69,11 @@ type Limits struct {
 	// silentTruncation marks a server that cuts an over-long prompt rather
 	// than refusing it (Ollama).
 	silentTruncation bool
-	// key names the endpoint and model in the window memory.
+	// key names the endpoint, model and account in the window memory.
 	key string
+	// learnedAt is when a learned window was named, by this process or,
+	// remembered, by an earlier one.
+	learnedAt time.Time
 }
 
 // WindowMemory keeps the limits providers named across processes, so a
@@ -73,11 +81,20 @@ type Limits struct {
 // again. The program installs the person's own (SetWindowMemory); without
 // one, learned limits last as long as the process.
 type WindowMemory interface {
-	// Recall is the window remembered for key, or 0.
-	Recall(key string) int
+	// Recall is the window remembered for key and when it was named, or 0.
+	Recall(key string) (window int, at time.Time)
 	// Remember keeps window for key.
 	Remember(key string, window int)
+	// Forget drops what is kept for key.
+	Forget(key string)
 }
+
+// MinRememberedWindow is the smallest limit kept beyond the process. A
+// smaller one is believed for the session (down to MinWindow) but not made
+// permanent: a gateway that once relays a fallback model's small limit
+// would otherwise pin every later session to it. No hosted model that runs
+// an agent has a window under 16,384.
+const MinRememberedWindow = 16_384
 
 var windowMemory atomic.Pointer[WindowMemory]
 
@@ -98,17 +115,49 @@ func memory() WindowMemory {
 	return nil
 }
 
-// WindowKey names an endpoint's model in the window memory: the provider
-// type, the endpoint and the model id, the three that decide which account
-// and which deployment a limit belongs to.
-func WindowKey(typ, base, model string) string {
-	return strings.ToLower(typ + " " + strings.TrimSuffix(base, "/") + " " + model)
+// WindowKey names an endpoint's model for one account in the window memory,
+// as a hash: the provider type, the endpoint without its user, password,
+// query or fragment (where a credential may be written), the model id, and
+// the credential itself, so two accounts on one endpoint keep their own
+// limits. Nothing of them can be read back from the key; a credential is a
+// long random string, so the hash cannot be searched for it either.
+func WindowKey(typ, base, model, credential string) string {
+	h := sha256.New()
+	for _, part := range []string{"abhed-window-v1", strings.ToLower(typ), endpointOnly(base), model, credential} {
+		fmt.Fprintf(h, "%d:%s|", len(part), part)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// endpointOnly is a base URL with only its scheme, host and path, lower-cased
+// where case does not matter.
+func endpointOnly(base string) string {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + strings.TrimSuffix(u.EscapedPath(), "/")
+}
+
+// credentialOf is the credential an adapter sends, which names the account.
+func credentialOf(a Adapter) string {
+	switch c := a.(type) {
+	case *Anthropic:
+		return orElse(c.Bearer, c.APIKey)
+	case *OpenAICompatible:
+		return c.APIKey
+	case *Gemini:
+		return c.APIKey
+	case *WatsonX:
+		return c.APIKey
+	}
+	return ""
 }
 
 // resolveLimits is the starting window for a spec: the configuration's,
 // else the table's, else the fallback.
-func resolveLimits(s Spec, base string) *Limits {
-	l := &Limits{typ: s.Type, base: base, local: isLocalEndpoint(s.Type, base), key: WindowKey(s.Type, base, s.Model)}
+func resolveLimits(s Spec, base, credential string) *Limits {
+	l := &Limits{typ: s.Type, base: base, local: isLocalEndpoint(s.Type, base), key: WindowKey(s.Type, base, s.Model, credential)}
 	l.silentTruncation = isOllama(s.Type, base)
 	_, out, known := LookupLimits(s.Model)
 	l.output = out
@@ -127,12 +176,13 @@ func resolveLimits(s Spec, base string) *Limits {
 	default:
 		l.window, l.source = FallbackWindow, WindowFallback
 	}
-	// A limit a provider named for this endpoint and model before, in an
-	// earlier process: it lowers any window, the configured one included,
-	// as it did when it was learned.
-	if m := memory(); m != nil {
-		if w := m.Recall(l.key); w >= MinWindow && w < l.window {
-			l.window, l.source = w, WindowLearned
+	// A limit a provider named for this endpoint, model and account in an
+	// earlier process. It does not override a configured window: the
+	// operator's statement outranks a relayed error from another day, while
+	// a refusal in this process still lowers it.
+	if m := memory(); m != nil && l.source != WindowConfig {
+		if w, at := m.Recall(l.key); w >= MinRememberedWindow && w < l.window {
+			l.window, l.source, l.learnedAt = w, WindowLearned, at
 		}
 	}
 	if s.MaxOutputTokens > 0 && (l.output == 0 || s.MaxOutputTokens < l.output) {
@@ -181,6 +231,9 @@ func (l *Limits) apply(p Profile) Profile {
 	}
 	w, out, src := l.snapshot()
 	p.ContextWindow, p.WindowSource, p.OutputLimit = w, src, out
+	l.mu.RLock()
+	p.LearnedAt = l.learnedAt
+	l.mu.RUnlock()
 	p.SilentTruncation = l.silentTruncation
 	if out > 0 && p.MaxOutputTokens > out {
 		p.MaxOutputTokens = out
@@ -199,7 +252,7 @@ func (l *Limits) learn(limit int) bool {
 	if l.window > 0 && limit >= l.window {
 		return false
 	}
-	l.window, l.source = limit, WindowLearned
+	l.window, l.source, l.learnedAt = limit, WindowLearned, time.Now()
 	return true
 }
 
@@ -248,7 +301,7 @@ func attachLimits(a Adapter, s Spec) {
 	if !ok {
 		return
 	}
-	*h.limitsRef() = resolveLimits(s, Endpoint(a))
+	*h.limitsRef() = resolveLimits(s, Endpoint(a), credentialOf(a))
 }
 
 // LearnWindow lowers an adapter's window to limit, for every session sharing
@@ -261,7 +314,7 @@ func LearnWindow(a Adapter, limit int, named bool) bool {
 	if !l.learn(limit) {
 		return false
 	}
-	if m := memory(); named && m != nil {
+	if m := memory(); named && m != nil && limit >= MinRememberedWindow {
 		m.Remember(l.key, limit)
 	}
 	return true
@@ -275,7 +328,7 @@ func ResolveLimits(s Spec) (window, output int, source string) {
 	if base == "" {
 		base = LocalDefaultURL(s.Type)
 	}
-	return resolveLimits(s, base).snapshot()
+	return resolveLimits(s, base, s.APIKey).snapshot()
 }
 
 // OutputReserve is the room a reply needs in the window: the request's cap,
@@ -328,4 +381,16 @@ func commaInt(n int) string {
 		b.WriteByte(d[i])
 	}
 	return b.String()
+}
+
+// ForgetWindow drops the limit kept for an adapter's endpoint, model and
+// account, so the next session starts from the configuration, the endpoint
+// or the table again. It reports whether a memory is installed.
+func ForgetWindow(a Adapter) bool {
+	l, m := limitsOf(a), memory()
+	if l == nil || m == nil {
+		return false
+	}
+	m.Forget(l.key)
+	return true
 }

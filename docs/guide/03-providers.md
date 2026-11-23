@@ -200,7 +200,8 @@ accounts are held to less than a model's published window. See
 [Context](02-configuration.md#context) for how a refusal is recovered.
 
 `abhed models` lists the configured models with each window, reply cap and
-where they came from, without contacting any endpoint; `abhed doctor` asks
+where they came from, without contacting any endpoint (a limit the provider
+named shows with its date; `abhed models forget-window NAME` drops it); `abhed doctor` asks
 the default model's endpoint first, as a session does. Discovery is off with
 `ABHED_NO_MODEL_DISCOVERY` set.
 

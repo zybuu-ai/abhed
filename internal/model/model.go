@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 )
 
 type Role string
@@ -238,6 +239,9 @@ type Profile struct {
 	// SilentTruncation marks a server that cuts an over-long prompt instead
 	// of refusing it, so the harness watches the reported prompt size.
 	SilentTruncation bool `json:"-"`
+	// LearnedAt is when a learned window was named by the provider, in this
+	// process or, kept in the window memory, an earlier one.
+	LearnedAt time.Time `json:"learned_at,omitzero"`
 	// Sampling reports which decoding knobs this provider honours, so a
 	// config naming one it does not is rejected rather than ignored.
 	Sampling Sampling `json:"-"`

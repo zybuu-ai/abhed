@@ -79,28 +79,35 @@ func (m *WindowMemory) read(path string) learnedWindows {
 	return f
 }
 
-// Recall is the window remembered for key, or 0 when none is, or it is
-// older than LearnedWindowTTL.
-func (m *WindowMemory) Recall(key string) int {
+// Recall is the window remembered for key and when it was named, or 0 when
+// none is, or it is older than LearnedWindowTTL.
+func (m *WindowMemory) Recall(key string) (int, time.Time) {
 	path, err := m.path()
 	if err != nil {
-		return 0
+		return 0, time.Time{}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	w, ok := m.read(path).Windows[key]
 	if !ok || m.now().Sub(w.At) > LearnedWindowTTL {
-		return 0
+		return 0, time.Time{}
 	}
-	return w.Window
+	return w.Window, w.At
 }
 
 // Remember keeps window for key, dropping entries past their time.
 func (m *WindowMemory) Remember(key string, window int) {
-	_ = m.remember(key, window)
+	_ = m.change(key, window)
 }
 
-func (m *WindowMemory) remember(key string, window int) error {
+// Forget drops what is kept for key.
+func (m *WindowMemory) Forget(key string) {
+	_ = m.change(key, 0)
+}
+
+// change keeps window for key, or drops key when window is 0. Keys are
+// hashes (model.WindowKey): no endpoint or credential is written.
+func (m *WindowMemory) change(key string, window int) error {
 	path, err := m.path()
 	if err != nil {
 		return err
@@ -128,7 +135,11 @@ func (m *WindowMemory) remember(key string, window int) error {
 		}
 	}
 	f.Version = 1
-	f.Windows[key] = learnedWindow{Window: window, At: now}
+	if window > 0 {
+		f.Windows[key] = learnedWindow{Window: window, At: now}
+	} else {
+		delete(f.Windows, key)
+	}
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err

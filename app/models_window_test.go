@@ -3,10 +3,12 @@ package app
 import (
 	"bytes"
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/model"
 )
 
 // abhed models shows each configured model's window, reply cap and where
@@ -20,7 +22,7 @@ func TestModelsCmdShowsWindows(t *testing.T) {
 		"odd":    {Type: "openai-compatible", BaseURL: "http://127.0.0.1:1/v1", Model: "mystery"},
 	}
 	var out bytes.Buffer
-	if code := modelsCmd(cfg, &out); code != 0 {
+	if code := modelsCmd(cfg, nil, &out, &out); code != 0 {
 		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
 	text := out.String()
@@ -42,5 +44,36 @@ func TestWindowLineForDoctor(t *testing.T) {
 	line, warn := windowLine(context.Background(), config.ProviderConfig{Type: "anthropic", Model: "claude-haiku-4-5", APIKey: "k"}, true)
 	if line != "200,000 tokens · replies up to 64,000 (Abhed's table of published limits)" || warn != "" {
 		t.Fatalf("%q %q", line, warn)
+	}
+}
+
+// A kept limit shows with its date, and forget-window drops it.
+func TestModelsForgetWindow(t *testing.T) {
+	mem := &config.WindowMemory{Path: filepath.Join(t.TempDir(), "w.json")}
+	model.SetWindowMemory(mem)
+	t.Cleanup(func() { model.SetWindowMemory(nil) })
+	cfg := config.Config{}
+	cfg.Model.Default = "claude"
+	cfg.Model.Providers = map[string]config.ProviderConfig{"claude": {Type: "anthropic", Model: "claude-sonnet-5-5", APIKey: "k"}}
+	a, err := cfg.Model.Providers["claude"].Adapter()
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.LearnWindow(a, 200_000, true)
+	var out, errb bytes.Buffer
+	if modelsCmd(cfg, nil, &out, &errb) != 0 || !strings.Contains(out.String(), "200,000 tokens") ||
+		!strings.Contains(out.String(), "named by the provider on 20") || !strings.Contains(out.String(), "forget-window") {
+		t.Fatalf("%s%s", out.String(), errb.String())
+	}
+	out.Reset()
+	if modelsCmd(cfg, []string{"forget-window", "claude"}, &out, &errb) != 0 || !strings.Contains(out.String(), "forgot the 200,000-token limit") {
+		t.Fatalf("%s%s", out.String(), errb.String())
+	}
+	out.Reset()
+	if modelsCmd(cfg, nil, &out, &errb) != 0 || !strings.Contains(out.String(), "1,000,000 tokens") {
+		t.Fatalf("after forget: %s", out.String())
+	}
+	if modelsCmd(cfg, []string{"forget-window", "nope"}, &out, &errb) != 1 || modelsCmd(cfg, []string{"bogus"}, &out, &errb) != 2 {
+		t.Fatal("bad arguments accepted")
 	}
 }

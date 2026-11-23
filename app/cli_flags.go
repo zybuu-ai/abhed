@@ -446,7 +446,7 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 			fmt.Fprintf(os.Stderr, "config: %v\n", err)
 			return 1
 		}
-		return modelsCmd(cfg, os.Stdout)
+		return modelsCmd(cfg, rest[1:], os.Stdout, os.Stderr)
 	case "ollama":
 		return ollamaCmd(workspace, rest[1:], a.trust, os.Stdin, os.Stdout, os.Stderr)
 	case "toolchain":

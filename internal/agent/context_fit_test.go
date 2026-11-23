@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -406,13 +407,18 @@ func TestOverflowAfterRetryNeverCompacts(t *testing.T) {
 // words and naming no limit, any request body over limit bytes, and answers
 // the rest with a short streamed reply.
 func openAIStub(t *testing.T, limit int, sizes *[]int) *httptest.Server {
+	return refusingStub(t, limit, sizes, `{"message":"Input is too long for requested model."}`)
+}
+
+// refusingStub is openAIStub refusing with the given body.
+func refusingStub(t *testing.T, limit int, sizes *[]int, refusal string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		*sizes = append(*sizes, len(body))
 		if len(body) > limit {
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"message":"Input is too long for requested model."}`))
+			_, _ = w.Write([]byte(refusal))
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -639,5 +645,52 @@ func TestOffloadUnderCeiling(t *testing.T) {
 	l2.offloadIfNeeded()
 	if len(fitEvents(store2, EvContextOffloaded)) != 0 {
 		t.Fatal("offloaded at 15% of the model's window with no ceiling")
+	}
+}
+
+type keptWindows map[string]int
+
+func (k keptWindows) Recall(key string) (int, time.Time) { return k[key], time.Time{} }
+func (k keptWindows) Remember(key string, w int)         { k[key] = w }
+func (k keptWindows) Forget(key string)                  { delete(k, key) }
+
+// Through a run: a limit the provider named is kept for later sessions; one
+// inferred below a refusal that named none is not.
+func TestRunKeepsOnlyNamedLimits(t *testing.T) {
+	kept := keptWindows{}
+	model.SetWindowMemory(kept)
+	t.Cleanup(func() { model.SetWindowMemory(nil) })
+
+	var sizes []int
+	named := refusingStub(t, 200_000, &sizes, `{"error":{"message":"This model's maximum context length is 60000 tokens. However, your messages resulted in 90000 tokens.","code":"context_length_exceeded"}}`)
+	a, err := model.New(model.Spec{Type: "openai", Model: "gpt-4.1", BaseURL: named.URL, APIKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, _ := fitLoop(t, a)
+	largeRecent(l)
+	if reason, err := l.Run(context.Background(), "and now?"); err != nil || reason != TermCompleted {
+		t.Fatalf("named: %s %v", reason, err)
+	}
+	if len(kept) != 1 {
+		t.Fatalf("named limit kept %d times: %v", len(kept), kept)
+	}
+	for _, w := range kept {
+		if w != 60_000 {
+			t.Fatalf("kept %d", w)
+		}
+	}
+
+	clear(kept)
+	var sizes2 []int
+	unnamed := openAIStub(t, 200_000, &sizes2)
+	b, _ := model.New(model.Spec{Type: "openai", Model: "gpt-4.1", BaseURL: unnamed.URL, APIKey: "k"})
+	l2, _ := fitLoop(t, b)
+	largeRecent(l2)
+	if reason, err := l2.Run(context.Background(), "and now?"); err != nil || reason != TermCompleted {
+		t.Fatalf("unnamed: %s %v", reason, err)
+	}
+	if len(kept) != 0 {
+		t.Fatalf("an inferred limit was kept: %v", kept)
 	}
 }

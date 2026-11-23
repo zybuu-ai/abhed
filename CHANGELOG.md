@@ -209,9 +209,13 @@ All notable changes to Abhed are recorded here. The format follows
   `/compact` with what to keep, or `/model` for a larger window); it never
   loops. A limit under 2,048 tokens is not believed, and an OpenAI-shaped
   refusal of the reply cap rather than the prompt is not compacted for. A
-  limit the provider named is kept in `~/.abhed/context-windows.json` by
-  provider type, endpoint and model for 30 days, so a restarted session
-  starts within it rather than being refused once more. Anthropic's `prompt is too
+  limit of 16,384 or more that the provider named is kept in
+  `~/.abhed/context-windows.json` for 30 days, per provider type, endpoint,
+  model and account under a hash (no URL, credential or query is written),
+  so a restarted session starts within it rather than being refused once
+  more. A kept limit never lowers a configured `context_window`; `abhed
+  models` and `abhed doctor` show it with its date, and `abhed models
+  forget-window NAME` drops it. Anthropic's `prompt is too
   long`, OpenAI's `context_length_exceeded`, Gemini's input token count and
   the wording of Bedrock, vLLM, llama.cpp, TGI, Mistral, Groq, watsonx and
   Ollama are recognised. A server that cuts an over-long prompt instead of

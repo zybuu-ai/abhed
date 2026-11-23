@@ -157,14 +157,20 @@ another turn. A refusal that names no limit (Bedrock's `Input is too long for
 requested model`) lowers the window to four fifths of the refused request's
 size, which brings the retry to about two fifths of it, so it fits any limit
 down to about half the refused size. A limit under 2,048 tokens is not
-believed. A limit the provider named is kept in `~/.abhed/context-windows.json`,
-by provider type, endpoint and model, so the next session, after a restart
-too, starts within it instead of paying a refused call to learn it again. It
-lowers any window, a configured one included, and is learned again after 30
-days, since accounts are moved to larger windows. A limit Abhed only inferred
-(below a refusal that named none, or from a prompt a server cut) is not kept.
-The file is the person's own state: the agent cannot write it and a workspace
-cannot set it. An OpenAI-shaped refusal whose prompt was within the limit and whose
+believed. A limit of 16,384 tokens or more that the provider named is kept in
+`~/.abhed/context-windows.json`, so the next session, after a restart too,
+starts within it instead of paying a refused call to learn it again. It is
+kept per provider type, endpoint, model and account, under a hash of them: the
+file holds no URL, user, password, query or key. It lowers the table's or the
+endpoint's window but never a configured `context_window` (a refusal within a
+session still lowers that one for the session), and is learned again after 30
+days, since accounts are moved to larger windows. A smaller limit, which a
+gateway falling back to another model can relay, lasts only for the process,
+as does a limit Abhed only inferred (below a refusal that named none, or from
+a prompt a server cut). `abhed models` and `abhed doctor` show a kept limit
+as "named by the provider on" its date, and `abhed models forget-window NAME`
+drops it for the provider configured as NAME. The file is the person's own
+state: the agent cannot write it and a workspace cannot set it. An OpenAI-shaped refusal whose prompt was within the limit and whose
 reply cap was not (`N in the messages, M in the completion`) is not treated as
 too long: lowering `max_tokens` is the fix, and compacting would not help. A second refusal in a row ends the
 run with what happened (the limit the provider named, or that it named none and
