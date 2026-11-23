@@ -86,14 +86,16 @@ only as one of a few adjectives ("Cited", "Related", "Suggested",
 "Deployed" and "No breaking changes" stay claims), questions, courtesies
 ("let me know if…"), advice
 ("run `make test` to confirm") and stated intentions ("I'll update the docs")
-are left out, and at most 40 statements are checked. A statement in which the
-assistant introduces itself or says what it can do in general ("I'm Abhed,
-your technical assistant", "I can help with code and infrastructure", "I can
-read files, run commands and edit code") is no claim about the session's work,
-whatever kind the agent gave it: it is unverified and never counts against the
-answer. One with anything of the session in it (a command, file, number, host,
-test or change, or wording of something done, as in "I can confirm the tests
-pass" or "I'm Abhed, and all 45 tests passed") is checked as before. From each statement Abhed
+are left out, and at most 40 statements are checked. A statement that is
+wholly the assistant introducing itself or saying what it can do in general
+("I'm Abhed, your technical assistant", "I can help with code and
+infrastructure", "I can read files, run commands and edit code") is no claim
+about the session's work, whatever kind the agent gave it: it is unverified
+and never counts against the answer. One that goes on past that (a second
+clause, or anything said to be some way, as in "I'm Abhed, and the server is
+healthy" or "I can help: the bug is resolved"), or names anything of the
+session (a command, file, number, host, test or change, or wording of
+something done, as in "I can confirm the tests pass"), is checked as before. From each statement Abhed
 takes what can be compared: quoted text and backticked text, file paths, host
 names and addresses, versions, dates, numbers, and a number with the word it
 counts (`12 tests`, `replicas: 3`). Then:

@@ -307,9 +307,13 @@ func Select(p Policy) (Sandbox, error) {
 			if passed != nil {
 				continue // the same image, without git
 			}
-			if lacks, missing := lacksGit(ct); lacks {
+			lacks, missing, why := lacksGit(ct)
+			if lacks {
 				passed, passedWhy = pick, ownToolsNote(ct, missing)
 				continue
+			}
+			if why != "" {
+				return noteChoice(pick, strongest+"; "+why), nil
 			}
 		}
 		if passed != nil {

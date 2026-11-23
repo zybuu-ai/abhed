@@ -38,12 +38,22 @@ func noteChoice(sb Sandbox, why string) Sandbox {
 // at hand: an image without git is not one to work in by default.
 var BasicTools = []string{"git", "curl", "ping", "node", "python3"}
 
+// imageLookWait bounds the look in an image, which runs a container.
+var imageLookWait = 10 * time.Second
+
 // ImageMissing reports which of programs the container's image lacks; tests
 // replace it so no engine is asked.
 var ImageMissing = func(c *Container, programs []string) ([]string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), imageLookWait)
 	defer cancel()
 	return c.MissingPrograms(ctx, programs)
+}
+
+// imageLook is what one look in an image found, a failure included, so a
+// look that failed is not paid for again by every session.
+type imageLook struct {
+	missing []string
+	err     error
 }
 
 // imageLooks keeps what each image was found to lack, per process: looking
@@ -61,8 +71,8 @@ func MissingTools(sb Sandbox) ([]string, bool) {
 	if img == DefaultImage {
 		return slices.Clone(BasicTools), true
 	}
-	if v, ok := imageLooks.Load(img); ok {
-		return slices.Clone(v.([]string)), true
+	if v, ok := imageLooks.Load(img); ok && v.(imageLook).err == nil {
+		return slices.Clone(v.(imageLook).missing), true
 	}
 	return nil, false
 }
@@ -71,25 +81,22 @@ func MissingTools(sb Sandbox) ([]string, bool) {
 func lookImage(c *Container) ([]string, error) {
 	img := SandboxImage()
 	if v, ok := imageLooks.Load(img); ok {
-		return v.([]string), nil
+		return v.(imageLook).missing, v.(imageLook).err
 	}
 	missing, err := ImageMissing(c, BasicTools)
-	if err != nil {
-		return nil, err
-	}
-	imageLooks.Store(img, missing)
-	return missing, nil
+	imageLooks.Store(img, imageLook{missing: missing, err: err})
+	return missing, err
 }
 
 // lacksGit reports a container tier whose image has no git, with what else
 // it lacks, which makes it no place for a person's own workspace when they
-// did not ask for it.
-func lacksGit(c *Container) (bool, []string) {
+// did not ask for it; why is set when the image could not be looked in.
+func lacksGit(c *Container) (lacks bool, missing []string, why string) {
 	missing, err := lookImage(c)
 	if err != nil {
-		return false, nil
+		return false, nil, fmt.Sprintf("the image %s could not be looked in (%v), so the container tier is kept", SandboxImage(), err)
 	}
-	return slices.Contains(missing, "git"), missing
+	return slices.Contains(missing, "git"), missing, ""
 }
 
 // selectChosen builds the one tier the configuration chose, or refuses

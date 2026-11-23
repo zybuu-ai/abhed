@@ -3,7 +3,11 @@
 package sandbox
 
 import (
+	"context"
 	"errors"
+	"os/exec"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -150,5 +154,54 @@ func TestMissingToolsOfTheDefaultImage(t *testing.T) {
 	}
 	if _, known := MissingTools(NewProcess(Policy{})); known {
 		t.Fatal("the process tier has no image")
+	}
+}
+
+// A look that fails keeps the container and says so in the choice, and is
+// not paid for again.
+func TestFailedLookIsSaidAndKept(t *testing.T) {
+	resetEngineProbes()
+	t.Cleanup(resetEngineProbes)
+	countingEngine(t)
+	looks := 0
+	was := ImageMissing
+	ImageMissing = func(*Container, []string) ([]string, error) { looks++; return nil, errors.New("did not answer") }
+	imageLooks.Clear()
+	t.Cleanup(func() { ImageMissing = was; imageLooks.Clear() })
+	p := Policy{Workspace: t.TempDir(), MinTier: TierProcess, PreferOwnTools: true}
+	for range 2 {
+		sb, err := Select(p)
+		if err != nil || sb.Tier() != TierContainer || !strings.Contains(ChoiceReason(sb), "could not be looked in") {
+			t.Fatalf("got %v %v %q", sb, err, ChoiceReason(sb))
+		}
+	}
+	if looks != 1 {
+		t.Fatalf("looked %d times", looks)
+	}
+}
+
+// The look starts the image as commands do; an image whose entry point runs
+// no shell lacks every program.
+func TestLookUsesTheCommandsEntryPoint(t *testing.T) {
+	SetConfiguredImage("registry.example/tools:1")
+	t.Cleanup(func() { SetConfiguredImage("") })
+	var ran []string
+	engine := func(answer string, code int) func(context.Context, ...string) *exec.Cmd {
+		return func(ctx context.Context, args ...string) *exec.Cmd {
+			ran = args
+			if args[0] == "image" {
+				return exec.CommandContext(ctx, "true")
+			}
+			return exec.CommandContext(ctx, "/bin/sh", "-c", "printf '"+answer+"'; exit "+strconv.Itoa(code))
+		}
+	}
+	c := NewContainer(Policy{})
+	got, err := c.missingPrograms(context.Background(), []string{"git", "curl"}, engine("abhed-look\\ncurl\\n", 0))
+	if err != nil || strings.Join(got, ",") != "curl" || slices.Contains(ran, "--entrypoint") {
+		t.Fatalf("got %v %v; ran %v", got, err, ran)
+	}
+	got, err = c.missingPrograms(context.Background(), []string{"git", "curl"}, engine("usage: git\\n", 1))
+	if err != nil || strings.Join(got, ",") != "git,curl" {
+		t.Fatalf("an entry point with no shell: %v %v", got, err)
 	}
 }

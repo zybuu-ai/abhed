@@ -10,15 +10,16 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
-// NetworkOfferText ends what a command that failed for the network is told,
-// and marks that output for Studio, which offers the person the choice. The
-// network is opened by the person alone (Studio, or /network at the
-// terminal); the agent can only say it needs it.
+// NetworkOfferText ends what a command that failed for the network is told.
+// Studio learns of such a failure from the observation's network_off, never
+// from this text. The network is opened by the person alone (Studio, or
+// /network at the terminal); the agent can only say it needs it.
 const NetworkOfferText = "Tell the user what needs the network: they can open it for this workspace, one host or this chat."
 
 // KeptNetwork is what a person opened to commands in a workspace, kept in
@@ -72,14 +73,32 @@ func (n *Network) policy() *egress.Policy {
 	return sandbox.EgressOf(resolved(n.sb))
 }
 
+// tier is the tier commands run under, "" before it is known.
+func (n *Network) tier() sandbox.Tier {
+	if n == nil || n.sb == nil {
+		return ""
+	}
+	if s := resolved(n.sb); s != nil {
+		return s.Tier()
+	}
+	return ""
+}
+
 // Offer reports whether the person can be asked to open the network here,
 // or why not.
 func (n *Network) Offer() (bool, string) {
+	if n.tier() == sandbox.TierNone {
+		return false, "commands run on the host with no sandbox, so they have its network already"
+	}
 	if ok, why := NetworkOfferable(n.cfg); !ok {
 		return false, why
 	}
 	if n.policy() == nil {
-		return false, "this sandbox cannot hold the egress proxy commands would reach the network through (a container tier on a VM needs control_plane relay_binary)"
+		switch n.tier() {
+		case sandbox.TierContainer, sandbox.TierVM:
+			return false, "this container tier cannot hold the egress proxy commands would go through (a container engine on a VM needs control_plane relay_binary)"
+		}
+		return false, "this sandbox holds no egress proxy for commands"
 	}
 	return true, ""
 }
@@ -108,10 +127,23 @@ func (n *Network) ApplyKept() {
 	})
 }
 
+// maxFactHosts bounds the hosts the facts line names, so it stays short.
+const maxFactHosts = 8
+
+// hostList names at most maxFactHosts hosts, and how many more.
+func hostList(h []string) string {
+	if len(h) <= maxFactHosts {
+		return strings.Join(h, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(h[:maxFactHosts], ", "), len(h)-maxFactHosts)
+}
+
 // State says what commands can reach now, in a line for the model.
 func (n *Network) State() string {
 	cfg := n.cfg
 	switch {
+	case n.tier() == sandbox.TierNone:
+		return "on (no sandbox: the host's network)"
 	case sandboxconfig.NetworkOpen(cfg):
 		return "on"
 	case cfg.Sandbox.Network == config.NetworkAllowlist:
@@ -122,7 +154,7 @@ func (n *Network) State() string {
 		hosts := "the hosts the egress rules allow"
 		if pol != nil {
 			if h := pol.AllowedHosts(); len(h) > 0 {
-				hosts = strings.Join(h, ", ")
+				hosts = hostList(h)
 			}
 		}
 		return "allowlist only: " + hosts
@@ -133,7 +165,7 @@ func (n *Network) State() string {
 	}
 	if pol != nil {
 		if h := pol.AllowedHosts(); len(h) > 0 {
-			return "off except " + strings.Join(h, ", ")
+			return "off except " + hostList(h)
 		}
 	}
 	return "off"
@@ -228,21 +260,28 @@ func SessionNote(cfg config.Config, sb sandbox.Sandbox, n *Network) string {
 	fmt.Fprintf(&b, "Sandbox: %s%s. Network: %s", s.Tier(), where, n.State())
 	if ok, why := n.Offer(); ok && !sandboxconfig.NetworkOpen(cfg) {
 		b.WriteString(", only the user can open it")
-	} else if !sandboxconfig.NetworkOpen(cfg) {
+	} else if !sandboxconfig.NetworkOpen(cfg) && s.Tier() != sandbox.TierNone {
 		b.WriteString("; cannot be opened: " + why)
 	}
-	b.WriteString(". Git remotes not brokered.")
+	if hostgit.BrokersRemotes() {
+		b.WriteString(". Git remotes brokered on the host.")
+	} else {
+		b.WriteString(". Git remotes not brokered.")
+	}
 	if missing, known := sandbox.MissingTools(s); known && len(missing) > 0 {
 		fmt.Fprintf(&b, " Not in image: %s.", strings.Join(missing, ", "))
 	}
+	// Clusters only where the session has the Kubernetes tools to use them.
 	var clusters []string
-	for _, c := range cfg.K8s.Clusters {
-		clusters = append(clusters, c.Name)
+	if cfg.K8s.Enabled {
+		for _, c := range cfg.K8s.Clusters {
+			clusters = append(clusters, c.Name)
+		}
 	}
 	if len(clusters) > 0 {
 		fmt.Fprintf(&b, " Clusters: %s.", strings.Join(clusters, ", "))
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return plainFacts(strings.TrimRight(b.String(), "\n"))
 }
 
 // withNetwork puts the workspace's kept network grants in force before a
@@ -267,4 +306,15 @@ func withNetwork(b tools.Bash, n *Network, offered bool) tools.Bash {
 		b.NetworkNote = strings.TrimSpace(b.NetworkNote + " " + NetworkOfferText)
 	}
 	return b
+}
+
+// plainFacts keeps the facts line one line of printable text, whatever a
+// name in it (an image, a cluster, a host) holds.
+func plainFacts(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || r >= 0x80 && r < 0xa0 || r == 0x2028 || r == 0x2029 {
+			return ' '
+		}
+		return r
+	}, s)
 }

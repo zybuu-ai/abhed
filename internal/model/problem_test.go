@@ -25,7 +25,9 @@ func TestProblemOf(t *testing.T) {
 		{429, `{"error":{"message":"Rate limit reached for requests"}}`, ProblemRateLimit, "Rate limit"},
 		{503, `upstream connect error`, ProblemUnavailable, "upstream connect error"},
 		{400, `{"detail":"max_tokens is too large"}`, ProblemOther, "max_tokens"},
-		{404, ``, ProblemRetired, "Not Found"},
+		{404, ``, ProblemOther, "Not Found"},
+		{404, `404 page not found`, ProblemOther, "page not found"},
+		{404, `{"error":{"message":"The model 'gpt-x' does not exist"}}`, ProblemRetired, "does not exist"},
 	} {
 		err := fmt.Errorf("model call failed: %w", &StatusError{Status: c.status, Body: c.body, Attempts: 1})
 		p := ProblemOf(err)

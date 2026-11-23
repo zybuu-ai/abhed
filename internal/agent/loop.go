@@ -2605,6 +2605,7 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 		DurationMS:  elapsed.Milliseconds(),
 		Sandbox:     result.Tier,
 		SandboxNote: result.SandboxNote,
+		NetworkOff:  result.NetworkOff,
 		Cwd:         cwd,
 	}); err != nil {
 		return result, TermError

@@ -37,8 +37,10 @@ var ErrSwitchDuringRun = errors.New("abhed: cannot switch the model while a run 
 
 // offered reports whether a configured provider may be chosen by name. A
 // managed file that sets model.default pins the model to it.
-func (a *Agent) offered(name string) bool {
-	return a.cfg.ModelAllowed(name) == nil
+// offered reports whether cfg, a snapshot of the agent's configuration taken
+// under forkMu, offers the provider name.
+func offered(cfg config.Config, name string) bool {
+	return cfg.ModelAllowed(name) == nil
 }
 
 // Models lists the configured models SwitchModelNamed accepts, by name. Only
@@ -47,11 +49,12 @@ func (a *Agent) offered(name string) bool {
 func (a *Agent) Models() []Model {
 	a.forkMu.Lock()
 	current := a.current
-	providers := a.cfg.Model.Providers
+	cfg := a.cfg // AddModels replaces the providers map, never writes in it
 	a.forkMu.Unlock()
+	providers := cfg.Model.Providers
 	out := make([]Model, 0, len(providers))
 	for name, p := range providers {
-		if !a.offered(name) {
+		if !offered(cfg, name) {
 			continue
 		}
 		out = append(out, Model{Name: name, Model: p.Model, Type: p.Type, Current: name == current, Images: readsImages(p)})

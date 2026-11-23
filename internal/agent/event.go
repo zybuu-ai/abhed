@@ -270,6 +270,9 @@ type Observation struct {
 	// SandboxNote is set when bash added a note that the sandbox refused part
 	// of the command: the credential folder named, or "denied" for none.
 	SandboxNote string `json:"sandbox_note,omitempty"`
+	// NetworkOff is set by bash, never by a command's output, when the
+	// command failed because the network is off.
+	NetworkOff bool `json:"network_off,omitempty"`
 	// NotRun marks the answer to a call the turn ended before running.
 	NotRun bool `json:"not_run,omitempty"`
 	// OutcomeUnknown marks the answer to a call that may have run on a

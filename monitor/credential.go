@@ -106,8 +106,19 @@ func gitConfigOnly(subject string) bool {
 }
 
 // gitConfigCredential reports a git config's text that holds a credential:
-// a URL with a password, or an https one whose user is token-shaped, or an
-// extra header carrying authorization. A remote's plain URL, an ssh user
-// such as git@, and a helper's name are none.
-var gitConfigCredential = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^/\s@:]*:[^/\s@]+@|` +
-	`\bhttps?://[A-Za-z0-9_.~%-]{20,}@|(?m)^\s*extraheader\s*=.*\b(?:authorization|private-token|job-token)\b`).MatchString
+// a URL with a password, or whose user is token-shaped (long, or a known
+// token prefix at any length), any extra header, or a cookie file. A remote's
+// plain URL, an ssh user such as git@, and a helper's name are none. Git
+// joins a value continued with a backslash at the line's end, and so does
+// this, before looking.
+func gitConfigCredential(out string) bool {
+	joined := gitContinuation.ReplaceAllString(out, "")
+	return gitConfigCredentialRe.MatchString(joined) || keyMaterial(joined)
+}
+
+var gitContinuation = regexp.MustCompile(`\\\r?\n`)
+
+var gitConfigCredentialRe = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^/\s@:]*:[^/\s@]+@|` +
+	`\bhttps?://[A-Za-z0-9_.~%-]{20,}@|` +
+	`\b[a-z][a-z0-9+.-]*://(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|glpat-|gldt-|glcbt-|x-access-token|x-token-auth|oauth2)[^/\s@]*@|` +
+	`(?m)^\s*extraheader\s*=|(?m)^\s*cookiefile\s*=`)

@@ -769,6 +769,16 @@ func CorpusCases() []CorpusCase {
 		{Name: "greeting with an invented change", Kind: p, Want: ClaimUnverified, Steps: steps(stepTests), Text: "I'm your assistant and I updated config/settings.yaml to raise the timeout."},
 		{Name: "capability with an invented command", Kind: p, Want: ClaimUnverified, Steps: steps(stepTests), Text: "I can run `make lint` and it was clean."},
 		{Name: "capability with work done already", Kind: p, Want: ClaimUnverified, Steps: steps(stepTests), Text: "I can help, and I have already fixed the login bug."},
+		// A lead does not carry a state claim behind it (architect review r1).
+		{Name: "greeting, then a server said healthy", Kind: p, Want: ClaimUnverified, Text: "I'm Abhed, and the server is healthy."},
+		{Name: "capability, then a bug said resolved", Kind: p, Want: ClaimUnverified, Text: "I can help: the login bug is resolved."},
+		{Name: "greeting, then the workspace said secure", Kind: p, Want: ClaimUnverified, Text: "I'm Abhed, and your workspace is secure."},
+		{Name: "greeting, then the service said up", Kind: p, Want: ClaimUnverified, Text: "I'm Abhed; the service is up."},
+		{Name: "observed: assistant, then the code said correct", Kind: p, Want: ClaimUnverified, Claim: &Claim{Text: "I'm your assistant, and the code is correct.", Kind: KindObserved}},
+		{Name: "observed: assistant, then the bug said gone", Kind: p, Want: ClaimUnverified, Claim: &Claim{Text: "I am your assistant; the bug is gone.", Kind: KindObserved}},
+		{Name: "observed: assistant, then a migration said safe", Kind: p, Want: ClaimUnverified, Claim: &Claim{Text: "I'm your assistant, and the migration is safe to run in production.", Kind: KindObserved}},
+		{Name: "capability, then tests said passing", Kind: p, Want: ClaimUnverified, Steps: steps(stepEdit, stepFailing), Text: "I can help with that - the tests are green."},
+		{Name: "greeting, then the deploy said live", Kind: p, Want: ClaimUnverified, Text: "Hi, I'm Abhed and the deploy is live."},
 		{Name: "greeting as observed with a wrong port", Kind: p, Want: ClaimContradicted, Steps: steps(stepConfig), Claim: &Claim{Text: "I'm Abhed; it listens on port 9090", Kind: KindObserved, Evidence: []string{"r1"}}},
 
 		{Name: "file written by a heredoc", Kind: c, Want: ClaimVerified, Steps: steps(stepHeredoc), Text: "I wrote notes.md with the outline."},

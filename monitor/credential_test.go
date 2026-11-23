@@ -30,6 +30,13 @@ func TestCredentialSeen(t *testing.T) {
 		{"git config with an access token", "read", `{"path":"/ws/.git/config"}`, "\turl = https://x-access-token:abcdEFGH1234@github.com/acme/api.git\n", true},
 		{"git config with an auth header", "bash", `{"command":"cat .git/config"}`, "[http]\n\textraheader = AUTHORIZATION: basic eDpzZWNyZXQ=\n", true},
 		{"git config beside .env", "bash", `{"command":"cat .git/config .env"}`, gitConfigPlain, true},
+		{"git config with a continued password", "bash", `{"command":"cat .git/config"}`, "[remote \"origin\"]\n\turl = https://bot:s3cr\\\n3tValue99@git.acme.example/api.git\n", true},
+		{"git config with an api key header", "bash", `{"command":"cat .git/config"}`, "[http]\n\textraheader = X-Api-Key: 9f8e7d6c5b4a\n", true},
+		{"git config with a cookie header", "bash", `{"command":"cat .git/config"}`, "[http]\n\textraHeader = Cookie: session=abc\n", true},
+		{"git config with a cookie file", "bash", `{"command":"cat .git/config"}`, "[http \"https://git.acme.example\"]\n\tcookieFile = ~/.gitcookies\n", true},
+		{"git config with a short gitlab token", "bash", `{"command":"cat .git/config"}`, "\turl = https://glpat-abcDEF123456@gitlab.com/acme/api.git\n", true},
+		{"git config with an oauth2 user", "read", `{"path":"/ws/.git/config"}`, "\turl = https://oauth2:tok@gitlab.com/acme/api.git\n", true},
+		{"git config with a short github token user", "bash", `{"command":"cat .git/config"}`, "\turl = https://ghp_abc@github.com/acme/api.git\n", true},
 		{"git-credentials still counts", "bash", `{"command":"cat ~/.git-credentials"}`, "https://github.com", true},
 	} {
 		if got := CredentialSeen(c.tool, c.args, c.out); got != c.want {

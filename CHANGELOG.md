@@ -231,7 +231,8 @@ All notable changes to Abhed are recorded here. The format follows
   `/config apply` offers the added models. Nothing that widens what the agent
   may do is applied to an open chat.
 - A provider's refusal is said with the provider's own words and the next
-  step (key, credit or quota, retired or not-found model, rate limit),
+  step (key, credit or quota, a model the provider says is retired or not
+  found, rate limit; a bare 404 is not taken as a retired model),
   naming configured models whose key is at hand: in Studio's chat
   (`_meta.providerError`), at the terminal and in `abhed doctor`. Anything
   key-shaped in the message is redacted. A model the provider called retired
@@ -723,12 +724,15 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
-- On a Mac, with no `sandbox.tier` and nothing managed setting the tier or
-  its minimum, a container tier whose image has no git is passed over for the
-  process tier: with podman running, the bare default image left the agent
-  without git, curl or node, and no network to get them. Set
-  `"tier": "container"` to use it anyway, or `sandbox.image` to an image with
-  git.
+- On a Mac, with no `sandbox.tier`, no `sandbox.image` or
+  `ABHED_SANDBOX_IMAGE`, and nothing managed setting the tier or its minimum,
+  the container tier on the default image is passed over for the process
+  tier: with podman running, the bare default image left the agent without
+  git, curl or node, and no network to get them. Set `"tier": "container"` to
+  use it anyway, or name an image, which keeps the container. The look in an
+  image now starts it as commands do (its entry point, then `/bin/sh -c`), so
+  an image whose entry point runs no shell is reported lacking every program,
+  and a look is bounded to 10 seconds.
 - Where the network may be opened from a session, commands get the session's
   egress proxy, closed until it is opened, also when toolchains or their
   registries are off.
@@ -848,14 +852,19 @@ All notable changes to Abhed are recorded here. The format follows
 
 - The verifier labelled a greeting ("I'm Abhed, your technical assistant")
   an unverified observed claim, and strict mode asked for a revision of it. A
-  self-introduction or a general statement of what the assistant can do is
-  now no claim about the session's work; one with anything of the session in
-  it is checked as before. The false-claim corpus gains these cases and its
-  floors rise.
+  sentence that is wholly a self-introduction or a general statement of what
+  the assistant can do is now no claim about the session's work. One that goes
+  on to anything else ("I'm Abhed, and the server is healthy", "I can help:
+  the bug is resolved"), or names anything of the session, is checked as
+  before. The false-claim corpus gains these cases, planted ones included,
+  and its floors rise.
 - The supervisor asked about every later call that could reach the network
   as credential-egress once `.git/config` had been read, with only plain
   remote URLs in it. A git config now counts only when it holds a credential:
-  a URL with a password or a token-shaped user, or an authorization header.
+  a URL with a password, a token-shaped user (long, or a known token prefix
+  such as `ghp_`, `glpat-`, `x-access-token` or `oauth2` at any length), any
+  `extraheader`, or a `cookieFile`, read with git's backslash continuations
+  joined.
 
 - `abhed mcp list` said "(signed in)" after the authorization server had
   refused the refresh token. The refusal is now kept with the login, the

@@ -44,7 +44,8 @@ func ProblemOf(err error) *Problem {
 	switch {
 	case se.Status == http.StatusPaymentRequired || creditRe.MatchString(body):
 		p.Kind = ProblemCredit
-	case se.Status == http.StatusNotFound || (se.Status == http.StatusBadRequest || se.Status == http.StatusForbidden) && retiredRe.MatchString(body):
+	// Only the provider saying so: a 404 alone is as often a wrong base_url.
+	case (se.Status == http.StatusNotFound || se.Status == http.StatusBadRequest || se.Status == http.StatusForbidden) && retiredRe.MatchString(body):
 		p.Kind = ProblemRetired
 	case se.Status == http.StatusUnauthorized || se.Status == http.StatusForbidden:
 		p.Kind = ProblemKey

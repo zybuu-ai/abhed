@@ -30,7 +30,7 @@ func TestRegistryEgress(t *testing.T) {
 		t.Fatal("allow opens them all")
 	}
 	// With registries or toolchains off, the proxy is there still, closed,
-	// for the network the person may open (network_access), and opens no registry.
+	// for the network the person may open (Studio, or /network), and opens no registry.
 	for _, c := range []func(*config.Config){
 		func(c *config.Config) { c.Sandbox.ToolchainsRegistries = "off" },
 		func(c *config.Config) { c.Sandbox.Toolchains = "off" },

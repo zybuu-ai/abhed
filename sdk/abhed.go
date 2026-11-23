@@ -76,7 +76,7 @@ type Options struct {
 	Workspace string
 
 	// KeptNetwork is what the person opened to this workspace's commands
-	// before, and KeepNetwork keeps a new grant (network_access); nil keeps
+	// before, and KeepNetwork keeps a new grant (Studio, /network); nil keeps
 	// none. Neither applies where the managed file holds the network.
 	KeptNetwork func() toolset.KeptNetwork
 	KeepNetwork func(all bool, host string) error

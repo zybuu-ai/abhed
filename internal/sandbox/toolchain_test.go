@@ -85,7 +85,7 @@ func TestMissingProgramsLooksInAHardenedContainer(t *testing.T) {
 	engine := func(ctx context.Context, args ...string) *exec.Cmd {
 		if args[0] == "run" {
 			runArgs = args
-			return exec.CommandContext(ctx, "/bin/sh", "-c", "echo node")
+			return exec.CommandContext(ctx, "/bin/sh", "-c", "echo abhed-look; echo node")
 		}
 		return exec.CommandContext(ctx, "/bin/sh", "-c", "true")
 	}

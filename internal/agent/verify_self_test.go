@@ -56,6 +56,9 @@ func TestSelfDescriptionKeepsWork(t *testing.T) {
 		"I can confirm the tests pass.", "I'm Abhed, and all 45 tests passed.", "I can help, and I have already fixed the login bug.",
 		"I'm your assistant and I updated config/settings.yaml.", "I can run `make lint` and it was clean.", "I'm done: the build is green.",
 		"I can see 3 replicas in the deployment.", "I'm Abhed; main.go:3 defines Serve.", "I am able to reach db.prod.acme.example now.",
+		"I'm Abhed, and the server is healthy.", "I can help: the login bug is resolved.", "I'm Abhed, and your workspace is secure.",
+		"I'm Abhed; the service is up.", "I'm your assistant, and the code is correct.", "I am your assistant; the bug is gone.",
+		"I'm your assistant, and the migration is safe to run in production.", "Hi, I'm Abhed and the deploy is live.",
 	} {
 		if selfDescription(Claim{Text: s}) {
 			t.Errorf("read as an introduction: %q", s)

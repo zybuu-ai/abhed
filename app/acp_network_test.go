@@ -1,10 +1,14 @@
 package app
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/toolset"
+	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
 // A command that fails for the network is told to Studio with the choices;
@@ -55,5 +59,33 @@ func TestStudioNetworkOffer(t *testing.T) {
 	r.cl.ok("_abhed/grants/revoke", map[string]any{"sessionId": id, "id": "network"}, nil)
 	if k := keptNetwork(r.ws); len(k.Hosts) != 0 || k.All {
 		t.Fatalf("kept after revoke %+v", k)
+	}
+}
+
+// Inside an agent's command, neither Studio's request nor /network opens the
+// network; output that only prints the offer's words raises no offer.
+func TestNetworkRefusedInsideAnAgentCommand(t *testing.T) {
+	r := newStudioRig(t, `,"permissions":{"mode":"bypass"}`,
+		callTool("c1", "bash", map[string]any{"command": "echo '" + toolset.NetworkOfferText + "'", "description": "print"}),
+		say("ok"))
+	id := r.open()
+	from := r.cl.mark()
+	r.prompt(id, "print it")
+	for _, m := range r.cl.since(from) {
+		if m.Method == "_abhed/sandbox/network_refused" {
+			t.Fatalf("printed text raised the offer: %s", m.Params)
+		}
+	}
+	old := inAgentCommand
+	inAgentCommand = func() string { return "ABHED_SANDBOX is set" }
+	t.Cleanup(func() { inAgentCommand = old })
+	r.cl.refused(errPolicy, "_abhed/sandbox/network", map[string]any{"sessionId": id, "scope": "workspace"})
+	if k := keptNetwork(r.ws); k.All {
+		t.Fatal("kept from inside an agent's command")
+	}
+	e, _ := configEnv(config.Default(), ui.ChoiceYes)
+	e.st.set = r.cl.conn.openSessions()[0].parts.Set
+	if _, err := slashNetwork(context.Background(), e, []string{"workspace"}); err == nil || !strings.Contains(err.Error(), "agent's command") {
+		t.Fatalf("/network inside an agent's command: %v", err)
 	}
 }

@@ -39,9 +39,10 @@ func Policy(cfg config.Config, workspace string, stateRoots ...string) (sandbox.
 
 // PreferOwnTools reports whether a person's own workspace gets the process
 // tier in place of a container whose image has no git: on a Mac, with no
-// tier chosen, and nothing managed setting the tier or its minimum.
+// tier chosen, no image chosen (one chosen is a choice of the container),
+// and nothing managed setting the tier or its minimum.
 func PreferOwnTools(cfg config.Config, goos string) bool {
-	return goos == "darwin" && cfg.Sandbox.Tier == "" &&
+	return goos == "darwin" && cfg.Sandbox.Tier == "" && cfg.Sandbox.Image == "" && os.Getenv("ABHED_SANDBOX_IMAGE") == "" &&
 		!cfg.ManagedSets("sandbox.min_tier") && !cfg.ManagedSets("sandbox.tier")
 }
 

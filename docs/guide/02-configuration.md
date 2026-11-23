@@ -602,16 +602,18 @@ refused at load). It is your own setting: set it with
 asks first; `auto` and a stronger tier do not), or in `~/.abhed/config.json`.
 A workspace file cannot set it, and the managed file pins it when it does.
 
-On a Mac, with no `tier` and nothing in the managed file setting `tier` or
-`min_tier`, a container tier whose image has no `git` is passed over for the
-process tier, which still meets the minimum: with podman running, the bare
-default image (`debian:bookworm-slim`, no git, curl, ping or node, and no
-network to install them) is no place for your own workspace. The default
-image is known to lack them; another is looked in once per process, as
-`abhed doctor` does, and a look that fails keeps the container. Choose
-`"tier": "container"` to use the container anyway, or set `sandbox.image` to
-an image that has git. `abhed doctor` says why the tier was chosen, what the
-image lacks, and how to choose another within the minimum.
+On a Mac, with no `tier`, no `sandbox.image` or `ABHED_SANDBOX_IMAGE`, and
+nothing in the managed file setting `tier` or `min_tier`, the container tier on
+the default image is passed over for the process tier, which still meets the
+minimum: with podman running, the bare default image (`debian:bookworm-slim`,
+no git, curl, ping or node, and no network to install them) is no place for
+your own workspace. Naming an image is choosing the container, so it is kept.
+Choose `"tier": "container"` to use the default image anyway. `abhed doctor`
+says why the tier was chosen, what the image lacks, and how to choose another
+within the minimum. Where an image is looked in (doctor, or the tier choice),
+it is started as commands are (its entry point, then `/bin/sh -c`), once per
+process and for at most 10 seconds; a look that fails keeps the container and
+the choice says so.
 
 ### Opening the network from a session
 
@@ -642,10 +644,11 @@ is used. A tier that cannot hold the proxy (a container tier on a VM without
 ### What the session tells the model
 
 From the first message you send, the model is told what this session can do,
-from its real state: the tier, the network (off, open, an allowlist, or what
-you opened), that git remote operations (fetch, pull, push, clone) are not
-brokered and need the network, the Kubernetes clusters configured, and the
-tools the container image lacks. It is asked not to find these limits by
+from its real state: the tier, the network (off, open, an allowlist, what
+you opened, or the host's own where there is no sandbox), whether git remote
+operations (fetch, pull, push, clone) are run on the host for it, the
+Kubernetes clusters configured when Kubernetes is enabled, and the tools the
+container image lacks, as one line of printable text. It is asked not to find these limits by
 trial, nor to dispute them with you. It is the system prompt's last section,
 read again each turn, so a change (opening the network) reaches the next
 request; it is never part of a message, so a rewind, fork or compaction neither

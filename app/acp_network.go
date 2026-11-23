@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
-	"github.com/zybuu-ai/abhed/internal/toolset"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
@@ -78,7 +77,7 @@ func (c *acpConn) networkRefused(s *acpSession, ev abhed.Event) {
 		return
 	}
 	var o agent.Observation
-	if json.Unmarshal(ev.Payload, &o) != nil || o.Tool != "bash" || !strings.Contains(o.Content, toolset.NetworkOfferText) {
+	if json.Unmarshal(ev.Payload, &o) != nil || o.Tool != "bash" || !o.NetworkOff {
 		return
 	}
 	s.mu.Lock()

@@ -72,16 +72,24 @@ func TestConfigSetSandboxTier(t *testing.T) {
 // nothing managed setting the tier or its minimum.
 func TestPreferOwnToolsWhere(t *testing.T) {
 	c := config.Default()
+	t.Setenv("ABHED_SANDBOX_IMAGE", "")
 	if !sandboxconfig.PreferOwnTools(c, "darwin") || sandboxconfig.PreferOwnTools(c, "linux") {
 		t.Fatal("darwin only")
 	}
+	t.Setenv("ABHED_SANDBOX_IMAGE", "registry.example/own:1")
+	if sandboxconfig.PreferOwnTools(c, "darwin") {
+		t.Fatal("preferred over an image named in the environment")
+	}
+	t.Setenv("ABHED_SANDBOX_IMAGE", "")
 	chosen := c
 	chosen.Sandbox.Tier = "container"
 	managedMin := c
 	managedMin.ManagedKeys = []string{"sandbox.min_tier"}
 	managedTier := c
 	managedTier.ManagedKeys = []string{"sandbox.tier"}
-	for name, cc := range map[string]config.Config{"chosen": chosen, "managed min": managedMin, "managed tier": managedTier} {
+	image := c
+	image.Sandbox.Image = "docker.io/library/golang:1.26-bookworm"
+	for name, cc := range map[string]config.Config{"chosen": chosen, "managed min": managedMin, "managed tier": managedTier, "image chosen": image} {
 		if sandboxconfig.PreferOwnTools(cc, "darwin") {
 			t.Errorf("%s: preferred", name)
 		}
