@@ -528,8 +528,13 @@ usual: `add`, `commit`, `branch`, `checkout`, `fetch`, and on Linux
 `git worktree add`. A few commands cannot work inside the sandbox: `git
 worktree add`, `remove` and `prune` and `git submodule update`, given as the
 whole line, run through host git with Abhed's safety settings on the process
-tier and the fence (see [Permissions](04-permissions.md)); `git submodule
-add` still fails there, and the container and vm tiers run none of them on
+tier and the fence (see [Permissions](04-permissions.md)). `git fetch`,
+`pull`, `push`, `clone` and `ls-remote` typed here have their network part
+run through your own git on the host, with your keys, where the sandbox
+holds git's configuration; a pull's merge, a clone's checkout and your own
+pre-push hook run in the sandbox, and no hook runs on the host (see
+[Permissions](04-permissions.md#git-fetch-pull-push-and-clone-through-your-own-git)).
+`git submodule add` still fails there, and the container and vm tiers run none of them on
 the host, so run those outside Abhed. **Changes** and **Review** compare each
 file with what it held before its first edit, by the server rather than
 through a command, and are unaffected.

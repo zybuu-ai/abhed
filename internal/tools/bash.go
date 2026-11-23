@@ -1102,6 +1102,10 @@ func withNote(content, note string) string {
 	return strings.TrimRight(content, "\n") + "\n\n" + note
 }
 
+// HostGitLine reports a line the host git broker runs on the host, or
+// refuses there; set by that package, which this one cannot import.
+var HostGitLine func(command string) bool
+
 // AskHost is HostAsk for a call, in the session's folder.
 func (b Bash) AskHost(s *Session, key string, raw json.RawMessage) (reason, step, bind string, err error) {
 	if b.HostAsk == nil || s == nil {
@@ -1141,6 +1145,11 @@ func (b Bash) command(ctx context.Context, cwd string, a bashArgs) (*exec.Cmd, e
 	b.forward(cmd, gitNames)
 
 	if len(a.Secrets) > 0 {
+		// Git run on the host as the person needs none of the vault, and gets none.
+		if b.HostAsk != nil && HostGitLine != nil && HostGitLine(a.Command) {
+			sandbox.Release(cmd)
+			return nil, errors.New("secrets are not given to git run on the host as you; run it without them")
+		}
 		env, err := b.Secrets(a.Secrets)
 		if err != nil {
 			sandbox.Release(cmd)

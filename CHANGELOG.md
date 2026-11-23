@@ -244,7 +244,10 @@ All notable changes to Abhed are recorded here. The format follows
   command line; the remote programs are git's own. A repository whose own
   configuration names a hook, a remote helper, another work tree, an upload
   or receive program, a proxy, an `http.*` setting, a URL rewrite, an SSH
-  command, askpass or credential helper is not brokered, nor is one whose git folder moved since the session started. It
+  command, askpass or credential helper is not brokered, nor is one whose
+  git folder moved since the session started, nor anything while the
+  person's global or system git configuration, a file it includes or the
+  file `~/.gitconfig` links to lies where commands can write. It
   reaches only the remotes the repository had when the session started, by
   name, or a clone URL the person approves; a remote added or changed since,
   a forced or deleting push and a clone are asked each time, and a call runs
@@ -349,8 +352,8 @@ All notable changes to Abhed are recorded here. The format follows
   kept with the workspace's kept approvals and revoked there. Default-deny
   stays the default.
 - The session tells the model, from the first message, what it can do from
-  its real state: the tier, the network, that git remote operations are not
-  brokered, the clusters configured and the tools the image lacks, and asks it
+  its real state: the tier, the network, whether git remote operations are
+  brokered through host git, the clusters configured and the tools the image lacks, and asks it
   not to find these by trial or dispute them with the person. It is the
   system prompt's last section, read again each turn, never part of a
   message; recorded as `session.facts` when it changes.

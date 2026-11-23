@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // Brokered reports whether line is a git command run on the host for the
@@ -33,6 +34,8 @@ func BrokersRemotes(sb sandbox.Sandbox) bool {
 	}
 	return false
 }
+
+func init() { tools.HostGitLine = Brokered }
 
 // noProtocol names no transport git has, so git reaches no remote.
 const noProtocol = "abhed-none"

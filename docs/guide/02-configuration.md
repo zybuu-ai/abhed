@@ -787,7 +787,10 @@ is used. A tier that cannot hold the proxy (a container tier on a VM without
 From the first message you send, the model is told what this session can do,
 from its real state: the tier, the network (off, open, an allowlist, what
 you opened, or the host's own where there is no sandbox), whether git remote
-operations (fetch, pull, push, clone) are run on the host for it, the
+operations (fetch, pull, push, clone) have their network part run through
+your own git on the host for it (on the process tier and the fence where
+the sandbox holds git's configuration; see
+[Permissions](04-permissions.md#git-fetch-pull-push-and-clone-through-your-own-git)), the
 Kubernetes clusters configured when Kubernetes is enabled, and the tools the
 container image lacks, as one line of printable text. It is asked not to find these limits by
 trial, nor to dispute them with you. It is the system prompt's last section,

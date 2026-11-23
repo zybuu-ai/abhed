@@ -91,3 +91,35 @@ func TestR3RefNameInHeredoc(t *testing.T) {
 	b2, _ := os.ReadFile(got)
 	t.Logf("hook input: %q", b2)
 }
+
+// A pull cancelled while its fetch is on the network (no hook, no relay)
+// leaves no git or ssh process behind.
+func TestCancelDuringPullFetchLeavesNothing(t *testing.T) {
+	r := newRemoteRig(t)
+	root := filepath.Dir(r.ws)
+	stub := filepath.Join(root, "ssh-stub")
+	slow := filepath.Join(root, "ssh-slow-stub")
+	if err := os.WriteFile(slow, []byte("#!/bin/sh\nsleep 8\nexec "+stub+" \"$@\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gc := filepath.Join(r.home, ".gitconfig")
+	cfg, _ := os.ReadFile(gc)
+	if err := os.WriteFile(gc, []byte(strings.Replace(string(cfg), stub, slow, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b := r.broker(Network{Open: true})
+	ctx, cancel := context.WithTimeout(r.ctx("c-pull"), 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, _ = runCmd(t, b.Command(ctx, r.ws, "git pull --ff-only"))
+	if d := time.Since(start); d > 7*time.Second {
+		t.Fatalf("the cancelled pull took %v", d)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	ps, _ := exec.Command("ps", "-axo", "pid,command").Output()
+	for _, l := range strings.Split(string(ps), "\n") {
+		if strings.Contains(l, root) && (strings.Contains(l, "ssh-slow-stub") || strings.Contains(l, "git") && strings.Contains(l, "fetch")) {
+			t.Errorf("LEFT AFTER THE CANCEL: %s", l)
+		}
+	}
+}

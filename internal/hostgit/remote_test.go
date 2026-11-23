@@ -75,6 +75,10 @@ func newRemoteRig(t *testing.T) *remoteRig {
 	if err := os.MkdirAll(cloneDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// The rig's home is in the temp folder; the checks name their own areas.
+	oldAreas := writableAreas
+	writableAreas = func() []string { return nil }
+	t.Cleanup(func() { writableAreas = oldAreas })
 	oldParent, oldRelay := cloneParent, relayParent
 	cloneParent = func() (string, error) { return cloneDir, nil }
 	relayParent = func() (string, error) { return cloneDir, nil }
@@ -847,5 +851,41 @@ func TestBrokerPrePushTheSandboxCannotRunStopsThePush(t *testing.T) {
 	}
 	if run(t, r.bare, "rev-parse", "main") != before {
 		t.Fatal("the push went on without its hook")
+	}
+}
+
+// The person's configuration is trusted as theirs only where no command can
+// write it: an include in a folder the sandbox writes, or one git cannot
+// read (so what it brings is not known), stops the broker, clones too.
+func TestBrokerNeedsThePersonsConfigOutOfReach(t *testing.T) {
+	r := newRemoteRig(t)
+	area := filepath.Join(r.home, "writable")
+	if err := os.MkdirAll(area, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inc := filepath.Join(area, "extra.gitconfig")
+	if err := os.WriteFile(inc, []byte("[user]\n\tname = x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run(t, r.home, "config", "--global", "include.path", inc)
+	b := r.broker(Network{Open: true})
+	if _, _, _, err := b.Ask(r.key("c"), r.ws, "git fetch"); err != nil {
+		t.Fatalf("an include outside every writable area: %v", err)
+	}
+	writableAreas = func() []string { return []string{area} }
+	for _, line := range []string{"git fetch", "git clone git@git.example:team/app.git copy"} {
+		if _, _, _, err := b.Ask(r.key("c"), r.ws, line); err == nil || !strings.Contains(err.Error(), "which commands can write") {
+			t.Fatalf("%s with an include in a writable folder: %v", line, err)
+		}
+	}
+	writableAreas = func() []string { return nil }
+	if os.Geteuid() != 0 {
+		if err := os.Chmod(inc, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(inc, 0o600) })
+		if _, _, _, err := b.Ask(r.key("c"), r.ws, "git fetch"); err == nil || !strings.Contains(err.Error(), "could not be read in full") {
+			t.Fatalf("an unreadable include: %v", err)
+		}
 	}
 }

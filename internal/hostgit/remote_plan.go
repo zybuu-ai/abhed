@@ -58,6 +58,9 @@ func (b *HostBroker) plan(ctx context.Context, cwd string, op remoteOp) (plan, e
 		// Not a repository Abhed read at the start, or one it cloned.
 		return plan{sandboxed: true}, nil
 	}
+	if err := b.personConfigHeld(ctx, cwd, op.verb); err != nil {
+		return plan{}, err
+	}
 	// Where the sandbox binds git's files as each command starts, one started
 	// before the clone could still write the clone's configuration.
 	if start.cloned && (b.holdsNew == nil || !b.holdsNew()) {
@@ -145,6 +148,16 @@ func (b *HostBroker) plan(ctx context.Context, cwd string, op remoteOp) (plan, e
 	return p, nil
 }
 
+// personConfigHeld says why the person's own git configuration, which
+// host git takes its SSH command and credential helpers from, is not theirs
+// alone: a file of it, or one it includes, lies where commands can write.
+func (b *HostBroker) personConfigHeld(ctx context.Context, cwd, verb string) error {
+	if err := PersonConfigWritable(ctx, cwd, append([]string{b.workspace}, writableAreas()...)); err != nil {
+		return fmt.Errorf("git %s: %v, so Abhed does not run git %s on the host as you; move it out of the agent's reach, or run it yourself", verb, err, verb)
+	}
+	return nil
+}
+
 // allowed says why the egress allowlist refuses host and port, nil when it does not.
 func (b *HostBroker) allowed(verb, host string, port uint16, what string) error {
 	if b.net.Allows == nil {
@@ -184,6 +197,9 @@ func (b *HostBroker) planClone(ctx context.Context, cwd string, op remoteOp) (pl
 		}
 	}
 	if _, err := b.cloneTarget(ctx, cwd, op.dir); err != nil {
+		return plan{}, err
+	}
+	if err := b.personConfigHeld(ctx, cwd, "clone"); err != nil {
 		return plan{}, err
 	}
 	if err := b.allowed("clone", host, port, "the URL's host"); err != nil {

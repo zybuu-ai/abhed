@@ -264,7 +264,7 @@ func SessionNote(cfg config.Config, sb sandbox.Sandbox, n *Network) string {
 		b.WriteString("; cannot be opened: " + why)
 	}
 	if hostgit.BrokersRemotes(s) {
-		b.WriteString(". Git remotes brokered on the host.")
+		b.WriteString(". Git fetch, pull, push and clone reach remotes through the user's own git on the host (their pre-push hook runs here).")
 	} else {
 		b.WriteString(". Git remotes not brokered.")
 	}

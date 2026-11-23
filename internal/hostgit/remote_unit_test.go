@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // Each setting in the repository's own files that would steer host git
@@ -112,5 +114,12 @@ func TestMoveIntoRefusesAFolderSwappedForALink(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
 		t.Fatalf("written outside the workspace: %v", entries)
+	}
+}
+
+// The bash tool knows a brokered line from this package's own test.
+func TestToolsKnowsBrokeredLines(t *testing.T) {
+	if tools.HostGitLine == nil || !tools.HostGitLine("git fetch origin") || tools.HostGitLine("make") {
+		t.Fatal("tools.HostGitLine is not the broker's")
 	}
 }

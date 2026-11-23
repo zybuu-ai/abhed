@@ -243,9 +243,8 @@ func hostScript(ctx context.Context, dir string, env []string, runs [][]string) 
 	cmd := exec.CommandContext(ctx, "/bin/bash", "-c", b.String(), path) // #nosec G204 -- fixed shell; every word quoted
 	cmd.Dir = dir
 	cmd.Env = env
-	// Its own session: a cancel ends git, ssh and a relayed hook with it, and
-	// nothing else; a pipe a leftover holds does not keep Wait waiting.
-	sandbox.EndWithCommand(cmd)
+	// A pipe a leftover holds does not keep Wait waiting. Its own session
+	// is given by whoever runs it: the bash tool for a call, runNow here.
 	cmd.WaitDelay = 5 * time.Second
 	return cmd
 }
@@ -548,6 +547,8 @@ func (b *HostBroker) runNow(ctx context.Context, cwd string, op remoteOp, p plan
 		return "", cmd.Err
 	}
 	p.early = true
+	// Its own session: a cancel ends git and ssh with it, and nothing else.
+	sandbox.EndWithCommand(cmd)
 	b.recordStart(ctx, cwd, op, p, cmd)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out

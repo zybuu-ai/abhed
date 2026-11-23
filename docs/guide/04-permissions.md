@@ -1105,7 +1105,8 @@ submodule's protected config.
 
 So on the process tier and the fence, a command that is exactly `git
 worktree add`, `git worktree remove`, `git worktree prune` or `git submodule
-update` (plain words, the usual options only, no second command), already
+update` (and, below, the network part of `git fetch`, `pull`, `push`,
+`clone` and `ls-remote`) (plain words, the usual options only, no second command), already
 approved as any command is, runs through host git instead, with the settings
 Abhed's own git uses: hooks, fsmonitor, filters and every transport but https
 off. A path it names outside the workspace refuses it. Host git is not
@@ -1188,6 +1189,14 @@ cannot steer host git:
 - The repository's git folder must be the one it was when the session
   started, inside the workspace: a `.git` swapped for a link to another
   repository is refused.
+- Your own git configuration must be yours alone: if your global or system
+  file, a file either includes, or the file `~/.gitconfig` links to lies in
+  the workspace or a folder commands can write (a dotfiles checkout opened
+  as the workspace, say), nothing is brokered, as the agent could name the
+  SSH command or credential helper host git runs. The same check stops an
+  issue's push.
+- A brokered line is given no vault secret (`secrets`): git run on the host
+  as you needs none.
 - On Linux, the process tier (bubblewrap) and the fence hold git's files by
   binding them read-only as each command starts, so a command started
   before a clone could still write the clone's configuration. There, a
