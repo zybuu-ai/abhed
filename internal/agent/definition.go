@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -43,7 +44,7 @@ type Definition struct {
 	Background *bool
 	// Color is how /agents shows the role; it changes nothing enforced.
 	Color string
-	// Source is builtin, managed, workspace or operator.
+	// Source is builtin, managed, workspace, operator, plugin or session.
 	Source string
 	// Path is the file it was read from; SHA256 is that file's content hash.
 	Path   string
@@ -62,6 +63,8 @@ const (
 	SourceOperator  = "operator"
 	// SourceSession is a definition given for one run, with -agents.
 	SourceSession = "session"
+	// SourcePlugin is a definition an approved plugin added.
+	SourcePlugin = "plugin"
 )
 
 // ReservedNames are the built-in roles' names. A file cannot redefine them:
@@ -181,14 +184,75 @@ func (d *Definitions) worktreeNote() string {
 	return ""
 }
 
+// ListingBudget bounds the task tool's type listing and agent_type enum, in
+// bytes; the rest are counted, and still run by name.
+const ListingBudget = 8 << 10
+
+// tailRoom is what the "and N more" line needs, kept free while items remain after i.
+func tailRoom(i, n int) int {
+	if i < n-1 {
+		return 120
+	}
+	return 0
+}
+
 func (d *Definitions) listing() string {
 	var b strings.Builder
-	for _, name := range d.Names() {
+	names := d.Names()
+	for i, name := range names {
 		def, _ := d.Get(name)
-		b.WriteString("\n- ")
-		b.WriteString(name)
-		b.WriteString(" — ")
-		b.WriteString(def.Description)
+		line := "\n- " + name + " — " + def.Description
+		if b.Len()+len(line)+tailRoom(i, len(names)) > ListingBudget {
+			fmt.Fprintf(&b, "\n- and %d more; give agent_type a word from the type or the task to search them", len(names)-i)
+			break
+		}
+		b.WriteString(line)
 	}
 	return b.String()
+}
+
+// enum is every type's name when they fit ListingBudget, or nil: a part of
+// them as an enum would forbid the rest, which a task may still name.
+func (d *Definitions) enum() []string {
+	names := d.Names()
+	n := 0
+	for _, name := range names {
+		if n += len(name) + 3; n > ListingBudget {
+			return nil
+		}
+	}
+	return names
+}
+
+// Search is the types whose name or description holds a word of query, best
+// first, at most limit.
+func (d *Definitions) Search(query string, limit int) []*Definition {
+	words := strings.Fields(strings.ToLower(strings.NewReplacer("-", " ", "_", " ").Replace(query)))
+	type hit struct {
+		def   *Definition
+		score int
+	}
+	var hits []hit
+	for _, name := range d.Names() {
+		def, _ := d.Get(name)
+		low, desc := strings.ToLower(name), strings.ToLower(def.Description)
+		score := 0
+		for _, w := range words {
+			if strings.Contains(low, w) {
+				score += 3
+			}
+			if strings.Contains(desc, w) {
+				score++
+			}
+		}
+		if score > 0 {
+			hits = append(hits, hit{def, score})
+		}
+	}
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].score > hits[j].score })
+	out := make([]*Definition, 0, min(len(hits), limit))
+	for _, h := range hits[:min(len(hits), limit)] {
+		out = append(out, h.def)
+	}
+	return out
 }

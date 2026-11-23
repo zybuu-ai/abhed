@@ -240,6 +240,8 @@ func unanswered(ctx context.Context, held bool) string {
 }
 
 type Config struct {
+	// Plugins are the approved plugins in force, recorded once as EvPluginLoaded.
+	Plugins []PluginInForce
 	// Egress is the guard of the tool set the loop runs with, egress.Unguarded
 	// outside the allowlist; nil names none. Subagents keep it.
 	Egress *egress.Guard
@@ -281,7 +283,7 @@ const ContinueCutReply = "Your reply was cut off before it finished. Continue it
 // cap. The floors keep a lower layer from cutting every thinking reply.
 const (
 	DefaultReasoningStallTokens = 8000
-	DefaultReasoningStall       = 10 * time.Minute
+	DefaultReasoningStall       = 5 * time.Minute
 )
 
 // The floors of the reasoning bounds, vars so tests can lower them.
@@ -309,6 +311,8 @@ type Loop struct {
 	// loop, by path and hash, guarded by startupMu.
 	startupMu    sync.Mutex
 	startupNoted string
+	// pluginsNoted is set once EvPluginLoaded is recorded, under startupMu.
+	pluginsNoted bool
 	Adapter      model.Adapter
 	// Provider is the configured name Adapter came from, when the surface
 	// knows it. A subagent that runs on its parent's model records it.
@@ -851,7 +855,7 @@ func NewLoop(a model.Adapter, reg *tools.Registry, pol *policy.Engine,
 	// every session the tool that reads the last one's record.
 	if reg != nil && rec != nil && rec.store != nil {
 		l.Tools = reg.Clone()
-		l.Tools.Add(Recall{Store: rec.store, SessionID: rec.sessionID})
+		l.Tools.Replace(Recall{Store: rec.store, SessionID: rec.sessionID})
 	}
 	return l
 }
@@ -914,6 +918,9 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 		return l.run(ctx)
 	}
 	if err := l.noteTrustedStartup(); err != nil {
+		return TermError, err
+	}
+	if err := l.notePlugins(); err != nil {
 		return TermError, err
 	}
 	text, withheld := l.withholdSecrets(m.Text)
@@ -1536,7 +1543,13 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	if stallTokens <= 0 {
 		stallTokens = DefaultReasoningStallTokens
 	}
+	// The backstop stays well under the call's own cap, half of it, or the
+	// cap ends a slow reasoning reply as an error before the backstop can
+	// cut and retry it; the floors still hold.
+	// Half the cap wins over the floor, so a short call timeout still leaves
+	// the backstop room to cut and retry.
 	stallAfter, stallTokens = max(stallAfter, minReasoningStall), max(stallTokens, minReasoningStallTokens)
+	stallAfter = min(stallAfter, model.CallTimeoutOf(l.Adapter)/2)
 	// Never cut within the thinking the request itself allows.
 	budget := model.ThinkingBudget(l.Adapter, req)
 	stallTokens = max(stallTokens, budget)
@@ -1687,7 +1700,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 				flushThinking(false)
 			}
 		case model.ChunkToolCall:
-			calls = append(calls, withCallID(*chunk.ToolCall, calls))
+			calls = append(calls, withCallID(l.realToolName(*chunk.ToolCall), calls))
 		case model.ChunkError:
 			streamErr = chunk.Err
 		case model.ChunkDone:
@@ -2826,6 +2839,30 @@ func flushable(s string) bool {
 		return true
 	}
 	return false
+}
+
+// wireName is model.WireName; a test puts in one that collides.
+var wireName = model.WireName
+
+// realToolName maps a call by a wire name the request did not carry (a
+// deferred tool's) to the one tool it names; an ambiguous one is left unknown.
+func (l *Loop) realToolName(c model.ToolCall) model.ToolCall {
+	if l.Tools == nil || !model.ValidWireName(c.Name) {
+		return c
+	}
+	if _, ok := l.Tools.Get(c.Name); ok {
+		return c
+	}
+	var match []string
+	for _, n := range l.Tools.Names() {
+		if n != c.Name && wireName(n) == c.Name {
+			match = append(match, n)
+		}
+	}
+	if len(match) == 1 {
+		c.Name = match[0]
+	}
+	return c
 }
 
 func toolDefs(r *tools.Registry) []model.ToolDef {

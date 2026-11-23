@@ -249,7 +249,7 @@ func TestDebugProcessTierUnderAllowlist(t *testing.T) {
 	tool, _ := s.parts.Loop.Tools.Get("bash")
 	b := tool.(tools.Bash)
 	b.Isolation.Allowlist = true
-	s.parts.Loop.Tools.Add(b)
+	s.parts.Loop.Tools.Replace(b)
 	if err := setDebugConsent(r.ws, true); err != nil {
 		t.Fatal(err)
 	}

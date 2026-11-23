@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/nlink"
 )
 
@@ -41,11 +42,11 @@ type TrustStore struct {
 
 // DefaultTrustStore is the person's store under their home directory.
 func DefaultTrustStore() (TrustStore, error) {
-	home, err := os.UserHomeDir()
+	p, err := home.PersonPath("command-trust.json")
 	if err != nil {
 		return TrustStore{}, err
 	}
-	return TrustStore{Path: filepath.Join(home, ".abhed", "command-trust.json")}, nil
+	return TrustStore{Path: p}, nil
 }
 
 func (s TrustStore) read() (trustFile, error) {

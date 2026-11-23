@@ -1,0 +1,229 @@
+# Plugin bundles
+
+Status: Draft · 2026-11-17 · 1.3.0 track T8
+
+A plugin bundle packages agents, skills, slash commands, simple hooks, MCP
+server definitions and docs under one signed manifest, so a person can install
+them together and an organisation can say which bundles may run.
+
+## Goals and the rule
+
+Everything a bundle can add already exists as a file Abhed loads under trust.
+A bundle adds no new kind of power. The rule is the one extensions follow:
+**a plugin adds content, never policy.**
+
+- A bundle cannot set any configuration key. Its hooks are veto-only simple
+  hooks. Its MCP servers face `mcp.allowed`/`mcp.denied`, the sandbox and the
+  egress guard like any other server. Its agents and commands can only narrow
+  tools. Deny rules, the sandbox tier and egress rules stay as they were.
+- Nothing in a bundle runs at install. Install reads bytes, checks hashes and
+  a signature, and copies files. Code runs only later, through the hook runner
+  or the MCP gateway, under the session's sandbox.
+- Installed content is inert until a person approves that exact content.
+- A plugin never takes a name already in use. It ranks right after the
+  person's own files in every loader: organisation and user names always win.
+  A plugin's skills and commands win over a workspace's, and a workspace's agent
+  definitions win over a plugin's, as they already win over the person's own.
+- Everything the person approves is shown, including each header a server
+  sends from the environment. A manifest string a terminal would not print as
+  itself is refused.
+
+## Format
+
+A bundle is a directory, or a `.tar.gz`/`.tgz` of one, holding:
+
+```
+abhed-plugin.json                  manifest (what is signed)
+abhed-plugin.json.sigstore.json    optional Sigstore bundle over the manifest
+agents/*.md  skills/<name>/...  commands/*.md  hooks/...  mcp/...  docs/...
+README*  LICENSE*
+```
+
+The manifest names the bundle (`name`, `version`, `publisher`, `description`),
+the minimum Abhed version (`abhed`), every file with its SHA-256, the hooks and
+MCP servers inline, and the `capabilities` it requests: `tools`, `egress`
+hosts, hook `events`, `mcp_servers`, and the `env` variables its servers send
+as headers. A variable named like a credential, or in a family that holds
+Abhed's, a model provider's, a cloud's or a forge's credentials, is refused.
+Loading refuses links, devices, `..`, absolute paths, files not listed, listed
+files missing, a hash mismatch, names that differ only by case or Unicode
+form, control and invisible characters in any string, archives that inflate
+past the bound, and any content that needs a capability the manifest does not
+request. The
+bundle's identity is the SHA-256 of the manifest bytes; since the manifest
+lists every file's hash, that one digest covers the whole bundle.
+
+`${ABHED_PLUGIN_ROOT}` in a hook command or an MCP server's command and
+arguments is replaced with the installed folder. The macOS process tier and
+the Linux fence tier let commands read and run, never write, `~/.abhed/plugins`,
+as they do `~/.abhed/skills`. Bubblewrap, container and microVM tiers do not
+mount it.
+
+## Verifying
+
+Two ways to trust a bundle, and nothing else:
+
+1. **Sigstore keyless signature.** `cosign sign-blob --yes --bundle
+   abhed-plugin.json.sigstore.json abhed-plugin.json` with cosign 3, or with
+   cosign 2.4 or later and `--new-bundle-format`. Bundles 0.2 and 0.3 with a
+   Rekor v1 `hashedrekord` 0.0.1 entry and its signed entry timestamp are read.
+   cosign's legacy bundle and Rekor v2 entries, which have no such timestamp,
+   are refused, and the message says which. Abhed verifies the bundle
+   offline: the leaf certificate chains to a certificate authority in a
+   Sigstore trusted root (`trusted_root.json`), the transparency log's signed
+   entry timestamp verifies against a log key in that root and falls inside the
+   certificate's validity, the log entry covers this manifest's digest and
+   signature, and the signature verifies over the manifest. The signer is the
+   certificate's identity (SAN email or URI) and issuer (Fulcio OID
+   1.3.6.1.4.1.57264.1.8 or .1.1). It must match an allowed publisher. No
+   network is used; the trusted root is a file the person or the organisation
+   provides. A bad signature is a refusal at install, never a fallback to
+   unsigned. The tests check a real bundle from the cosign v3.1.4 release
+   against the public-good trusted root (`plugin/testdata/sigstore`), and
+   tampered copies of it.
+2. **SHA-256 pin**, for air-gapped sites. Either the person gives
+   `-sha256 <manifest digest>` at install, and their approval of exactly that
+   digest is recorded, or a granting layer (below) lists the digest in
+   `plugins.allowed_bundles`.
+
+At every load the staged signature is verified again, offline, against two
+roots. The **org root** is the managed `plugins.trusted_root`, else the
+public-good root built into Abhed. A signer counts toward an allow list or
+`require_signature` only when it verifies against the org root. The
+**person's root** is their own `plugin-trusted-root.json`, else the org root,
+and it counts only for their own publishers. A CA the person made therefore
+cannot meet an organisation's list. The signer used for policy and named in
+the record is the one verified then. What `plugins.json` says about the
+signer is never trusted. A pin counts only for the digest the files hash to
+now. A trusted source's word at install is recorded as that pin. A load
+never takes a source from the state file.
+
+The certificate must name exactly one identity, and its v1 and v2 issuer
+extensions must agree. An ECDSA log whose `keyId` is not its key's SHA-256
+makes the trusted root invalid; a log of another kind is left out. Identities
+with dot segments, or with escaped `.`, `/` or `\`, match no publisher.
+
+## Install, approve, upgrade, remove
+
+`abhed plugin install <path|url|name>` reads the bundle, verifies it, applies
+policy, and prints what it adds (each agent, skill, command, hook and server)
+and what it requests (tools, egress hosts, hook events). The files are copied to
+`~/.abhed/plugins/<name>/<digest>/` and recorded as **pending**. Pending
+content never loads. At a terminal the person is asked to approve now.
+Otherwise `abhed plugin approve <name>` asks, or `-sha256 <digest>` approves
+that exact content without a prompt. Approval and every state change are
+refused inside an agent's command.
+
+Installing a different version of an installed plugin is an upgrade. It shows
+the diff (files, hooks, servers and capabilities added, removed or changed) and
+is staged as pending. The approved version keeps loading until the new one is
+approved, and then the old folder is removed. `abhed plugin remove` deletes the
+folder and the state entry.
+
+State lives in `~/.abhed/plugins.json`, which the person owns; once someone
+signs in, the store and its state are in that person's folder instead
+(`home.PersonPath`), and the first account takes the machine's over. A state file
+naming a folder other than its digest's is refused whole, so it can never
+point a removal outside the store. On every load each approved plugin's
+manifest and files are hashed again against the approved digest. A plugin that
+changed on disk does not load, and the warning says why. The check runs at
+session start. No sandboxed command can write the store on any tier, but a
+program running as the person outside Abhed could change it mid-session.
+
+A plugin does not load in `abhed serve` sessions, which are other people's.
+
+## Policy
+
+`plugins` is a managed-only configuration key, so the managed file or the
+signed org policy sets it. A user file, `-settings` or a workspace setting it
+is set aside:
+
+```json
+"plugins": {
+  "disabled": false,
+  "require_signature": true,
+  "allowed_publishers": [{"identity": "release@acme.example", "issuer": "https://accounts.google.com"}],
+  "allowed_bundles": ["<manifest sha256>"],
+  "sources": [{"name": "acme", "url": "https://abhed.acme.example/v1/plugins/index"}],
+  "org_source": true,
+  "trusted_root": "/etc/abhed/sigstore/trusted_root.json"
+}
+```
+
+An org policy may set `disabled` and `require_signature` (only to true),
+`allowed_publishers`, `allowed_bundles` and `org_source`. It never sets
+`sources` or `trusted_root`, because those name a server or a file. Those come
+from the machine's managed file. `org_source` adds the org server this machine
+takes its signed policy from as the source `org`.
+
+`disabled` loads and installs nothing. The machine's file and the org policy
+are each a layer. A bundle must pass every layer that sets `allowed_publishers`
+or `allowed_bundles` (signed by a listed publisher, or a listed digest), so
+neither layer widens the other. Passing a layer is enough to trust a bundle
+only when the layer *grants*: the machine's file does, and an org policy does
+only when the machine pins its keys and the policy is fresh and verified. A
+stale, refused or fallback policy keeps its lists, which still narrow, but
+they never grant. Otherwise the layer only narrows, and the trust must come
+from the person's own publishers or pin, which count only within every
+layer. `require_signature`
+refuses pins. When any source is set, installs come only from a source: a
+name is looked up in each index, the archive must sit under the source, and
+its digest must be the one the index lists. When the source is trusted (one
+the machine's file names, or the org server when the org's keys are pinned),
+that is the trust basis `org-source`. It is kept as the approval of exactly
+that digest through the source (`source_pin`). That approval stands at every
+later load, under `require_signature` too as long as the signature verifies
+against the org root. Loads never ask the source again. Turning `org_source`
+off, removing a source, or removing a bundle from an index therefore does not
+unload an installed plugin; the allow lists and `disabled` do. Install and
+approve judge a bundle from what is kept, exactly as a load will, and refuse
+one that would not load. Policy is applied again at every load, so a later
+org change to the lists unloads a plugin that no longer passes.
+
+The built-in public-good root is a dated snapshot. Past a year, loading and
+`abhed plugin list` say so. Rotations and revocations reach a build only
+through an upgrade or a managed `plugins.trusted_root`. A workspace has no way to enable a plugin:
+installs and approvals live in the person's own state, and the policy is
+managed.
+
+Without a granting layer, the person's own publishers (`abhed plugin
+publishers add`) decide who may sign. A URI identity may end in `*` right
+after `/` or `@`. An email identity is named whole.
+
+## Record
+
+Install, upgrade, approve, remove, and changes to the person's publishers or
+trusted root are appended to `~/.abhed/config-changes.jsonl`, as `abhed mcp
+add` changes are, with the plugin's name, trust basis and digest. Refused
+installs are logged too. The next session records each line as
+`config.changed` in its hash-chained record. Each session also records
+`plugin.loaded` once, before its first message, listing the plugins in force
+and their digests. Both map to OCSF Device Config State Change (5019).
+Hooks and MCP calls are recorded as they always are, under their prefixed
+names (`<plugin>/<hook>`, `<plugin>-<server>`).
+
+## Editions
+
+Everything above is Community: one person installing, verifying and governing
+plugins on their own machine, and an organisation's managed file or signed
+policy constraining it. Team adds the **private plugin source**. The org server
+keeps a list of bundles that admins upload or remove through an admin API. The
+server checks each upload with the same Community reader (hashes, layout,
+capabilities, and the signature against the server's trusted root when it has
+one), then serves the index (`GET /v1/plugins/index`) and the archives to
+signed-in laptops. The org policy turns on `plugins.org_source`. Community knows
+only the index format and how to fetch it with the profile's token, so the
+boundary between editions is a document format, not code. The reader,
+verifier and index types are the public package `plugin` (an experimental API
+until 2.0), which the Team server imports.
+
+## Out of scope for now
+
+- Online Sigstore checks: TUF refresh of the trusted root, Rekor inclusion
+  proofs and checkpoints, and the certificate's CT SCTs. Verification is
+  offline, against the signed entry timestamp.
+- Rekor v2 entries, which need an RFC 3161 timestamp and a checkpoint.
+- Bubblewrap, container and microVM tiers do not mount `~/.abhed/plugins`. A
+  plugin hook or server that needs its own files runs on the macOS process
+  tier or the Linux fence tier.
+- A public marketplace.

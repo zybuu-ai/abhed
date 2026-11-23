@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -409,7 +410,7 @@ func changedRegion(a, b string, context int) (string, string) {
 
 // editorFiles are the paths in a workspace an editor reads as its own
 // configuration; the agent may not change them (§2.6).
-var editorFiles = []string{".vscode", ".devcontainer", ".git/config", ".git/hooks"}
+var editorFiles = []string{".vscode", ".devcontainer", ".git/config", ".git/config.worktree", ".git/hooks", ".git/modules", ".git/info/attributes"}
 
 // protectedPaths are a workspace's editor files as paths for the sandbox, from
 // the workspace as given and resolved, with the *.code-workspace files that
@@ -428,7 +429,8 @@ func protectedPaths(ws string) []string {
 			}
 		}
 		for _, dir := range gitDirs(root) {
-			out = append(out, filepath.Join(dir, "config"), filepath.Join(dir, "hooks"))
+			out = append(out, filepath.Join(dir, "config"), filepath.Join(dir, "config.worktree"), filepath.Join(dir, "hooks"),
+				filepath.Join(dir, "modules"), filepath.Join(dir, "info", "attributes"))
 		}
 		out = append(out, nestedGit(root)...)
 	}
@@ -826,6 +828,9 @@ func mcpView(cfg config.Config, set *toolset.Set) []any {
 			v["error"] = mcpError(st.Err)
 		}
 		v["status"] = status
+		if m.URL != "" {
+			v["auth"] = mcpAuthView(m, known && st.Err != nil && errors.Is(st.Err, mcp.ErrUnauthorized), time.Now())
+		}
 		if refused := refusedNames(st.Refused); len(refused) > 0 {
 			v["refusedTools"] = refused
 		}

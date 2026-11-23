@@ -49,6 +49,7 @@ configuration](#trusting-the-workspace-configuration).
 | `agents` | where subagent definitions are loaded from, or `disabled` — [Agent definitions](17-agent-definitions.md) |
 | `subagents` | what a background task's result does while the session is idle — [Parallel subagents](14-parallel-subagents.md#background-tasks) |
 | `extensions` | processes that can intercept — [Extensions](07-extensions.md) |
+| `plugins` | which plugin bundles may be installed and loaded: `disabled`, `require_signature`, `allowed_publishers`, `allowed_bundles`, `sources`, `org_source`, `trusted_root` — managed only, [Plugins](41-plugins.md#policy) |
 | `mcp` | Model Context Protocol servers — [MCP](08-mcp.md); `allowed` and `denied`: which servers may ever start — [Allowed models and MCP servers](#allowed-models-and-mcp-servers) |
 | `custom_providers` | providers added without a rebuild |
 | `network` | `upstream_proxy`: a corporate HTTP proxy all of Abhed's connections, and the allowlisted commands' traffic, go out through, with a CA bundle, credentials by secret name, a `no_proxy` list and `resolve_via_proxy` (off); never from a workspace, and the managed file can force it — [Network policy](21-network-policy.md#a-corporate-upstream-proxy) |
@@ -158,6 +159,15 @@ to let that many through. It applies to the OpenAI-compatible types (`ollama`,
 gateways); a value above 0 on any other type, or a negative one, is refused at
 startup on every provider, not only the default.
 
+**`max_tools` is the most tools one request to a provider offers.** 0, the
+default, is 128, the limit OpenAI-compatible endpoints set; it is used for
+every type unless set. Searched-for MCP tools are unloaded, least recently
+used first, to stay within it, and a request that the tools always offered
+still put past it is refused before it is sent, naming the count and the
+limit; see [MCP limits](08-mcp.md#limits). Set it lower for a local model
+that handles few tools well, or higher for a provider that takes more. A
+negative value is refused at startup.
+
 ## Limits
 
 ```json
@@ -180,8 +190,11 @@ limit](04-permissions.md#turn-limit).
 `reasoning_stall_tokens` (8000 by default) cuts a model reply that has only
 reasoned, with no text or tool call, past that many reasoning tokens
 (counted at about four characters a token), instead of holding it to the
-call's ten-minute cap. `reasoning_stall_seconds` (600 by default) is a time
-backstop for the same. Neither cuts a reply whose reasoning is still within
+call's ten-minute cap. `reasoning_stall_seconds` (300 by default) is a time
+backstop for the same, held to half the provider's `call_timeout_seconds`
+(which wins over the 30-second floor)
+so that it, not the call's cap, ends a slow reasoning reply and the turn
+can ask again. Neither cuts a reply whose reasoning is still within
 the request's own thinking budget (`thinking_budget`), which raises the token
 bound to it. Values under 1000 tokens or 30 seconds are raised to those
 floors, so a repository's configuration cannot cut every thinking reply. A
@@ -194,7 +207,9 @@ set a Gemini reply rarely reaches the bound and is held by the call's
 timeouts instead.
 
 A cut reply is charged as any cut call is (see below), and the turn asks once
-more, with thinking off (no effort, and no thinking budget sent) and a nudge
+more, with thinking off (no effort, and no thinking budget sent; for
+Ollama, whose `/v1` endpoint ignores `think`, `reasoning_effort: "none"` as
+well) and a nudge
 to answer or make the one tool call it needs. If an answer arrives just as
 the cut comes, it is kept; a text answer cut part way is kept and the model
 asked to finish it (`-p` returns the two parts as one answer), and a second
@@ -242,7 +257,10 @@ raised is marked `estimated` on the call:
   back.
 - A cut call (cancelled, timed out, or ended by an error once its stream
   opened) is charged at least its prompt and what came back. Under a dollar
-  cap, or for a model that reasons out of sight, it is charged at the most
+  cap, or for a model that may reason out of sight (the official OpenAI
+  API's o-series and gpt-5, or any server with a `think` switch other than
+  a local one known to stream its reasoning: Ollama, llama.cpp, or vLLM,
+  TGI or SGLang on a loopback address), it is charged at the most
   the request allowed: the provider took the request and worked, and bills
   what it produced whether or not it arrived, so interrupting a run, or a
   connection that drops, does not save money under a cap.

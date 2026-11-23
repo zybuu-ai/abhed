@@ -43,6 +43,7 @@ type Server struct {
 	ISS           bool
 	DenyRefresh   bool
 	asked         []string
+	refusedGrants int
 	ClientSecret  string
 }
 
@@ -193,6 +194,7 @@ func (s *Server) serveAS(w http.ResponseWriter, r *http.Request) {
 			}
 		case "refresh_token":
 			if s.DenyRefresh || f.Get("refresh_token") != s.refresh {
+				s.refusedGrants++
 				writeJSON(w, 400, map[string]string{"error": "invalid_grant", "error_description": "gone"})
 				return
 			}
@@ -239,6 +241,13 @@ func browserWith(t *testing.T, tr http.RoundTripper) func(string) error {
 		}()
 		return nil
 	}
+}
+
+// RefreshesRefused is how many refreshes the token endpoint refused.
+func (s *Server) RefreshesRefused() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.refusedGrants
 }
 
 // SetDenyRefresh makes the token endpoint refuse every refresh.

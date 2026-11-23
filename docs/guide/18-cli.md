@@ -21,6 +21,8 @@ more often a mistyped command than a task.
 | Flag | |
 |---|---|
 | `-C DIR` | the workspace (default: the current directory) |
+| `-guest` | work as guest: nothing is kept when the run ends (also `ABHED_GUEST=1`); see [Signing in](38-signing-in.md) |
+| `-account NAME` | work as this account on this machine, which must be signed in; a run that cannot ask exits 10 otherwise (also `ABHED_ACCOUNT`) |
 | `-model NAME` | a configured provider for this run |
 | `-fallback-model A,B` | configured providers to move to when the model is unavailable |
 | `-mode MODE` | `default`, `accept-edits`, `plan`, `auto` or `bypass` |
@@ -73,6 +75,8 @@ filter it, Enter opens the first match, and the session you are in is marked
 The familiar spellings `-permission-mode`, `-allowedTools`,
 `-disallowedTools` and `-dangerously-skip-permissions` are accepted too; the
 table of what each maps to is in [Automation](10-automation.md#familiar-flag-spellings).
+`-mode` itself also takes `acceptEdits` and `bypassPermissions` (and
+`accept_edits`, `bypass_permissions`) for `accept-edits` and `bypass`.
 
 ### A narrower run: -tools and -bare
 

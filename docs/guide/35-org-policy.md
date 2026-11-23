@@ -99,9 +99,14 @@ names a local CA file and secret, and the policy is fetched through it), ssh
 hosts, `ssh.read_commands` and `ssh.read_contents`, `k8s` clusters, `sandbox.read_only_paths`,
 `sandbox.language_servers`, `sandbox.image`, `verify.contract.require`,
 `verify.critic`, extensions, simple hooks (`hooks.run`), `mcp.servers`,
-statusline, the `dirs` settings, `context`, `additional_dirs`, record paths
+statusline, the `dirs` settings, `plugins.sources` and `plugins.trusted_root`, `context`, `additional_dirs`, record paths
 and retention, storage, server, auth, schedules, the control plane and
 `org_policy` itself.
+
+**Who may work on the machine**: `auth.client.sign_in` (only `required`
+or `server`), `auth.client.guest` (only `false`) and
+`auth.client.remember_days` (any bound), never `auth.client.server`; see
+[Signing in](38-signing-in.md).
 
 **Only where it tightens** what the layers below already say, by the same rule
 an untrusted workspace's file follows: deny and ask rules, honeytokens and `verify.contract.protect` (added to the
@@ -166,6 +171,12 @@ later applies to the sessions started after it.
 **Always**: `record.ship.enabled` and `record.ship.max_backlog_mb` (records
 go only to the server this machine enrolled with), `hooks.managed_only:
 true`, `studio.disable_host_terminal: true`, `model.allowed_loopback: false`,
+`plugins.disabled: true`, `plugins.require_signature: true`,
+`plugins.allowed_publishers` and `plugins.allowed_bundles` (a layer of their
+own that every bundle must pass as well as the machine's; they grant trust
+only when the machine pins the keys, and otherwise only narrow), and
+`plugins.org_source: true` (the server this machine enrolled with serves the
+plugin index, trusted only with pinned keys; see [Plugins](41-plugins.md#policy)),
 and `model.default` pinned to a provider the machine's managed file defines
 (never one the person configured with their own key). Under the org's `model.allowed`,
 endpoints are bound as under the managed file's, but only the managed file

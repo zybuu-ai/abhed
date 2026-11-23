@@ -183,8 +183,9 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		Skills:      skills.NewRegistry(),
 		Agents:      agent.BuiltinDefinitions(),
 	}
+	add := adder(s.Registry, warn)
 	if tc != nil && !tc.Off {
-		s.Registry.Add(toolchain.Tool{S: tc})
+		add(toolchain.Tool{S: tc})
 	}
 	// In force before anything below connects, MCP servers included.
 	// An unguarded set too, so a request naming no set amid a mix is refused.
@@ -224,7 +225,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 			warn("%v", err)
 		}
 		for _, t := range s.Gateway.Tools() {
-			s.Registry.Add(t)
+			add(t)
 		}
 		for _, m := range s.Gateway.Overlaps() {
 			warn("%s", m)
@@ -239,24 +240,25 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 			warn("%v", err)
 		}
 		for _, t := range ts {
-			s.Registry.Add(t)
-			s.extensionTools = append(s.extensionTools, t.Name())
+			if add(t) {
+				s.extensionTools = append(s.extensionTools, t.Name())
+			}
 		}
 	}
 	if o.Parts&RAG != 0 {
 		for _, t := range RAGTools(cfg, warn) {
-			s.Registry.Add(t)
+			add(t)
 		}
 	}
 	if o.Parts&Infra != 0 {
 		for _, t := range InfraTools(cfg, o.Vault, warn) {
-			s.Registry.Add(t)
+			add(t)
 		}
 	}
 	if o.Parts&Skills != 0 {
 		s.Skills, s.SkillListing = LoadSkills(cfg, warn)
 		if s.Skills.Len() > 0 {
-			s.Registry.Add(SkillTool(s.Skills))
+			add(SkillTool(s.Skills))
 		}
 	}
 	if o.Parts&Agents != 0 {
@@ -275,11 +277,11 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		} else if t != nil {
 			// Results point at web_fetch only where it is offered.
 			t.Fetch = fetch != nil
-			s.Registry.Add(t)
+			add(t)
 		}
 	}
 	if fetch != nil {
-		s.Registry.Add(fetch)
+		add(fetch)
 	}
 	// Retrieval is an accelerator over grep, not a replacement.
 	if o.Parts&Retrieval != 0 && cfg.Retrieval.Enabled {
@@ -287,11 +289,33 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 			warn("index unavailable, falling back to grep: %v", err)
 		} else {
 			s.Index = ix
-			s.Registry.Add(&index.SearchTool{Index: ix})
+			add(&index.SearchTool{Index: ix})
 		}
 	}
 	warnCaseOnly(cfg, s.Registry.Names(), warn)
 	return s
+}
+
+// adder registers a tool unless its name or its wire name (model.WireName)
+// is taken; then it warns and the first tool keeps it.
+func adder(reg *tools.Registry, warn func(string, ...any)) func(tools.Tool) bool {
+	wires := map[string]string{}
+	for _, n := range reg.Names() {
+		wires[model.WireName(n)] = n
+	}
+	return func(t tools.Tool) bool {
+		if _, dup := reg.Get(t.Name()); dup {
+			warn("tool %s is not registered: a tool of that name is already registered and keeps it", config.Printable(t.Name()))
+			return false
+		}
+		w := model.WireName(t.Name())
+		if other, clash := wires[w]; clash {
+			warn("tool %s is not registered: it would reach the model provider as %s, as the tool %s does", config.Printable(t.Name()), w, config.Printable(other))
+			return false
+		}
+		wires[w] = t.Name()
+		return reg.Add(t)
+	}
 }
 
 // warnCaseOnly warns of each CaseOnlyRules finding once per process: a server
@@ -696,6 +720,13 @@ func LoopConfig(cfg config.Config, system string) agent.Config {
 	}
 	c.OffloadAt = cfg.Context.OffloadFraction()
 	c.MaxContinues = cfg.ContinuesAllowed()
+	for _, l := range cfg.LoadedPlugins() {
+		p := agent.PluginInForce{Name: l.Name, Version: l.Version, Digest: l.Digest, Basis: l.Basis}
+		if l.Signer != nil {
+			p.Signer = l.Signer.String()
+		}
+		c.Plugins = append(c.Plugins, p)
+	}
 	return c
 }
 
@@ -804,11 +835,11 @@ func Subagents(reg *tools.Registry, f *agent.SubagentFactory, maxParallel int) *
 	var bg func(context.Context, agent.SubagentRequest) (string, error)
 	if f.Background {
 		bg = f.SpawnBackground
-		out.Add(agent.TaskStatus{})
-		out.Add(agent.TaskCancel{})
+		out.Replace(agent.TaskStatus{})
+		out.Replace(agent.TaskCancel{})
 	}
-	out.Add(agent.Task{Spawn: f.Spawn, Agents: f.Definitions, Workspace: f.Workspace, Models: models, Background: bg})
-	out.Add(agent.Tasks{Spawn: f.Spawn, Agents: f.Definitions,
+	out.Replace(agent.Task{Spawn: f.Spawn, Agents: f.Definitions, Workspace: f.Workspace, Models: models, Background: bg})
+	out.Replace(agent.Tasks{Spawn: f.Spawn, Agents: f.Definitions,
 		Workspace: f.Workspace, MaxParallel: maxParallel, Models: models, Background: bg})
 	return out
 }

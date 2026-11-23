@@ -20,8 +20,22 @@ type slotPool struct {
 	mu      sync.Mutex
 	limit   int
 	inUse   int
-	waiters []chan struct{} // oldest first; each is closed when it is given a slot
+	waiters []waiter // first served first; each is closed when it is given a slot
 }
+
+// waiter is a request waiting for a slot; first ones go before the others.
+type waiter struct {
+	turn  chan struct{}
+	first bool
+}
+
+type firstKey struct{}
+
+// First marks a request on ctx to be given the next free slot ahead of the
+// requests waiting without the mark, as an editor's inline completion is:
+// a person waits on it keystroke by keystroke, while a next-edit
+// suggestion or an agent's turn can wait the second it takes.
+func First(ctx context.Context) context.Context { return context.WithValue(ctx, firstKey{}, true) }
 
 var (
 	poolsMu sync.Mutex
@@ -36,6 +50,10 @@ func endpointKey(baseURL, model string) string {
 		return strings.TrimRight(strings.ToLower(baseURL), "/") + "\x00" + model
 	}
 	host := strings.ToLower(u.Hostname())
+	if host == "localhost" || host == "::1" || host == "127.0.0.1" {
+		// One machine's loopback, however it is written.
+		host = "127.0.0.1"
+	}
 	port := u.Port()
 	if (u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443") {
 		port = ""
@@ -44,6 +62,13 @@ func endpointKey(baseURL, model string) string {
 		host += ":" + port
 	}
 	return strings.ToLower(u.Scheme) + "://" + host + strings.TrimRight(u.Path, "/") + "\x00" + model
+}
+
+// ServerKey is a server's base URL as the slot pools key it, without the
+// model: two spellings of one server give one key.
+func ServerKey(baseURL string) string {
+	k, _, _ := strings.Cut(endpointKey(baseURL, ""), "\x00")
+	return k
 }
 
 // poolFor is the shared pool for a model on a server; n above 0 bounds it,
@@ -103,8 +128,16 @@ func (p *slotPool) acquire(ctx context.Context) (func(), error) {
 		return p.releaser(), nil
 	}
 	turn := make(chan struct{})
+	first, _ := ctx.Value(firstKey{}).(bool)
 	ahead := len(p.waiters)
-	p.waiters = append(p.waiters, turn)
+	if first {
+		// After the other first ones, before the rest.
+		ahead = 0
+		for ahead < len(p.waiters) && p.waiters[ahead].first {
+			ahead++
+		}
+	}
+	p.waiters = append(p.waiters[:ahead], append([]waiter{{turn: turn, first: first}}, p.waiters[ahead:]...)...)
 	p.mu.Unlock()
 
 	tell := SlotWaitOf(ctx)
@@ -118,7 +151,7 @@ func (p *slotPool) acquire(ctx context.Context) (func(), error) {
 		p.mu.Lock()
 		given := true
 		for i, w := range p.waiters {
-			if w == turn {
+			if w.turn == turn {
 				p.waiters = append(p.waiters[:i:i], p.waiters[i+1:]...)
 				given = false
 				break
@@ -149,14 +182,26 @@ func (p *slotPool) release() {
 	if len(p.waiters) > 0 && (p.limit == 0 || p.inUse <= p.limit) {
 		next := p.waiters[0]
 		p.waiters = p.waiters[1:]
-		close(next) // the slot passes to it; inUse is unchanged
+		close(next.turn) // the slot passes to it; inUse is unchanged
 		return
 	}
 	p.inUse--
 }
 
+// Waiting is how many requests wait for a slot of a model on a server, for
+// a surface that shows the queue (and for tests).
+func Waiting(baseURL, model string) int {
+	poolsMu.Lock()
+	p := pools[endpointKey(baseURL, model)]
+	poolsMu.Unlock()
+	return p.waiting()
+}
+
 // waiting is how many requests wait for a slot, for tests.
 func (p *slotPool) waiting() int {
+	if p == nil {
+		return 0
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.waiters)

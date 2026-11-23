@@ -150,6 +150,9 @@ var samples = []sample{
 	{agent.EvTurnsExtended, agent.ActorUser, `{"from":25,"to":50,"count":1,"max":3,"by":"user","surface":"tui"}`},
 	{agent.EvBudgetStopped, agent.ActorSystem, `{"reason":"usd","model":"gpt-4o","spent_usd":1.02,"max_usd":1,"message":"stopped: the budget of $1.00 is spent ($1.0200)"}`},
 	{agent.EvModelWaiting, agent.ActorSystem, `{"session":"s-child","model":"m","ahead":2}`},
+	{agent.EvPluginLoaded, agent.ActorSystem, `{"plugins":[{"name":"acme-review","version":"1.0.0","digest":"ab12","basis":"signature","signer":"release@acme.example (https://issuer.acme.example)"}]}`},
+	{agent.EvConfigChanged, agent.ActorSystem, `{"time":"2026-11-17T05:00:00Z","by":"plugin install","key":"plugins","name":"acme-review","kind":"signature","sha256":"ab12"}`},
+	{agent.EvSessionEnded, agent.ActorSystem, `{"reason":"stdin_late","turns":1,"tokens_in":1,"tokens_out":1,"tokens_cached":0,"compactions":0}`},
 }
 
 // sampleLines are the samples as one session's lines, seq from 1.

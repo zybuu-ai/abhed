@@ -131,7 +131,9 @@ A stdio server does not inherit Abhed's environment, which holds model
 provider keys and Abhed's own settings. It gets `PATH`, `HOME`, `USER`,
 `LOGNAME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TMPDIR` and `TZ` from it (on
 Windows, also what a program needs to start, such as `SYSTEMROOT` and
-`TEMP`), then the entries in its `env`, which win: `"KEY=VALUE"` sets a
+`TEMP`), and `ABHED_GUEST` and `ABHED_ACCOUNT`, which say who is working
+(see [Signing in](38-signing-in.md)); its `env` cannot set or clear those
+two. Then come the entries in its `env`, which win: `"KEY=VALUE"` sets a
 value, and a bare `"KEY"` passes your own value of `KEY`, as `GITHUB_TOKEN`
 above. Anything else a server needs, a proxy setting included, is listed
 there.
@@ -237,6 +239,55 @@ records the change log's new entries as `config.changed`, so an add, from
 Studio or a terminal, reaches a hash-chained record. Studio removes a
 server of your own with `_abhed/mcp/remove`, recorded as `mcp.status`.
 
+### Importing servers, commands and agents in Studio
+
+**Abhed: Import Settings from Another Editor…** also offers *MCP Servers,
+Commands and Agents from Other Agent Tools* when a folder is open. It reads,
+and never changes, the shapes other agent tools keep: the folder's
+`.mcp.json`; a JSON file in your home folder that lists `mcpServers`, with
+the servers it keeps for this folder under `projects`; and, in a dot-folder of
+the project or your home folder, an `mcp.json`, Markdown commands under
+`commands/` and agent definitions under `agents/`. Each is mapped to Abhed's
+shape or left out with why:
+
+- A command server keeps its command and arguments. Its environment
+  variables are passed by name, so the server gets your own value; a value
+  written in the file is never copied. A URL server keeps its URL; a header
+  is kept only when its whole value is `${VARIABLE}` (as `headers_env`), and
+  sign in with `abhed mcp login` otherwise. A server is left out when its
+  command or URL holds a credential in a shape Studio recognises: a known
+  token shape, the value after a secret-named flag (`--api-key VALUE`,
+  `--token=VALUE`), a secret-named `NAME=VALUE` (as after docker's `-e`),
+  an Authorization, Basic or Bearer header, or a secret-named query
+  parameter (`client_secret`, `auth`, `token`, `key`, `sig`, `signature`,
+  `password` and the like); or when it uses `${…}` expansion Abhed does not
+  do. A credential in another shape is not recognised, so read the list
+  before you import.
+- A command or agent is written with a header Studio builds itself, never
+  the source's; one whose header does not read strictly (unclosed, nested,
+  a block value, a line that is not `key: value`, or text after it that
+  starts another header) is left out.
+- A command keeps `description`, `argument-hint` and `allowed-tools`, with
+  tool names mapped to Abhed's (a rule such as `Bash(git diff:*)` becomes
+  the `bash` tool, and the policy decides each call); another model and
+  other keys are left out. An agent keeps its name, description, tools,
+  disallowed tools, colour and a `plan` or `default` permission mode. A
+  command or agent none of whose tools has an Abhed equivalent is left out,
+  since no list would give it every tool.
+
+They land in the folder's `.abhed`, untrusted: servers in
+`.abhed/config.json`, commands in `.abhed/commands`, agents in
+`.abhed/agents`. Abhed starts a workspace's servers and loads its commands
+and agents only once you trust their exact content, so nothing imported
+runs until you review it in Studio's Health and Trust view (or `abhed
+trust`) and, for commands, `/commands trust` in an Abhed terminal. Changing
+`.abhed/config.json` sets the whole file aside until you trust it again.
+Nothing is written through a symbolic link: if `.abhed`, its `config.json`,
+`commands`, `agents` or any file on the way is a link, the import stops.
+Items found in your home folder start unpicked, since the folder they go
+into may be committed and pushed. The modal, whose default is Don't Import,
+names everything left out and every change made on the way, never a value.
+
 For one run, `-mcp-config FILE` adds servers and `-strict-mcp-config` makes
 them the only ones; see [The command line](18-cli.md#settings-servers-and-roles-for-one-run).
 
@@ -313,7 +364,22 @@ browser's apart, goes under the egress allowlist (`sandbox.network:
 corporate upstream proxy. `login` and `logout` are refused inside an
 agent's command, and `login` needs a person at a terminal; each is written
 to `~/.abhed/config-changes.jsonl`, never a token. `abhed mcp list` says
-which servers are signed in.
+which servers are signed in: "signed in" only while the login can still give
+a token. When the authorization server refuses the refresh token, the
+refusal is kept with the login, the refused token is not sent again, and
+`mcp list` shows "not signed in: the login was refused at refresh" with the
+time, until you run `login` again; a login that ended with no refresh token
+reads "the login ended".
+
+Abhed Studio signs in through the same command. A URL server in the
+Agents, Skills and MCP view shows its sign-in state and when the token
+ends, and Sign In when it answered `401` or its login cannot give a token.
+Studio asks in a modal whose default is No, then its engine host process
+runs `abhed mcp login -confirm-fd 3 NAME`, writing the yes on descriptor 3:
+`-confirm-fd` stands in for the terminal, fails when no yes is read, leaves
+opening the browser to Studio (which opens the printed address), and is
+logged as `by: "login -confirm-fd"`. The tokens stay in the engine's store;
+Studio never reads or keeps one.
 
 The login is read from the operator's store, by the terminal, an editor's
 sessions, the SDK and an `abhed serve` that no accounts sign in to. OAuth
@@ -425,12 +491,16 @@ warning. Built-in commands, and your own and the workspace's custom
 commands, keep their names: an MCP prompt that would take one is left out,
 and the session says so.
 
-A remote tool's name may hold only letters, digits, `_`, `.` and `-`, up to
-64 characters. The MCP specification allows names of up to 128, but model
-providers refuse tool names over 64, so a longer one is left out: a warning
+A prompt's name and its arguments' names may hold only letters, digits, `_`,
+`.` and `-`, up to 64 characters, since a person types them; a server may
+list up to 200 prompts, over up to 10 pages, and a warning names a server
+that lists more. A remote tool's name may hold the same characters, up to
+128, as the MCP specification allows; any other is left out: a warning
 names it and gives its length, `/mcp` and Studio list it under its server,
 and `abhed doctor` and the server's MCP status count the tools left out for
-their names beside each server.
+their names beside each server. A full name a model provider would refuse,
+longer than 64 or holding `.`, still works: see
+[Names on the wire](#names-on-the-wire).
 `abhed doctor` also says why each configured server that did not connect
 was not: a program that does not match its `digest`, a URL server given a
 `digest`, a server that would not start.
@@ -479,8 +549,22 @@ person added for themselves, has no one who has.
 ## Failure
 
 A server that will not start is reported and skipped; the agent runs without it
-rather than refusing to start. Tool lists are fetched lazily on first use, so an
-unreachable server costs nothing until something needs it.
+rather than refusing to start. Servers start when the session does, eight at
+a time, each within its own startup deadline: 60 seconds by default, set per
+server with `startup_timeout_seconds`. The deadline covers the handshake and
+reading its tool, prompt and resource lists. A server that has not started
+by then, one that hangs say, is reported as failed with the deadline it
+missed, its tools are absent, and the other servers start as they would
+without it; `/mcp restart <server>` tries it again. A server still starting
+after 5 seconds gives its place among the eight to the next one, while it
+keeps its own deadline, so hung servers delay the others' starts by 5
+seconds for each group of eight, not by a deadline. The session itself
+starts once every server has started or missed its deadline: with hung
+servers that is the longest deadline, plus 5 seconds for each further
+group of eight (16 hung servers at the default: about 65 seconds), where
+each one used to add a minute. Lower `startup_timeout_seconds` on a server
+you would rather lose than wait for. After the start, each
+request to a server (a tool call, a list page) waits at most 60 seconds.
 
 In a session, `/mcp` lists each enabled server, connected or with the reason
 it is not, and its tools; `/mcp restart <server>` reconnects one, and the
@@ -490,9 +574,11 @@ connection for want of a sign-in says to run `abhed mcp login <server>`.
 ## Many tools
 
 A server tool is registered only when its name is letters, digits, `_`, `.`
-and `-`, up to 64 characters; any other is left out with a warning on
+and `-`, up to 128 characters; any other is left out with a warning on
 stderr, and `/mcp` lists it under its server, its hidden characters shown as
-escapes.
+escapes. A tool list in pages is read to its end, following `nextCursor`, up
+to 100 pages and 2,000 tools a server; past either, the rest is left out and
+a warning names the server.
 
 With more than 40 MCP tools across the servers, the model is not given each
 one. A server of three tools or fewer is still offered in full, smallest
@@ -509,3 +595,89 @@ by the words in their names and descriptions and loads the ones it returns,
 with their parameters, from the next step. A loaded tool is policed, approved and
 recorded like any other, and a tool the model never searched for can still
 only run through policy.
+
+A server an administrator adds to a running `abhed serve` is checked and
+deferred the same way, from the next session. What a session loads is its own: a search in one session, or one user's
+session on a server, never loads or unloads a tool in another, and a
+subagent's loads stay its own. At most 100 tools stay loaded per session.
+Loading one more unloads the one loaded or called least recently, and
+`tool_search` says how many it unloaded; a search loads one again. A request also never offers the provider more tools than it
+takes (`max_tools`, 128 by default, of the provider serving the request; see
+[Configuration](02-configuration.md)): past that, the loop unloads loaded
+tools, least recently used first, before it sends. A built-in tool, an
+extension's, and an MCP tool offered in full are never unloaded, so when they
+alone pass the limit the request is refused before it is sent, with an error
+that names the count, the limit and what to narrow (an MCP server's
+`allow_tools`, a server or extension to disable, or `max_tools`), rather than
+a provider's 400.
+
+## Names on the wire
+
+Providers accept a tool name of letters, digits, `_` and `-`, up to 64
+characters. `mcp__<server>__<tool>` can be longer, and a tool's own name may
+hold `.`. Such a name is sent to the provider under a short wire name: its
+plain characters, up to 47 (so `mcp__<server>__` stays whole for a server
+name of up to 40 characters), then `_` and 16 hex digits (64 bits) of the
+full name's SHA-256, so `mcp__docs__search.pages` goes as
+`mcp__docs__search_pages_` followed by its hash. The wire name is the same in
+every request, so the prompt prefix stays cacheable, and a call by it is
+mapped back to the real name before anything else sees it. `tool_search`
+gives the wire name beside the real one. A tool whose name or wire name is
+already another tool's is not registered, with a warning, so a wire name
+always stands for one tool; a request that would still carry two names on
+one wire name is refused before it is sent.
+
+Only the request to the provider carries the wire name. Permission rules,
+approval cards, `always allow`, hooks and the record all use the real
+`mcp__<server>__<tool>` name, so a rule written for `mcp__docs__search.pages`
+matches it however it travelled.
+
+## Limits
+
+| What | Limit | Past it |
+|---|---|---|
+| A tool's name on its server | 128 characters, letters, digits, `_ . -` | left out, with a warning |
+| A tool list | 100 pages, 2,000 tools a server | the rest left out, with a warning |
+| Prompts | 200 a server, 10 pages; names up to 64 | the rest left out, with a warning |
+| Resources listed | 500 a server, 10 pages | the rest not listed, with a warning |
+| A tool's description | 1,024 bytes, cut on a character | cut, with `…` |
+| A tool's result, a prompt's text, a resource read | 30,000 bytes, cut on a character | cut, marked `[truncated]` |
+| One message on a stdio server's stdout | 16 MiB | the connection ends, with an error naming the server |
+| Starting a server | 60 s (`startup_timeout_seconds`), 8 servers at once; one still starting after 5 s gives its place to the next | reported as failed, its tools absent |
+| One request to a server | 60 s | the call fails with a timeout |
+| MCP tools offered in full | 40 across the servers, then `tool_search`; servers of 3 tools or fewer, 12 tools in all, stay in full | deferred |
+| Tools loaded by `tool_search` | 100 per session | least recently used unloaded |
+| Tools in one request | the provider's `max_tools`, 128 by default | loaded tools unloaded, then refused with a clear error |
+
+Skills and agent types have budgets of their own in the prompt; see
+[Skills](06-skills.md#why-only-the-description-is-in-the-prompt) and
+[Agent definitions](17-agent-definitions.md#many-definitions). A workspace
+reads at most 64 skills, 64 agent definitions and 128 custom commands a
+directory, and says so when there are more.
+
+## Scale
+
+What was tested, with stub servers on this machine and no network, in the
+`TestScaleIntegrations` check (`make test-scale`): 50 stdio servers of 20
+tools each (1,000 tools, some with dotted names and names past 64
+characters), 300 skills and 100 agent types in one session. All the servers
+start; calls on a sample of the servers' tools reach the right server with
+their arguments unchanged, through the registry and through the loop and an
+OpenAI-compatible adapter by their wire names; after 150 tools are searched
+for, 100 stay loaded and no request offers more than 128 tools, every name
+one a provider accepts; and the skill listing and the agent types each stay
+within their 8 KB budgets. Routing tests besides it cover three servers
+offering a tool of one name, a deferred tool once loaded, pagination, an
+extension tool named like an MCP tool (refused), one server and seventeen
+servers that hang at start, and a long and a dotted name through each provider's wire format.
+
+That run is the tested bound: 50 servers and 1,000 MCP tools. No setting
+caps how many servers you configure, but more than that has not been
+tested, and the costs grow with them. Each stdio server is a process of its
+own for the whole session; startup takes longer, eight servers at a time;
+and the always-offered tools (built-ins, extensions', servers offered in
+full) still count against `max_tools`, so a session can be refused before
+any MCP tool is searched for. In that run the tool definitions and listings
+came to about 16,000 tokens before the first message: the limits above keep
+a request's tools within the provider's, not that cost at zero. A single
+server's tools past 2,000 are not read.

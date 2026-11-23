@@ -29,6 +29,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/nlink"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/toolchain"
+	"github.com/zybuu-ai/abhed/plugin"
 )
 
 type Config struct {
@@ -81,6 +82,8 @@ type Config struct {
 	Record RecordConfig `json:"record,omitempty"`
 	// Hooks governs the extension hooks.
 	Hooks HooksConfig `json:"hooks,omitempty"`
+	// Plugins governs plugin bundles. Managed only.
+	Plugins PluginsConfig `json:"plugins,omitempty"`
 	// Studio governs what Abhed Studio may offer beside the agent.
 	Studio StudioConfig `json:"studio,omitempty"`
 	// Suggest governs the next-prompt suggestion shown after a turn.
@@ -163,6 +166,10 @@ type Config struct {
 	// mergingManaged is set while the managed document merges: only it
 	// replaces a simple hook of a name an earlier layer gave.
 	mergingManaged bool
+	// loadedPlugins are the approved plugins loading added; see LoadedPlugins.
+	loadedPlugins []plugin.Loaded
+	// orgPlugins is the org policy's plugins section, a layer of its own.
+	orgPlugins *orgPlugins
 	// ruleLayers names the layer each permission rule came from; see RuleLayer.
 	ruleLayers map[string]string
 	// allowLayers are each file's own model.allowed and mcp lists, applied
@@ -426,6 +433,7 @@ var managedOnly = map[string]string{
 	"record.ship":                        "only the managed configuration ships the record to the org server",
 	"org_policy":                         "only the managed configuration says where the org policy comes from",
 	"hooks.disabled":                     "only the managed configuration switches hooks off, since that removes their vetoes",
+	"plugins":                            "only the managed configuration (or the signed org policy) sets which plugins may be installed and loaded",
 	"hooks.managed_only":                 "only the managed configuration limits hooks to its own extensions",
 	"studio.disable_host_terminal":       "only the managed configuration removes Studio's host terminal",
 	"sandbox.network":                    "only the managed configuration, or your own file narrowing allow_network, turns on the egress allowlist",
@@ -441,6 +449,7 @@ var managedOnly = map[string]string{
 	"control_plane.kubernetes":           "only the managed configuration configures the Kubernetes driver",
 	"control_plane.interceptors":         "only the managed configuration sets what admits sandbox calls",
 	"auth.bound_claims":                  "only the managed configuration sets which identity provider tokens are accepted",
+	"auth.client":                        "only the managed configuration or the org policy says who may work on this machine",
 	"control_plane.ha.relay_peer":        "only the managed configuration names the replicas a relayed call is accepted from",
 	"control_plane.ha.relay_key_command": "only the managed configuration names a program serve runs for the relay key",
 }
@@ -509,8 +518,12 @@ func clearManagedOnly(c *Config, key string) {
 		c.Record.Ship = ShipConfig{}
 	case "org_policy":
 		c.Org = OrgPolicyConfig{}
+	case "auth.client":
+		c.Auth.Client = ClientAuthConfig{}
 	case "hooks.disabled":
 		c.Hooks.Disabled = false
+	case "plugins":
+		c.Plugins = PluginsConfig{}
 	case "hooks.managed_only":
 		c.Hooks.ManagedOnly = false
 	case "studio.disable_host_terminal":
@@ -673,6 +686,42 @@ func warnScoped(w warnSink, c Config, want func(string) bool) {
 		warnNeverAllows(w, c.Permissions.Allow)
 		warnRuleFindings(w, c.RuleFindings())
 	}
+}
+
+// warnOverriddenPrices says, once per file and model, that the managed
+// configuration's price replaced the one a lower layer set, which the guide
+// promises; a price already said to be set aside is not said twice.
+func warnOverriddenPrices(w warnSink, c Config) {
+	said := map[string]bool{}
+	for _, k := range c.SetAside {
+		if strings.HasPrefix(k.Key, "pricing.") {
+			said[k.File+"\x00"+priceModel(k.Key)] = true
+		}
+	}
+	for _, k := range c.Overridden {
+		if !strings.HasPrefix(k.Key, "pricing.") {
+			continue
+		}
+		model := priceModel(k.Key)
+		id := k.File + "\x00" + model
+		if said[id] {
+			continue
+		}
+		said[id] = true
+		w.emit("priceover\x00"+id, fmt.Sprintf("%s sets pricing.%s, which is ignored: the managed configuration sets that model's price, and its price is used", Printable(k.File), Printable(model)))
+	}
+}
+
+// priceModel is the model a pricing key names: pricing.<model>, or one of
+// its figures.
+func priceModel(key string) string {
+	m := strings.TrimPrefix(key, "pricing.")
+	for _, f := range []string{".input", ".output", ".cached_input", ".cache_write"} {
+		if strings.HasSuffix(m, f) {
+			return strings.TrimSuffix(m, f)
+		}
+	}
+	return m
 }
 
 // warnSetAside warns of each set-aside setting.
@@ -870,6 +919,10 @@ type ProviderConfig struct {
 	// and no bound for other types. OpenAI-compatible types only.
 	MaxConcurrentRequests int `json:"max_concurrent_requests,omitempty"`
 
+	// MaxTools caps the tools one request offers; 0 is 128. Loaded MCP tools
+	// are unloaded, least recently used first, to stay under it.
+	MaxTools int `json:"max_tools,omitempty"`
+
 	// Extra passes provider-specific settings through without this struct
 	// growing a field per vendor.
 	Extra map[string]string `json:"extra,omitempty"`
@@ -960,6 +1013,13 @@ type AuthConfig struct {
 	// AllowSignup lets anyone create a local account. Off by default: an
 	// open signup on an internal tool is rarely what an operator intends.
 	AllowSignup bool `json:"allow_signup,omitempty"`
+	// Guest offers "Continue as guest" on the console: a browser session as
+	// an identity of its own, with no groups, whose sessions are removed when
+	// it signs out or expires. Off by default; an agent that runs commands
+	// for whoever reaches the server is rarely what an operator intends.
+	Guest bool `json:"guest,omitempty"`
+	// GuestHours is how long a guest's browser session lasts (8).
+	GuestHours int `json:"guest_hours,omitempty"`
 	// DefaultTenant is assigned to accounts created without one.
 	DefaultTenant string `json:"default_tenant,omitempty"`
 	// UsersFile is where local accounts are kept when there is no database.
@@ -1015,6 +1075,70 @@ type AuthConfig struct {
 	// GitHub restricts GitHub sign-in, which only the paid editions provide.
 	// The Community Edition validates these keys and otherwise ignores them.
 	GitHub GitHubAuthConfig `json:"github,omitempty"`
+	// Client is who may work on this machine: the sign-in every start asks
+	// for. Managed only; an org policy may only tighten it.
+	Client ClientAuthConfig `json:"client,omitzero"`
+}
+
+// Values of auth.client.sign_in.
+const (
+	SignInOptional = ""         // an account, a server or guest
+	SignInRequired = "required" // an account on this machine or a server
+	SignInServer   = "server"   // a server: auth.client.server, else the org policy's
+)
+
+// ClientAuthConfig is the sign-in a start of the CLI, Studio or an ACP
+// client asks for. See docs/architecture/sign-in.md.
+type ClientAuthConfig struct {
+	// SignIn is "", "required" or "server".
+	SignIn string `json:"sign_in,omitempty"`
+	// Server is the only server whose sign-in counts under sign_in "server";
+	// empty is the org policy's server.
+	Server string `json:"server,omitempty"`
+	// Guest, when false, removes guest: no screen offers it, -guest and
+	// ABHED_GUEST are refused, and a run with no sign-in fails.
+	Guest *bool `json:"guest,omitempty"`
+	// RememberDays bounds a remembered sign-in; unset, it lasts until sign-out.
+	// 0 asks at every start.
+	RememberDays *int `json:"remember_days,omitempty"`
+}
+
+// GuestAllowed reports whether guest may be chosen.
+func (c ClientAuthConfig) GuestAllowed() bool { return c.Guest == nil || *c.Guest }
+
+// SignInServer is the server whose sign-in counts under sign_in "server":
+// auth.client.server, else the org policy's server the machine names, else
+// the one it took its org policy from.
+func (c Config) SignInServer() string {
+	for _, s := range []string{c.Auth.Client.Server, c.Org.URL, c.OrgPolicy.URL} {
+		if s = strings.TrimRight(s, "/"); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func (c Config) validateClientAuth() error {
+	a := c.Auth.Client
+	switch a.SignIn {
+	case SignInOptional, SignInRequired:
+	case SignInServer:
+		if c.SignInServer() == "" {
+			return fmt.Errorf("auth.client.sign_in is server, but neither auth.client.server, org_policy.url nor an org policy names one")
+		}
+	default:
+		return fmt.Errorf("unknown auth.client.sign_in %q (want required or server, or leave it out)", a.SignIn)
+	}
+	if s := a.Server; s != "" {
+		u, err := url.Parse(s)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			return fmt.Errorf("auth.client.server must be an http or https URL, got %q", Printable(s))
+		}
+	}
+	if d := a.RememberDays; d != nil && (*d < 0 || *d > 3650) {
+		return fmt.Errorf("auth.client.remember_days is %d; use 0 (ask every start) to 3650", *d)
+	}
+	return nil
 }
 
 // GitHubAuthConfig says which GitHub accounts may sign in.
@@ -1622,6 +1746,9 @@ type MCPServerConfig struct {
 	// HostFiles runs a stdio server with the host's files rather than
 	// confined to its own home and the workspace on the process tier.
 	HostFiles bool `json:"host_files,omitempty"`
+	// StartupTimeoutSeconds bounds the server's start; 0 is 60. Past it the
+	// server is reported and its tools are absent.
+	StartupTimeoutSeconds int `json:"startup_timeout_seconds,omitempty"`
 	// OAuth configures `abhed mcp login` for a URL server; a server needs it
 	// only for a client registered ahead of time or particular scopes.
 	OAuth *MCPOAuthConfig `json:"oauth,omitempty"`
@@ -1761,7 +1888,8 @@ type LimitsConfig struct {
 	// ReasoningStallTokens cuts a model reply that has only reasoned, with no
 	// text or tool call, past this many reasoning tokens (or its thinking
 	// budget, if larger); ReasoningStallSeconds past this long, as a backstop.
-	// Zero is 8000 and 600; below 1000 and 30 the floors apply.
+	// Zero is 8000 and 300; below 1000 and 30 the floors apply, and the
+	// seconds are held to half the provider's call timeout, which wins over the floor.
 	ReasoningStallTokens  int  `json:"reasoning_stall_tokens,omitempty"`
 	ReasoningStallSeconds int  `json:"reasoning_stall_seconds,omitempty"`
 	MaxSubagents          int  `json:"max_subagents"`
@@ -1957,15 +2085,19 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	applyWebIntents(&cfg)
 	dropLockedAllow(&cfg, userFile, cfg.Workspace.File, o.SettingsName)
 	userAllowlistNarrows(&cfg)
+	w := warnSink(o.Warn)
+	// After the managed file, whose plugins policy decides, and before the
+	// allow lists, which judge a plugin's servers as any other.
+	applyPlugins(&cfg, w)
 
 	applyEnv(&cfg)
 	narrowToAllowLists(&cfg)
-	w := warnSink(o.Warn)
 	warnOrgFallback(w, cfg)
 	if o.WarnFor == nil {
 		warnUnknown(w, cfg.Unknown)
 		warnDuplicates(w, cfg.Duplicates)
 		warnSetAside(w, cfg.SetAside)
+		warnOverriddenPrices(w, cfg)
 		warnNotYetInEffect(w, cfg)
 		warnReadOnlyHint(w, cfg)
 		warnNeverAllows(w, cfg.Permissions.Allow)
@@ -2249,6 +2381,9 @@ func (c Config) Validate() error {
 	if k := c.ControlPlane.Kubernetes; len(k) > 0 && !jsonObject(k) {
 		return errors.New("control_plane.kubernetes must be a JSON object of the Kubernetes driver's options")
 	}
+	if err := c.Plugins.validate(); err != nil {
+		return err
+	}
 	if err := c.validateHooks(); err != nil {
 		return err
 	}
@@ -2289,6 +2424,8 @@ func (c Config) Validate() error {
 		switch {
 		case pc.MaxConcurrentRequests < 0:
 			return fmt.Errorf("provider %q: max_concurrent_requests may not be negative", name)
+		case pc.MaxTools < 0:
+			return fmt.Errorf("provider %q: max_tools may not be negative", name)
 		case pc.MaxConcurrentRequests > 0 && model.Known(pc.Type) && !model.HonoursMaxConcurrent(pc.Type):
 			return fmt.Errorf("provider %q: max_concurrent_requests is honoured only by OpenAI-compatible types, not %q", name, pc.Type)
 		}
@@ -2351,6 +2488,15 @@ func (c Config) Validate() error {
 	case "none", "proxy", "oidc", "local", "":
 	default:
 		return fmt.Errorf("unknown auth.mode %q (want none, local, proxy or oidc)", c.Auth.Mode)
+	}
+	if err := c.validateClientAuth(); err != nil {
+		return err
+	}
+	if c.Auth.Guest && c.Auth.Mode != "local" && c.Auth.Mode != "oidc" {
+		return fmt.Errorf("auth.guest offers guests beside signed-in people, so it needs auth.mode local or oidc")
+	}
+	if h := c.Auth.GuestHours; h < 0 || h > 720 {
+		return fmt.Errorf("auth.guest_hours is %d; use 1 to 720, or 0 for 8", h)
 	}
 	if err := c.validateTLS(); err != nil {
 		return err

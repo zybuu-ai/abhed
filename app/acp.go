@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -192,6 +193,8 @@ type acpSession struct {
 	id    string
 	cwd   string
 	agent acpAgent
+	// shutOnce makes the session's close (its summaries and end) happen once.
+	shutOnce sync.Once
 	// parts are the SDK agent's insides; inner is false for a test's
 	// stand-in, whose session answers what needs them with a refusal.
 	parts embedded.Parts
@@ -366,6 +369,23 @@ type acpConn struct {
 	recDir             string
 	recUser, recTenant string
 
+	// identMu orders who is working against everything that works as them:
+	// authenticate holds it from its check through the switch, and every other
+	// method but initialize takes it once to mark the connection started, after
+	// which who is working is fixed. initialize reads the record fields under it.
+	identMu      sync.Mutex
+	identStarted bool
+	// switching is a server sign-in waiting on its network or browser part,
+	// with identMu released; switchCancel ends it (under identMu), and
+	// switchCancelUnlocked is the same for _abhed/auth/cancel (under switchMu).
+	switching bool
+	// signedOut is set by _abhed/auth/signout: nothing more works as anyone.
+	signedOut            bool
+	switchCancel         context.CancelFunc
+	switchGen            int
+	switchMu             sync.Mutex
+	switchCancelUnlocked context.CancelFunc
+
 	sessMu   sync.Mutex
 	sessions map[string]*acpSession
 	// pending are the agent→client requests waiting for an answer, by id.
@@ -394,6 +414,8 @@ type acpConn struct {
 	// warmed is when each completion provider was last warmed on this
 	// connection, so many sessions load a model once.
 	warmed map[string]time.Time
+	// pool puts completions before next-edit calls on a model server.
+	pool editorPool
 
 	// inflight are the requests being answered; gone closes when stdin
 	// does, so nothing waits for an answer the client can no longer send.
@@ -401,7 +423,23 @@ type acpConn struct {
 	goneInit sync.Once
 	gone     chan struct{}
 	goneOnce sync.Once
+
+	// The one close of every session, whoever starts it (a stop signal or
+	// stdin ending); every caller waits for it. closing refuses sessions
+	// opened after it began; late are those, shut by the close before it
+	// ends, and closed says it has ended (a session refused then is its
+	// opener's to shut).
+	shutOnce sync.Once
+	shutDone chan struct{}
+	shutAt   time.Time
+	closing  bool
+	closed   bool
+	late     []*acpSession
 }
+
+// closeHook, set only by tests, runs in closeAll once the sessions are taken
+// and before they are shut, so a test can hold the close there.
+var closeHook atomic.Pointer[func(*acpConn)]
 
 // drainWait bounds how long the requests read before stdin closed may take
 // to be answered before the process exits anyway.
@@ -464,10 +502,12 @@ func acpCmd(workspace string, build acpBuild, trust config.TrustChoice) int {
 // run serves in, answers every request read from it, then closes every
 // session.
 func (c *acpConn) run(in io.Reader) error {
-	// Once stdin has ended, a stop signal waits for closeAll to record each
+	// Once stdin has ended, a stop signal waits for the close to record each
 	// session's end. A signal while stdin is open waits stdinGrace for it to
 	// end, as Studio ends stdin and signals at once and the signal can come
-	// first, and otherwise does not wait for this.
+	// first, and otherwise starts the close itself. Either way there is one
+	// close, and the exit is let go only once it has ended (or run out of
+	// signalCloseWait).
 	release := func() {}
 	if c.busy != nil {
 		var once sync.Once
@@ -478,9 +518,15 @@ func (c *acpConn) run(in io.Reader) error {
 	go func() {
 		select {
 		case <-c.root().Done():
+			// Stopped: the editor's model calls end now, as a prompt does, so
+			// nothing in flight holds the exit.
+			c.cancelEditorCalls()
 			select {
 			case <-served:
 			case <-time.After(stdinGrace):
+				// Stdin is still open: the sessions are closed here, their
+				// summaries and ends recorded, within signalCloseWait.
+				c.closeOnce(signalCloseWait)
 				release()
 			}
 		case <-served:
@@ -488,10 +534,27 @@ func (c *acpConn) run(in io.Reader) error {
 	}()
 	err := c.serve(in)
 	close(served)
-	if !c.drain(drainWait) {
-		fmt.Fprintln(os.Stderr, "abhed: acp: stdin closed and some requests were still unanswered after "+drainWait.String())
+	// Nobody is left to read an editor suggestion: those in flight end.
+	c.cancelEditorCalls()
+	wait := drainWait
+	if c.root().Err() != nil {
+		wait = signalCloseWait // stopped: what is still running was cancelled
 	}
-	c.closeAll()
+	if !c.drain(wait) {
+		fmt.Fprintln(os.Stderr, "abhed: acp: stdin closed and some requests were still unanswered after "+wait.String())
+	}
+	// The close a signal began, if one did: waited for, never run again.
+	if c.root().Err() != nil {
+		c.closeOnce(signalCloseWait)
+	} else {
+		select {
+		case <-c.startClose():
+		case <-c.root().Done():
+			// A signal during the close stdin's end began: bounded from now.
+			c.cancelEditorCalls()
+			c.closeWaitUntil(time.Now().Add(signalCloseWait))
+		}
+	}
 	release()
 	return err
 }
@@ -499,6 +562,66 @@ func (c *acpConn) run(in io.Reader) error {
 // stdinGrace is how long a stop signal that comes while stdin is open waits
 // for stdin to end, so the sessions are closed before the exit.
 const stdinGrace = 250 * time.Millisecond
+
+// signalCloseWait bounds the close of every session on a stop signal: what
+// it records (each session's summaries and end) is written, then the exit.
+const signalCloseWait = 3 * time.Second
+
+// closeOnce closes every session, once for the connection whoever asks
+// first, and waits for that close: at most wait after it began, or until it
+// ends when wait is 0. It says whether the close ended.
+func (c *acpConn) closeOnce(wait time.Duration) bool {
+	done := c.startClose()
+	if wait <= 0 {
+		<-done
+		return true
+	}
+	return c.closeWaitUntil(c.shutAt.Add(wait))
+}
+
+// startClose begins the one close, if it has not begun, and says when it
+// has ended.
+func (c *acpConn) startClose() <-chan struct{} {
+	c.shutOnce.Do(func() {
+		c.shutDone, c.shutAt = make(chan struct{}), time.Now()
+		go func() {
+			defer close(c.shutDone)
+			c.closeAll()
+		}()
+	})
+	return c.shutDone
+}
+
+// closeWaitUntil waits for the close begun by startClose, until deadline.
+func (c *acpConn) closeWaitUntil(deadline time.Time) bool {
+	t := time.NewTimer(time.Until(deadline))
+	defer t.Stop()
+	select {
+	case <-c.startClose():
+		return true
+	case <-t.C:
+		fmt.Fprintln(os.Stderr, "abhed: acp: the sessions were not all closed within "+signalCloseWait.String())
+		return false
+	}
+}
+
+// cancelEditorCalls ends every editor model call in flight (completions,
+// next edits): their counts stay for the summary as cancelled.
+func (c *acpConn) cancelEditorCalls() {
+	c.compMu.Lock()
+	all := make([]*acpCompleter, 0, len(c.comps))
+	for _, k := range c.comps {
+		all = append(all, k)
+	}
+	c.compMu.Unlock()
+	for _, k := range all {
+		k.mu.Lock()
+		if k.cancel != nil {
+			k.cancel()
+		}
+		k.mu.Unlock()
+	}
+}
 
 // serve answers the requests on in until it ends, then says the input is
 // gone; the replies to requests still running follow (see drain).
@@ -772,9 +895,35 @@ func (c *acpConn) closeAll() {
 	c.sessMu.Lock()
 	all := c.sessions
 	c.sessions = map[string]*acpSession{}
+	c.closing = true
 	c.sessMu.Unlock()
+	// Every editor call is cancelled first, then waited for once against one
+	// deadline, so a call slow to end costs the close summaryWait, not
+	// summaryWait for each feature of each session.
+	counted := time.Now().Add(summaryWait)
+	c.stopEditors(all)
+	if h := closeHook.Load(); h != nil {
+		(*h)(c)
+	}
 	for _, s := range all {
-		c.shut(s)
+		c.shutBy(s, counted)
+	}
+	// Sessions refused while this ran are shut before it ends, so the exit
+	// waits for their ends too.
+	for {
+		c.sessMu.Lock()
+		late := c.late
+		c.late = nil
+		if len(late) == 0 {
+			c.closed = true
+		}
+		c.sessMu.Unlock()
+		if len(late) == 0 {
+			break
+		}
+		for _, s := range late {
+			c.shutBy(s, counted)
+		}
 	}
 	c.killTerminals("")
 	c.killDebugs("")
@@ -784,6 +933,15 @@ func (c *acpConn) closeAll() {
 // shut ends a session's hold: its prompt and review window stop, its
 // background tasks end as session_closed, and its record is let go.
 func (c *acpConn) shut(s *acpSession) {
+	c.shutBy(s, time.Now().Add(summaryWait))
+}
+
+// shutBy is shut, its summaries waiting until counted for the calls in flight.
+func (c *acpConn) shutBy(s *acpSession, counted time.Time) {
+	s.shutOnce.Do(func() { c.shutNow(s, counted) })
+}
+
+func (c *acpConn) shutNow(s *acpSession, counted time.Time) {
 	// Contested-port joins held back are recorded first, before a running
 	// turn is cancelled and records its own end.
 	if s.inner && s.parts.Set != nil && s.parts.Set.FlushListen != nil {
@@ -802,7 +960,7 @@ func (c *acpConn) shut(s *acpSession) {
 	c.killTerminals(s.id)
 	c.killDebugs(s.id)
 	c.killLSPs(s.id)
-	c.completionSummary(s)
+	c.completionSummary(s, counted)
 	c.unsubscribeSession(s.id)
 	s.recordClosed(cancel != nil)
 	s.agent.Close()
@@ -835,13 +993,39 @@ func (c *acpConn) request(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errNoMethod, "method not found: %s", msg.Method))
 		return
 	}
+	if !acpBeforeSignIn[msg.Method] {
+		// Waits for an authenticate in progress, so this works as whoever it settles on.
+		c.identMu.Lock()
+		if c.signedOut {
+			c.identMu.Unlock()
+			c.reply(msg.ID, nil, &rpcError{Code: errRefused, Message: "signed out; restart the engine to sign in again",
+				Data: map[string]any{"authRequired": true, "signedOut": true}})
+			return
+		}
+		if c.switching {
+			c.identMu.Unlock()
+			c.reply(msg.ID, nil, &rpcError{Code: errRefused, Message: "a sign-in is in progress; try again when it has finished",
+				Data: map[string]any{"signingIn": true}})
+			return
+		}
+		err := pendingSignIn()
+		if err == nil {
+			c.identStarted = true
+		}
+		c.identMu.Unlock()
+		if err != nil {
+			c.reply(msg.ID, nil, &rpcError{Code: errRefused, Message: "Authentication required: " + err.Error(),
+				Data: map[string]any{"authRequired": true}})
+			return
+		}
+	}
 	h(c, msg)
 }
 
 // acpMethods are the requests the engine answers; anything else is -32601.
 var acpMethods = map[string]func(*acpConn, rpcMessage){
 	"initialize":                (*acpConn).initialize,
-	"authenticate":              func(c *acpConn, m rpcMessage) { c.reply(m.ID, map[string]any{}, nil) },
+	"authenticate":              (*acpConn).authenticate,
 	"session/new":               (*acpConn).newSession,
 	"session/prompt":            (*acpConn).prompt,
 	"session/set_config_option": (*acpConn).setConfigOption,
@@ -1010,10 +1194,30 @@ func (c *acpConn) openSession(o openOptions) (*acpSession, *rpcError) {
 	if e := c.buildAgent(s, o); e != nil {
 		return nil, e
 	}
-	c.sessMu.Lock()
-	c.sessions[s.id] = s
-	c.sessMu.Unlock()
+	if !c.addSession(s) {
+		return nil, refusal(errParams, "the editor is closing; no session is opened")
+	}
 	return s, nil
+}
+
+// addSession adds s to the connection, unless every session is being
+// closed: false then, and s is shut (its end recorded) by the close if it
+// is still running, so the exit waits for it, or else here.
+func (c *acpConn) addSession(s *acpSession) bool {
+	c.sessMu.Lock()
+	switch {
+	case !c.closing:
+		c.sessions[s.id] = s
+		c.sessMu.Unlock()
+		return true
+	case !c.closed:
+		c.late = append(c.late, s)
+		c.sessMu.Unlock()
+		return false
+	}
+	c.sessMu.Unlock()
+	c.shut(s)
+	return false
 }
 
 // buildAgent makes s's agent and wires its undo log and guard.
@@ -1043,7 +1247,7 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 	}
 	// The editor's own files in the workspace are out of the agent's reach (§2.6).
 	s.protected = protectedPaths(o.cwd)
-	settings := embedded.Settings{Protect: s.protected, ProtectGit: true, Surface: "acp", PlanExit: true}
+	settings := embedded.Settings{Protect: s.protected, ProtectGit: true, Surface: "acp", PlanExit: true, Principal: principalStart()}
 	if c.durable() {
 		rec, err := c.record()
 		if err != nil {

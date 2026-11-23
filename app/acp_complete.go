@@ -125,6 +125,22 @@ type acpCompleter struct {
 	lat        []int64
 	warmed     time.Time          // when the last warm-up was sent
 	warmCancel context.CancelFunc // ends a warm-up in flight when the session closes
+	// running are the requests sent and not yet counted; added to only
+	// while open, so the summary can wait for them. idle closes when they
+	// reach none, for a summary waiting.
+	running int
+	idle    chan struct{}
+}
+
+// finished says one request counted in running has been counted.
+func (k *acpCompleter) finished() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.running--
+	if k.running == 0 && k.idle != nil {
+		close(k.idle)
+		k.idle = nil
+	}
 }
 
 // took keeps one sent request's answer time.
@@ -434,6 +450,10 @@ func (c *acpConn) complete(msg rpcMessage) {
 		c.admitRefused(msg, empty, why, field)
 		return
 	}
+	// From now to the answer, next-edit calls to this server wait, and one in flight is cancelled.
+	if key := editorServer(provider); key != "" {
+		defer c.pool.completing(key)()
+	}
 	k.mu.Lock()
 	_, canFIM := a.(model.Infiller)
 	fim := canFIM && fimTypes[provider.Type] && !k.chatOnly
@@ -529,6 +549,7 @@ func (c *acpConn) complete(msg rpcMessage) {
 	elapsed := time.Since(arrived)
 	// A reply that carries a secret is dropped, not edited into the code.
 	text, _ := model.OneBlock(prefix, res.Text)
+	text = model.DropLineRest(text, prefix, suffix)
 	if clean(text) != text {
 		text = ""
 	}
@@ -623,7 +644,14 @@ func (c *acpConn) admit(k *acpCompleter, seq int64, name string, provider config
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), completeTimeout)
 	k.cancel = cancel
-	return ctx, cancel, k.adapter, "", ""
+	// The caller's cancel, deferred, runs once the request is counted.
+	k.running++
+	var once sync.Once
+	done := func() {
+		cancel()
+		once.Do(k.finished)
+	}
+	return ctx, done, k.adapter, "", ""
 }
 
 // spend takes one request from the session's and the connection's rate
@@ -670,7 +698,28 @@ func (k *acpCompleter) count(f func(*agent.CompletionSummary)) {
 	k.mu.Unlock()
 }
 
-func (c *acpConn) completeCancel(msg rpcMessage) {
+func (c *acpConn) completeCancel(msg rpcMessage) { c.featureCancel(msg, "complete") }
+
+// editorServer is the model server a provider's requests go to, for the
+// pool, or "" where completions need not go first: a hosted server, which
+// serves requests side by side and bills a cancelled one all the same. Only
+// a server on this machine, or one held to a bound of requests (ollama, or
+// max_concurrent_requests), queues them.
+func editorServer(p config.ProviderConfig) string {
+	base := p.BaseURL
+	if base == "" {
+		// A local server type left at its default: keyed by that endpoint, as its adapter and the slot pools resolve it.
+		base = model.LocalDefaultURL(p.Type)
+	}
+	if base == "" || !p.OnThisMachine() && p.Type != "ollama" && p.MaxConcurrentRequests <= 0 {
+		return ""
+	}
+	return model.ServerKey(base)
+}
+
+// featureCancel cancels an editor feature's request in flight: with seq,
+// only that one; without it, whatever is in flight.
+func (c *acpConn) featureCancel(msg rpcMessage, feature string) {
 	s, e := c.sessionFor(msg.Params)
 	if e != nil {
 		c.reply(msg.ID, nil, e)
@@ -681,7 +730,7 @@ func (c *acpConn) completeCancel(msg rpcMessage) {
 		Seq int64 `json:"seq"`
 	}
 	_ = json.Unmarshal(msg.Params, &p)
-	if k := c.completer(s); k != nil {
+	if k := c.completerFor(s, feature); k != nil {
 		k.mu.Lock()
 		if k.cancel != nil && (p.Seq == 0 || p.Seq == k.latest) {
 			k.cancel()
@@ -780,6 +829,8 @@ func (c *acpConn) completeWarm(msg rpcMessage) {
 	ctx, cancel := context.WithTimeout(c.root(), warmTimeout)
 	defer cancel()
 	k.warmCancel = cancel
+	k.running++
+	defer k.finished()
 	k.mu.Unlock()
 	// Ended too when the editor's input ends, so it never holds the drain at exit.
 	go func() {
@@ -804,14 +855,45 @@ func (c *acpConn) completeWarm(msg rpcMessage) {
 }
 
 // completionSummary records the session's completions, once, as it closes.
-func (c *acpConn) completionSummary(s *acpSession) {
-	for _, feature := range []string{"complete", "next_edit", "commit"} {
-		c.featureSummary(s, feature)
+func (c *acpConn) completionSummary(s *acpSession, counted time.Time) {
+	c.stopEditors(map[string]*acpSession{s.id: s})
+	for _, feature := range closedFeatures {
+		c.featureSummary(s, feature, counted)
+	}
+}
+
+// closedFeatures are the features whose calls a session's close ends, in
+// the order their summaries are recorded.
+var closedFeatures = []string{"complete", "next_edit", "commit"}
+
+// stopEditors closes the sessions' editor features to new calls and
+// cancels those in flight, which count themselves as they end.
+func (c *acpConn) stopEditors(sessions map[string]*acpSession) {
+	c.compMu.Lock()
+	var ks []*acpCompleter
+	for id := range sessions {
+		for _, feature := range closedFeatures {
+			if k := c.comps[id+"\x00"+feature]; k != nil {
+				ks = append(ks, k)
+			}
+		}
+	}
+	c.compMu.Unlock()
+	for _, k := range ks {
+		k.mu.Lock()
+		k.closed = true
+		if k.cancel != nil {
+			k.cancel()
+		}
+		if k.warmCancel != nil {
+			k.warmCancel()
+		}
+		k.mu.Unlock()
 	}
 }
 
 // featureSummary records one editor feature's summary for a closing session.
-func (c *acpConn) featureSummary(s *acpSession, feature string) {
+func (c *acpConn) featureSummary(s *acpSession, feature string, counted time.Time) {
 	c.compMu.Lock()
 	k := c.comps[s.id+"\x00"+feature]
 	delete(c.comps, s.id+"\x00"+feature)
@@ -819,13 +901,23 @@ func (c *acpConn) featureSummary(s *acpSession, feature string) {
 	if k == nil {
 		return
 	}
+	// Its calls were cancelled by stopEditors and are counted (and charged)
+	// by their handlers: waited for until counted, one deadline for the
+	// whole close, so the summary has what the budget has.
 	k.mu.Lock()
-	k.closed = true
-	if k.cancel != nil {
-		k.cancel()
-	}
-	if k.warmCancel != nil {
-		k.warmCancel()
+	if k.running > 0 {
+		if k.idle == nil {
+			k.idle = make(chan struct{})
+		}
+		idle := k.idle
+		k.mu.Unlock()
+		t := time.NewTimer(time.Until(counted))
+		select {
+		case <-idle:
+		case <-t.C:
+		}
+		t.Stop()
+		k.mu.Lock()
 	}
 	sum := k.sum
 	sum.LatencyP50Ms, sum.LatencyP90Ms, sum.LatencyMaxMs = latencies(k.lat)
@@ -839,6 +931,10 @@ func (c *acpConn) featureSummary(s *acpSession, feature string) {
 		}
 	}
 }
+
+// summaryWait bounds how long a closing session's summary waits for its
+// cancelled editor calls to be counted.
+const summaryWait = time.Second
 
 // latencies are the median, 90th percentile and longest of ms.
 func latencies(ms []int64) (int, int, int) {
@@ -858,6 +954,8 @@ func latencies(ms []int64) (int, int, int) {
 // completionCall asks the completion model for one suggestion: by its
 // fill-in-the-middle endpoint when fim, else by a chat turn.
 func completionCall(ctx context.Context, a model.Adapter, fim bool, in model.InfillRequest) (model.InfillResult, error) {
+	// Ahead of next edits and agent turns waiting for the same server.
+	ctx = model.First(ctx)
 	if fim {
 		return a.(model.Infiller).Infill(ctx, in)
 	}

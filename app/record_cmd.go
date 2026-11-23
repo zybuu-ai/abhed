@@ -506,11 +506,10 @@ func exportPath(given, id, format string) (string, error) {
 	if given != "" {
 		return given, nil
 	}
-	home, err := os.UserHomeDir()
+	dir, err := exportsDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".abhed", "exports")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}

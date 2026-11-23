@@ -120,6 +120,8 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 	}()
 
 	var cur *rpcSession
+	// started is set by the first start: who is working is fixed from then on.
+	started := false
 	// undelivered says, before the session closes, what steering it never read.
 	undelivered := func(why string) {
 		if cur == nil || cur.agent == nil {
@@ -162,7 +164,16 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			a = cur.agent
 		}
 		switch req.Method {
+		case "auth.status", "auth.signin", "auth.register", "auth.guest":
+			emit(rpcAuth(req, started))
+			continue
+
 		case "start":
+			if err := pendingSignIn(); err != nil {
+				emit(rpcResponse{ID: req.ID, Type: "error", Error: err.Error() + "; send auth.signin, auth.register or auth.guest first"})
+				continue
+			}
+			started = true
 			if a != nil {
 				undelivered("a new session was started")
 				a.Close()
@@ -221,7 +232,7 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			if req.Approvals {
 				opts.Approve = rpcApprover(approvals, emit)
 			}
-			na, err := abhed.New(embedded.With(ctx, embedded.Settings{Surface: "rpc"}), opts)
+			na, err := abhed.New(embedded.With(ctx, embedded.Settings{Surface: "rpc", Principal: principalStart()}), opts)
 			made = na
 			cur = q.sess
 			mu.Lock()
@@ -345,7 +356,7 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 		default:
 			emit(rpcResponse{ID: req.ID, Type: "error",
 				Error: fmt.Sprintf("unknown method %q; want start, prompt, steer, approve, "+
-					"usage, export, providers, tasks, cancel_task, wake or quit", req.Method)})
+					"usage, export, providers, tasks, cancel_task, wake, quit or auth.status, auth.signin, auth.register, auth.guest", req.Method)})
 		}
 	}
 }
@@ -429,6 +440,10 @@ type rpcRequest struct {
 	Decision  string `json:"decision,omitempty"`
 	Remember  bool   `json:"remember,omitempty"`
 	Approver  string `json:"approver,omitempty"`
+	// Username, Password and Email are auth.signin's and auth.register's.
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+	Email    string `json:"email,omitempty"`
 }
 
 type rpcResponse struct {
@@ -448,6 +463,13 @@ type rpcResponse struct {
 	Verdict *abhed.AnswerVerdict `json:"verdict,omitempty"`
 	// Approval is a call put to the caller for an answer.
 	Approval *rpcApproval `json:"approval,omitempty"`
+	// Principal answers the auth methods: who is working.
+	Principal *rpcPrincipal `json:"principal,omitempty"`
+	// RecoveryCode, on auth.register, is shown once.
+	RecoveryCode string `json:"recovery_code,omitempty"`
+	// Notice, on auth.signin, is what the person must be told, such as a
+	// password reset since their last sign-in.
+	Notice string `json:"notice,omitempty"`
 }
 
 // rpcRunsOn reports whether a prompt's run goes on for messages queued as it

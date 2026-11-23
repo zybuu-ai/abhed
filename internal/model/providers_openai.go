@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -25,16 +26,16 @@ func init() {
 	// The local servers accept the OpenAI body plus top_k, min_p and
 	// repetition_penalty, which hosted APIs do not define.
 	registerOpenAI("vllm", "vLLM server (OpenAI-compatible, /v1)",
-		parallelCalls(openAIStyle("http://127.0.0.1:8000/v1", SamplingLocal())))
+		parallelCalls(openAIStyle(localURLs["vllm"], SamplingLocal())))
 	registerOpenAI("ollama", "Ollama (OpenAI-compatible endpoint, /v1)", func(sp Spec) (Adapter, error) {
-		return openAIStyle(defaults.OllamaURL, SamplingLocal())(sp)
+		return openAIStyle(LocalDefaultURL("ollama"), SamplingLocal())(sp)
 	})
 	registerOpenAI("llamacpp", "llama.cpp server (OpenAI-compatible, /v1)",
-		openAIStyle("http://127.0.0.1:8080/v1", SamplingLocal()))
+		openAIStyle(localURLs["llamacpp"], SamplingLocal()))
 	registerOpenAI("tgi", "Hugging Face Text Generation Inference (/v1)",
-		openAIStyle("http://127.0.0.1:8080/v1", SamplingLocal()))
+		openAIStyle(localURLs["tgi"], SamplingLocal()))
 	registerOpenAI("sglang", "SGLang server (OpenAI-compatible, /v1)",
-		openAIStyle("http://127.0.0.1:30000/v1", SamplingLocal()))
+		openAIStyle(localURLs["sglang"], SamplingLocal()))
 
 	// Hosted OpenAI-compatible gateways.
 	registerOpenAI("groq", "Groq (OpenAI-compatible)",
@@ -54,6 +55,19 @@ func init() {
 	// permissive local sampling set because that is what it was used for.
 	registerOpenAI("openai-compatible", "any OpenAI-compatible endpoint (generic)",
 		parallelCalls(openAIStyle("", SamplingLocal())))
+}
+
+// localURLs are the endpoints local server types use when no base_url is set.
+var localURLs = map[string]string{"vllm": "http://127.0.0.1:8000/v1", "llamacpp": "http://127.0.0.1:8080/v1",
+	"tgi": "http://127.0.0.1:8080/v1", "sglang": "http://127.0.0.1:30000/v1"}
+
+// LocalDefaultURL is the endpoint a local server type uses with no
+// base_url, as its adapter resolves it; "" for any other type.
+func LocalDefaultURL(typ string) string {
+	if typ == "ollama" {
+		return defaults.OllamaURL
+	}
+	return localURLs[typ]
 }
 
 func openAIStyle(defaultURL string, sampling Sampling) Factory {
@@ -88,6 +102,9 @@ func openAIStyle(defaultURL string, sampling Sampling) Factory {
 				key = os.Getenv("OPENAI_API_KEY")
 			}
 		}
+		profile.StreamsReasoning = streamsReasoning(s.Type, base)
+		// The official API's reasoning models bill reasoning they never stream.
+		profile.ReasoningTokens = s.Type == "openai" && hiddenReasoning(s.Model)
 		a := NewOpenAICompatible(base, key, s.Model, profile)
 		a.Defaults = s.Params
 		a.Think = s.Params.Think
@@ -98,11 +115,69 @@ func openAIStyle(defaultURL string, sampling Sampling) Factory {
 		}
 		a.PromptCache = cache
 		a.ParallelToolCalls = s.Get("parallel_tool_calls") == "true"
+		a.EffortOff, err = effortOff(s, base)
+		if err != nil {
+			return nil, err
+		}
 		if len(s.ReasoningTags) == 2 {
 			a.ReasoningTags = [2]string{s.ReasoningTags[0], s.ReasoningTags[1]}
 		}
 		return a, nil
 	}
+}
+
+// streamsReasoning is a local server known to stream reasoning: Ollama and
+// llama.cpp anywhere, and vLLM, TGI or SGLang on a loopback address. A
+// generic or hosted entry may front a model that reasons out of sight.
+func streamsReasoning(typ, base string) bool {
+	switch typ {
+	case "ollama", "llamacpp":
+		return true
+	case "vllm", "tgi", "sglang":
+		return loopback(base)
+	}
+	return false
+}
+
+// hiddenReasoning is an OpenAI reasoning model: the o-series and gpt-5 on.
+func hiddenReasoning(model string) bool {
+	m := strings.ToLower(model)
+	return len(m) > 1 && m[0] == 'o' && m[1] >= '1' && m[1] <= '9' || strings.HasPrefix(m, "gpt-5") || strings.HasPrefix(m, "gpt-6")
+}
+
+// loopback reports a base URL on this machine's loopback address.
+func loopback(base string) bool {
+	u, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	h := u.Hostname()
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
+}
+
+// effortOff says whether thinking off is also sent as reasoning_effort
+// "none": for Ollama (its type, or an openai-compatible entry on Ollama's
+// loopback port 11434), or as extra.think_off ("reasoning_effort", or
+// "think" for the field alone), which a remote Ollama needs.
+func effortOff(s Spec, base string) (bool, error) {
+	switch v := s.Get("think_off"); v {
+	case "reasoning_effort":
+		return true, nil
+	case "think":
+		return false, nil
+	case "":
+	default:
+		return false, fmt.Errorf("provider %q: extra.think_off must be reasoning_effort or think, not %q", s.Type, v)
+	}
+	if s.Type == "ollama" {
+		return true, nil
+	}
+	u, err := url.Parse(base)
+	return err == nil && s.Type == "openai-compatible" && u.Port() == "11434" && loopback(base), nil
 }
 
 // parallelCalls is f for a server known to take "parallel_tool_calls": it is

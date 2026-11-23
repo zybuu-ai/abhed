@@ -256,3 +256,14 @@ func TestFailedTurnAfterModelSwitchNamesTheWayBack(t *testing.T) {
 		t.Fatalf("after a good turn the hint stays: %q", got)
 	}
 }
+
+// The fallback's tool limit counts every fallback after the model answering,
+// one not yet built included, so a move never meets a request it refuses.
+func TestFallbackToolLimitCountsUnbuiltFallbacks(t *testing.T) {
+	a := model.NewOpenAICompatible("http://127.0.0.1:1/v1", "", "a", model.Profile{})
+	f := newFallbackAdapter("a", a, []string{"b", "c"}, func(string) (model.Adapter, error) { return a, nil })
+	f.limits = []int{0, 0, 40}
+	if n := model.ToolLimitOf(f); n != 40 {
+		t.Fatalf("limit %d, want the unbuilt fallback's 40", n)
+	}
+}

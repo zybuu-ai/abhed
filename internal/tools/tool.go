@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -200,11 +201,51 @@ func NewRegistry(ts ...Tool) *Registry {
 	return r
 }
 
-func (r *Registry) Add(t Tool) {
+// Add registers t and reports whether it did: a name already registered is
+// refused and the first tool keeps it; the caller warns. Replace swaps.
+func (r *Registry) Add(t Tool) bool {
+	if _, dup := r.tools[t.Name()]; dup {
+		return false
+	}
+	r.order = append(r.order, t.Name())
+	r.tools[t.Name()] = t
+	return true
+}
+
+// Replace puts t in place of the tool of its name, keeping its place, or
+// adds it: a deliberate swap, such as a session's bound bash.
+func (r *Registry) Replace(t Tool) {
 	if _, dup := r.tools[t.Name()]; !dup {
 		r.order = append(r.order, t.Name())
 	}
 	r.tools[t.Name()] = t
+}
+
+// Cloner is a tool with per-session state, such as a deferred tool's
+// loaded flag: each registry derived from another gets its own copy.
+type Cloner interface {
+	CloneTool() Tool
+}
+
+// Rebinder is a tool that refers to others of its registry, such as
+// tool_search to the tools it loads: a derived registry rebinds it to its own.
+type Rebinder interface {
+	Rebind(r *Registry) Tool
+}
+
+// own gives r its own copy of every Cloner, then rebinds every Rebinder to them.
+func (r *Registry) own() *Registry {
+	for _, n := range r.order {
+		if c, ok := r.tools[n].(Cloner); ok {
+			r.tools[n] = c.CloneTool()
+		}
+	}
+	for _, n := range r.order {
+		if b, ok := r.tools[n].(Rebinder); ok {
+			r.tools[n] = b.Rebind(r)
+		}
+	}
+	return r
 }
 
 func (r *Registry) Get(name string) (Tool, bool) {
@@ -248,7 +289,7 @@ func (r *Registry) Clone() *Registry {
 		out.tools[k] = v
 	}
 	copy(out.order, r.order)
-	return out
+	return out.own()
 }
 
 // Remove drops a tool. Used when an MCP server is disconnected, whose tools
@@ -277,7 +318,7 @@ func (r *Registry) Subset(names ...string) *Registry {
 			sub.Add(t)
 		}
 	}
-	return sub
+	return sub.own()
 }
 
 // SubsetStrict returns a registry limited to the tools names match, in this
@@ -307,7 +348,7 @@ func (r *Registry) SubsetStrict(names []string) (*Registry, []string) {
 			sub.Add(r.tools[n])
 		}
 	}
-	return sub, missing
+	return sub.own(), missing
 }
 
 // Without returns a copy of the registry without the tools names match. A
@@ -329,7 +370,7 @@ func (r *Registry) Without(names []string) *Registry {
 			out.Add(r.tools[n])
 		}
 	}
-	return out
+	return out.own()
 }
 
 // match finds the tools one written name stands for.
@@ -385,6 +426,36 @@ type Definition struct {
 // tool search loads it.
 type Hidden interface {
 	Hidden() bool
+}
+
+// Unloadable is a hidden tool that was loaded on request and can be put back
+// out of the offered set: a deferred MCP tool tool_search loaded.
+type Unloadable interface {
+	Hidden
+	// LastUsed orders loaded tools by when they were last loaded or called.
+	LastUsed() int64
+	Unload()
+}
+
+// UnloadLeastUsed unloads up to n loaded Unloadable tools, least recently
+// used first, and says how many; a built-in is never one.
+func (r *Registry) UnloadLeastUsed(n int) int {
+	var loaded []Unloadable
+	for _, name := range r.order {
+		if u, ok := r.tools[name].(Unloadable); ok && !u.Hidden() {
+			loaded = append(loaded, u)
+		}
+	}
+	sort.SliceStable(loaded, func(i, j int) bool { return loaded[i].LastUsed() < loaded[j].LastUsed() })
+	done := 0
+	for _, u := range loaded {
+		if done == n {
+			break
+		}
+		u.Unload()
+		done++
+	}
+	return done
 }
 
 // Definitions are the tools offered to the model, in registration order,

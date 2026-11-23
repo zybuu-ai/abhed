@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -326,6 +327,13 @@ type gatedAdapter struct {
 // budget is seen.
 func (g gatedAdapter) SamplingDefaults() model.Params { return model.SamplingDefaultsOf(g.Adapter) }
 
+// ToolLimit is the wrapped adapter's.
+func (g gatedAdapter) ToolLimit() int { return model.ToolLimitOf(g.Adapter) }
+
+// CallTimeout passes the wrapped adapter's through, so the reasoning
+// backstop stays under it.
+func (g gatedAdapter) CallTimeout() time.Duration { return model.CallTimeoutOf(g.Adapter) }
+
 func (g gatedAdapter) Complete(ctx context.Context, req model.Request) (<-chan model.Chunk, error) {
 	if err := g.probe.check(ctx); err != nil {
 		return nil, err
@@ -510,6 +518,9 @@ func listModels(ctx context.Context, base, key string) ([]string, error) {
 			out = append(out, d.ID)
 		}
 	}
+	// The server's order varies between calls (Ollama's follows use), and
+	// the first is the default choice: sorted, the same list each time.
+	sort.Strings(out)
 	return out, nil
 }
 
@@ -857,6 +868,9 @@ func looksLikeKey(v string) bool {
 // writeUserConfig writes the person's own configuration, which must not
 // exist yet. It holds a key's variable name, never a key.
 func writeUserConfig(name string, p config.ProviderConfig, autoMemory bool) (string, error) {
+	if err := guestRefusal("writing this machine's configuration"); err != nil {
+		return "", err
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

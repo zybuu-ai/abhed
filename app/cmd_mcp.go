@@ -55,7 +55,8 @@ func mcpCmd(workspace string, args []string, trust config.TrustChoice, cio mcpIO
 			"       abhed mcp add [-header-env HEADER=VAR]... [-allow-tools a,b] NAME https://URL\n"+
 			"         either add also takes -sha256 HEX (only that entry) and -confirm-fd N (the yes from an inherited descriptor, for an editor)\n"+
 			"       abhed mcp remove NAME\n"+
-			"       abhed mcp login [-no-browser] NAME | logout NAME\n"+
+			"       abhed mcp login [-no-browser] [-confirm-fd N] NAME | logout NAME\n"+
+			"         login -confirm-fd N reads the yes from an inherited descriptor and leaves the browser to the editor that asked\n"+
 			"  Servers are added to ~/.abhed/config.json, enabled, after a confirmation at a terminal.")
 		return 2
 	}
@@ -74,25 +75,26 @@ func mcpCmd(workspace string, args []string, trust config.TrustChoice, cio mcpIO
 			return usage()
 		}
 		return fail0(mcpRemove(args[1], cio.out), fail)
-	case "login", "logout":
-		rest, noBrowser := args[1:], false
-		if args[0] == "login" {
-			rest = slices.DeleteFunc(slices.Clone(rest), func(a string) bool {
-				if a == "-no-browser" || a == "--no-browser" {
-					noBrowser = true
-					return true
-				}
-				return false
-			})
-		}
-		if len(rest) != 1 {
+	case "login":
+		name, fd, noBrowser, ok := parseMCPLogin(args[1:])
+		if !ok {
 			return usage()
 		}
-		if args[0] == "login" {
-			cio.noBrowser = noBrowser
-			return fail0(mcpLogin(workspace, trust, rest[0], cio), fail)
+		if fd != 0 {
+			f := os.NewFile(uintptr(fd), "confirm") // #nosec G115 -- checked to be 3 or above
+			if _, err := f.Stat(); err != nil {
+				return fail(fmt.Errorf("-confirm-fd %d is not open", fd))
+			}
+			defer func() { _ = f.Close() }()
+			cio.in, cio.terminal, cio.byEditor = f, true, true
 		}
-		return fail0(mcpLogout(workspace, trust, rest[0], cio), fail)
+		cio.noBrowser = noBrowser
+		return fail0(mcpLogin(workspace, trust, name, cio), fail)
+	case "logout":
+		if len(args) != 2 {
+			return usage()
+		}
+		return fail0(mcpLogout(workspace, trust, args[1], cio), fail)
 	case "add":
 		s, o, err := parseMCPAddOpts(args[1:], cio.err)
 		if errors.Is(err, errUsage) {
@@ -103,7 +105,7 @@ func mcpCmd(workspace string, args []string, trust config.TrustChoice, cio mcpIO
 		}
 		if o.confirmFD != 0 {
 			f := os.NewFile(uintptr(o.confirmFD), "confirm") // #nosec G115 -- checked to be 3 or above
-			if f == nil {
+			if _, err := f.Stat(); err != nil {
 				return fail(fmt.Errorf("-confirm-fd %d is not open", o.confirmFD))
 			}
 			defer func() { _ = f.Close() }()
@@ -122,6 +124,19 @@ func fail0(err error, fail func(error) int) int {
 }
 
 var errUsage = errors.New("usage")
+
+// parseMCPLogin reads login's words: NAME, or -confirm-fd N NAME for an
+// editor that asked the person and opens the browser itself.
+func parseMCPLogin(args []string) (name string, fd int, noBrowser, ok bool) {
+	fs := flag.NewFlagSet("mcp login", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.IntVar(&fd, "confirm-fd", 0, "")
+	fs.BoolVar(&noBrowser, "no-browser", false, "")
+	if fs.Parse(args) != nil || fs.NArg() != 1 || (fd != 0 && fd < 3) {
+		return "", 0, false, false
+	}
+	return fs.Arg(0), fd, noBrowser, true
+}
 
 // mcpAddOpts are add's flags for an editor's main process: where the yes is
 // read from instead of a terminal, and the entry the person was shown.
@@ -448,16 +463,33 @@ func mcpList(workspace string, trust config.TrustChoice, out io.Writer) error {
 		where := config.Printable(s.Command)
 		if s.URL != "" {
 			where = config.PrintableURL(s.URL)
-			switch in, _, _, err := mcpauth.Status(openVault(), s.Name, s.URL); {
-			case err != nil:
-				where += " (login for another URL; abhed mcp login " + config.Printable(s.Name) + ")"
-			case in:
-				where += " (signed in)"
-			}
+			where += mcpLoginNote(s.Name, s.URL, time.Now())
 		}
 		fmt.Fprintf(out, "%-20s %-9s %-8s %s\n", config.Printable(s.Name), source, state, where)
 	}
 	return nil
+}
+
+// mcpLoginNote is how abhed mcp list shows a URL server's login: "signed
+// in" only while the login can still give a token.
+func mcpLoginNote(name, serverURL string, now time.Time) string {
+	st, err := mcpauth.State(openVault(), name, serverURL)
+	again := "; abhed mcp login " + config.Printable(name) + ")"
+	switch {
+	case err != nil:
+		return " (the stored login does not read" + again
+	case !st.Held:
+		return ""
+	case st.OtherURL:
+		return " (login for another URL" + again
+	case !st.RefreshRefused.IsZero():
+		return " (not signed in: the login was refused at refresh " + st.RefreshRefused.Local().Format("2006-01-02 15:04") + again
+	case !st.Usable(now):
+		return " (not signed in: the login ended" + again
+	case !st.Expiry.IsZero() && !st.Refreshable:
+		return " (signed in until " + st.Expiry.Local().Format("2006-01-02 15:04") + ")"
+	}
+	return " (signed in)"
 }
 
 // readUserDoc is ~/.abhed/config.json as a generic document, so a write
@@ -552,8 +584,13 @@ func logConfigChange(by, key string, s config.MCPServerConfig, file string) erro
 const maxConfigChangeLog = 4 << 20
 
 func appendConfigChange(c configChange, s config.MCPServerConfig) error {
-	c.Time = time.Now().UTC()
 	c.Kind, c.SHA256 = mcpEntrySum(s)
+	return writeConfigChange(c)
+}
+
+// writeConfigChange appends c, as it is, to the change log beside c.File.
+func writeConfigChange(c configChange) error {
+	c.Time = time.Now().UTC()
 	line, err := json.Marshal(c)
 	if err != nil {
 		return err

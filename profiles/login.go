@@ -87,7 +87,9 @@ func Discover(ctx context.Context, c *http.Client, base string) (*Discovery, err
 }
 
 // Resolve makes an endpoint absolute against base. An absolute endpoint on
-// another host is allowed only over https.
+// another host is allowed only over https, or over http when it and the
+// server are both on this machine (an identity provider run beside a local
+// server), where nothing crosses the network.
 func Resolve(base, endpoint string) (string, error) {
 	if endpoint == "" {
 		return "", errors.New("the server named no endpoint for this step")
@@ -106,7 +108,8 @@ func Resolve(base, endpoint string) (string, error) {
 		}
 		return strings.TrimRight(base, "/") + endpoint, nil
 	}
-	if e.Host != b.Host && e.Scheme != "https" {
+	local := e.Scheme == "http" && Loopback(e.Hostname()) && Loopback(b.Hostname())
+	if e.Host != b.Host && e.Scheme != "https" && !local {
 		return "", fmt.Errorf("endpoint %s is on another host over plain http", endpoint)
 	}
 	return e.String(), nil
@@ -550,7 +553,7 @@ func Whoami(ctx context.Context, c *http.Client, p *Profile) (map[string]any, er
 		if reason == "" {
 			reason, _ = out["error"].(string)
 		}
-		return nil, fmt.Errorf("the server refused the token (%s): %s", resp.Status, reason)
+		return nil, &RefusedError{Status: resp.StatusCode, Text: resp.Status, Reason: shown(reason)}
 	}
 	return out, nil
 }
@@ -561,4 +564,22 @@ func randomString(n int) string {
 		panic("profiles: system random source unavailable: " + err.Error())
 	}
 	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// RefusedError is a server answering whoami with something other than 200,
+// access removal aside: Status says whether it refused the token (401, 403)
+// or could not answer (5xx, 429).
+type RefusedError struct {
+	Status int
+	Text   string
+	Reason string
+}
+
+func (e *RefusedError) Error() string {
+	return fmt.Sprintf("the server refused the token (%s): %s", e.Text, e.Reason)
+}
+
+// TokenRefused reports whether the server said the token is not good: 401 or 403.
+func (e *RefusedError) TokenRefused() bool {
+	return e.Status == 401 || e.Status == 403
 }

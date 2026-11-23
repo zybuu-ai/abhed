@@ -291,7 +291,7 @@ func withAsk(reg *tools.Registry, interactive bool) *tools.Registry {
 		return reg
 	}
 	out := reg.Clone()
-	out.Add(personAsk)
+	out.Replace(personAsk)
 	return out
 }
 

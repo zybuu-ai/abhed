@@ -448,7 +448,7 @@ func TestNoBrowser(t *testing.T) {
 	t.Cleanup(func() { openBrowser = old })
 	openBrowser = func(string) error { t.Error("a browser was opened"); return nil }
 	var errOut bytes.Buffer
-	_ = signInOpener(true, &errOut)("https://srv/approve")
+	_ = signInOpener(true, &errOut, openBrowser)("https://srv/approve")
 	if !strings.Contains(errOut.String(), "  https://srv/approve") {
 		t.Fatalf("%q", errOut.String())
 	}

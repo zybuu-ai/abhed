@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/filelock"
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/nlink"
 )
 
@@ -51,11 +52,7 @@ type trustFile struct {
 
 // TrustStorePath is where decisions are kept.
 func TrustStorePath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".abhed", "trust.json"), nil
+	return home.PersonPath("trust.json")
 }
 
 func readTrust() (trustFile, string, error) {

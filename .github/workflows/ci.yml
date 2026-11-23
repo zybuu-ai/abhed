@@ -316,9 +316,9 @@ jobs:
       - name: Only a command's proven processes are signalled (fake process tables)
         run: |
           set -euo pipefail
-          go test ./internal/sandbox -count=1 -v -run 'TestWatchSignalsOnlyTheCommandsOwnTree|TestAReparentedChildIsFollowedByItsOrigin|TestMarkerNarrowsNeverWidens|TestSessionProofIsTheSessionOnly|TestClosingSignalsNoMarkedProcessOfAnUnwatchedCommand|TestHostCommandsDoNotInheritAMarker|TestAReusedPidIsNeverSignalled|TestAChildOfAReusedParentPidIsNotFollowed|TestAStopThatLandsOnAReusedPidIsUndone|TestSessionProofWaitsForTheExitedRoot|TestEndedProcessesAreNamed' 2>&1 | tee "$RUNNER_TEMP/watch.log"
+          go test ./internal/sandbox -count=1 -v -run 'TestWatchSignalsOnlyTheCommandsOwnTree|TestAReparentedChildIsFollowedByItsOrigin|TestMarkerNarrowsNeverWidens|TestSessionProofIsTheSessionOnly|TestClosingSignalsNoMarkedProcessOfAnUnwatchedCommand|TestHostCommandsDoNotInheritAMarker|TestAReusedPidIsNeverSignalled|TestAChildOfAReusedParentPidIsNotFollowed|TestAStopThatLandsOnAReusedPidIsUndone|TestSessionProofWaitsForTheExitedRoot|TestEndedProcessesAreNamed|TestWaitAndEndRunTogether|TestTheMarkerSearchStartsAtTheRoot' 2>&1 | tee "$RUNNER_TEMP/watch.log"
           ! grep -E -- "--- SKIP" "$RUNNER_TEMP/watch.log"
-          [ "$(grep -c -- "--- PASS" "$RUNNER_TEMP/watch.log")" -eq 11 ]
+          [ "$(grep -c -- "--- PASS" "$RUNNER_TEMP/watch.log")" -eq 13 ]
       # A throwaway runner: the tests that end real process trees on macOS,
       # skipped on a person's machine, run here, and none may skip.
       - name: Real process trees are ended on macOS (throwaway runner)
@@ -335,6 +335,22 @@ jobs:
           ABHED_BIN="$RUNNER_TEMP/abhed" python3 -m unittest tests.test_action.RunTest tests.test_action.EndToEnd -v 2>&1 | tee "$RUNNER_TEMP/action.log"
           # Only the test that ends real process trees may skip: it runs on Linux.
           ! grep -E "skipped '" "$RUNNER_TEMP/action.log" | grep -v "ends real process trees: Linux only"
+
+  # Many MCP servers, skills and agent types in one session: routing, the
+  # provider's tool limit and the listing budgets. Stub servers only; trimmed
+  # to run in about a minute (make test-scale).
+  integration-scale:
+    name: Integration scale
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.10"
+
+      - name: Scale check
+        run: make test-scale
 
   # The process tier on Linux is bubblewrap, and denying network needs a
   # namespace the hosted runner will not grant. A privileged container can, so

@@ -185,6 +185,16 @@ is asking for.
 A definition must be a regular file: a link, or a file with a second hard
 link, is refused. `agents.disabled: true` loads the managed definitions only.
 
+## Many definitions
+
+The `task` and `tasks` tools list each agent type with its description,
+within 8 KB, about 2,300 tokens. Past that the rest are counted ("and 40
+more"). Their `agent_type` property lists every type's name as an `enum`
+while the names fit in 8 KB; past that it has no `enum`, since a part of the
+names as one would forbid the rest. A task may name any type, listed or not,
+and a name that matches none returns the types whose names or descriptions
+hold its words. A workspace reads at most 64 definitions.
+
 ## Definitions in a repository need your trust
 
 A definition in `.abhed/agents` came with the repository. It can choose a
