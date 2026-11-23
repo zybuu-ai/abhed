@@ -242,7 +242,13 @@ func TestK8sLoginIsOfferedOnceALoginIsPasted(t *testing.T) {
 	if strings.Contains(bodies[0], `"name":"k8s_login"`) {
 		t.Fatal("k8s_login was offered before anything was pasted")
 	}
-	if !strings.Contains(bodies[len(bodies)-1], `"name":"k8s_login"`) {
+	// The last call may be a suggestion's, which offers no tools: any call
+	// after the paste is the turn's.
+	offered := false
+	for _, b := range bodies[1:] {
+		offered = offered || strings.Contains(b, `"name":"k8s_login"`)
+	}
+	if !offered {
 		t.Fatal("k8s_login was not offered once a login was pasted")
 	}
 }
