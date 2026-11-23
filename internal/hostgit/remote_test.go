@@ -82,6 +82,13 @@ func newRemoteRig(t *testing.T) *remoteRig {
 	oldParent, oldRelay := cloneParent, relayParent
 	cloneParent = func() (string, error) { return cloneDir, nil }
 	relayParent = func() (string, error) { return cloneDir, nil }
+	runDirFolder := filepath.Join(root, "git-run")
+	if err := os.MkdirAll(runDirFolder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldRun := runParent
+	runParent = func() (string, error) { return runDirFolder, nil }
+	t.Cleanup(func() { runParent = oldRun })
 	t.Cleanup(func() { cloneParent, relayParent = oldParent, oldRelay })
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(r.home, ".config"))
 	t.Setenv("SSH_AUTH_SOCK", filepath.Join(root, sockMarker))

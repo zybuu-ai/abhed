@@ -85,3 +85,26 @@ func TestServedSessionsNeverBrokerRemoteGit(t *testing.T) {
 		t.Fatalf("the fence ran %q", ran)
 	}
 }
+
+// unchosen stands in for the CLI's sandbox while it is still being chosen.
+type unchosen struct{ sandbox.Sandbox }
+
+func (unchosen) Resolved() bool { return false }
+
+// While the CLI's sandbox is still being chosen, bash's description answers
+// as the process tier, the floor, would, without waiting for the choice.
+func TestCLIHostGitOnUsesTheFloorWhileChoosing(t *testing.T) {
+	gb := hostgit.NewBroker(t.TempDir(), func() sandbox.Tier { return sandbox.TierProcess }, hostgit.Network{}, nil)
+	cfg := config.Default()
+	if !cliHostGitOn(cfg, unchosen{}, gb) {
+		t.Fatal("with git protected by default, the floor brokers")
+	}
+	off := false
+	cfg.Sandbox.GitProtect = &off
+	if cliHostGitOn(cfg, unchosen{}, gb) {
+		t.Fatal("with protect_git off, the floor does not broker")
+	}
+	if cliHostGitOn(config.Default(), unchosen{}, gb.RemotesOff("sandbox.host_git is false")) {
+		t.Fatal("turned off, it does not broker")
+	}
+}

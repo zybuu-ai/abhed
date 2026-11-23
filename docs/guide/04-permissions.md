@@ -1203,6 +1203,42 @@ cannot steer host git:
   (`~name/`) or git's install (`%(prefix)/`), which Abhed does not follow;
   while `GIT_CONFIG_GLOBAL` or `GIT_CONFIG_SYSTEM` is a relative path; or
   past 200 files. The same check stops an issue's push.
+- The programs your configuration names for host git must be yours alone
+  too: the SSH command (or `ssh` when you name none), `core.askPass` and
+  `SSH_ASKPASS`, `core.gitProxy` and each credential helper. Words are read
+  as git reads them: an askpass or git proxy is one path, spaces and all;
+  the SSH command and a credential helper are split as the shell splits
+  them, quotes honoured; a leading `~/` is your home. Every word, and the
+  value after `=` in each (ssh's `-o ProxyCommand=…`), is judged: nothing is
+  brokered while one is a relative path, or an absolute one in the
+  workspace or a folder commands can write, or another user's or writable
+  by others; while a shell is given a command line (`sh -c …`); or while a
+  `!` credential helper is more than a program and its words (a shell
+  function such as `!f() { …; }; f`, a variable, a pipe or a second
+  command). If you use a shell-function helper, put it in a script of your
+  own and name the script instead: until then, a brokered git remote
+  command is refused, with the reason.
+- So is your ssh configuration: `/etc/ssh/ssh_config`, `~/.ssh/config` (or
+  the file the SSH command names with `-F`) and every file they `Include`
+  (relative ones from `~/.ssh` or `/etc/ssh`, globs expanded), checked as
+  your git configuration files are, and every command a `ProxyCommand`,
+  `LocalCommand`, `KnownHostsCommand` or `Match exec` there runs, judged as
+  above. So is what ssh loads or runs as its own (`PKCS11Provider`,
+  `SecurityKeyProvider`, `XAuthLocation`, and `SSH_SK_PROVIDER` in your
+  environment): an absolute path of your own, or `none` or `internal`. A
+  `ControlPath` socket must not lie in the workspace or a folder commands
+  can write. The same settings given as `-o` options in the SSH command are
+  judged the same way. An `Include` or `-F` path that ssh would expand (an
+  environment variable, a `%` token, `~user`) is refused: write the full
+  path.
+- Host git runs with your `PATH`, less every folder that is relative or
+  lies in the workspace or a folder commands can write (a project's `bin`,
+  `node_modules/.bin`), so no program is found there, by git, ssh, a
+  wrapper or a `ProxyCommand`; a stray folder like that leaves brokering on.
+  It runs from an empty folder of your own, the repository given as
+  `GIT_DIR`, so nothing it names is found in the workspace. `GIT_SSH`,
+  `GIT_SSH_COMMAND` and `GIT_ASKPASS` in your environment are not given to
+  host git at all.
 - A brokered line is given no vault secret (`secrets`): git run on the host
   as you needs none.
 - On Linux, the process tier (bubblewrap) and the fence hold git's files by

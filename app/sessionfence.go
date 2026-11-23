@@ -153,3 +153,17 @@ func lazyHostAsk(gb *hostgit.HostBroker) func(key, cwd, command string) (string,
 	}
 	return gb.Ask
 }
+
+// cliHostGitOn is whether the CLI's bash brokers remote git, for its
+// description: while the sandbox is still being chosen, what the process
+// tier, the floor, would do, so the first request does not wait for it.
+func cliHostGitOn(cfg config.Config, sb sandbox.Sandbox, gb *hostgit.HostBroker) bool {
+	if !gb.BrokersRemoteCommands() {
+		return false
+	}
+	if l, ok := sb.(interface{ Resolved() bool }); ok && !l.Resolved() {
+		on, _ := cfg.Sandbox.GitProtected()
+		return on
+	}
+	return hostgit.BrokersRemotes(sb)
+}
