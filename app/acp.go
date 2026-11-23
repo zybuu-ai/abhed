@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -417,10 +418,11 @@ type acpConn struct {
 	closing  bool
 	closed   bool
 	late     []*acpSession
-	// beforeShut, when set, runs once the sessions are taken and before they
-	// are shut; tests hold the close there.
-	beforeShut func()
 }
+
+// closeHook, set only by tests, runs in closeAll once the sessions are taken
+// and before they are shut, so a test can hold the close there.
+var closeHook atomic.Pointer[func(*acpConn)]
 
 // drainWait bounds how long the requests read before stdin closed may take
 // to be answered before the process exits anyway.
@@ -883,8 +885,8 @@ func (c *acpConn) closeAll() {
 	// summaryWait for each feature of each session.
 	counted := time.Now().Add(summaryWait)
 	c.stopEditors(all)
-	if c.beforeShut != nil {
-		c.beforeShut()
+	if h := closeHook.Load(); h != nil {
+		(*h)(c)
 	}
 	for _, s := range all {
 		c.shutBy(s, counted)

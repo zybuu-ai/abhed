@@ -58,6 +58,18 @@ func TestACPCloseAllWhilePromptsStartAndEnd(t *testing.T) {
 	wg.Wait()
 }
 
+// holdClose runs f in c's close, once the sessions are taken and before
+// they are shut, for the rest of the test.
+func holdClose(t *testing.T, c *acpConn, f func()) {
+	h := func(got *acpConn) {
+		if got == c {
+			f()
+		}
+	}
+	closeHook.Store(&h)
+	t.Cleanup(func() { closeHook.CompareAndSwap(&h, nil) })
+}
+
 type closeCountAgent struct {
 	idleACPAgent
 	n *atomic.Int32
@@ -86,7 +98,7 @@ func TestACPSessionShutOnce(t *testing.T) {
 func TestACPSessionRefusedDuringCloseIsShutByIt(t *testing.T) {
 	c := &acpConn{sessions: map[string]*acpSession{}}
 	entered, gate := make(chan struct{}), make(chan struct{})
-	c.beforeShut = func() { close(entered); <-gate }
+	holdClose(t, c, func() { close(entered); <-gate })
 	done := make(chan struct{})
 	go func() { c.closeOnce(0); close(done) }()
 	<-entered
@@ -126,7 +138,7 @@ func boundRig(t *testing.T) (c *acpConn, stop func(), inW *io.PipeWriter, entere
 	inR, inW := io.Pipe()
 	c = &acpConn{out: io.Discard, sessions: map[string]*acpSession{}, pending: map[int64]chan rpcMessage{}, ctx: ctx,
 		busy: func() func() { var once sync.Once; return func() { once.Do(func() { close(released) }) } }}
-	c.beforeShut = func() { close(entered); <-gate }
+	holdClose(t, c, func() { close(entered); <-gate })
 	go func() { _ = c.run(inR); close(ran) }()
 	t.Cleanup(func() {
 		stop()
