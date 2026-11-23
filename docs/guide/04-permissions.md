@@ -1200,7 +1200,10 @@ cannot steer host git:
   file is a hard link (another name for it could lie in reach), is owned by
   another user, is writable by other users or sits in a folder they can
   write (on macOS a folder only the `admin` group may also write, as
-  Homebrew's are, counts as yours), or cannot be read; while an include names another user's home
+  Homebrew's `you:admin` 775 folders are, counts as yours: every member of
+  `admin` can already act as root through `sudo`, so it lets in no one who
+  could not change the program anyway; such a folder inside the workspace or
+  an area commands can write is still refused), or cannot be read; while an include names another user's home
   (`~name/`) or git's install (`%(prefix)/`), which Abhed does not follow;
   while `GIT_CONFIG_GLOBAL` or `GIT_CONFIG_SYSTEM` is a relative path; or
   past 200 files. The same check stops an issue's push.
