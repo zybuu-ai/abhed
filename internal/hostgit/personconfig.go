@@ -72,6 +72,9 @@ func personEnv() []string {
 	return out
 }
 
+// maxConfigFiles bounds the files the walk checks; past it, it refuses.
+var maxConfigFiles = 200
+
 // personConfigFiles are the files personEnv's git reads as the person's
 // configuration, and every file they include, whatever its condition.
 func personConfigFiles(ctx context.Context, dir string) ([]string, error) {
@@ -81,6 +84,12 @@ func personConfigFiles(ctx context.Context, dir string) ([]string, error) {
 		env[k] = v
 	}
 	home, _ := os.UserHomeDir()
+	// git opens a relative one from its own folder, the repository's: not checked here.
+	for _, k := range []string{"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"} {
+		if v := env[k]; v != "" && !filepath.IsAbs(v) {
+			return nil, fmt.Errorf("%s names %q, a relative path, which git would open from the repository's folder; make it absolute", k, v)
+		}
+	}
 	var roots []string
 	if env["GIT_CONFIG_NOSYSTEM"] == "" {
 		if f := env["GIT_CONFIG_SYSTEM"]; f != "" {
@@ -114,8 +123,11 @@ func personConfigFiles(ctx context.Context, dir string) ([]string, error) {
 	for len(roots) > 0 {
 		f := roots[0]
 		roots = roots[1:]
-		if f = filepath.Clean(f); seen[f] || len(seen) > 200 {
+		if f = filepath.Clean(f); seen[f] {
 			continue
+		}
+		if len(seen) >= maxConfigFiles {
+			return nil, fmt.Errorf("your git configuration includes more than %d files, so not all of them were checked", maxConfigFiles)
 		}
 		seen[f] = true
 		out = append(out, f)
@@ -133,7 +145,14 @@ func personConfigFiles(ctx context.Context, dir string) ([]string, error) {
 			return nil, err
 		}
 		for _, v := range incs {
-			if rest, ok := strings.CutPrefix(v, "~/"); ok && home != "" {
+			switch {
+			case strings.HasPrefix(v, "~") && !strings.HasPrefix(v, "~/"), strings.HasPrefix(v, "%(prefix)/"):
+				// git finds these from another user's home or its own install; not followed here.
+				return nil, fmt.Errorf("your git configuration file %s includes %q, a path Abhed does not follow (only ~/ and plain paths are)", f, v)
+			case strings.HasPrefix(v, "~/") && home == "":
+				return nil, fmt.Errorf("your git configuration file %s includes %q, and there is no home folder to find it in", f, v)
+			}
+			if rest, ok := strings.CutPrefix(v, "~/"); ok {
 				v = filepath.Join(home, rest)
 			} else if !filepath.IsAbs(v) {
 				v = filepath.Join(filepath.Dir(f), v)

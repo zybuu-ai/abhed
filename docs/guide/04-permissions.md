@@ -1199,7 +1199,10 @@ cannot steer host git:
   SSH command or credential helper host git runs. Nor is it while such a
   file is a hard link (another name for it could lie in reach), is owned by
   another user, is writable by other users or sits in a folder they can
-  write, or cannot be read. The same check stops an issue's push.
+  write, or cannot be read; while an include names another user's home
+  (`~name/`) or git's install (`%(prefix)/`), which Abhed does not follow;
+  while `GIT_CONFIG_GLOBAL` or `GIT_CONFIG_SYSTEM` is a relative path; or
+  past 200 files. The same check stops an issue's push.
 - A brokered line is given no vault secret (`secrets`): git run on the host
   as you needs none.
 - On Linux, the process tier (bubblewrap) and the fence hold git's files by
