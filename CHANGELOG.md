@@ -16,9 +16,12 @@ All notable changes to Abhed are recorded here. The format follows
   only as written. Flags that do the same also match: `-R`, `--recursive` and
   `--force` for `rm`; `--recursive` for `chmod`, `chown` and `chgrp`;
   `--force` and `--force-with-lease` for `git push -f`; `--force` for
-  `git clean -f`; and git's global options before its subcommand (`-C`,
-  `-c`, `--git-dir`, `--work-tree`, `--no-pager`) are skipped. Deny and ask
-  only.
+  `git clean -f`; a `+ref` refspec forces as `git push -f` does; a long
+  flag with a glued star (`--force*`) is read as the flag, then anything; and
+  every git option before the subcommand is skipped (`-C dir`, `-c x=y`,
+  `--git-dir`, `--config-env`, `--no-pager`, `--no-optional-locks` and the
+  rest). Deny and ask only; `git -c alias.p=push p -f`, a push through an
+  alias, is not read as a push and reaches the destructive ask.
 - Abhed Studio's request to open the network for one host with scope
   `workspace` opened, and kept, every host, while the record named only that
   host. A named host now opens and keeps that host alone at every scope.

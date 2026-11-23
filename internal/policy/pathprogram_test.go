@@ -84,6 +84,31 @@ func TestRuleFlagsMatchMovedOrSplit(t *testing.T) {
 		{"bash(git clean -fdx*)", "git clean --force -d -x", true},
 		{"bash(git clean -fdx*)", "git -C /r clean -x -d -f", true},
 		{"bash(git clean -fdx*)", "git clean -f -d", false},
+		// Architect review r1: long flags with a glued star.
+		{"bash(git push --force*)", "git push -f", true},
+		{"bash(git push --force*)", "git push -f origin", true},
+		{"bash(git push --force*)", "git -C d push --force origin", true},
+		{"bash(rm --recursive*)", "rm -r x", true},
+		{"bash(rm --recursive*)", "rm -rf x", true},
+		{"bash(chmod --recursive*)", "chmod -R 644 x", true},
+		{"bash(git push --force*)", "git push origin", false},
+		// Every git option before the subcommand is skipped.
+		{"bash(git push -f*)", "git --exec-path=/tmp/x push -f", true},
+		{"bash(git push -f*)", "git --config-env=a.b=ENV push -f", true},
+		{"bash(git push -f*)", "git --config-env a.b=ENV push -f", true},
+		{"bash(git push -f*)", "git --no-optional-locks push -f", true},
+		{"bash(git push -f*)", "git --glob-pathspecs --no-advice push -f", true},
+		{"bash(git push -f*)", "git --attr-source=HEAD --super-prefix=x/ push -f", true},
+		{"bash(git push -f*)", "git -Cdir push -f", true},
+		{"bash(git push -f*)", "git -cx=y push -f", true},
+		{"bash(git push -f*)", "git -C dir -C d2 push -f", true},
+		{"bash(git push -f*)", "git --git-dir .git push --force-with-lease=main", true},
+		{"bash(git push -f*)", "git -c x=y log -f", false},
+		{"bash(git push -f*)", "git pull --force", false},
+		// A refspec with + forces as -f does.
+		{"bash(git push -f*)", "git push origin +main", true},
+		{"bash(git push -f *)", "git -C d push origin +main:main", true},
+		{"bash(git push -f*)", "git push origin main", false},
 	} {
 		kinds := []string{"deny"}
 		if strings.HasPrefix(c.rule, "bash(chmod") {
@@ -107,10 +132,12 @@ func TestRuleFlagsMatchMovedOrSplit(t *testing.T) {
 	// Allow rules match only as written: a starred cluster's, and no synonym
 	// or git global option widens one.
 	for rule, cmds := range map[string][]string{
-		"bash(rm -rf*)":       {"rm -r -f build", "rm -fr build", "rm build -rf", "rm -Rf build", "rm --recursive --force build"},
-		"bash(git push -f*)":  {"git push --force origin", "git -C /r push -f origin", "git push --force-with-lease origin"},
-		"bash(chmod -R*)":     {"chmod --recursive 777 /srv"},
-		"bash(git clean -f*)": {"git clean --force", "git -C /r clean -f"},
+		"bash(rm -rf*)":           {"rm -r -f build", "rm -fr build", "rm build -rf", "rm -Rf build", "rm --recursive --force build"},
+		"bash(git push -f*)":      {"git push --force origin", "git -C /r push -f origin", "git push --force-with-lease origin", "git push origin +main", "git --no-optional-locks push -f"},
+		"bash(git push --force*)": {"git push -f", "git push --force origin"},
+		"bash(rm --recursive*)":   {"rm -r x", "rm --recursive x"},
+		"bash(chmod -R*)":         {"chmod --recursive 777 /srv"},
+		"bash(git clean -f*)":     {"git clean --force", "git -C /r clean -f"},
 	} {
 		for _, cmd := range cmds {
 			e := New(ModeDefault)

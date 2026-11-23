@@ -27,8 +27,11 @@ var shortClusterStar = regexp.MustCompile(`^-[A-Za-z0-9]+\*$`)
 
 // longFlag reports a long option with no value glued to it.
 func longFlag(w string) bool {
-	return len(w) > 2 && strings.HasPrefix(w, "--") && !strings.Contains(w, "=")
+	return len(w) > 2 && strings.HasPrefix(w, "--") && !strings.ContainsAny(w, "=*?")
 }
+
+// longFlagStar is a long flag a rule's glob ends with a star: --force*.
+var longFlagStar = regexp.MustCompile(`^--[A-Za-z0-9][A-Za-z0-9-]*\*$`)
 
 // parseFlagForm reads glob as a flag form, or nil when it names no flag after
 // literal words, or has a wildcard before its flags.
@@ -59,6 +62,11 @@ flags:
 			}
 		case longFlag(w):
 			f.long[w] = true
+		case longFlagStar.MatchString(w):
+			// --force* in bash(git push --force*): the flag, then anything.
+			f.long[w[:len(w)-1]] = true
+			fields[i] = "*"
+			break flags
 		case shortClusterStar.MatchString(w):
 			// -rf* in bash(rm -rf*): the flags, then anything; the star
 			// stands for the rest, which may be more flags or operands.
@@ -115,6 +123,10 @@ func (f *flagForm) matches(command string) bool {
 		case strings.HasPrefix(w, "--") && strings.Contains(w, "=") && eq[w[:strings.IndexByte(w, '=')]] != "":
 			// --force-with-lease=main is the flag its table names.
 			have[canonFlag(eq, w[:strings.IndexByte(w, '=')])] = true
+		case len(w) > 1 && w[0] == '+' && eq[forceRefspec] != "":
+			// git push origin +main forces that ref, as -f does.
+			have[eq[forceRefspec]] = true
+			operands = append(operands, w)
 		default:
 			operands = append(operands, w)
 		}
@@ -140,9 +152,12 @@ var flagSynonyms = map[string]map[string]string{
 	"chmod":     {"--recursive": "-R"},
 	"chown":     {"--recursive": "-R"},
 	"chgrp":     {"--recursive": "-R"},
-	"git push":  {"--force": "-f", "--force-with-lease": "-f"},
+	"git push":  {"--force": "-f", "--force-with-lease": "-f", forceRefspec: "-f"},
 	"git clean": {"--force": "-f"},
 }
+
+// forceRefspec stands in the table for a refspec that forces (+main).
+const forceRefspec = "+refspec"
 
 // canonFlag is flag as its command's synonym table spells it.
 func canonFlag(eq map[string]string, flag string) string {
@@ -153,34 +168,29 @@ func canonFlag(eq map[string]string, flag string) string {
 }
 
 // gitGlobalWithValue are git's options before the subcommand that take the
-// next word as their value when not glued to it with =.
-var gitGlobalWithValue = map[string]bool{"-C": true, "-c": true, "--git-dir": true, "--work-tree": true, "--namespace": true}
+// next word as their value when it is not glued on with =.
+var gitGlobalWithValue = map[string]bool{"-C": true, "-c": true, "--git-dir": true, "--work-tree": true, "--namespace": true,
+	"--config-env": true, "--exec-path": true, "--attr-source": true, "--super-prefix": true}
 
-// skipGitGlobals drops git's global options between git and its subcommand,
-// so git -C dir push -f is read as git push -f.
+// skipGitGlobals drops git's options between git and its subcommand, so
+// git -C dir --no-pager push -f is read as git push -f: every word starting
+// with - goes, and one of gitGlobalWithValue takes the next word with it.
+// For deny and ask matching only.
 func skipGitGlobals(fields []string) []string {
 	if len(fields) == 0 || tools.CommandName(path.Base(fields[0])) != "git" {
 		return fields
 	}
-	out := []string{fields[0]}
 	i := 1
-	for i < len(fields) {
-		w := fields[i]
-		switch {
-		case gitGlobalWithValue[w]:
-			i += 2
-			continue
-		case strings.HasPrefix(w, "--git-dir=") || strings.HasPrefix(w, "--work-tree=") || strings.HasPrefix(w, "--namespace=") ||
-			strings.HasPrefix(w, "-C") && len(w) > 2 || strings.HasPrefix(w, "-c") && len(w) > 2 && strings.Contains(w, "="):
+	for i < len(fields) && strings.HasPrefix(fields[i], "-") {
+		if gitGlobalWithValue[fields[i]] {
 			i++
-			continue
-		case w == "--no-pager" || w == "-P" || w == "--paginate" || w == "-p" || w == "--bare" || w == "--no-replace-objects" || w == "--literal-pathspecs":
-			i++
-			continue
 		}
-		break
+		i++
 	}
-	return append(out, fields[i:]...)
+	if i > len(fields) {
+		i = len(fields)
+	}
+	return append([]string{fields[0]}, fields[i:]...)
 }
 
 // matchesFlagsAny reports a bash deny or ask rule whose flag form matches
