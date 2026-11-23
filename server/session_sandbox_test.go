@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -465,4 +466,36 @@ type guardFunc func(a *controlplane.Admission) error
 
 func (g guardFunc) Admit(_ context.Context, a *controlplane.Admission) (func(), error) {
 	return nil, g(a)
+}
+
+// A second server on the same address fails to bind before it touches what
+// the running one holds: its startup sweep, which does not know the running
+// server's sessions, never asks to delete their sandboxes.
+func TestSecondServerOnTheSameAddressSweepsNothing(t *testing.T) {
+	r := newPerSessionRig(t)
+	_, live := r.open(t, "alice")
+	sbID := filepath.Base(r.srv.workspaceOf(live))
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	svc := r.srv.opts.ControlPlane
+	mgr2, err := sessionsandbox.New(sessionsandbox.Config{Service: svc, Tenant: "default", Ready: 10 * time.Second,
+		Workspace: func(id string) (string, error) { d := filepath.Join(r.root, id); return d, os.MkdirAll(d, 0o700) },
+		Isolation: func(sb controlplane.Sandbox) tools.Isolation { return tools.Isolation{Tier: sb.Tier} }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := New(Options{Workspace: r.ws, Config: config.Default(), Adapter: stubAdapter{}, ControlPlane: svc,
+		Registry: tools.NewRegistry(tools.Read{}), SessionSandboxes: mgr2, Addr: busy.Addr().String()})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := second.ListenAndServe(ctx); err == nil {
+		t.Fatal("the second server bound an address in use")
+	}
+	time.Sleep(300 * time.Millisecond)
+	if _, err := r.mem.Get(context.Background(), sbID); err != nil {
+		t.Fatalf("the running server's session sandbox was deleted by the second: %v", err)
+	}
 }

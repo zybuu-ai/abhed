@@ -5420,6 +5420,16 @@ func badBody(w http.ResponseWriter, err error, msg string) {
 // ListenAndServe starts the HTTP server. With Options.TLS set every
 // connection is a TLS one.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	// An address another server holds fails here, before the startup work
+	// below reclaims, reconciles or sweeps anything that server is running.
+	// The probe is closed again, so nothing is accepted until that work ends.
+	if _, port, err := net.SplitHostPort(s.opts.Addr); err != nil || !loopport.AnyPort(port) {
+		probe, err := net.Listen("tcp", s.opts.Addr)
+		if err != nil {
+			return err
+		}
+		_ = probe.Close()
+	}
 	return s.serve(ctx, func() (net.Listener, error) { return loopport.ListenAddr(s.opts.Addr) })
 }
 
