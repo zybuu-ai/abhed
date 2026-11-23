@@ -287,6 +287,11 @@ func toolHints(names []string) string {
 		b.WriteString("\n- To have the user choose between options before you go on, call ask_user rather than " +
 			"asking in prose and ending your turn.")
 	}
+	if slices.Contains(names, "k8s_get") || slices.Contains(names, "k8s_login") || slices.Contains(names, "ssh") {
+		b.WriteString("\n- Cluster and remote-machine work is yours to do: use the cluster and SSH tools, which " +
+			"hold the user's credentials so you never see one, not kubectl, oc or ssh in bash. A first use asks " +
+			"the user once; cluster changes ask each time.")
+	}
 	if slices.Contains(names, "task") {
 		b.WriteString("\n- For a broad search across many files, or independent parts of a larger task, " +
 			"hand the work to a subagent with task (tasks for several at once); it returns a summary and " +

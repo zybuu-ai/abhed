@@ -112,6 +112,13 @@ type Targeter interface {
 	Target(sess *Session, args json.RawMessage) string
 }
 
+// CertificatePinner is a tool whose call, once approved, pins the
+// certificate a server presented: its SHA-256 and subject, for the person
+// approving it to check. ok is false when the call pins none.
+type CertificatePinner interface {
+	PinnedCertificate(sess *Session, args json.RawMessage) (sha256, subject string, ok bool)
+}
+
 // precheckPath is the shared check for tools whose target is a "path" argument.
 func precheckPath(s *Session, raw json.RawMessage) error {
 	var a struct {
@@ -261,6 +268,20 @@ func (r *Registry) Get(name string) (Tool, bool) {
 func (r *Registry) Names() []string {
 	out := make([]string, len(r.order))
 	copy(out, r.order)
+	return out
+}
+
+// OfferedNames are the names of the tools offered now, leaving out those
+// hidden for now (a deferred MCP tool, a cluster tool with nothing yet to
+// reach): what a prompt built now may tell the model it has.
+func (r *Registry) OfferedNames() []string {
+	out := make([]string, 0, len(r.order))
+	for _, n := range r.order {
+		if h, ok := r.tools[n].(Hidden); ok && h.Hidden() {
+			continue
+		}
+		out = append(out, n)
+	}
 	return out
 }
 

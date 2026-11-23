@@ -1300,6 +1300,29 @@ approval is not spent on them and the model is told to read first. When
 another call in the same turn names the file, or a command runs before it,
 the tool decides when it runs.
 
+### First use of your own clusters and hosts
+
+A call that reaches a kubeconfig context or an `~/.ssh/config` host on your
+own machine asks the first time, in every mode but bypass, even a read that
+would otherwise run unasked
+([Tools](05-tools.md#your-own-clusters-and-machines)). Its question says it
+is a first use, names the context and its server (or the host, its user and
+address) and how it signs in, never the credential, and names the program a
+credential helper would run. Its "always" answer is *always for this
+cluster* or host: it is kept for you, in your own state
+(`state/machine-grants.json` in your account's folder), not for the session,
+the workspace or another account; a guest is not offered it, and what a
+guest approves holds for the session only, and it covers that cluster or host as
+it was, so a changed server, CA (by its content), credential helper (by
+the program `PATH` finds), address, user, key, `known_hosts` entry or jump
+host asks again. It never covers a command or a write: those ask as they
+always do. A "yes" covers the rest of the session. An allow rule answers a
+first use as it answers any ask, and a deny rule refuses it. The record
+names a kept grant on the approval (`first_use`), and `abhed machine list`
+and `abhed machine forget` show and drop them. A session restored in Abhed
+Studio does not take a first-use grant back from its record; only what is
+kept for you counts.
+
 ### Allow scopes in Abhed Studio
 
 In Abhed Studio a bash command the policy asks about by default (no deny or
@@ -1581,6 +1604,11 @@ time can read that environment; see [Configuration](02-configuration.md#sandbox)
 password as `password_secret`, and use it for that session's login only.
 `ssh` names one as `stdin_secret` to write it to a remote command's stdin,
 and `k8s_apply` names them in `secret_from` to build a Secret.
+A cluster you kept from a pasted login is the one exception: the token
+you pasted is bound to that cluster's server when you approve it, so
+`k8s_login`, `k8s_get` and `k8s_apply` read it for that cluster with no
+`secret(NAME)` rule, and a deny rule on it still refuses
+([Tools](05-tools.md#a-pasted-login)).
 Whether any of them may is decided by a rule. Rules hold for the whole
 deployment: on `abhed serve`, every session may name a secret its rules
 allow, whichever user started it.
@@ -1660,6 +1688,26 @@ line at the start of the turn (with `secretsWithheld` in its `_meta`), and the
 for rpc and SDK callers. To let a command use a value, name the secret
 (`secrets` on `bash`, see above); the model never needs to see it.
 Extension hooks that see a submitted prompt get it as typed.
+
+A credential you paste that is no stored secret is withheld too, when its
+shape says what it is: the token of an `oc login` or `kubectl … login`
+command, an OpenShift `sha256~` token, a `Bearer` token, a private key block,
+or a key of a known form (GitHub, GitLab, Slack, AWS, cloud API keys, a JSON
+web token, a password in a URL). The model and the record get
+`[pasted:P1]`, the model is told what kind it was (and the server an
+`oc login` named), and the value is held in the session's memory only, for
+a login you approve ([Tools](05-tools.md#a-pasted-login)); it is gone when
+the session ends. You are told as for a stored value, and the `user.message`
+event carries `pasted`, each `ID:kind`; an ACP editor gets
+`pastedCredentials` in the note's `_meta`, to mask the text it drew as you
+typed it. A placeholder such as `--token=<token>` or `$TOKEN` is not
+withheld. A value you pasted is withheld again wherever it reappears in
+the session: a later message, a tool's output. A message a hook refused,
+the terminal's prompt history, a server's session list and an editor's
+completion or commit request keep `[pasted credential]` in place of any
+pasted credential's shape. A login that would pin a server's certificate is
+always put to you with its fingerprint, in every mode, and refused where no
+one can be asked.
 
 **File paths.** A `write` or `edit` whose path holds a stored secret is
 refused, in every mode, whether the agent or a person at the workbench makes

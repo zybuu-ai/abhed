@@ -140,6 +140,20 @@ func SetPerson(root string) error {
 	return nil
 }
 
+// Guest reports whether the person working is a guest, whose folder goes
+// when they quit: nothing of theirs may be kept beyond it, nor anywhere else.
+func Guest() bool {
+	mu.RLock()
+	p := person
+	mu.RUnlock()
+	m, err := Machine()
+	if p == "" || err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(m, p)
+	return err == nil && strings.HasPrefix(filepath.ToSlash(rel), GuestDir+"/")
+}
+
 // ExpandState resolves a configured "~/.abhed/..." path to the person's
 // folder, and any other "~/..." to the home folder.
 func ExpandState(p string) string {

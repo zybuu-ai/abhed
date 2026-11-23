@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -40,7 +41,9 @@ func TestACPPromptWithholdsATypedSecret(t *testing.T) {
 		}
 		if strings.Contains(string(raw), "secretsWithheld") {
 			notes++
-			if !strings.Contains(string(raw), "API_TOKEN") || !strings.Contains(string(raw), "not sent to the model") {
+			if !strings.Contains(string(raw), "API_TOKEN") || !strings.Contains(string(raw), "not sent to the model") ||
+				!strings.Contains(string(raw), `"text":"deploy with [secret:API_TOKEN]"`) || !strings.Contains(string(raw), `"seq":`) ||
+				!strings.Contains(string(raw), `"steered":false`) {
 				t.Errorf("the note: %s", raw)
 			}
 		}
@@ -58,5 +61,71 @@ func TestACPPromptWithholdsATypedSecret(t *testing.T) {
 	}
 	if !said {
 		t.Fatal("the record's user.message does not name what was withheld")
+	}
+}
+
+// A pasted `oc login` reaches neither the model nor any update; the note
+// names it and carries the message as recorded, with its seq, for the
+// editor to redraw the bubble it drew as typed.
+func TestACPPromptWithholdsAPastedLogin(t *testing.T) {
+	const tok = "sha256~Zq1cP3xYv8mN0aB4dE6fG7hI9jK2lM5nO8pQrStUvWx"
+	r := newStudioRig(t, "")
+	id := r.open()
+	_, ups := r.prompt(id, "oc login --token="+tok+" --server=https://api.lab.example:6443")
+	r.model.mu.Lock()
+	bodies := append([]string(nil), r.model.bodies...)
+	r.model.mu.Unlock()
+	for _, b := range bodies {
+		if strings.Contains(b, tok) {
+			t.Fatalf("the model was sent the token")
+		}
+	}
+	var seq int64
+	for _, ev := range r.events(id) {
+		if ev.Type == agent.EvUserMessage {
+			seq = ev.Seq
+		}
+	}
+	notes := 0
+	for _, u := range ups {
+		raw, _ := json.Marshal(u)
+		if strings.Contains(string(raw), tok) {
+			t.Fatalf("an update carried the token: %s", raw)
+		}
+		if strings.Contains(string(raw), "pastedCredentials") {
+			notes++
+			want := `"text":"oc login --token=[pasted:P1] --server=https://api.lab.example:6443"`
+			if !strings.Contains(string(raw), want) || !strings.Contains(string(raw), `"seq":`+strconv.FormatInt(seq, 10)) ||
+				!strings.Contains(string(raw), `"id":"P1"`) {
+				t.Errorf("the note: %s (seq %d)", raw, seq)
+			}
+		}
+	}
+	if notes != 1 {
+		t.Fatalf("%d notes", notes)
+	}
+}
+
+// A message that was not delivered still tells the sender what it held, with
+// the text as kept, its seq and whether it was a steer, and never the value.
+func TestACPDroppedMessageNoteNamesWhatItHeld(t *testing.T) {
+	c := &acpConn{}
+	payload, _ := json.Marshal(agent.DroppedMessage{Text: "oc login --token=[pasted credential]", Steered: true,
+		Pasted: ":an OpenShift token", Reason: "a hook refused it"})
+	ups := c.updates(&acpSession{}, agent.Event{Type: agent.EvMessageDropped, Seq: 7, Payload: payload}, false)
+	if len(ups) != 1 {
+		t.Fatalf("updates %v", ups)
+	}
+	raw, _ := json.Marshal(ups[0])
+	for _, want := range []string{`"dropped":true`, `"seq":7`, `"steered":true`, `"text":"oc login --token=[pasted credential]"`,
+		`"pastedCredentials":[{"id":"","kind":"an OpenShift token"}]`, "not delivered"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("the note lacks %s: %s", want, raw)
+		}
+	}
+	// One that held nothing earns no note.
+	plain, _ := json.Marshal(agent.DroppedMessage{Text: "hello", Reason: "x"})
+	if ups := c.updates(&acpSession{}, agent.Event{Type: agent.EvMessageDropped, Seq: 8, Payload: plain}, false); len(ups) != 0 {
+		t.Fatalf("a plain dropped message: %v", ups)
 	}
 }

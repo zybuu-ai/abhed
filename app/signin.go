@@ -356,6 +356,10 @@ func guestSubcommand(rest []string) error {
 		}
 	case "login", "logout":
 		what = "a server sign-in"
+	case "machine":
+		if verb == "forget" || verb == "rm" || verb == "remove" {
+			what = "a kept cluster or host"
+		}
 	case "provider":
 		if verb == "login" || verb == "logout" {
 			what = "a stored model key"

@@ -126,7 +126,11 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 	// or Enter alone never approves. The spec is checked as every dialog is.
 	choices := []Choice{{ID: ChoiceYes, Label: "Yes"}}
 	if scope != "" {
-		choices = append(choices, Choice{ID: "always", Label: "Yes, and don't ask again for " + VisibleLine(scope) + " this session", Widening: true})
+		label := "Yes, and don't ask again for " + VisibleLine(scope) + " this session"
+		if res.Keeps != "" {
+			label = KeepsLabel(res.Keeps)
+		}
+		choices = append(choices, Choice{ID: "always", Label: label, Widening: true})
 	}
 	choices = append(choices, Choice{ID: ChoiceNo, Label: "No"})
 	if approvalHidden(ctx, tool, args, res) {
@@ -163,6 +167,12 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 	}
 	answered("rejected")
 	return false, nil
+}
+
+// KeepsLabel is the "always" answer to the first use of something the
+// person's own machine set up: it is kept for them, beyond this session.
+func KeepsLabel(keeps string) string {
+	return "Yes, and always for " + VisibleLine(keeps) + " (kept for you on this machine, not in the workspace)"
 }
 
 // inputEnded records an ask that input ran out on as the system's refusal:

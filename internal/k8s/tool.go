@@ -10,9 +10,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/kubescope"
+	"github.com/zybuu-ai/abhed/internal/machinegrant"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -38,13 +40,44 @@ import (
 // sessions in one process.
 type Manager struct {
 	cfg Config
+	// secret reads a kept login's token; nil reads none.
+	secret func(name string) (string, error)
 
 	mu       sync.Mutex
 	clusters map[string]*Cluster
+	// listing names the kubeconfig's contexts, read once, for the descriptions.
+	listing func() string
+	// loggedIn is set once any session of this manager logs in; pasted once
+	// one holds a paste.
+	loggedIn, pasted atomic.Bool
+	// keptNames are the kept logins as they were when first asked, so the
+	// tools' descriptions and what is offered stay the same for the life of
+	// the session, and its prompt cache with them; a login kept since is
+	// still reached by name.
+	keptNames func() []string
 }
 
 func NewManager(cfg Config) *Manager {
-	return &Manager{cfg: cfg, clusters: map[string]*Cluster{}}
+	m := &Manager{cfg: cfg, secret: cfg.Secret, clusters: map[string]*Cluster{}}
+	m.listing = sync.OnceValue(m.contextList)
+	// Read when the session's tools are made, not when first described.
+	var kept []string
+	if cfg.KeptLogins {
+		for name := range machinegrant.Logins() {
+			kept = append(kept, name)
+		}
+	}
+	sort.Strings(kept)
+	m.keptNames = func() []string { return kept }
+	return m
+}
+
+// contexts is the descriptions' line naming the kubeconfig's contexts.
+func (m *Manager) contexts() string {
+	if m == nil || m.listing == nil {
+		return ""
+	}
+	return m.listing()
 }
 
 // logins is what k8s_login added to one session: credentials keyed by the
@@ -123,6 +156,7 @@ func (m *Manager) login(sess *tools.Session, cred sessionCred) error {
 	}
 	cred.at = time.Now()
 	l.creds[cred.cluster.Name] = cred
+	m.loggedIn.Store(true)
 	// Drop the clients built with the old credential, connections included,
 	// so the next call uses the new one.
 	if c, ok := l.clusters[cred.cluster.Name]; ok {
@@ -142,8 +176,15 @@ func (m *Manager) cluster(sess *tools.Session, clusterName, ctxName string) (*Cl
 	}
 	l := m.logins(sess, false)
 	if clusterName != "" {
-		if l == nil {
-			return nil, fmt.Errorf("this session has not logged in to cluster %q; call k8s_login first", clusterName)
+		if l == nil || !l.has(clusterName) {
+			// A cluster the person kept a login for signs in with its bound token.
+			if _, kept := m.keptLogin(clusterName); !kept {
+				return nil, fmt.Errorf("this session has not logged in to cluster %q; call k8s_login first", clusterName)
+			}
+			if err := m.loginKept(sess, clusterName); err != nil {
+				return nil, err
+			}
+			l = m.logins(sess, false)
 		}
 		return l.cluster(m.cfg, clusterName)
 	}
@@ -189,6 +230,17 @@ func (m *Manager) resolve(sess *tools.Session, raw json.RawMessage, apply bool) 
 		}
 	}
 	clusterName, ctxName := str("cluster"), str("context")
+	// A cluster named that is a kubeconfig context, and no declared or kept
+	// cluster, is that context: the model names either the same way, and
+	// k8s.clusters wins a clash.
+	if clusterName != "" && ctxName == "" {
+		if _, declared := m.loginCluster(clusterName); !declared && m.isContext(clusterName) {
+			delete(args, "cluster")
+			set("context", clusterName)
+			changed = append(changed, "cluster")
+			clusterName, ctxName = "", str("context")
+		}
+	}
 	l := m.logins(sess, false)
 	if clusterName == "" && ctxName == "" && l != nil {
 		if name, n := l.only(); n == 1 {
@@ -376,18 +428,19 @@ func (m *Manager) where(sess *tools.Session, clusterName, ctxName string) string
 		}
 	}
 	if clusterName != "" && ctxName == "" {
-		for _, lc := range m.cfg.Clusters {
-			if lc.Name != clusterName {
-				continue
-			}
-			how := "with this session's login"
-			if l == nil || !l.has(clusterName) {
-				how = "but this session has not logged in to it, so the call will fail"
-			}
-			return fmt.Sprintf("changes cluster %s at %s %s, %s", lc.Name, displayURL(lc.Server), how,
-				lc.Verification(m.cfg.CAFile))
+		lc, ok := m.loginCluster(clusterName)
+		if !ok {
+			return ""
 		}
-		return ""
+		how := "with this session's login"
+		if l == nil || !l.has(clusterName) {
+			how = "but this session has not logged in to it, so the call will fail"
+			if kl, kept := m.keptLogin(clusterName); kept {
+				how = "with the token you kept for it as secret " + kl.Secret
+			}
+		}
+		return fmt.Sprintf("changes cluster %s at %s %s, %s", lc.Name, displayURL(lc.Server), how,
+			lc.Verification(m.cfg.CAFile))
 	}
 	// The client the call will use, not a fresh read of the file, which may
 	// have changed since that client was opened.
@@ -403,6 +456,10 @@ func (m *Manager) where(sess *tools.Session, clusterName, ctxName string) string
 	return fmt.Sprintf("changes kubeconfig context %s at %s with the kubeconfig's own credential",
 		c.Name, displayURL(c.Server))
 }
+
+// DisplayURL is a server URL fit to show: any user, password, query or
+// fragment written into it is left out.
+func DisplayURL(server string) string { return displayURL(server) }
 
 // displayURL is a server URL fit to show and record: any user, password,
 // query or fragment written into it is left out.
@@ -475,11 +532,12 @@ func (t GetTool) ResolveArgs(sess *tools.Session, raw json.RawMessage) (json.Raw
 func (GetTool) Name() string  { return "k8s_get" }
 func (GetTool) Mutates() bool { return false }
 
-func (GetTool) Description() string {
+func (t GetTool) Description() string {
 	return "Read from a Kubernetes cluster: list or describe resources, and fetch pod logs. " +
 		"Read-only — it cannot create, change or delete anything. " +
 		"With wait_seconds it waits for a Deployment's rollout to finish. " +
-		"Use resource plural names as kubectl does (pods, deployments, services, nodes, events)."
+		"Use resource plural names as kubectl does (pods, deployments, services, nodes, events). " +
+		"The first use of a kubeconfig context asks the user once." + t.M.contexts()
 }
 
 func (GetTool) Schema() json.RawMessage {
@@ -632,7 +690,7 @@ func (ApplyTool) Name() string { return "k8s_apply" }
 // recoverable by /undo the way a file edit is.
 func (ApplyTool) Mutates() bool { return true }
 
-func (ApplyTool) Description() string {
+func (t ApplyTool) Description() string {
 	return "Change a Kubernetes cluster: apply a manifest, scale a workload, delete a resource, " +
 		"restart a rollout, or roll a Deployment back to an earlier revision. Every call requires " +
 		"human approval, and is dry-run on the cluster first where its credential is at hand; " +
@@ -640,7 +698,7 @@ func (ApplyTool) Description() string {
 		"Prefer k8s_get first to confirm what you are about to change, and k8s_get with " +
 		"wait_seconds after a restart or rollback to wait for the rollout. " +
 		"To create a Secret, such as a TLS certificate and key, use secret_from with stored " +
-		"secret NAMES and workspace files: never put a key or password in a manifest."
+		"secret NAMES and workspace files: never put a key or password in a manifest." + t.M.contexts()
 }
 
 func (ApplyTool) Schema() json.RawMessage {
@@ -1181,13 +1239,16 @@ type LoginTool struct {
 	Secret func(name string) (string, error)
 	// SecretNames is what the model may name, listed in the description.
 	SecretNames []string
+	// Store keeps a pasted token as a secret; nil keeps none, and a pasted
+	// token cannot be used.
+	Store *secrets.Store
 }
 
 func (LoginTool) Name() string { return "k8s_login" }
 
 // BindStore is the tool reading tokens from v instead.
 func (t LoginTool) BindStore(v *secrets.Store) tools.Tool {
-	t.Secret, t.SecretNames = v.Value, v.Offered()
+	t.Secret, t.SecretNames, t.Store = v.Value, v.Offered(), v
 	return t
 }
 
@@ -1203,17 +1264,14 @@ func (LoginTool) FixedArgs() {}
 func (LoginTool) SecretArgs() []string { return []string{"token_secret"} }
 
 func (t LoginTool) Description() string {
-	d := "Authenticate to a Kubernetes or OpenShift cluster, for this session only, with a " +
-		"token the user has stored with `abhed secret set NAME`. Pass the cluster's name from " +
-		"the list below and the secret's NAME, never the token or a server URL. When the user " +
-		"offers a token or pastes an `oc login --token=... --server=...` command, ask them to " +
-		"store the token with `abhed secret set NAME` and tell you the name. " +
-		"Do NOT run `oc login` through bash: the sandbox blocks access to the kubeconfig, " +
-		"and a login inside a bash call does not survive to the next one."
+	d := "Log in to a Kubernetes or OpenShift cluster by name, never with a token or URL. When the user " +
+		"pastes an `oc login` or a token, Abhed withholds it and names it (P1): call this with pasted=P1 and a " +
+		"short cluster name; one approval stores it, keeps the cluster and logs in. Never ask for it again. " +
+		"Otherwise pass token_secret, a stored secret's NAME. Do not run `oc login` through bash."
 	if names := t.clusterNames(); len(names) > 0 {
 		d += " Clusters: " + strings.Join(names, ", ") + "."
 	} else {
-		d += " No clusters are declared for login; the operator adds them in k8s.clusters."
+		d += " No clusters yet."
 	}
 	if len(t.SecretNames) > 0 {
 		d += " Stored secrets: " + strings.Join(t.SecretNames, ", ") + "."
@@ -1225,11 +1283,13 @@ func (LoginTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type":"object",
   "properties":{
-    "cluster":{"type":"string","description":"Name of a cluster the operator declared, e.g. prod. Not a URL."},
-    "token_secret":{"type":"string","description":"NAME of the stored secret holding the bearer token, e.g. OCP_TOKEN. Never the token."},
-    "namespace":{"type":"string","description":"Default namespace for later calls."}
+    "cluster":{"type":"string","description":"Cluster name, not a URL."},
+    "token_secret":{"type":"string","description":"A stored secret's NAME."},
+    "pasted":{"type":"string","description":"A pasted credential's id, e.g. P1."},
+    "store_as":{"type":"string","description":"With pasted: the secret NAME to store it as."},
+    "namespace":{"type":"string"}
   },
-  "required":["cluster","token_secret"]
+  "required":["cluster"]
 }`)
 }
 
@@ -1237,62 +1297,105 @@ type loginArgs struct {
 	Cluster     string `json:"cluster"`
 	TokenSecret string `json:"token_secret"`
 	Namespace   string `json:"namespace"`
+	Pasted      string `json:"pasted"`
+	StoreAs     string `json:"store_as"`
 }
 
 func (t LoginTool) clusterNames() []string {
 	if t.M == nil {
 		return nil
 	}
-	out := make([]string, 0, len(t.M.cfg.Clusters))
-	for _, c := range t.M.cfg.Clusters {
-		out = append(out, c.Name)
-	}
-	return out
+	return t.M.loginNames()
 }
 
-// declared finds the named cluster. Anything else, a URL included, is refused
-// before a secret is read or a request is made.
+// declared finds the named cluster: one in k8s.clusters, or one the person
+// kept. Anything else, a URL included, is refused before a secret is read
+// or a request is made.
 func (t LoginTool) declared(name string) (LoginCluster, error) {
 	name = strings.TrimSpace(name)
 	if t.M != nil {
-		for _, c := range t.M.cfg.Clusters {
-			if c.Name == name {
-				return c, nil
-			}
+		if lc, ok := t.M.loginCluster(name); ok {
+			return lc, nil
 		}
 	}
 	names := t.clusterNames()
 	if len(names) == 0 {
 		return LoginCluster{}, fmt.Errorf("no clusters are declared for k8s_login; the operator " +
-			"adds them in k8s.clusters, and a token is sent to no other server")
+			"adds them in k8s.clusters, or the user pastes an `oc login` command to log in and keep one. " +
+			"A token is sent to no other server")
 	}
-	return LoginCluster{}, fmt.Errorf("%q is not a declared cluster (declared: %s). A token is "+
-		"sent only to a cluster the operator declared in k8s.clusters, never to a URL",
+	return LoginCluster{}, fmt.Errorf("%q is not a declared or kept cluster (%s). A token is "+
+		"sent only to a cluster in k8s.clusters or one the user kept, never to a URL",
 		name, strings.Join(names, ", "))
 }
 
-// Precheck refuses an undeclared cluster before anyone is asked to approve it.
-func (t LoginTool) Precheck(_ *tools.Session, raw json.RawMessage) error {
+// BoundSecrets names the secret a kept login reads when the call names none,
+// or the one a pasted login stores into, so a deny rule on either refuses
+// the call before anything is stored or sent.
+func (t LoginTool) BoundSecrets(_ *tools.Session, raw json.RawMessage) []string {
+	var a loginArgs
+	if t.M == nil || json.Unmarshal(raw, &a) != nil || a.TokenSecret != "" {
+		return nil
+	}
+	if a.Pasted != "" {
+		return []string{storeName(a)}
+	}
+	if kl, ok := t.M.keptLogin(strings.TrimSpace(a.Cluster)); ok {
+		return []string{kl.Secret}
+	}
+	return nil
+}
+
+// PrecheckContext refuses a cluster that is not declared or kept before
+// anyone is asked, and for a pasted token reads the server's certificate
+// (sending nothing) so the approval can name what it will be verified against.
+func (t LoginTool) PrecheckContext(ctx context.Context, sess *tools.Session, raw json.RawMessage) error {
 	var a loginArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return err
 	}
-	_, err := t.declared(a.Cluster)
-	return err
+	if a.Pasted != "" {
+		return t.planPasted(ctx, sess, a)
+	}
+	lc, err := t.declared(a.Cluster)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(a.TokenSecret) == "" {
+		if _, kept := t.M.keptLogin(lc.Name); !kept {
+			return fmt.Errorf("token_secret is required for cluster %s: the NAME of a stored secret. "+
+				"If the user pasted a token, pass pasted with its id instead", lc.Name)
+		}
+	}
+	return nil
+}
+
+// Precheck is PrecheckContext with no turn to stop it.
+func (t LoginTool) Precheck(sess *tools.Session, raw json.RawMessage) error {
+	return t.PrecheckContext(context.Background(), sess, raw)
 }
 
 // Target tells the person approving, and the record, where the token goes.
-func (t LoginTool) Target(_ *tools.Session, raw json.RawMessage) string {
+func (t LoginTool) Target(sess *tools.Session, raw json.RawMessage) string {
 	var a loginArgs
 	if json.Unmarshal(raw, &a) != nil {
 		return ""
+	}
+	if a.Pasted != "" {
+		return t.pastedTarget(sess, a)
 	}
 	lc, err := t.declared(a.Cluster)
 	if err != nil {
 		return ""
 	}
+	secret := a.TokenSecret
+	if secret == "" {
+		if kl, ok := t.M.keptLogin(lc.Name); ok {
+			secret = kl.Secret + " (kept for this cluster)"
+		}
+	}
 	return fmt.Sprintf("sends the token in secret %s to cluster %s at %s, %s",
-		a.TokenSecret, lc.Name, displayURL(lc.Server), lc.Verification(t.M.cfg.CAFile))
+		secret, lc.Name, displayURL(lc.Server), lc.Verification(t.M.cfg.CAFile))
 }
 
 func (t LoginTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage) tools.Result {
@@ -1304,14 +1407,25 @@ func (t LoginTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMes
 	if sess == nil {
 		return errf("k8s_login needs a session to hold the login; nothing was stored.")
 	}
+	if a.Pasted != "" {
+		return t.runPasted(ctx, sess, a)
+	}
 	lc, err := t.declared(a.Cluster)
 	if err != nil {
 		return errf("%v", err)
 	}
 	a.TokenSecret = strings.TrimSpace(a.TokenSecret)
 	if a.TokenSecret == "" {
+		if kl, ok := t.M.keptLogin(lc.Name); ok {
+			a.TokenSecret = kl.Secret
+			if a.Namespace == "" {
+				a.Namespace = kl.Namespace
+			}
+		}
+	}
+	if a.TokenSecret == "" {
 		return errf("token_secret is required. Ask the user to store the token with " +
-			"`abhed secret set NAME` and pass that NAME as token_secret.")
+			"`abhed secret set NAME` and pass that NAME as token_secret, or to paste it.")
 	}
 	if !secrets.ValidName(a.TokenSecret) {
 		return errf("token_secret is the NAME of a stored secret, such as OCP_TOKEN, not the " +

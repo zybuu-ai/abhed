@@ -203,7 +203,11 @@ func (a *DialogApprover) spec(ctx context.Context, tool string, args json.RawMes
 
 	choices := []Choice{{ID: "yes", Label: "Yes"}}
 	if scope := res.Offer(); scope != "" {
-		choices = append(choices, Choice{ID: "always", Label: "Yes, and don't ask again for " + a.showScope(scope) + " this session", Widening: true})
+		label := "Yes, and don't ask again for " + a.showScope(scope) + " this session"
+		if res.Keeps != "" {
+			label = KeepsLabel(res.Keeps)
+		}
+		choices = append(choices, Choice{ID: "always", Label: label, Widening: true})
 	}
 	choices = append(choices, Choice{ID: "no", Label: "No, and tell Abhed what to do instead (esc)"})
 	scope := a.showScope(res.Offer())
