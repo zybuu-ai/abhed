@@ -95,6 +95,9 @@ type WatsonXConfig struct {
 func (w *WatsonX) Name() string     { return "watsonx:" + w.ModelID }
 func (w *WatsonX) Profile() Profile { return w.profile }
 
+// SetMaxTools sets the most tools one request may offer.
+func (w *WatsonX) SetMaxTools(n int) { w.profile.MaxTools = n }
+
 // bearer returns a valid IAM token, exchanging the API key when needed.
 func (w *WatsonX) bearer(ctx context.Context) (string, error) {
 	w.mu.Lock()
@@ -278,6 +281,10 @@ func (w *WatsonX) buildRequest(req Request) wxRequest {
 
 // Complete streams a response.
 func (w *WatsonX) Complete(ctx context.Context, req Request) (<-chan Chunk, error) {
+	req, wire, err := toWire(req, ToolLimit(w.Profile()), w.Name())
+	if err != nil {
+		return nil, err
+	}
 	token, err := w.bearer(ctx)
 	if err != nil {
 		return nil, err
@@ -314,7 +321,7 @@ func (w *WatsonX) Complete(ctx context.Context, req Request) (<-chan Chunk, erro
 
 	out := make(chan Chunk, 64)
 	go w.stream(resp.Body, out, req.Tools)
-	return out, nil
+	return fromWire(out, wire), nil
 }
 
 func (w *WatsonX) stream(body io.ReadCloser, out chan<- Chunk, offered []ToolDef) {

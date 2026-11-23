@@ -124,3 +124,48 @@ func TestManagedConfigOffersNoKeptLogin(t *testing.T) {
 		}
 	}
 }
+
+// Each session's tool set is built on its own (an ACP session builds its
+// agent, and so its tools, when it opens): a login kept in one session is
+// offered by the next one built. A registry cloned within a session, for
+// its subagents, keeps that session's view.
+func TestTheNextSessionSeesAKeptLogin(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("KUBECONFIG", "")
+	old := machinegrant.Path
+	machinegrant.Path = func() string { return filepath.Join(home, "g.json") }
+	t.Cleanup(func() { machinegrant.Path = old })
+	build := func() *tools.Registry {
+		return tools.NewRegistry(InfraToolsFor(config.Config{}, nil, func(string, ...any) {}, true)...)
+	}
+	names := func(r *tools.Registry) []string {
+		var out []string
+		for _, d := range r.Definitions() {
+			out = append(out, d.Name)
+		}
+		slices.Sort(out)
+		return out
+	}
+	first := build()
+	sub := first.Clone()
+	if err := machinegrant.Keep(machinegrant.Grant{Kind: machinegrant.KindK8sLogin, Name: "lab", Identity: "i",
+		Login: &machinegrant.Login{Server: "https://lab.example:6443", Secret: "K8S_LAB_TOKEN"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := names(first); !slices.Equal(got, []string{"k8s_login"}) {
+		t.Fatalf("the open session's tools changed: %v", got)
+	}
+	if got := names(sub); !slices.Equal(got, []string{"k8s_login"}) {
+		t.Fatalf("its subagents' copy changed: %v", got)
+	}
+	next := build()
+	if got := names(next); !slices.Equal(got, []string{"k8s_apply", "k8s_get", "k8s_login"}) {
+		t.Fatalf("the next session offers %v", got)
+	}
+	for _, d := range next.Definitions() {
+		if d.Name == "k8s_login" && !strings.Contains(d.Description, "lab") {
+			t.Fatalf("the next session's k8s_login does not name the kept login: %s", d.Description)
+		}
+	}
+}

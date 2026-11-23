@@ -59,16 +59,15 @@ type Manager struct {
 func NewManager(cfg Config) *Manager {
 	m := &Manager{cfg: cfg, secret: cfg.Secret, clusters: map[string]*Cluster{}}
 	m.listing = sync.OnceValue(m.contextList)
-	m.keptNames = sync.OnceValue(func() []string {
-		var out []string
-		if cfg.KeptLogins {
-			for name := range machinegrant.Logins() {
-				out = append(out, name)
-			}
+	// Read when the session's tools are made, not when first described.
+	var kept []string
+	if cfg.KeptLogins {
+		for name := range machinegrant.Logins() {
+			kept = append(kept, name)
 		}
-		sort.Strings(out)
-		return out
-	})
+	}
+	sort.Strings(kept)
+	m.keptNames = func() []string { return kept }
 	return m
 }
 

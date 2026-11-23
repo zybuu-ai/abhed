@@ -889,7 +889,7 @@ func NewLoop(a model.Adapter, reg *tools.Registry, pol *policy.Engine,
 	// every session the tool that reads the last one's record.
 	if reg != nil && rec != nil && rec.store != nil {
 		l.Tools = reg.Clone()
-		l.Tools.Add(Recall{Store: rec.store, SessionID: rec.sessionID})
+		l.Tools.Replace(Recall{Store: rec.store, SessionID: rec.sessionID})
 	}
 	return l
 }
@@ -1736,7 +1736,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 				flushThinking(false)
 			}
 		case model.ChunkToolCall:
-			calls = append(calls, withCallID(*chunk.ToolCall, calls))
+			calls = append(calls, withCallID(l.realToolName(*chunk.ToolCall), calls))
 		case model.ChunkError:
 			streamErr = chunk.Err
 		case model.ChunkDone:
@@ -2904,6 +2904,30 @@ func flushable(s string) bool {
 		return true
 	}
 	return false
+}
+
+// wireName is model.WireName; a test puts in one that collides.
+var wireName = model.WireName
+
+// realToolName maps a call by a wire name the request did not carry (a
+// deferred tool's) to the one tool it names; an ambiguous one is left unknown.
+func (l *Loop) realToolName(c model.ToolCall) model.ToolCall {
+	if l.Tools == nil || !model.ValidWireName(c.Name) {
+		return c
+	}
+	if _, ok := l.Tools.Get(c.Name); ok {
+		return c
+	}
+	var match []string
+	for _, n := range l.Tools.Names() {
+		if n != c.Name && wireName(n) == c.Name {
+			match = append(match, n)
+		}
+	}
+	if len(match) == 1 {
+		c.Name = match[0]
+	}
+	return c
 }
 
 func toolDefs(r *tools.Registry) []model.ToolDef {

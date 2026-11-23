@@ -2109,7 +2109,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		if registry != nil {
 			if _, ok := registry.Get("bash"); ok {
 				registry = registry.Clone()
-				registry.Add(bound.Bash)
+				registry.Replace(bound.Bash)
 			}
 		}
 		live.closeBash = func() error { release(); return nil }
@@ -2118,7 +2118,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 			if shared, ok := t.(tools.Bash); ok {
 				bash, release := s.opts.SessionBash(sessionID, rec, shared)
 				registry = registry.Clone()
-				registry.Add(bash)
+				registry.Replace(bash)
 				live.closeBash = release
 			}
 		}

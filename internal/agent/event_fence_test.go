@@ -36,7 +36,7 @@ func TestToolCallCarriesItsLaunch(t *testing.T) {
 	var seen [3]string
 	l, store, _ := harness(t, []scriptedTurn{{calls: []model.ToolCall{{ID: "call-7", Name: "seer", Args: json.RawMessage(`{}`)}}}, {text: "done"}},
 		policy.ModeBypass, true)
-	l.Tools.Add(launchSeer{seen: &seen})
+	l.Tools.Replace(launchSeer{seen: &seen})
 	if _, err := l.Run(context.Background(), "go"); err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestSubagentLaunchesAsItsRootSession(t *testing.T) {
 		{text: "child done"},
 		{text: "done"},
 	}}, AutoApprove{Yes: true}, store, store, true)
-	f.Tools.Add(seer)
+	f.Tools.Replace(seer)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := l.Run(ctx, "go"); err != nil {
