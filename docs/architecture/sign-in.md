@@ -39,7 +39,7 @@ Where the build differs from the sections below, the build is right:
 - Code: `internal/home` (machine and person folders), `internal/identity`
   (the gate, the accounts store, guest, migration), `app/signin*.go`,
   `app/cmd_account.go`, `app/rpc_auth.go`, `app/acp_auth.go`,
-  `app/serve_signin.go`. Guide: `docs/guide/38-signing-in.md`.
+  `app/serve_signin.go`. Guide: `docs/guide/42-signing-in.md`.
 - ACP credentials go in `_meta["zybuu.ai/abhed"]`, as every other `_meta`
   of the contract (studio-acp-contract §1.5).
 - Server guest web sessions (2.5): `auth.guest` (off by default) adds

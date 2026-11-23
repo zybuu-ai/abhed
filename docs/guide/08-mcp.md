@@ -132,7 +132,7 @@ provider keys and Abhed's own settings. It gets `PATH`, `HOME`, `USER`,
 `LOGNAME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TMPDIR` and `TZ` from it (on
 Windows, also what a program needs to start, such as `SYSTEMROOT` and
 `TEMP`), and `ABHED_GUEST` and `ABHED_ACCOUNT`, which say who is working
-(see [Signing in](38-signing-in.md)); its `env` cannot set or clear those
+(see [Signing in](42-signing-in.md)); its `env` cannot set or clear those
 two. Then come the entries in its `env`, which win: `"KEY=VALUE"` sets a
 value, and a bare `"KEY"` passes your own value of `KEY`, as `GITHUB_TOKEN`
 above. Anything else a server needs, a proxy setting included, is listed
