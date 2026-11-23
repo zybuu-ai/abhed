@@ -1241,12 +1241,18 @@ All notable changes to Abhed are recorded here. The format follows
   leaves out "I" was read as a plain statement, which never counts against
   an answer. It is now a claim about the session's work, as "I pushed" is,
   so it stays unverified and strict mode does not complete on it. "listed"
-  after only a refused call no longer passes as a look at nothing. A digit
-  inside a word ("python3", "r2alice") is no longer read as a number said,
-  which marked true answers unverified; and the read tool's line numbers no
-  longer count as what the file holds, which verified "returns x + 2"
-  against `return x + 3`. The false-claim corpus and the strict regression
-  pin gain the evaluation's cases, and its floors rise.
+  after only a refused call no longer passes as a look at nothing. Prose
+  that opens with a past form used as an adjective ("Built-in functions
+  …", "Released versions are tagged …", "Changed files:") is not read as
+  such a report. A word with a digit in it ("python3", "r2alice") was read
+  as a number, which marked true answers unverified; it is now a name a
+  result, or the call's own argument (an ssh host), must hold, so "signed
+  in as r2alice" verifies against a result showing it and "python2" does
+  not verify against one showing python3.
+  The read tool's line numbers, truncated reads included, no longer count
+  as what the file holds, which verified "returns x + 2" against `return
+  x + 3`. The false-claim corpus and the strict regression pin gain the
+  evaluation's cases, and its floors rise.
 - The verifier labelled a greeting ("I'm Abhed, your technical assistant")
   an unverified observed claim, and strict mode asked for a revision of it. A
   sentence that is wholly a self-introduction or a general statement of what

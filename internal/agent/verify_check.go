@@ -474,9 +474,10 @@ func (ix *recordIndex) lastChange() *mutation {
 func (o *obsRec) evidence() *evidenceText {
 	if o.ev == nil {
 		content := o.content
-		// A read's line numbers are not what the file holds.
+		// A read's line numbers, and a truncated read's closing note, are
+		// not what the file holds.
 		if o.tool == "read" {
-			content = stripGutter(content)
+			content = readTrailerRe.ReplaceAllString(stripGutter(content), "")
 		}
 		o.ev = prepareEvidence(content, o.testRun())
 	}
@@ -1512,6 +1513,17 @@ func (ix *recordIndex) literal(pool []*obsRec, lit string, cited bool) finding {
 	for i := len(pool) - 1; i >= 0; i-- {
 		if o := pool[i]; o.tool == "bash" && o.command != "" && commandShows(o, lit) {
 			return finding{out: matched, what: fmt.Sprintf("%q is the command of #%d", lit, o.seq), seq: o.seq, pooled: true}
+		}
+	}
+	// A name with a digit in it (a host, a cluster) is shown by a call made
+	// to it: an argument of exactly that value.
+	if digitWordRe.MatchString(" " + lit) {
+		for i := len(pool) - 1; i >= 0; i-- {
+			for k, v := range pool[i].argMap {
+				if k != "command" && normText(v) == lit {
+					return finding{out: matched, what: fmt.Sprintf("%q is the %s of #%d", lit, k, pool[i].seq), seq: pool[i].seq, pooled: true}
+				}
+			}
 		}
 	}
 	if cited {

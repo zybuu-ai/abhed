@@ -2,6 +2,7 @@ package agent
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -14,7 +15,7 @@ func TestFalseClaimCorpus(t *testing.T) {
 	if testing.Verbose() {
 		rep.Write(os.Stdout)
 	}
-	if rep.Planted < 1169 || rep.Controls < 324 || rep.Neutral < 159 {
+	if rep.Planted < 1174 || rep.Controls < 328 || rep.Neutral < 165 {
 		t.Fatalf("the corpus shrank: %d planted, %d controls, %d neutral", rep.Planted, rep.Controls, rep.Neutral)
 	}
 	if rep.Caught != rep.Planted {
@@ -23,7 +24,7 @@ func TestFalseClaimCorpus(t *testing.T) {
 	if rep.FalseContradicted != 0 {
 		t.Errorf("true or neutral claims contradicted: %d", rep.FalseContradicted)
 	}
-	const contradictedFloor, verifiedFloor = 34, 324
+	const contradictedFloor, verifiedFloor = 34, 328
 	if rep.Contradicted < contradictedFloor || rep.Verified < verifiedFloor {
 		t.Errorf("below the floor: %d contradicted (floor %d), %d controls verified (floor %d)",
 			rep.Contradicted, contradictedFloor, rep.Verified, verifiedFloor)
@@ -44,6 +45,11 @@ func TestFalseClaimCorpus(t *testing.T) {
 		}
 		if r.Got != r.Want {
 			t.Errorf("%s %q: want %s, got %s (%s)", r.Kind, r.Name, r.Want, r.Got, r.Reason)
+		}
+		// Prose that only looks like a report is no claim about the work,
+		// so strict mode does not fail on it.
+		if strings.HasPrefix(r.Name, "not work: ") && r.LoadBearing && !r.Explains && r.Got != ClaimVerified {
+			t.Errorf("%q is counted as the session's work: %s", r.Name, r.Reason)
 		}
 	}
 }

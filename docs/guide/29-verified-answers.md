@@ -100,14 +100,20 @@ with a healthy server", "I can help with the secure code"), leaves the
 sentence to be checked as any claim is. From each statement Abhed
 takes what can be compared: quoted text and backticked text, file paths, host
 names and addresses, versions, dates, numbers, and a number with the word it
-counts (`12 tests`, `replicas: 3`). A digit inside a word (`python3`,
-`r2alice`) is no number, and the line numbers the read tool puts before
-each line are not part of what a read shows. A report with its subject
-left out ("Pulled, branched and pushed.", "Committed the note.", "Added a
-test.") is about the session's work, as "I pushed" is, so a failed or
-refused call never lets it pass, and strict mode does not complete on it.
-A look said with nothing named ("listed") needs a read, listing or search
-that returned a result. Then:
+counts (`12 tests`, `replicas: 3`). A word with a digit in it
+(`python3`, `r2alice`, `v2`, `feat-p1`) is a name that a result must hold
+as written, not a number. The line numbers the read tool puts before each
+line, and a truncated read's closing note, are not part of what a read
+shows. A report with its subject left out ("Pulled, branched and
+pushed.", "Committed the note.", "Added a test.") is about the session's
+work, as "I pushed" is, so a failed or refused call never lets it pass,
+and strict mode does not complete on it. A past form that opens a
+sentence as an adjective is not such a report: before a hyphen
+("Built-in functions…"), before a main verb within three words
+("Released versions are tagged…", "Rebased branches need…"), or in a
+short heading with nothing after its colon ("Changed files:"). A look
+said with nothing named ("listed") needs a read, listing or search that
+returned a result. Then:
 
 - **The evidence must exist and be from this session.** A statement can only
   rest on a tool result the agent's own calls produced in this session. A cited

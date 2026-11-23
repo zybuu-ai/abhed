@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // The pieces of a claim that can be compared with what a tool returned:
@@ -248,7 +249,7 @@ func unitOf(w string) string {
 // extractFacts reads what a claim asserts that can be checked.
 func extractFacts(claim string) facts {
 	var f facts
-	text := ansiRe.ReplaceAllString(claim, "")
+	text := adjectiveLead(ansiRe.ReplaceAllString(claim, ""))
 	seen := map[string]bool{}
 	addLit := func(s string) {
 		s = normText(strings.Trim(s, ",;:!?()[]{}'\""))
@@ -372,6 +373,9 @@ func extractFacts(claim string) facts {
 		f.paths = append(f.paths, rawPath(p))
 		return true
 	})
+	// A word with a digit in it (python3, r2alice, v2) is a name, which a
+	// result must hold as written; its digit is no number.
+	cut(digitWordRe, func(m []string) bool { addLit(strings.TrimLeft(m[0], " \t\n([{'\"")); return true })
 	// What is left: host names, then numbers.
 	low := strings.ToLower(text)
 	for _, h := range hostRe.FindAllString(low, -1) {
@@ -389,10 +393,6 @@ func extractFacts(claim string) facts {
 	low = timeRe.ReplaceAllStringFunc(low, func(m string) string { addLit(m); return " " })
 	counted := map[string]bool{}
 	for _, at := range countRe.FindAllStringSubmatchIndex(low, -1) {
-		// A digit inside a word (python3, r2alice) counts nothing.
-		if at[2] > 0 && isWordRune(rune(low[at[2]-1])) {
-			continue
-		}
 		unit := low[at[4]:at[5]]
 		if notUnits[unit] {
 			continue
@@ -434,7 +434,7 @@ func extractFacts(claim string) facts {
 	low = listNumberRe.ReplaceAllStringFunc(low, func(m string) string { return strings.Repeat(" ", len(m)) })
 	for _, m := range numberRe.FindAllStringIndex(low, -1) {
 		// A digit inside a word, as in sha256 or utf8, is not a number said.
-		if m[0] > 0 && isWordRune(rune(low[m[0]-1])) {
+		if r, _ := utf8.DecodeLastRuneInString(low[:m[0]]); m[0] > 0 && isWordRune(r) {
 			continue
 		}
 		n := normNumber(low[m[0]:m[1]])
@@ -650,7 +650,60 @@ var presentEed = map[string]bool{"need": true, "feed": true, "speed": true, "see
 
 // leadDeedRe is a report that opens with what was done, its subject left
 // out as answers often do: "Pulled, branched and pushed.", "Added a test."
-var leadDeedRe = regexp.MustCompile(`^\W*(?:(?:then|also|first|finally|next|and|just|successfully)\s+)*(?:pulled|pushed|committed|branched|merged|rebased|cloned|fetched|tagged|checked out|stashed|staged|amended|squashed|cherry-picked|reverted|created|added|removed|deleted|updated|changed|fixed|edited|modified|wrote|rewrote|ran|installed|uninstalled|deployed|restarted|renamed|moved|refactored|implemented|built|rebuilt|tested|applied|configured|upgraded|downgraded|bumped|released|published|replaced|patched|migrated|generated|formatted|scaled|rolled back|rolled out|opened a (?:pr|pull request))\b`)
+var leadDeedRe = regexp.MustCompile(`^\W*(?:(?:then|also|first|finally|next|and|just|successfully)\s+)*(?:pulled|pushed|committed|branched|merged|rebased|cloned|fetched|tagged|checked out|stashed|staged|amended|squashed|cherry-picked|reverted|created|added|removed|deleted|updated|changed|fixed|edited|modified|wrote|rewrote|ran|installed|uninstalled|deployed|restarted|renamed|moved|refactored|implemented|built|rebuilt|tested|applied|configured|upgraded|downgraded|bumped|released|published|replaced|patched|migrated|generated|formatted|scaled|rolled back|rolled out|opened a (?:pr|pull request))(?:[\s,.;!]|$)`)
+
+// digitWordRe is a word with a digit after its first letter: python3,
+// r2alice, v2, f_core_a_3, web1.
+var digitWordRe = regexp.MustCompile(`(?:^|[^\p{L}\d_\-.])\p{L}[\p{L}\d_\-]*\d[\p{L}\d_\-]*`)
+
+// leadVerbRe is a sentence's first word; mainVerbRe a verb that makes the
+// words before it a subject; leadLabelRe a short label ending in a colon.
+var (
+	leadVerbRe       = regexp.MustCompile(`^(\W*)([A-Za-z]+)(-?)`)
+	mainVerbRe       = regexp.MustCompile(`^(?:are|is|was|were|can|cannot|can't|could|need|needs|should|must|will|would|may|might|have|has|had|show|shows|live|lives|stay|stays|return|returns|makes|breaks|keeps|gets)$`)
+	leadNotVerbAfter = wordSet(`to the a an its this that these those my our your their his her`)
+	leadLabelRe      = regexp.MustCompile(`^\W*[A-Za-z]+(?:\s+[A-Za-z]+){0,2}\s*:\s*$`)
+)
+
+// adjectiveLead blanks a past form that opens a sentence as an adjective,
+// not a report of work: before a hyphen ("Built-in functions"), before a
+// main verb within three words ("Released versions are tagged", "Removed
+// APIs return 410"), or as a short heading ("Changed files:").
+func adjectiveLead(text string) string {
+	m := leadVerbRe.FindStringSubmatchIndex(text)
+	if m == nil {
+		return text
+	}
+	w := strings.ToLower(text[m[4]:m[5]])
+	if !irregularPast[w] && !(len(w) > 3 && strings.HasSuffix(w, "ed") && !notPastEd[w]) {
+		return text
+	}
+	// A heading with nothing after its colon claims nothing.
+	if leadLabelRe.MatchString(text) {
+		return strings.Repeat(" ", len(text))
+	}
+	adj := m[6] != m[7]
+	if !adj {
+		// A word after "to" or a determiner is no main verb ("to use",
+		// "the return statement").
+		prev := ""
+		for i, x := range strings.Fields(strings.ToLower(text[m[5]:])) {
+			if i >= 3 {
+				break
+			}
+			x = strings.Trim(x, ",.;:!?")
+			if !leadNotVerbAfter[prev] && mainVerbRe.MatchString(x) {
+				adj = true
+				break
+			}
+			prev = x
+		}
+	}
+	if !adj {
+		return text
+	}
+	return text[:m[4]] + strings.Repeat(" ", m[5]-m[4]) + text[m[5]:]
+}
 
 // saysDeed reports the agent saying it did something.
 func saysDeed(lower string) bool {

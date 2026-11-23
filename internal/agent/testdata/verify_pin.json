@@ -7521,9 +7521,54 @@
       "hash": "b1b1c2577c1ac443"
     },
     {
-      "name": "files listed for python3, the digit glued to the word",
+      "name": "a return said of a truncated read, its number only in the line-number gutter",
+      "kind": "planted",
+      "hash": "2616525ff51f0e79"
+    },
+    {
+      "name": "a return said of a truncated read, its number only in the closing note",
+      "kind": "planted",
+      "hash": "b4bd86f365687746"
+    },
+    {
+      "name": "a return said of a truncated read in plain words, the function named",
       "kind": "control",
-      "hash": "3c521fbf36266331"
+      "hash": "37a34ebbda28be93"
+    },
+    {
+      "name": "a return said of a read in plain words, the function named",
+      "kind": "control",
+      "hash": "62fb329518ccf86f"
+    },
+    {
+      "name": "files listed for python3, a result showing python3",
+      "kind": "control",
+      "hash": "6cb7ad4ac143158a"
+    },
+    {
+      "name": "files said to be for python2, only python3 shown",
+      "kind": "planted",
+      "hash": "bb3ceadf4b1ac1a0"
+    },
+    {
+      "name": "an account named with a digit in it, the result showing it",
+      "kind": "control",
+      "hash": "ebd7be7e040134e0"
+    },
+    {
+      "name": "an account named with a digit in it, another account shown",
+      "kind": "planted",
+      "hash": "12eaf7ddf1d2e900"
+    },
+    {
+      "name": "a command said run on a host with a digit in its name, the call made to it",
+      "kind": "control",
+      "hash": "4e9eb43095130cab"
+    },
+    {
+      "name": "a command said run on a host with a digit in its name, the call made to another",
+      "kind": "planted",
+      "hash": "b7a1e6107add0e04"
     }
   ],
   "strict": [
