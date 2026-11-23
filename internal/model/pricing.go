@@ -59,6 +59,17 @@ func (p Price) Cost(u Usage) float64 {
 		float64(u.CacheWriteTokens)*write + float64(u.OutputTokens)*p.Output) / 1e6
 }
 
+// scaled is p with every figure multiplied by f, its long tier's too.
+func (p Price) scaled(f float64) Price {
+	r := func(v float64) float64 { return math.Round(v*f*1e6) / 1e6 }
+	out := Price{Input: r(p.Input), Output: r(p.Output), CachedInput: r(p.CachedInput), CacheWrite: r(p.CacheWrite), LongAbove: p.LongAbove}
+	if p.Long != nil {
+		l := p.Long.scaled(f)
+		out.Long = &l
+	}
+	return out
+}
+
 // PromptTokens is a call's whole prompt: every input token, cached and
 // cache-written included, however the provider reported them.
 func PromptTokens(u Usage) int {

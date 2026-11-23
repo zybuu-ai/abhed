@@ -947,6 +947,11 @@ type PermissionsConfig struct {
 
 type ContextConfig struct {
 	CompactAt float64 `json:"compact_at"`
+	// CompactAtTokens bounds how large the conversation grows before it is
+	// compacted, whatever the window: a 1M-token window compacted at its
+	// fraction sends calls of 650k tokens, each a cost and a wait. Zero
+	// means 200,000; set it to the model's window to use all of it.
+	CompactAtTokens int `json:"compact_at_tokens,omitempty"`
 	// OffloadAt is the fraction of the context window at which old, large
 	// tool results are replaced in the window by a stub; the full text stays
 	// in the session record and the recall tool reads it back. It should sit
@@ -2353,6 +2358,9 @@ func (c Config) Validate() error {
 	}
 	if t := c.SSH.MaxTimeoutSeconds; t < 0 || t > MaxSSHTimeoutSeconds {
 		return fmt.Errorf("ssh.max_timeout_seconds is %d; use a number of seconds up to %d (a day), or 0 for the default (120)", t, MaxSSHTimeoutSeconds)
+	}
+	if c.Context.CompactAtTokens < 0 {
+		return fmt.Errorf("context.compact_at_tokens may not be negative, got %d", c.Context.CompactAtTokens)
 	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt > 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)

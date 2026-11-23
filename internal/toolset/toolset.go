@@ -694,6 +694,9 @@ func LoopConfig(cfg config.Config, system string) agent.Config {
 	if at := cfg.Context.CompactAt; at > 0 {
 		c.CompactAt = at
 	}
+	if n := cfg.Context.CompactAtTokens; n > 0 {
+		c.CompactAtTokens = n
+	}
 	c.OffloadAt = cfg.Context.OffloadFraction()
 	c.MaxContinues = cfg.ContinuesAllowed()
 	for _, l := range cfg.LoadedPlugins() {

@@ -35,10 +35,6 @@ func TestLookupLimits(t *testing.T) {
 		{"models/gemini-2.0-flash", 1_048_576, 8_192},
 		{"gemini-1.5-pro-002", 2_097_152, 8_192},
 		{"grok-4.7", 500_000, 0},
-		{"llama3.1:70b", 131_072, 0},
-		{"meta-llama/llama-3.3-70b-instruct", 131_072, 0},
-		{"qwen3-coder:30b", 262_144, 0},
-		{"qwen3:8b", 32_768, 0},
 	}
 	for _, c := range cases {
 		w, o, ok := LookupLimits(c.id)
@@ -46,7 +42,7 @@ func TestLookupLimits(t *testing.T) {
 			t.Errorf("%s: window %d output %d (%v), want %d %d", c.id, w, o, ok, c.window, c.output)
 		}
 	}
-	for _, id := range []string{"my-finetune", "gemma4:26b", "", "deepseek-v4-pro", "mixtral"} {
+	for _, id := range []string{"my-finetune", "gemma4:26b", "", "deepseek-v4-pro", "mixtral", "llama3.1:70b", "qwen3:8b"} {
 		if _, _, ok := LookupLimits(id); ok {
 			t.Errorf("%q matched a row", id)
 		}
@@ -71,10 +67,8 @@ func TestResolveLimits(t *testing.T) {
 		{Spec{Type: "openai", Model: "gpt-4o"}, 128_000, WindowBuiltIn, 16_384},
 		{Spec{Type: "openai-compatible", Model: "mystery", BaseURL: "https://gw.example/v1"}, FallbackWindow, WindowFallback, 0},
 		{Spec{Type: "ollama", Model: "llama3.1:8b"}, FallbackWindow, WindowFallback, 0},
-		{Spec{Type: "vllm", Model: "qwen3:8b"}, 32_768, WindowFallback, 0},
-		{Spec{Type: "vllm", Model: "qwen3-coder"}, FallbackWindow, WindowFallback, 0},
+		{Spec{Type: "vllm", Model: "claude-sonnet-5-5"}, FallbackWindow, WindowFallback, 128_000}, // a local server never gets the table's window
 		{Spec{Type: "openai-compatible", Model: "llama3.1:8b", BaseURL: "http://localhost:11434/v1"}, FallbackWindow, WindowFallback, 0},
-		{Spec{Type: "groq", Model: "llama-3.3-70b-versatile"}, 131_072, WindowBuiltIn, 0},
 		{Spec{Type: "ollama", Model: "gemma4:26b", ContextWindow: 65536}, 65536, WindowConfig, 0},
 		{Spec{Type: "gemini", Model: "gemini-2.5-flash"}, 1_048_576, WindowBuiltIn, 65_536},
 	}
@@ -186,9 +180,23 @@ func TestLookupLimitsIgnoresRowOrder(t *testing.T) {
 	}
 	catalog = reversed
 	for id, want := range map[string]int{"claude-haiku-4-5": 200_000, "claude-opus-4-1": 200_000, "gpt-4o-mini": 128_000,
-		"gemini-1.5-pro-002": 2_097_152, "qwen3-coder:30b": 262_144, "claude-opus-5-5": 1_000_000} {
+		"gemini-1.5-pro-002": 2_097_152, "claude-opus-5-5": 1_000_000} {
 		if w, _, _ := LookupLimits(id); w != want {
 			t.Errorf("%s: %d, want %d", id, w, want)
 		}
+	}
+}
+
+// A window below MinWindow, learned or discovered, is not believed.
+func TestWindowFloor(t *testing.T) {
+	l := resolveLimits(Spec{Type: "anthropic", Model: "claude-sonnet-5-5"}, "https://api.anthropic.com")
+	if l.learn(5) || l.learn(MinWindow-1) || l.discovered(100, 0) {
+		t.Fatal("a tiny window was taken")
+	}
+	if w, _, _ := l.snapshot(); w != 1_000_000 {
+		t.Fatal(w)
+	}
+	if !l.learn(MinWindow) {
+		t.Fatal("the floor itself is a window")
 	}
 }

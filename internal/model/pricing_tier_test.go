@@ -8,10 +8,20 @@ import "testing"
 func TestPriceNormalisation(t *testing.T) {
 	opus := Price{Input: 4, Output: 20, CachedInput: 0.20, CacheWrite: 5}
 	for _, n := range []string{"claude-opus-5-5", "anthropic/claude-opus-5-5", "claude-opus-5-5@20261101",
-		"us.anthropic.claude-opus-5-5", "anthropic.claude-opus-5-5-v1:0", "global.anthropic.claude-opus-5-5", "CLAUDE-OPUS-5-5"} {
+		"anthropic.claude-opus-5-5-v1:0", "global.anthropic.claude-opus-5-5", "CLAUDE-OPUS-5-5"} {
 		if p, ok := PriceFor(n, nil); !ok || p != opus {
 			t.Errorf("%q: %+v %v", n, p, ok)
 		}
+	}
+	// A Bedrock regional endpoint is 10% over the global price.
+	regional := Price{Input: 4.4, Output: 22, CachedInput: 0.22, CacheWrite: 5.5}
+	for _, n := range []string{"us.anthropic.claude-opus-5-5", "eu.anthropic.claude-opus-5-5-v1:0", "apac.anthropic.claude-opus-5-5"} {
+		if p, ok := PriceFor(n, nil); !ok || p != regional {
+			t.Errorf("%q: %+v %v, want %+v", n, p, ok, regional)
+		}
+	}
+	if p, _ := PriceFor("us.anthropic.claude-haiku-5-5", nil); p.Long == nil || p.Long.Input != 0.55 || p.Input != 0.11 {
+		t.Errorf("regional haiku 5.5 %+v", p)
 	}
 	for n, want := range map[string]Price{
 		"claude-opus-5":              {Input: 5, Output: 25, CachedInput: 0.50, CacheWrite: 6.25},

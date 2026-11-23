@@ -76,12 +76,23 @@ func ContextOverflow(err error) (overflow bool, limit int) {
 	for _, re := range limitPatterns {
 		if m := re.FindStringSubmatch(text); m != nil {
 			if n, err := strconv.Atoi(strings.ReplaceAll(m[1], ",", "")); err == nil && n > 0 {
+				// "N in the messages, M in the completion": a prompt within
+				// the limit was refused for the reply cap it asked for, which
+				// compacting would not help; that is not an overflow.
+				if p := promptPart.FindStringSubmatch(text); p != nil {
+					if in, err := strconv.Atoi(p[1]); err == nil && in <= n {
+						return false, 0
+					}
+				}
 				return true, n
 			}
 		}
 	}
 	return true, 0
 }
+
+// promptPart is the prompt's share of a request OpenAI-shaped servers report.
+var promptPart = regexp.MustCompile(`\(([0-9]+) in the messages, [0-9]+ in the completion\)`)
 
 // TruncatedPrompt reports a prompt a server cut to fit its window rather than
 // refusing it, as Ollama does: the prompt it says it read is well short of

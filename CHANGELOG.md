@@ -183,7 +183,7 @@ All notable changes to Abhed are recorded here. The format follows
   Mistral, llama.cpp's `/props`, TGI's `/info`, Ollama's `/api/ps` and
   `/api/show`), then a built-in table of published limits matched by model
   family (every current Claude model, and the OpenAI, Gemini, Grok and
-  open-weight families), and for a model none of these knows an assumed
+  families), and for a model none of these knows an assumed
   32,768 tokens, which the session says on its first turn and `abhed doctor`
   warns of. A server on this machine is never given its model's trained
   window from the table, since it decides its own. A configured reply cap
@@ -194,9 +194,14 @@ All notable changes to Abhed are recorded here. The format follows
 - A request a provider refuses as longer than the window is recovered once:
   the window is lowered to the limit the provider named, every tool result
   is cut to the new window's share, the history is compacted and the turn is
-  asked again. A second refusal in a row ends the run saying what happened
-  and what to do (a new conversation, `/compact` with what to keep, or
-  `/model` for a larger window); it never loops. Anthropic's `prompt is too
+  asked again, without counting as another turn. A refusal that names no
+  limit (Bedrock's `Input is too long for requested model`) lowers the
+  window to four fifths of the refused request's size. A second refusal in
+  a row ends the run saying what happened (the limit named, or that none was
+  and the refused request's size) and what to do (a new conversation,
+  `/compact` with what to keep, or `/model` for a larger window); it never
+  loops. A limit under 2,048 tokens is not believed, and an OpenAI-shaped
+  refusal of the reply cap rather than the prompt is not compacted for. Anthropic's `prompt is too
   long`, OpenAI's `context_length_exceeded`, Gemini's input token count and
   the wording of Bedrock, vLLM, llama.cpp, TGI, Mistral, Groq, watsonx and
   Ollama are recognised. A server that cuts an over-long prompt instead of
@@ -701,6 +706,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- A conversation is compacted before it passes `context.compact_at_tokens`
+  tokens (default 200,000), however large the window: on a 1M-token model
+  the fraction alone sent calls of about 650,000 tokens. The threshold, the
+  history kept, offloading and the cap on each tool result work within that
+  ceiling. Set it to the model's window to use all of it.
 - The compaction check made after a turn's tool results land now keeps room
   for the model's reply (its output cap, at most an eighth of the window), and
   counts tokens as the provider last reported them for a prompt rather than
@@ -715,9 +725,11 @@ All notable changes to Abhed are recorded here. The format follows
   `anthropic.claude-opus-5-5-v1:0`, `claude-opus-5-5@…`, a Claude snapshot
   date), which were unpriced and so refused under `-max-budget-usd`. Only
   the model's own id is priced: another vendor's dated snapshot keeps its own
-  price and stays unpriced. The prices are Anthropic's list prices; Bedrock
-  and Google Cloud invoice at their own, so set `pricing` where a budget must
-  match the cloud's bill.
+  price and stays unpriced. The prices are Anthropic's list prices; a Bedrock
+  id naming a geography (`us.anthropic.…`) is priced 10% over them, as
+  Anthropic states for regional endpoints, as an estimate. Bedrock and
+  Google Cloud invoice at their own prices, so set `pricing` where a budget
+  must match the cloud's bill.
 - The `served` field of the `next_edit.summary` record event now includes
   renames finished from the file, which are also counted in `local`; before,
   `served` left them out. A SIEM or other reader of the record that added

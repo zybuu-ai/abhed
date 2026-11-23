@@ -267,6 +267,9 @@ type Config struct {
 	ReasoningStallTokens int
 	ReasoningStall       time.Duration
 	CompactAt            float64 // fraction of the context window
+	// CompactAtTokens caps the conversation's size before compaction,
+	// whatever the window; zero is no cap. See Compactor.Ceiling.
+	CompactAtTokens int
 	// OffloadAt is the fraction of the window at which old tool results move
 	// out to the record. Zero turns offloading off.
 	OffloadAt    float64
@@ -293,7 +296,7 @@ var (
 )
 
 func DefaultConfig() Config {
-	return Config{MaxTurns: 100, MaxTokens: 8192, CompactAt: 0.90, OffloadAt: 0.60}
+	return Config{MaxTurns: 100, MaxTokens: 8192, CompactAt: 0.90, OffloadAt: 0.60, CompactAtTokens: DefaultCompactAtTokens}
 }
 
 // Loop is the agent's execution loop: a turn-based cycle that terminates
@@ -1193,6 +1196,9 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 	}
 	l.beginAnswer()
 	l.stopContinues = 0
+	// A retry an earlier run left marked, ended by another error, is not this run's.
+	l.overflowRetried = false
+	l.fitCompactor()
 	l.hookHalted() // an end a hook asked of an earlier run is not this one's
 	if hh, ok := l.Hooks.(HaltHooks); ok {
 		hh.RunStarted(l.rootID())
@@ -1355,7 +1361,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	if l.Compactor == nil {
 		return nil
 	}
-	l.Compactor.OutputTokens = l.Config.MaxTokens
+	l.fitCompactor()
 	check := l.Compactor.ShouldCompact
 	// Right after a compaction the history is as small as it gets: room for
 	// the next turn on top would compact again at once in a small window.
@@ -2927,6 +2933,9 @@ func (l *Loop) resultLimitChars() int {
 	window := l.Adapter.Profile().ContextWindow
 	if window <= 0 {
 		return 0
+	}
+	if l.Compactor != nil {
+		window = l.Compactor.Effective(window)
 	}
 	// A quarter of the window, converted back to characters at the same
 	// ~3.6 chars/token the estimator uses, and at the model's own count once

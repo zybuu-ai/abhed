@@ -73,6 +73,7 @@ configuration](#trusting-the-workspace-configuration).
 "context": {
   "offload_at": 0.60,
   "compact_at": 0.80,
+  "compact_at_tokens": 200000,
   "memory_files": ["ABHED.md"]
 }
 ```
@@ -111,7 +112,17 @@ an eighth of the window), so a small window is not summarized twice in a row
 and the next call still has room to answer. Tokens are counted as the model
 counts them: the estimate is scaled by what the provider reported for the
 last prompt, since code, JSON and YAML run to more tokens per character than
-prose. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
+prose.
+
+**`compact_at_tokens` — a size ceiling.** However large the window, the
+conversation is compacted before it grows past this many tokens: the
+threshold, the headroom, the history kept after a compaction, offloading and
+the cap on each tool result all work within a window of `compact_at_tokens`
+divided by `compact_at`. Unset or 0 means 200,000. Without it a 1M-token model
+compacted at 0.90 sends calls of about 650,000 tokens, each costing dollars
+when the cache misses and tens of seconds to prefill; 200,000 is also the
+limit some accounts are held to. A window smaller than the ceiling is
+unaffected. Set it to the model's window to use all of it. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
 and the token estimate is approximate. Not much below 0.5 either: a
 compaction keeps recent turns up to about half the window, so below roughly
 0.3 what it keeps is already over the threshold and it compacts on almost
@@ -138,8 +149,16 @@ request as longer than the window (Anthropic's `prompt is too long`, OpenAI's
 `context_length_exceeded`, Gemini's input token count, llama.cpp, vLLM, TGI,
 Mistral, watsonx and Ollama's own wording), the window is lowered to the limit
 it names, every tool result is cut to the new window's share, the history is
-compacted, and the turn is asked once more. A second refusal in a row ends the
-run with what happened and what to do: start a new conversation, `/compact`
+compacted, and the turn is asked once more; the retry does not count as
+another turn. A refusal that names no limit (Bedrock's `Input is too long for
+requested model`) lowers the window to four fifths of the refused request's
+size, which brings the retry to about two fifths of it, so it fits any limit
+down to about half the refused size. A limit under 2,048 tokens is not
+believed. An OpenAI-shaped refusal whose prompt was within the limit and whose
+reply cap was not (`N in the messages, M in the completion`) is not treated as
+too long: lowering `max_tokens` is the fix, and compacting would not help. A second refusal in a row ends the
+run with what happened (the limit the provider named, or that it named none and
+how large the refused request was) and what to do: start a new conversation, `/compact`
 with what to keep, or `/model` for a larger window. It never loops. Both are
 recorded as `context.overflow` (`action` `compacted_retry` or `gave_up`). A
 server that cuts an over-long prompt instead of refusing it (Ollama) is caught
@@ -147,8 +166,9 @@ by the prompt size it reports: the window is learned, the conversation
 compacted before the next call, and `context.overflow` records `truncated`.
 
 **Large tool results are cut before they enter the conversation.** One result
-may hold at most a quarter of the window (about 900,000 characters on a
-1M-token model, about 29,000 on a 32k one). The head and tail are kept, and the
+may hold at most a quarter of the window, or of the window `compact_at_tokens`
+sets when that is smaller (about 200,000 characters on a 1M-token model at the
+default ceiling, about 29,000 on a 32k one). The head and tail are kept, and the
 cut says how much was left out and how to read it: the whole output is in the
 session record, and `recall` with the result's `call_id` and an offset reads
 the rest. This applies to every tool: a `k8s_get` of many pods, a long `bash`
@@ -311,10 +331,13 @@ region and vendor (`us.anthropic.claude-opus-5-5`, `anthropic.claude-opus-5-5-v1
 a Vertex version (`claude-opus-5-5@…`), and a Claude snapshot date. Only the
 model's own id is priced, never a family: another vendor's dated snapshot
 (`gpt-4o-2024-05-13`) keeps its own price, and is unpriced here. These are
-Anthropic's and OpenAI's own list prices; Amazon Bedrock and Google Cloud
-invoice Claude at their own prices (a regional endpoint costs 10% more than
-a global one), so set `pricing` for those names when a dollar budget must
-match the cloud's bill.
+Anthropic's and OpenAI's own list prices. Amazon Bedrock and Google Cloud
+invoice Claude at their own prices, and a regional or multi-region endpoint
+costs 10% more than a global one: a Bedrock id that names a geography
+(`us.anthropic.…`, `eu.…`, `apac.…`) is priced at the list price plus 10%, and
+any other at the list price, as an estimate. A Vertex region is not in the
+model id, so a regional Vertex endpoint is priced as global. Set `pricing`
+for those names when a dollar budget must match the cloud's bill.
 
 Claude Haiku 5.5 is priced by prompt length, as Anthropic bills it: a call
 whose prompt is over 100,000 tokens, counting cache reads and cache writes,

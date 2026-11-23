@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -396,5 +399,168 @@ func TestOverflowAfterRetryNeverCompacts(t *testing.T) {
 	}
 	if l.overflowRetried || len(fitEvents(store, EvCompactStarted)) != 0 {
 		t.Fatal("gave up but compacted, or left the retry marked")
+	}
+}
+
+// openAIStub is an OpenAI-compatible server that refuses, in Bedrock's
+// words and naming no limit, any request body over limit bytes, and answers
+// the rest with a short streamed reply.
+func openAIStub(t *testing.T, limit int, sizes *[]int) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		*sizes = append(*sizes, len(body))
+		if len(body) > limit {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"message":"Input is too long for requested model."}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"choices":[{"index":0,"delta":{"content":"fine"},"finish_reason":null}]}`+"\n\n"+
+			`data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":2}}`+"\n\n"+
+			"data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// largeRecent adds eight recent reads of 36 KB each to a fitLoop history.
+func largeRecent(l *Loop) {
+	for i := 0; i < 8; i++ {
+		id := fmt.Sprintf("big-%d", i)
+		l.messages = append(l.messages,
+			model.Message{Role: model.RoleUser, Content: fmt.Sprintf("read part %d", i)},
+			model.Message{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{ID: id, Name: "read", Args: json.RawMessage(`{}`)}}},
+			model.Message{Role: model.RoleTool, ToolCallID: id, Content: strings.Repeat("node-7 Ready 3d v1.31\n", 1650)},
+			model.Message{Role: model.RoleAssistant, Content: "read"})
+	}
+}
+
+// A refusal that names no limit (Bedrock's "Input is too long") lowers the
+// window below what was refused, so the one retry fits: before, the window
+// stayed at the model's published 1M, the retry was refused again, and the
+// run ended naming a window the provider never stated.
+func TestOverflowWithNoNamedLimitLearnsBelowTheRefusal(t *testing.T) {
+	var sizes []int
+	srv := openAIStub(t, 200_000, &sizes)
+	a, err := model.New(model.Spec{Type: "openai", Model: "gpt-4.1", BaseURL: srv.URL, APIKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, store := fitLoop(t, a)
+	largeRecent(l)
+	if reason, err := l.Run(context.Background(), "and now?"); err != nil || reason != TermCompleted {
+		t.Fatalf("run: %s %v; request sizes %v", reason, err, sizes)
+	}
+	p := a.Profile()
+	if p.WindowSource != model.WindowLearned || p.ContextWindow >= 1_047_576 {
+		t.Fatalf("window %d (%s) after an unnamed refusal", p.ContextWindow, p.WindowSource)
+	}
+	over := fitEvents(store, EvContextOverflow)
+	var o ContextOverflow
+	_ = json.Unmarshal(over[0].Payload, &o)
+	if len(over) != 1 || o.Action != OverflowRetried || o.Limit != 0 || p.ContextWindow != o.Sent*unnamedLimitShare/100 {
+		t.Fatalf("%d overflow events; %+v; window %d", len(over), o, p.ContextWindow)
+	}
+}
+
+// When even that retry is refused, the run ends saying the provider named no
+// limit and how large the refused request was, never a window it did not state.
+func TestUnnamedOverflowGiveUpSaysWhatIsKnown(t *testing.T) {
+	var sizes []int
+	srv := openAIStub(t, 1_000, &sizes)
+	a, err := model.New(model.Spec{Type: "openai", Model: "gpt-4.1", BaseURL: srv.URL, APIKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, _ := fitLoop(t, a)
+	largeRecent(l)
+	reason, err := l.Run(context.Background(), "and now?")
+	if reason != TermError || err == nil {
+		t.Fatalf("run: %s %v", reason, err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "did not name its limit") || !strings.Contains(msg, "the refused request was about") ||
+		strings.Contains(msg, "1047576") || strings.Contains(msg, "context window of") {
+		t.Fatalf("message: %s", msg)
+	}
+}
+
+// Calibration through a run: a provider that counts the prompt at twice the
+// estimate makes the check after the tool results compact, where the
+// estimate alone would not have.
+func TestRunCalibratesTheCount(t *testing.T) {
+	c := call("read", map[string]string{"path": "/nonexistent-ctx-test"})
+	a := &windowAdapter{name: "m", window: 10_000, script: []windowReply{
+		{calls: []model.ToolCall{c}, usage: &model.Usage{InputTokens: 10_000}},
+		{text: "done"},
+	}}
+	sess, _ := tools.NewSession(tempDir(t))
+	store := NewMemStore()
+	l := NewLoop(a, tools.NewRegistry(tools.Read{}), policy.New(policy.ModeDefault),
+		AutoApprove{Yes: true}, sess, NewRecorder(store, "sess1", ""), DefaultConfig())
+	l.Compactor = NewCompactor(a, 0.9)
+	l.messages = longMessages(10, 2_000) // about 5,000 estimated
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fitEvents(store, EvCompactStarted)) == 0 {
+		t.Fatal("the calibrated count did not compact")
+	}
+}
+
+// A switch starts the calibration again: the new model counts its own way.
+func TestSwitchResetsCalibration(t *testing.T) {
+	a := &windowAdapter{name: "a", window: 100_000}
+	l, _ := fitLoop(t, a)
+	l.Compactor.SetScale(2)
+	if err := l.SwitchModel("b", &windowAdapter{name: "b", window: 100_000}); err != nil {
+		t.Fatal(err)
+	}
+	if l.Compactor.Scale() != 1 {
+		t.Fatalf("scale %v after a switch", l.Compactor.Scale())
+	}
+}
+
+// A retry marked by an earlier run that ended on another error does not make
+// this run's first refusal give up; and the retry is not counted as a turn,
+// so a refusal on the last turn allowed is still retried.
+func TestOverflowRetryIsPerRunAndUncounted(t *testing.T) {
+	refusal := &model.StatusError{Status: 400, Body: "prompt is too long: 9000 tokens > 8000 maximum"}
+	a := &windowAdapter{name: "m", window: 1_000_000, script: []windowReply{{err: refusal}, {text: "ok"}}}
+	l, _ := fitLoop(t, a)
+	l.overflowRetried = true // left by an earlier run
+	l.Config.MaxTurns = 1
+	if reason, err := l.Run(context.Background(), "and now?"); err != nil || reason != TermCompleted {
+		t.Fatalf("run: %s %v", reason, err)
+	}
+}
+
+// The size ceiling bounds compaction, the history kept and each result
+// whatever the window: by default a 1M-token model is compacted near 200k.
+func TestCompactAtTokensCeiling(t *testing.T) {
+	a := &windowAdapter{name: "big", window: 1_000_000}
+	c := NewCompactor(a, 0.9)
+	msgs := longMessages(10, 100_000) // 250,000 estimated
+	if should, _, _ := c.ShouldCompactNow("", msgs, nil); should {
+		t.Fatal("250k of 1M compacted with no ceiling")
+	}
+	c.Ceiling = DefaultCompactAtTokens
+	if should, _, _ := c.ShouldCompactNow("", msgs, nil); !should {
+		t.Fatal("250k did not compact under a 200k ceiling")
+	}
+	if got := c.Effective(1_000_000); got != 222_222 {
+		t.Fatalf("effective window %d", got)
+	}
+	if got := c.Effective(32_768); got != 32_768 {
+		t.Fatalf("a small window was changed: %d", got)
+	}
+	l, _ := fitLoop(t, a)
+	l.fitCompactor()
+	if got, want := l.resultLimitChars(), int(float64(222_222/4)*3.6); got != want {
+		t.Fatalf("result cap %d, want %d", got, want)
+	}
+	if DefaultConfig().CompactAtTokens != DefaultCompactAtTokens {
+		t.Fatal("no default ceiling")
 	}
 }

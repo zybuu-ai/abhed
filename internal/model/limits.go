@@ -32,6 +32,12 @@ const (
 // when it refuses a request lowers the window for the rest of the session.
 const FallbackWindow = 32768
 
+// MinWindow is the smallest window learned or discovered that is believed.
+// An endpoint that names less (an error reading "> 5 maximum") would leave
+// every tool result cut to a few characters and a compaction on every turn;
+// no model that can run an agent has a window this small.
+const MinWindow = 2048
+
 // DefaultOutputReserve is the room kept for a reply when neither the
 // configuration nor the request names an output cap: the Anthropic adapter's
 // own default max_tokens, and a typical reply with a tool call or two.
@@ -137,7 +143,7 @@ func (l *Limits) apply(p Profile) Profile {
 // learn lowers the window to limit, as a provider's refusal named it. It
 // reports whether the window changed.
 func (l *Limits) learn(limit int) bool {
-	if l == nil || limit <= 0 {
+	if l == nil || limit < MinWindow {
 		return false
 	}
 	l.mu.Lock()
@@ -155,6 +161,9 @@ func (l *Limits) discovered(window, output int) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	changed := false
+	if window < MinWindow {
+		window = 0
+	}
 	if window > 0 && l.source != WindowConfig && l.source != WindowLearned && window != l.window {
 		l.window, l.source, changed = window, WindowDiscovered, true
 	}

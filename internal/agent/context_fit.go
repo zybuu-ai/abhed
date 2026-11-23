@@ -73,18 +73,31 @@ type ContextRefit struct {
 	AfterTokens   int  `json:"after_tokens"`
 }
 
+// unnamedLimitShare is the percentage of a refused prompt's size taken as
+// the window when the refusal names no limit; see overflowRecovery.
+const unnamedLimitShare = 80
+
 // ContextOverflowError ends a run whose conversation does not fit the model
-// even after compacting: it says what happened and what to do.
+// even after compacting: it says what happened and what to do, and only what
+// is known: the limit the provider named, or that it named none.
 type ContextOverflowError struct {
-	Model  string
-	Window int
-	Err    error
+	Model string
+	// Limit is the window the provider named, zero when it named none;
+	// Refused is the measured size of the refused request.
+	Limit   int
+	Refused int
+	Err     error
 }
 
 func (e *ContextOverflowError) Error() string {
-	limit := "its context window"
-	if e.Window > 0 {
-		limit = fmt.Sprintf("its context window of %d tokens", e.Window)
+	var limit string
+	switch {
+	case e.Limit > 0:
+		limit = fmt.Sprintf("its context window of %d tokens", e.Limit)
+	case e.Refused > 0:
+		limit = fmt.Sprintf("the provider did not name its limit; the refused request was about %d tokens", e.Refused)
+	default:
+		limit = "the provider did not name its limit"
 	}
 	return fmt.Sprintf("the conversation is too long for %s (%s), even after compacting it once. "+
 		"Start a new conversation, compact it yourself with /compact and say what to keep, "+
@@ -123,29 +136,48 @@ func (l *Loop) noteWindow(ctx context.Context) {
 func (l *Loop) overflowRecovery(ctx context.Context, cause error, limit int) (TerminalReason, bool, error) {
 	was := l.Adapter.Profile()
 	info := ContextOverflow{Model: was.Name, Window: was.ContextWindow, Limit: limit, Error: truncate(cause.Error(), 600)}
-	info.Sent, _ = l.contextSize()
+	info.Sent = l.measured()
 	giveUp := func() (TerminalReason, bool, error) {
 		l.overflowRetried = false
 		info.Action = OverflowGaveUp
 		l.record(EvContextOverflow, ActorSystem, info)
-		w := l.Adapter.Profile().ContextWindow
-		if limit > 0 {
-			w = limit
-		}
-		return TermError, true, &ContextOverflowError{Model: was.Name, Window: w, Err: cause}
+		return TermError, true, &ContextOverflowError{Model: was.Name, Limit: limit, Refused: info.Sent, Err: cause}
 	}
 	if l.overflowRetried {
 		return giveUp()
 	}
-	model.LearnWindow(l.Adapter, limit)
+	if limit > 0 {
+		model.LearnWindow(l.Adapter, limit)
+	} else if info.Sent > 0 {
+		// No limit named: it is below what was refused, by an unknown
+		// amount. Four fifths of the refused prompt puts the retry well under
+		// it: compaction keeps half the window (two fifths of the refused
+		// size) and caps each result at a quarter (one fifth), so the one
+		// retry fits a limit as low as about half the refused size.
+		model.LearnWindow(l.Adapter, info.Sent*unnamedLimitShare/100)
+	}
 	before, after, changed := l.shrinkToWindow(ctx, "overflow", true)
 	if !changed {
 		return giveUp()
 	}
 	l.overflowRetried = true
+	// The retry asks the same turn again; it does not count as another.
+	l.turns--
 	info.Action, info.BeforeTokens, info.AfterTokens = OverflowRetried, before, after
 	l.record(EvContextOverflow, ActorSystem, info)
 	return "", false, nil
+}
+
+// measured is the conversation's size as the next request would send it,
+// counted as the model counts tokens once it has reported some.
+func (l *Loop) measured() int {
+	req := model.Request{System: l.Config.SystemPrompt, Messages: l.messages, Tools: l.offeredDefs()}
+	if l.Compactor != nil && l.Compactor.Adapter == l.Adapter {
+		n, _ := l.Compactor.count(req)
+		return n
+	}
+	n, _ := l.Adapter.CountTokens(req)
+	return n
 }
 
 // noteTruncation checks a reply's reported prompt against what was sent, for
@@ -312,4 +344,12 @@ func ContextNotice(ev Event) string {
 		}
 	}
 	return ""
+}
+
+// fitCompactor gives the compactor the loop's reply cap and size ceiling.
+func (l *Loop) fitCompactor() {
+	if l.Compactor != nil {
+		l.Compactor.OutputTokens = l.Config.MaxTokens
+		l.Compactor.Ceiling = l.Config.CompactAtTokens
+	}
 }

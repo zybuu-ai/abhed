@@ -45,6 +45,8 @@ func TestContextOverflow(t *testing.T) {
 		&StatusError{Status: 400, Body: `{"error":{"message":"max_tokens: 200000 > 128000, which is the maximum allowed number of output tokens"}}`},
 		&StatusError{Status: 401, Body: "invalid x-api-key"},
 		&TimeoutError{},
+		// The reply cap, not the prompt, was over: lowering max_tokens is the fix.
+		&StatusError{Status: 400, Body: `{"error":{"message":"This model's maximum context length is 128000 tokens. However, you requested 140000 tokens (20000 in the messages, 120000 in the completion). Please reduce the length of the messages or completion.","code":"context_length_exceeded"}}`},
 	} {
 		if ok, _ := ContextOverflow(e); ok {
 			t.Errorf("%v read as an overflow", e)

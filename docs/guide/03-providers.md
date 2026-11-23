@@ -182,8 +182,9 @@ from the first of these that knows:
    or a Vertex `@` version is removed: every current Claude model (1,000,000
    tokens and 128,000-token replies for Claude Fable, Mythos, Opus 4.6 and
    later, Sonnet 4.6 and later and Haiku 5.5; 200,000 for Claude Haiku 4.5,
-   Opus 4.5, Sonnet 4.5 and older), the OpenAI, Gemini and Grok families, and
-   the open-weight families as trained. A server on this machine (`ollama`,
+   Opus 4.5, Sonnet 4.5 and older), and the OpenAI, Gemini and Grok families.
+   Open-weight models have no row: where they are served decides their
+   window, and the servers that report one are asked. A server on this machine (`ollama`,
    `vllm`, `llamacpp`, `tgi`, `sglang`, or `openai-compatible` at a loopback
    address) decides its window when it starts, so for it the table is only a
    ceiling and the window stays assumed until the server reports one.

@@ -16,7 +16,8 @@ import (
 // Sources: platform.claude.com/docs/en/about-claude/pricing and the Claude
 // models overview for Claude; developers.openai.com/api/docs/models and
 // /pricing for OpenAI; aistudio.google.com/docs/models for Gemini;
-// docs.x.ai/docs/models for Grok; each open-weight family's model card.
+// docs.x.ai/docs/models for Grok. Open-weight families have no row: where
+// they are served decides their window, and the servers that say are asked.
 
 // PricesAsOf is the day the built-in prices were last checked, Standard
 // tier: the Claude prices on platform.claude.com/docs/en/about-claude/pricing
@@ -73,7 +74,6 @@ var catalog = []catalogRow{
 	{id: "claude-sonnet-4-5", window: 200_000, output: 64_000, price: usd(3, 15, 0.30, 3.75), hosted: true},
 	{id: "claude-sonnet-4", window: 200_000, output: 64_000, hosted: true}, // retired
 	{id: "claude-haiku-5-5", window: 1_000_000, output: 128_000, price: claudeHaiku55, hosted: true},
-	{id: "claude-haiku-5", window: 1_000_000, output: 128_000, hosted: true},
 	{id: "claude-haiku-4-5", window: 200_000, output: 64_000, price: usd(1, 5, 0.10, 1.25), hosted: true},
 	{id: "claude-3-7-sonnet", window: 200_000, output: 64_000, hosted: true},
 	{id: "claude-3-5-sonnet", window: 200_000, output: 8_192, hosted: true},
@@ -99,7 +99,6 @@ var catalog = []catalogRow{
 	{id: "o4-mini", window: 200_000, output: 100_000, hosted: true},
 	{id: "o3", window: 200_000, output: 100_000, price: usd(2, 8, 0.50, 0), hosted: true},
 	{id: "o1", window: 200_000, output: 100_000, hosted: true},
-	{id: "gpt-oss", window: 131_072}, // open weights, served anywhere
 
 	// Google.
 	{id: "gemini-4", window: 1_000_000, output: 65_536, hosted: true},
@@ -119,15 +118,6 @@ var catalog = []catalogRow{
 	{id: "grok-build", window: 500_000, hosted: true},
 	{id: "grok-4", window: 256_000, hosted: true},
 	{id: "grok-3", window: 131_072, hosted: true},
-
-	// Open-weight families, as trained. A server on this machine may run them
-	// with a smaller window; see resolveLimits.
-	{id: "llama-3.1", window: 131_072}, {id: "llama-3.2", window: 131_072}, {id: "llama-3.3", window: 131_072},
-	{id: "llama3.1", window: 131_072}, {id: "llama3.2", window: 131_072}, {id: "llama3.3", window: 131_072},
-	{id: "qwen3-coder", window: 262_144}, {id: "qwen3", window: 32_768}, {id: "qwen2.5", window: 32_768},
-	{id: "gemma3", window: 131_072}, {id: "gemma-3", window: 131_072},
-	{id: "mistral-nemo", window: 131_072},
-	{id: "phi4", window: 16_384}, {id: "phi-4", window: 16_384},
 }
 
 // knownHosted are current hosted models with no row and no confirmed list
@@ -186,15 +176,33 @@ func LookupLimits(modelID string) (window, output int, ok bool) {
 	return window, output, wLen >= 0
 }
 
-// builtinPrice is the catalog's list price for exactly this model.
+// builtinPrice is the catalog's list price for exactly this model. On a
+// Bedrock regional endpoint ("us.anthropic.…", "eu.…", "apac.…"), as
+// opposed to a global one, Claude costs 10% more than the global price
+// (platform.claude.com pricing, "Regional and multi-region endpoint
+// pricing", for Claude 4.5 and later, which are the Claude models priced
+// here). It is an estimate of what the cloud invoices; pricing is the exact
+// override.
 func builtinPrice(name string) (Price, bool) {
 	id := CatalogID(name)
 	for _, r := range catalog {
 		if r.id == id && r.price != nil {
-			return *r.price, true
+			p := *r.price
+			if regionalBedrock(name) {
+				p = p.scaled(1.1)
+			}
+			return p, true
 		}
 	}
 	return Price{}, false
+}
+
+// regionalBedrock reports a Bedrock inference profile id naming a geography
+// rather than global: "us.anthropic.claude-…".
+func regionalBedrock(name string) bool {
+	n, _ := NormalModelName(name)
+	geo, _, ok := strings.Cut(n, ".anthropic.")
+	return ok && geo != "" && geo != "global" && !strings.Contains(geo, "/")
 }
 
 // listedNames are the names an org's zero price must never reach: every

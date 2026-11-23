@@ -99,6 +99,15 @@ func TestCompactAtBounds(t *testing.T) {
 			t.Errorf("compact_at %v must be rejected", v)
 		}
 	}
+	c := Default()
+	c.Context.CompactAtTokens = -1
+	if err := c.Validate(); err == nil {
+		t.Error("a negative compact_at_tokens must be rejected")
+	}
+	c.Context.CompactAtTokens = 1_000_000
+	if err := c.Validate(); err != nil {
+		t.Errorf("compact_at_tokens 1,000,000: %v", err)
+	}
 }
 
 func TestWriteDefaultRoundTrips(t *testing.T) {

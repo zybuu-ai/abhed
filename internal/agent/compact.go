@@ -43,6 +43,12 @@ type Compactor struct {
 	// survive it.
 	Summarizer func(messages []model.Message) (summary string, cancel bool)
 
+	// Ceiling caps the conversation's size before compaction, whatever the
+	// window, so a 1M-token window is not filled to 900k on every call; zero
+	// is no cap. The threshold, headroom and the history kept after a
+	// compaction all work within Effective's window.
+	Ceiling int
+
 	// OutputTokens is the reply cap the loop asks for; zero takes the
 	// model's (model.OutputReserve). It is kept free in the window.
 	OutputTokens int
@@ -103,7 +109,7 @@ func (c *Compactor) ShouldCompactNow(system string, messages []model.Message, to
 
 func (c *Compactor) shouldCompact(system string, messages []model.Message,
 	tools []model.ToolDef, reserve bool) (bool, int, error) {
-	window := c.Adapter.Profile().ContextWindow
+	window := c.Effective(c.Adapter.Profile().ContextWindow)
 	if window <= 0 {
 		return false, 0, nil // unknown window: never auto-compact
 	}
@@ -115,6 +121,25 @@ func (c *Compactor) shouldCompact(system string, messages []model.Message,
 	}
 	budget := float64(used) + float64(c.headroom(window, reserve))
 	return budget >= float64(window)*c.Threshold, used, nil
+}
+
+// DefaultCompactAtTokens is the conversation's size past which it is
+// compacted whatever the window: on a 1M-token model the fraction alone lets
+// every call grow to some 650k tokens, which costs dollars a call uncached and
+// tens of seconds to prefill. 200,000 is the window most hosted models had
+// before 1M ones, and the limit some accounts are still held to.
+const DefaultCompactAtTokens = 200_000
+
+// Effective is the window the compactor works within: the model's, or the
+// smaller one Ceiling sets.
+func (c *Compactor) Effective(window int) int {
+	if c == nil || c.Ceiling <= 0 || window <= 0 || c.Threshold <= 0 {
+		return window
+	}
+	if capped := int(float64(c.Ceiling) / c.Threshold); capped < window {
+		return capped
+	}
+	return window
 }
 
 // SetScale takes the ratio of the tokens a provider reported for a prompt to
@@ -228,7 +253,7 @@ func (c *Compactor) CompactWith(ctx context.Context, trigger string, system stri
 	// is nothing "older" to summarize, and the no-op leaves the session to die
 	// at the next model call. So the count is a preference, not a promise: drop
 	// exchanges from the front until what remains actually fits.
-	if window := c.Adapter.Profile().ContextWindow; window > 0 {
+	if window := c.Effective(c.Adapter.Profile().ContextWindow); window > 0 {
 		// Keep as much recent history as fits in half the window, so the
 		// session has room to run several more turns before the next
 		// compaction. Compacting back to the threshold instead would leave it
