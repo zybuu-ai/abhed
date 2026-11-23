@@ -197,3 +197,22 @@ func TestInitBeforeSignInLeavesLaterRunsGuest(t *testing.T) {
 		}
 	}
 }
+
+// Commands that read the server sign-in abhed login kept (in the person's
+// folder) find it: abhed sandbox asks that server, rather than saying no
+// profile is signed in, and abhed doctor reads the person's store.
+func TestSandboxFindsThePersonsServerSignIn(t *testing.T) {
+	t.Parallel()
+	h := piped(t, Opts{Args: []string{"-p", "hi"}, Script: `text "done"`})
+	prof := `{"current":"org","profiles":{"org":{"url":"http://127.0.0.1:9","token":"tok"}}}`
+	if err := os.WriteFile(filepath.Join(PersonDir(h.Home()), "profiles.json"), []byte(prof), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(Binary(t), "sandbox", "list")
+	cmd.Dir = h.Workspace()
+	cmd.Env = h.env()
+	out, _ := cmd.CombinedOutput()
+	if strings.Contains(string(out), "no current profile") || !strings.Contains(string(out), "127.0.0.1:9") {
+		t.Fatalf("abhed sandbox list did not use the person's sign-in:\n%s", out)
+	}
+}
