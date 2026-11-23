@@ -449,6 +449,7 @@ var managedOnly = map[string]string{
 	"control_plane.kubernetes":           "only the managed configuration configures the Kubernetes driver",
 	"control_plane.interceptors":         "only the managed configuration sets what admits sandbox calls",
 	"auth.bound_claims":                  "only the managed configuration sets which identity provider tokens are accepted",
+	"auth.client":                        "only the managed configuration or the org policy says who may work on this machine",
 	"control_plane.ha.relay_peer":        "only the managed configuration names the replicas a relayed call is accepted from",
 	"control_plane.ha.relay_key_command": "only the managed configuration names a program serve runs for the relay key",
 }
@@ -517,6 +518,8 @@ func clearManagedOnly(c *Config, key string) {
 		c.Record.Ship = ShipConfig{}
 	case "org_policy":
 		c.Org = OrgPolicyConfig{}
+	case "auth.client":
+		c.Auth.Client = ClientAuthConfig{}
 	case "hooks.disabled":
 		c.Hooks.Disabled = false
 	case "plugins":
@@ -1022,6 +1025,13 @@ type AuthConfig struct {
 	// AllowSignup lets anyone create a local account. Off by default: an
 	// open signup on an internal tool is rarely what an operator intends.
 	AllowSignup bool `json:"allow_signup,omitempty"`
+	// Guest offers "Continue as guest" on the console: a browser session as
+	// an identity of its own, with no groups, whose sessions are removed when
+	// it signs out or expires. Off by default; an agent that runs commands
+	// for whoever reaches the server is rarely what an operator intends.
+	Guest bool `json:"guest,omitempty"`
+	// GuestHours is how long a guest's browser session lasts (8).
+	GuestHours int `json:"guest_hours,omitempty"`
 	// DefaultTenant is assigned to accounts created without one.
 	DefaultTenant string `json:"default_tenant,omitempty"`
 	// UsersFile is where local accounts are kept when there is no database.
@@ -1077,6 +1087,70 @@ type AuthConfig struct {
 	// GitHub restricts GitHub sign-in, which only the paid editions provide.
 	// The Community Edition validates these keys and otherwise ignores them.
 	GitHub GitHubAuthConfig `json:"github,omitempty"`
+	// Client is who may work on this machine: the sign-in every start asks
+	// for. Managed only; an org policy may only tighten it.
+	Client ClientAuthConfig `json:"client,omitzero"`
+}
+
+// Values of auth.client.sign_in.
+const (
+	SignInOptional = ""         // an account, a server or guest
+	SignInRequired = "required" // an account on this machine or a server
+	SignInServer   = "server"   // a server: auth.client.server, else the org policy's
+)
+
+// ClientAuthConfig is the sign-in a start of the CLI, Studio or an ACP
+// client asks for. See docs/architecture/sign-in.md.
+type ClientAuthConfig struct {
+	// SignIn is "", "required" or "server".
+	SignIn string `json:"sign_in,omitempty"`
+	// Server is the only server whose sign-in counts under sign_in "server";
+	// empty is the org policy's server.
+	Server string `json:"server,omitempty"`
+	// Guest, when false, removes guest: no screen offers it, -guest and
+	// ABHED_GUEST are refused, and a run with no sign-in fails.
+	Guest *bool `json:"guest,omitempty"`
+	// RememberDays bounds a remembered sign-in; unset, it lasts until sign-out.
+	// 0 asks at every start.
+	RememberDays *int `json:"remember_days,omitempty"`
+}
+
+// GuestAllowed reports whether guest may be chosen.
+func (c ClientAuthConfig) GuestAllowed() bool { return c.Guest == nil || *c.Guest }
+
+// SignInServer is the server whose sign-in counts under sign_in "server":
+// auth.client.server, else the org policy's server the machine names, else
+// the one it took its org policy from.
+func (c Config) SignInServer() string {
+	for _, s := range []string{c.Auth.Client.Server, c.Org.URL, c.OrgPolicy.URL} {
+		if s = strings.TrimRight(s, "/"); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func (c Config) validateClientAuth() error {
+	a := c.Auth.Client
+	switch a.SignIn {
+	case SignInOptional, SignInRequired:
+	case SignInServer:
+		if c.SignInServer() == "" {
+			return fmt.Errorf("auth.client.sign_in is server, but neither auth.client.server, org_policy.url nor an org policy names one")
+		}
+	default:
+		return fmt.Errorf("unknown auth.client.sign_in %q (want required or server, or leave it out)", a.SignIn)
+	}
+	if s := a.Server; s != "" {
+		u, err := url.Parse(s)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			return fmt.Errorf("auth.client.server must be an http or https URL, got %q", Printable(s))
+		}
+	}
+	if d := a.RememberDays; d != nil && (*d < 0 || *d > 3650) {
+		return fmt.Errorf("auth.client.remember_days is %d; use 0 (ask every start) to 3650", *d)
+	}
+	return nil
 }
 
 // GitHubAuthConfig says which GitHub accounts may sign in.
@@ -2429,6 +2503,15 @@ func (c Config) Validate() error {
 	case "none", "proxy", "oidc", "local", "":
 	default:
 		return fmt.Errorf("unknown auth.mode %q (want none, local, proxy or oidc)", c.Auth.Mode)
+	}
+	if err := c.validateClientAuth(); err != nil {
+		return err
+	}
+	if c.Auth.Guest && c.Auth.Mode != "local" && c.Auth.Mode != "oidc" {
+		return fmt.Errorf("auth.guest offers guests beside signed-in people, so it needs auth.mode local or oidc")
+	}
+	if h := c.Auth.GuestHours; h < 0 || h > 720 {
+		return fmt.Errorf("auth.guest_hours is %d; use 1 to 720, or 0 for 8", h)
 	}
 	if err := c.validateTLS(); err != nil {
 		return err

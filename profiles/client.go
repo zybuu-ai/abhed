@@ -71,7 +71,8 @@ func (p *Profile) TLSConfig() (*tls.Config, error) {
 }
 
 // HTTPClient is a client for this profile's server. It never follows a
-// redirect to another host, so the token is not carried off.
+// redirect to another host, or from https to http, so the token is not
+// carried off or sent in clear.
 func (p *Profile) HTTPClient() (*http.Client, error) {
 	tc, err := p.TLSConfig()
 	if err != nil {
@@ -85,6 +86,10 @@ func (p *Profile) HTTPClient() (*http.Client, error) {
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) > 0 && req.URL.Host != via[0].URL.Host {
 				return http.ErrUseLastResponse
+			}
+			// Same host, but plain http would carry the token in clear.
+			if len(via) > 0 && via[0].URL.Scheme == "https" && req.URL.Scheme != "https" {
+				return fmt.Errorf("refused a redirect from https to %s; the token is never sent in clear", req.URL.Scheme)
 			}
 			if len(via) >= 5 {
 				return errors.New("too many redirects")

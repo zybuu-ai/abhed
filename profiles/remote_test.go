@@ -222,3 +222,27 @@ func writePEM(t *testing.T, path string, ts *httptest.Server) {
 		t.Fatal(err)
 	}
 }
+
+// A redirect to plain http on the same host would carry the token in clear,
+// so it is refused; https to https on the same host is still followed.
+func TestHTTPClientRefusesHTTPSToHTTPRedirect(t *testing.T) {
+	p := &profiles.Profile{URL: "https://abhed.example:8443"}
+	c, err := p.HTTPClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := func(u string) *http.Request {
+		r, err := http.NewRequest("GET", u, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	via := []*http.Request{req("https://abhed.example:8443/v1/whoami")}
+	if err := c.CheckRedirect(req("http://abhed.example:8443/v1/whoami"), via); err == nil || !strings.Contains(err.Error(), "https to http") {
+		t.Fatalf("https→http on the same host: %v", err)
+	}
+	if err := c.CheckRedirect(req("https://abhed.example:8443/v1/me"), via); err != nil {
+		t.Fatalf("https→https on the same host: %v", err)
+	}
+}

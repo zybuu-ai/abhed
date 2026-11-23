@@ -563,6 +563,20 @@ function signInForm(o){
     box.appendChild(oauthButtons(o));
   }
 
+  // A guest works as an identity of its own, kept nothing of once it signs
+  // out or its session ends; offered only when the server says so (auth.guest).
+  if(o.guest_sign_in){
+    const g = document.createElement('button');
+    g.type = 'button';
+    g.className = 'ghost';
+    g.textContent = 'Continue as guest';
+    g.title = 'Nothing you do as a guest is kept after you sign out';
+    g.onclick = async () => {
+      const r = await fetch('/v1/guest', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+      if(r.ok){ location.reload(); }
+    };
+    box.appendChild(g);
+  }
   const foot = el('div','note');
   foot.style.marginTop = '13px';
   if(o.allow_signup || o.invite_signup){

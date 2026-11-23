@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/zybuu-ai/abhed/internal/home"
 )
 
 // MemoryWrite lets the agent save a note for later sessions, when the person
@@ -43,8 +45,23 @@ const (
 	memoryMaxTotal = 64 << 10
 )
 
-// AutoMemoryPath is where a workspace's auto memory lives under home.
-func AutoMemoryPath(home, workspace string) string {
+// AutoMemoryFor is where a workspace's auto memory lives for the person
+// working.
+func AutoMemoryFor(workspace string) (string, error) {
+	root, err := home.Person()
+	if err != nil {
+		return "", err
+	}
+	return autoMemoryIn(root, workspace), nil
+}
+
+// AutoMemoryPath is where a workspace's auto memory lives under an OS home
+// folder, in the layout before sign-in.
+func AutoMemoryPath(osHome, workspace string) string {
+	return autoMemoryIn(filepath.Join(osHome, home.DirName), workspace)
+}
+
+func autoMemoryIn(root, workspace string) string {
 	abs, err := filepath.Abs(workspace)
 	if err != nil {
 		abs = workspace
@@ -55,7 +72,7 @@ func AutoMemoryPath(home, workspace string) string {
 	sum := sha256.Sum256([]byte(abs))
 	base := regexp.MustCompile(`[^A-Za-z0-9._-]`).ReplaceAllString(filepath.Base(abs), "_")
 	id := base + "-" + hex.EncodeToString(sum[:])[:12]
-	return filepath.Join(home, ".abhed", "projects", id, "memory", "MEMORY.md")
+	return filepath.Join(root, "projects", id, "memory", "MEMORY.md")
 }
 
 // Bind sets the conversation's redactor and what each save reports to; a

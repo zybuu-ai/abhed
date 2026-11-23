@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/frontmatter"
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -65,6 +66,9 @@ type MemoryOptions struct {
 	Workspace string
 	// Home is the person's home directory; empty uses the process's.
 	Home string
+	// UserFile is the person's own memory file; empty is ABHED.md in the
+	// person's folder (home.PersonPath), or under Home/.abhed when Home is set.
+	UserFile string
 	// ImportDepth bounds imports; zero is DefaultImportDepth, and it is
 	// never more than MaxImportDepth.
 	ImportDepth int
@@ -121,8 +125,8 @@ func DiscoverMemoryFiles(workspace string) []string {
 		}
 		return false
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		add(filepath.Join(home, ".abhed", MemoryFileName))
+	if p, err := home.PersonPath(MemoryFileName); err == nil {
+		add(p)
 	}
 	addNamed := func(p string) bool { return existsAsNamed(p) && add(p) }
 	if !addNamed(filepath.Join(workspace, MemoryFileName)) {
@@ -176,8 +180,26 @@ func inWorkspace(workspace, path string) bool {
 	return false
 }
 
+// userMemoryLabel is the person's memory file as the prompt and /memory name
+// it: under ~ when it is in the home folder.
+func userMemoryLabel(osHome, path string) string {
+	if osHome != "" {
+		if rel, err := filepath.Rel(osHome, path); err == nil && filepath.IsLocal(rel) {
+			return "~/" + filepath.ToSlash(rel)
+		}
+	}
+	return path
+}
+
 // LoadMemory reads every memory file, its imports and the rule files.
 func LoadMemory(o MemoryOptions) *Memory {
+	if o.UserFile == "" {
+		if o.Home != "" {
+			o.UserFile = filepath.Join(o.Home, home.DirName, MemoryFileName)
+		} else if p, err := home.PersonPath(MemoryFileName); err == nil {
+			o.UserFile = p
+		}
+	}
 	if o.Home == "" {
 		o.Home, _ = os.UserHomeDir()
 	}
@@ -185,8 +207,8 @@ func LoadMemory(o MemoryOptions) *Memory {
 	l := memoryLoader{o: o, m: m, seen: map[string]bool{}}
 	// ManagedOnly skips the person's and the workspace's files; the rule
 	// directories and auto memory are the caller's to narrow.
-	if user := filepath.Join(o.Home, ".abhed", MemoryFileName); !o.ManagedOnly && o.Home != "" && exists(user) {
-		l.file(user, MemoryUser, "~/.abhed/"+MemoryFileName, "", 0)
+	if user := o.UserFile; !o.ManagedOnly && user != "" && exists(user) {
+		l.file(user, MemoryUser, userMemoryLabel(o.Home, user), "", 0)
 	}
 	if o.Workspace != "" && !o.ManagedOnly {
 		project := filepath.Join(o.Workspace, MemoryFileName)
@@ -620,14 +642,15 @@ func ReadAllowed(pol *policy.Engine) func(path string) error {
 // are followed, at the default depth, only when allow puts them to the read
 // rules: with no policy to ask, a file an import names is not read.
 func memoryFromFiles(workspace string, files []string, allow func(string) error) *Memory {
-	home, _ := os.UserHomeDir()
+	osHome, _ := os.UserHomeDir()
+	user, _ := home.PersonPath(MemoryFileName)
 	m := &Memory{Workspace: workspace}
-	l := memoryLoader{o: MemoryOptions{Workspace: workspace, Home: home, Allow: allow}, m: m, seen: map[string]bool{}, noImports: allow == nil}
+	l := memoryLoader{o: MemoryOptions{Workspace: workspace, Home: osHome, UserFile: user, Allow: allow}, m: m, seen: map[string]bool{}, noImports: allow == nil}
 	for _, f := range files {
 		scope, label := MemoryProject, filepath.Base(f)
 		switch {
-		case home != "" && f == filepath.Join(home, ".abhed", MemoryFileName):
-			scope, label = MemoryUser, "~/.abhed/"+MemoryFileName
+		case user != "" && f == user:
+			scope, label = MemoryUser, userMemoryLabel(osHome, user)
 		case f == filepath.Join(managed.MemoryDir, MemoryFileName):
 			scope, label = MemoryManaged, f+", set by the organisation"
 		case filepath.Base(f) == LocalMemoryFileName:

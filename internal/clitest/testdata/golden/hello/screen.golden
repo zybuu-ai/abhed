@@ -5,8 +5,9 @@
      ▗█▛  ▜█▖      model    stub-model
     ▗█▛▀▀▀▀▜█▖     work     ‹ws›
    ▗█▛      ▜█▖    sandbox  ‹tier› · no network
-  ▗██▖      ▗██▖   storage  local record, chained (~/.abhed/records; abhed rec…
+  ▗██▖      ▗██▖   storage  local record, chained (tester's; abhed record veri…
 
+Signed in as tester. /account to switch.
 Type a task, or /help. Esc interrupts, Ctrl-C twice exits.
 
 ▲ hi

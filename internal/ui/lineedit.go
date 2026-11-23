@@ -18,6 +18,8 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/term"
+
+	"github.com/zybuu-ai/abhed/internal/home"
 )
 
 // LineReader is the interactive terminal: the input dock, the keys, and the
@@ -567,11 +569,10 @@ const draftMax = 8 << 20
 // write, where a running task could read the draft, change it, or swap it
 // for a link to a file it cannot read.
 func draftDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return "", errors.New("no home folder for the draft")
+	dir, err := home.PersonPath("drafts")
+	if err != nil {
+		return "", errors.New("no folder for the draft")
 	}
-	dir := filepath.Join(home, ".abhed", "drafts")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}

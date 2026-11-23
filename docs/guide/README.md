@@ -17,6 +17,7 @@ model you point it at, and records everything it does.
 | [The microVM driver](24-microvm.md) | experimental: sandboxes as Firecracker microVMs on Linux with KVM, or Virtualization.framework VMs on macOS; what is and is not isolated |
 | [The command line](18-cli.md) | flags, `/model`, `/status`, `/config`, the status line, `/mcp` and the other panels |
 | [The terminal](20-terminal.md) | the interactive CLI: keys, pastes, approvals, the footer, themes |
+| [Signing in](38-signing-in.md) | who is working: accounts on this machine, a server's accounts, guest; what each keeps; runs that cannot ask and exit code 10; `auth.client` for organisations |
 | [TLS and command-line sign-in](26-tls-and-cli-login.md) | `serve` over HTTPS with reload and two certificates, client certificates, `abhed pki`, `abhed login` and profiles |
 | [Signed org policy](35-org-policy.md) | the managed layer an org server signs: `abhed login`, pinned keys and rotation, precedence under `/etc/abhed`, refresh, max age, the fail-closed fallback, `abhed policy` |
 | [Shipping the record](36-record-shipping.md) | `record.ship`: each session's chained record sent to the org server as it is written, resumable offline, `abhed record ship` |
