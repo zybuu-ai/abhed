@@ -662,6 +662,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- The `served` field of the `next_edit.summary` record event now includes
+  renames finished from the file, which are also counted in `local`; before,
+  `served` left them out. A SIEM or other reader of the record that added
+  `served` and `local` counts those renames twice; use `served` alone for
+  suggestions offered, and `served - local` (at least 0) for those from the
+  model. The `abhed_next_edits_total` metric already keeps `served` (from
+  the model) and `local` apart, and clamps an older summary's count at 0.
 - Providers of type `ollama` now send one request at a time unless
   `max_concurrent_requests` says more, matching Ollama's documented
   `OLLAMA_NUM_PARALLEL` default of 1; the rest wait in Abhed. Set the key to
@@ -735,7 +742,23 @@ All notable changes to Abhed are recorded here. The format follows
   refused token is not sent again, and the list reads "not signed in: the
   login was refused at refresh" with the time until `abhed mcp login` runs
   again; a login that ended with no refresh token reads "the login ended".
-
+- Quitting Studio while an editor model call ran lost the session's
+  `completion.summary`, `next_edit.summary` and `session.ended`: a stop
+  signal while Studio's input was still open let the exit go after 250 ms,
+  and with the input closed the engine waited up to 30 s for the call
+  before closing the sessions. Editor model calls in flight are now
+  cancelled when the input ends or a stop signal comes, and on a signal
+  every session is closed, with its summaries and end recorded, within 3 s.
+  The signal's close and the input's end are one close, which both wait
+  for, so the input ending during a signal's close no longer lets the exit
+  go before the summaries are written, and each is written once. A call
+  cancelled as its session closes is counted in the summary, as it is
+  charged to the budget, instead of being left out when its handler had
+  not yet counted it.
+- `next_edit.summary` counted a rename finished from the file as `local`
+  but not as `served`, so a session whose only next edit was such a rename
+  showed `served: 0`. It now counts in both; the metrics keep `served`
+  (from the model) and `local` apart.
 - `abhed -p -mode acceptEdits` was refused ("unknown -mode"), although
   `-permission-mode acceptEdits` was taken. `-mode` now takes
   `acceptEdits` and `bypassPermissions` (and their snake_case forms) as

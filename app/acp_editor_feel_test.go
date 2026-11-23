@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -390,5 +391,211 @@ func TestStudioNextEditQueuedAndCancelledIsNotCharged(t *testing.T) {
 	sum = charged(sent, func() { waitArrival(t, m, "chat") })
 	if tin, _ := sum["tokens_in"].(float64); tin <= 0 || sum["estimated"] != float64(1) {
 		t.Fatalf("a call that went was not charged: %v", sum)
+	}
+}
+
+// A stop signal while Studio's stdin is still open (Cmd+Q mid-request) ends
+// the editor's model calls and closes the sessions before the exit is let
+// go, so the summaries and the session's end are recorded; before, the
+// exit went after 250 ms with none of them (real-model rerun, 17 Nov).
+func TestStudioStopSignalRecordsTheSummaries(t *testing.T) {
+	m := newEditorModel(t, "x", feelWindow)
+	m.hold("chat")
+	sm := newScriptModel(t)
+	acpModelsEnv(t, `{"model":{"default":"m","completion":"coder","providers":{"m":`+stubProvider(sm.URL, "m-1")+
+		`,"coder":{"type":"openai-compatible","base_url":"`+m.URL+`/v1","model":"qwen2.5-coder"}}}}`)
+	ws := t.TempDir()
+	if real, err := filepath.EvalSymlinks(ws); err == nil {
+		ws = real
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	released := make(chan struct{})
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	c := &acpConn{out: outW, version: "test", build: acpBuild{Version: "1.2.3", Edition: "ce", Commit: "abc"}, base: ws,
+		sessions: map[string]*acpSession{}, pending: map[int64]chan rpcMessage{}, ctx: ctx,
+		busy: func() func() { var once sync.Once; return func() { once.Do(func() { close(released) }) } }}
+	c.useRecord(ws, "")
+	r := &studioRig{t: t, ws: ws, home: os.Getenv("HOME"), model: sm}
+	r.cl = startStudioClient(t, c, inW, outR, func() { _ = c.run(inR) })
+	r.cl.ok("initialize", map[string]any{"protocolVersion": 1}, nil)
+	noHold(t)
+	id := r.open()
+	send(r, "n1", "_abhed/nextEdit", nextEditParams(id, "file://"+r.ws+"/text.py"))
+	waitArrival(t, m, "chat")
+
+	stopped := time.Now()
+	stop() // the signal; stdin stays open
+	select {
+	case <-released:
+	case <-time.After(signalCloseWait + 2*time.Second):
+		t.Fatal("the exit was never let go")
+	}
+	if took := time.Since(stopped); took > signalCloseWait+time.Second {
+		t.Fatalf("the exit waited %v", took)
+	}
+	waitLogged(t, m, "chat cut off")
+	sum, _ := r.recorded(id, agent.EvNextEditSummary)
+	ended, _ := r.recorded(id, agent.EvSessionEnded)
+	if len(sum) != 1 || sum[0]["cancelled"] != float64(1) || len(ended) != 1 {
+		t.Fatalf("next_edit.summary %v, session.ended %v", sum, ended)
+	}
+}
+
+// A stop signal's close and stdin ending are one close: stdin ending while
+// the signal's close is still recording does not let the exit go before it
+// has, and each session's summaries and end are recorded exactly once.
+func TestStudioStopThenInputClosedWaitsForOneClose(t *testing.T) {
+	m := newEditorModel(t, "x", feelWindow)
+	m.hold("chat")
+	sm := newScriptModel(t)
+	acpModelsEnv(t, `{"model":{"default":"m","completion":"coder","providers":{"m":`+stubProvider(sm.URL, "m-1")+
+		`,"coder":{"type":"openai-compatible","base_url":"`+m.URL+`/v1","model":"qwen2.5-coder"}}}}`)
+	ws := t.TempDir()
+	if real, err := filepath.EvalSymlinks(ws); err == nil {
+		ws = real
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	released := make(chan struct{})
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	c := &acpConn{out: outW, version: "test", build: acpBuild{Version: "1.2.3", Edition: "ce", Commit: "abc"}, base: ws,
+		sessions: map[string]*acpSession{}, pending: map[int64]chan rpcMessage{}, ctx: ctx,
+		busy: func() func() { var once sync.Once; return func() { once.Do(func() { close(released) }) } }}
+	// The first close is held once it has taken the sessions, as a slow
+	// record would hold it; any other close goes straight through.
+	var closes atomic.Int32
+	entered, gate := make(chan struct{}), make(chan struct{})
+	c.beforeShut = func() {
+		if closes.Add(1) == 1 {
+			close(entered)
+			<-gate
+		}
+	}
+	c.useRecord(ws, "")
+	ran := make(chan struct{})
+	r := &studioRig{t: t, ws: ws, home: os.Getenv("HOME"), model: sm}
+	r.cl = startStudioClient(t, c, inW, outR, func() { _ = c.run(inR); close(ran) })
+	r.cl.ok("initialize", map[string]any{"protocolVersion": 1}, nil)
+	noHold(t)
+	id := r.open()
+	send(r, "n1", "_abhed/nextEdit", nextEditParams(id, "file://"+r.ws+"/text.py"))
+	waitArrival(t, m, "chat")
+
+	stop() // the signal; stdin stays open past the grace
+	select {
+	case <-entered:
+	case <-time.After(stdinGrace + 2*time.Second):
+		close(gate)
+		t.Fatal("the signal never began the close")
+	}
+	_ = inW.Close() // Studio quits while the signal's close is recording
+	select {
+	case <-released:
+		close(gate)
+		t.Fatal("the exit was let go while the signal's close was still recording")
+	case <-ran:
+		close(gate)
+		t.Fatal("run returned while the signal's close was still recording")
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(gate)
+	for name, ch := range map[string]chan struct{}{"released": released, "run returned": ran} {
+		select {
+		case <-ch:
+		case <-time.After(signalCloseWait + 2*time.Second):
+			t.Fatalf("never %s once the close ended", name)
+		}
+	}
+	if n := closes.Load(); n != 1 {
+		t.Fatalf("the sessions were closed %d times", n)
+	}
+	sum, _ := r.recorded(id, agent.EvNextEditSummary)
+	ended, _ := r.recorded(id, agent.EvSessionEnded)
+	if len(sum) != 1 || sum[0]["cancelled"] != float64(1) || len(ended) != 1 {
+		t.Fatalf("next_edit.summary %v, session.ended %v", sum, ended)
+	}
+}
+
+// A session closed with a next edit in flight (nothing cancelled it first)
+// has that call in its summary: the summary waits for the handler to count
+// the call it has just cancelled, as the budget is charged for it.
+func TestStudioCloseCountsTheCallInFlight(t *testing.T) {
+	m := newEditorModel(t, "x", feelWindow)
+	m.hold("chat")
+	sm := newScriptModel(t)
+	acpModelsEnv(t, `{"model":{"default":"m","completion":"coder","providers":{"m":`+stubProvider(sm.URL, "m-1")+
+		`,"coder":{"type":"openai-compatible","base_url":"`+m.URL+`/v1","model":"qwen2.5-coder"}}}}`)
+	ws := t.TempDir()
+	if real, err := filepath.EvalSymlinks(ws); err == nil {
+		ws = real
+	}
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	c := &acpConn{out: outW, version: "test", build: acpBuild{Version: "1.2.3", Edition: "ce", Commit: "abc"}, base: ws,
+		sessions: map[string]*acpSession{}, pending: map[int64]chan rpcMessage{}}
+	c.useRecord(ws, "")
+	ran := make(chan struct{})
+	r := &studioRig{t: t, ws: ws, home: os.Getenv("HOME"), model: sm}
+	r.cl = startStudioClient(t, c, inW, outR, func() { _ = c.run(inR); close(ran) })
+	r.cl.ok("initialize", map[string]any{"protocolVersion": 1}, nil)
+	noHold(t)
+	id := r.open()
+	send(r, "n1", "_abhed/nextEdit", nextEditParams(id, "file://"+r.ws+"/text.py"))
+	waitArrival(t, m, "chat")
+	c.closeOnce(0)
+	sum, _ := r.recorded(id, agent.EvNextEditSummary)
+	if len(sum) != 1 || sum[0]["requests"] != float64(1) || sum[0]["cancelled"] != float64(1) {
+		t.Fatalf("next_edit.summary %v", sum)
+	}
+	_ = inW.Close()
+	select {
+	case <-ran:
+	case <-time.After(5 * time.Second):
+		t.Fatal("run never returned")
+	}
+}
+
+// Stdin closing (Studio quitting) ends the editor's model calls in flight,
+// so the drain does not wait out a next edit's model call before the
+// sessions close.
+func TestStudioInputClosedEndsEditorCalls(t *testing.T) {
+	m := newEditorModel(t, "x", feelWindow)
+	m.hold("chat")
+	sm := newScriptModel(t)
+	acpModelsEnv(t, `{"model":{"default":"m","completion":"coder","providers":{"m":`+stubProvider(sm.URL, "m-1")+
+		`,"coder":{"type":"openai-compatible","base_url":"`+m.URL+`/v1","model":"qwen2.5-coder"}}}}`)
+	ws := t.TempDir()
+	if real, err := filepath.EvalSymlinks(ws); err == nil {
+		ws = real
+	}
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	c := &acpConn{out: outW, version: "test", build: acpBuild{Version: "1.2.3", Edition: "ce", Commit: "abc"}, base: ws,
+		sessions: map[string]*acpSession{}, pending: map[int64]chan rpcMessage{}}
+	c.useRecord(ws, "")
+	ran := make(chan struct{})
+	r := &studioRig{t: t, ws: ws, home: os.Getenv("HOME"), model: sm}
+	r.cl = startStudioClient(t, c, inW, outR, func() { _ = c.run(inR); close(ran) })
+	r.cl.ok("initialize", map[string]any{"protocolVersion": 1}, nil)
+	noHold(t)
+	id := r.open()
+	send(r, "n1", "_abhed/nextEdit", nextEditParams(id, "file://"+r.ws+"/text.py"))
+	waitArrival(t, m, "chat")
+	closed := time.Now()
+	_ = inW.Close()
+	select {
+	case <-ran:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the drain waited for the next edit's model call")
+	}
+	if took := time.Since(closed); took > 3*time.Second {
+		t.Fatalf("closing took %v", took)
+	}
+	sum, _ := r.recorded(id, agent.EvNextEditSummary)
+	if len(sum) != 1 || sum[0]["cancelled"] != float64(1) {
+		t.Fatalf("next_edit.summary %v", sum)
 	}
 }
