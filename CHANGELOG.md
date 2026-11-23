@@ -118,8 +118,9 @@ All notable changes to Abhed are recorded here. The format follows
   `sandbox.host_git: false` (or `sandbox.protect_git: false`, which also
   stops holding git's files); an organisation sets `sandbox.host_git:
   false` in the managed file, and a managed file that holds the network off
-  turns it off too ("ask your administrator"). `abhed serve` never brokers
-  remote git.
+  turns it off too; remote git then runs in the sandbox as in 1.2.9, and
+  the session says why ("ask your administrator"). `abhed serve` never
+  brokers remote git.
 - The first interactive start asks who is working. With anything 1.2.9
   kept in `~/.abhed` (sessions, history, memory, secrets, sign-ins, trust,
   skills, plugins), choose **Create my account and bring my data**: it

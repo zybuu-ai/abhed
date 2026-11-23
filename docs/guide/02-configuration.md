@@ -698,8 +698,8 @@ file you have not trusted cannot set it.
 network part through your own git on the host (see
 [Permissions](04-permissions.md#git-fetch-pull-push-and-clone-through-your-own-git)).
 Any file may set it false, a workspace's too; none can set it back. In the
-managed file it is the organisation's switch, and such a call is refused
-with "ask your administrator".
+managed file it is the organisation's switch, and the session tells the
+model why ("ask your administrator").
 
 `"terminal": "lines"` makes the workbench terminal run each line as a
 policy-checked command of its own instead of an interactive shell; the
