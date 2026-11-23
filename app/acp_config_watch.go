@@ -30,8 +30,8 @@ func init() {
 // configWatchEvery is how often the person's file is looked at; tests set it.
 var configWatchEvery = 2 * time.Second
 
-// userConfigFile is the person's own configuration file; tests set it.
-var userConfigFile = func() string {
+// watchedConfigFile is the person's own configuration file; tests set it.
+var watchedConfigFile = func() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
@@ -135,7 +135,7 @@ func (c openChatChange) message() string {
 // watchUserConfig looks at the person's file until the connection ends,
 // and tells Studio of each change, for every open chat.
 func (c *acpConn) watchUserConfig() {
-	file := userConfigFile()
+	file := watchedConfigFile()
 	if file == "" {
 		return
 	}
@@ -229,7 +229,7 @@ func (c *acpConn) configApply(msg rpcMessage) {
 // file changed since this session last looked, or "". The first call only
 // takes the file as it is.
 func (st *cliState) configChangedNote() string {
-	file := userConfigFile()
+	file := watchedConfigFile()
 	if file == "" {
 		return ""
 	}
