@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/mcpauth"
 	"github.com/zybuu-ai/abhed/internal/toolset"
+	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
 // MCP servers from Studio (studio-acp-contract.md §6.4). Adding one widens the
@@ -16,11 +19,44 @@ import (
 // engine's own `abhed mcp add -confirm-fd 3 -sha256 …`. Removing one narrows.
 
 func init() {
-	liveFeatures = append(liveFeatures, "mcp.check")
+	liveFeatures = append(liveFeatures, "mcp.check", "mcp.login")
 	handle(map[string]func(*acpConn, rpcMessage){
 		"_abhed/mcp/check":  (*acpConn).mcpCheck,
 		"_abhed/mcp/remove": (*acpConn).mcpRemoveServer,
 	})
+}
+
+// mcpAuthView is a URL server's OAuth login as Studio shows it, never a
+// token: its state, when it ends, when a refresh was refused, and whether a
+// sign-in would help. Signing in is never an ACP method either: Studio's
+// engine host process runs `abhed mcp login -confirm-fd 3 NAME`.
+func mcpAuthView(m config.MCPServerConfig, unauthorized bool, now time.Time) map[string]any {
+	st, err := mcpauth.State(openVault(), m.Name, m.URL)
+	v := map[string]any{}
+	switch {
+	case err != nil:
+		v["state"], v["error"] = "unreadable", ui.VisibleLine(redacted(err.Error()))
+	case !st.Held:
+		v["state"] = "none"
+	case st.OtherURL:
+		v["state"] = "other-url"
+	case !st.RefreshRefused.IsZero():
+		v["state"], v["refusedAt"] = "refused", st.RefreshRefused.Unix()
+	case !st.Usable(now):
+		v["state"] = "ended"
+	default:
+		v["state"] = "signed-in"
+	}
+	if st.Issuer != "" {
+		v["issuer"] = ui.VisibleLine(st.Issuer)
+	}
+	if !st.Expiry.IsZero() {
+		v["expiresAt"] = st.Expiry.Unix()
+	}
+	v["refreshable"] = st.Refreshable
+	// A server that answered 401, or a login that cannot give a token, wants a sign-in.
+	v["needsLogin"] = unauthorized || (st.Held && v["state"] != "signed-in")
+	return v
 }
 
 // mcpServerParams is a server as Studio sends it. env holds names only: the
