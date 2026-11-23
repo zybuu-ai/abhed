@@ -14,7 +14,7 @@ import (
 // marker; no real process is read.
 func fakeMarked(t *testing.T, f *fakeTable, carriers map[int]string) {
 	old := markedPids
-	markedPids = func(marker string) []int {
+	markedPids = func(marker string, _ uint64) []int {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		var out []int
@@ -76,7 +76,7 @@ func TestMarkerNarrowsNeverWidens(t *testing.T) {
 	fakeMarked(t, f, map[int]string{child: testMarker, escaped: testMarker, unseen: testMarker,
 		inherited: testMarker, planted: testMarker, member: testMarker})
 	fakeSessions(t, f, map[int]int{child: root, member: root, escaped: escaped})
-	w := &Watch{root: root, seen: map[int]uint64{root: 10}, leader: Leader{Pid: root, start: 10, ok: true},
+	w := &Watch{root: root, seen: map[int]uint64{root: 10}, leader: Leader{Pid: root, start: 10, ok: true}, exited: true,
 		stop: make(chan struct{}), polled: make(chan struct{})}
 	w.poll()
 	f.mu.Lock()
@@ -88,7 +88,7 @@ func TestMarkerNarrowsNeverWidens(t *testing.T) {
 	f.mu.Unlock()
 	f.stillFake(t)
 
-	unproven := endMarked(testMarker, w.owns)
+	unproven := endMarked(testMarker, 0, w.owns)
 
 	got := map[int]bool{}
 	for _, pid := range f.sent {
@@ -127,7 +127,7 @@ func TestSessionProofIsTheSessionOnly(t *testing.T) {
 	f.install(t)
 	fakeMarked(t, f, map[int]string{job: testMarker, editor: testMarker})
 	fakeSessions(t, f, map[int]int{shell: shell, job: shell, editor: editor})
-	unproven := endMarked(testMarker, inSession(shell))
+	unproven := endMarked(testMarker, 0, inSession(shell))
 	if len(f.sent) == 0 || f.sent[0] != job {
 		t.Errorf("the session member was not ended: sent %v", f.sent)
 	}
@@ -154,7 +154,7 @@ func TestClosingSignalsNoMarkedProcessOfAnUnwatchedCommand(t *testing.T) {
 	f.install(t)
 	called := false
 	old := markedPids
-	markedPids = func(string) []int { called = true; return []int{fakeBase + 500} }
+	markedPids = func(string, uint64) []int { called = true; return []int{fakeBase + 500} }
 	t.Cleanup(func() { markedPids = old })
 	fakeSessions(t, f, nil)
 	var c commandSet

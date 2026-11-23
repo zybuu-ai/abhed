@@ -52,13 +52,14 @@ func EndWithCommand(cmd *exec.Cmd) *exec.Cmd {
 	cmd.Env = append(cmd.Env, marker)
 	backend := cmd.Cancel
 	cmd.Cancel = func() error {
-		// The marker only narrows the session this command created.
-		defer endMarked(marker, inSession(cmd.Process.Pid))
 		// A reaped leader's group id could be reused, so none is signalled once
 		// Wait has reaped it; a cancel racing that reap is the window left.
 		if errors.Is(cmd.Process.Signal(syscall.Signal(0)), os.ErrProcessDone) {
 			return os.ErrProcessDone
 		}
+		// The marker only narrows the session this command created.
+		since, _ := startTime(cmd.Process.Pid)
+		defer endMarked(marker, since, inSession(cmd.Process.Pid))
 		endTree(cmd.Process.Pid)
 		// Only the group this command leads: never one it does not own.
 		if pgid, gerr := syscall.Getpgid(cmd.Process.Pid); gerr != nil || pgid != cmd.Process.Pid {
@@ -128,20 +129,6 @@ func ownGroup(cmd *exec.Cmd) {
 	}
 }
 
-// EndLeft ends what cmd's command left running in the group and session it
-// created, after the command itself has exited: a server it started in the
-// background, say. A child that left its session is not ended.
-func EndLeft(cmd *exec.Cmd) {
-	if cmd.Process == nil || cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setsid {
-		return
-	}
-	// The group and session it led keep their id while a member is left.
-	_ = killGroup(cmd.Process.Pid)
-	if m := markerIn(cmd.Env); m != "" {
-		endMarked(m, inSession(cmd.Process.Pid))
-	}
-}
-
 // markerIn is the last marker in env, or "".
 func markerIn(env []string) string {
 	for i := len(env) - 1; i >= 0; i-- {
@@ -159,7 +146,8 @@ func commandMarker() string {
 	return markerName + "=" + hex.EncodeToString(b[:])
 }
 
-// markedPids lists the processes carrying a marker; replaced in tests.
+// markedPids lists the processes started at or after since (a start time as
+// startTime gives it; 0 for any) that carry a marker; replaced in tests.
 var markedPids = marked
 
 // endMarked stops then kills the processes carrying marker that signal agrees
@@ -169,11 +157,14 @@ var markedPids = marked
 // the session it created, or a process followed from its start) and refuse
 // anything else. It returns how many marked processes were not proven and
 // were left running, for the caller to report.
-func endMarked(marker string, signal func(pid int, sig syscall.Signal) bool) (unproven int) {
+//
+// Only processes started at or after since are read: one that was running
+// before the command (an editor, say) cannot be its own.
+func endMarked(marker string, since uint64, signal func(pid int, sig syscall.Signal) bool) (unproven int) {
 	stopped, refused := map[int]bool{}, map[int]bool{}
 	for range maxSweepPasses {
 		fresh := 0
-		for _, pid := range markedPids(marker) {
+		for _, pid := range markedPids(marker, since) {
 			if stopped[pid] {
 				continue
 			}
@@ -190,7 +181,7 @@ func endMarked(marker string, signal func(pid int, sig syscall.Signal) bool) (un
 	}
 	// Read again once stopped: a pid no longer marked is continued, not killed.
 	still := map[int]bool{}
-	for _, pid := range markedPids(marker) {
+	for _, pid := range markedPids(marker, since) {
 		still[pid] = true
 	}
 	for pid := range stopped {

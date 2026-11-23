@@ -316,9 +316,18 @@ jobs:
       - name: Only a command's proven processes are signalled (fake process tables)
         run: |
           set -euo pipefail
-          go test ./internal/sandbox -count=1 -v -run 'TestWatchSignalsOnlyTheCommandsOwnTree|TestAReparentedChildIsFollowedByItsOrigin|TestMarkerNarrowsNeverWidens|TestSessionProofIsTheSessionOnly|TestClosingSignalsNoMarkedProcessOfAnUnwatchedCommand|TestHostCommandsDoNotInheritAMarker' 2>&1 | tee "$RUNNER_TEMP/watch.log"
+          go test ./internal/sandbox -count=1 -v -run 'TestWatchSignalsOnlyTheCommandsOwnTree|TestAReparentedChildIsFollowedByItsOrigin|TestMarkerNarrowsNeverWidens|TestSessionProofIsTheSessionOnly|TestClosingSignalsNoMarkedProcessOfAnUnwatchedCommand|TestHostCommandsDoNotInheritAMarker|TestAReusedPidIsNeverSignalled|TestAChildOfAReusedParentPidIsNotFollowed|TestAStopThatLandsOnAReusedPidIsUndone|TestSessionProofWaitsForTheExitedRoot|TestEndedProcessesAreNamed' 2>&1 | tee "$RUNNER_TEMP/watch.log"
           ! grep -E -- "--- SKIP" "$RUNNER_TEMP/watch.log"
-          [ "$(grep -c -- "--- PASS" "$RUNNER_TEMP/watch.log")" -eq 6 ]
+          [ "$(grep -c -- "--- PASS" "$RUNNER_TEMP/watch.log")" -eq 11 ]
+      # A throwaway runner: the tests that end real process trees on macOS,
+      # skipped on a person's machine, run here, and none may skip.
+      - name: Real process trees are ended on macOS (throwaway runner)
+        env:
+          ABHED_TEST_PROCESS_KILL: "1"
+        run: |
+          set -euo pipefail
+          go test ./internal/sandbox ./internal/tools ./server -count=1 -v -run 'TestCancelKillsOnlyAGroupTheCommandLeads|TestTreeStopsOnlyProcessesWhoseParentIsInIt|TestCancelSignalsOnlyTheCommandsOwnGroup|TestRunawayCommandEndsAtItsDeadline|TestNoneShellEndsItsBackgroundJobs|TestSweepNeedsTheShellItNamed|TestBashCancelEndsWhatTheCommandStarted|TestBashReturnsWhenABackgroundJobHoldsTheOutput|TestBashBackgroundNoteOnAFailingCommand|TestBashTimeoutEndsADetachedChild|TestBashTimeoutEndsADaemon|TestShellKillEndsBackgroundJobs' 2>&1 | tee "$RUNNER_TEMP/kill.log"
+          ! grep -E -- "--- SKIP: (TestNoneShell|TestBash|TestShellKill|TestCancel|TestTree|TestSweepNeeds)" "$RUNNER_TEMP/kill.log"
       - name: The action's run script and real runs
         working-directory: integrations/github-action
         run: |
@@ -357,6 +366,21 @@ jobs:
           grep -q -- "--- PASS: TestFenceSpecAsRootHidesShadow " sandbox.log || { echo "TestFenceSpecAsRootHidesShadow did not run and pass as root"; exit 1; }
           grep -q -- "--- PASS: TestEgressResolverInTheSandbox " sandbox.log || { echo "TestEgressResolverInTheSandbox did not run and pass as root"; exit 1; }
           echo "$(grep -c -- "--- PASS" sandbox.log) boundary tests ran under bubblewrap"
+      # What a command starts is ended with it on the process tier under
+      # bubblewrap as on the none tier: the real kill tests, whose process
+      # tier must run here (ABHED_REQUIRE_PROCESS_TIER fails a skip).
+      - name: Nothing a command starts outlives it, under bubblewrap
+        env:
+          CGO_ENABLED: "0"
+          ABHED_TEST_PROCESS_KILL: "1"
+          ABHED_REQUIRE_PROCESS_TIER: "1"
+        run: |
+          set -euo pipefail
+          go test ./internal/sandbox/ -run 'TestNothingACommandStartsOutlivesIt$|TestClosingTheSandboxEndsItsCommands$|TestAnEscapedProcessIsReportedNotEnded$' -count=1 -v > kill.log 2>&1 || { cat kill.log; exit 1; }
+          ! grep -- "--- SKIP" kill.log
+          for t in TestNothingACommandStartsOutlivesIt TestClosingTheSandboxEndsItsCommands TestAnEscapedProcessIsReportedNotEnded; do
+            grep -q -- "--- PASS: $t " kill.log || { echo "$t did not run and pass:"; cat kill.log; exit 1; }
+          done
       # The statusline's pinned script, end to end under bubblewrap: it runs,
       # and swapped for a link into ~/.abhed it neither runs nor reads.
       - name: The statusline script is pinned under bubblewrap

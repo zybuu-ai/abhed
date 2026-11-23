@@ -25,6 +25,7 @@ import (
 // A cancelled command ends everything it started, in every tier: the turn
 // stops promptly and no child is left running on the host.
 func TestBashCancelEndsWhatTheCommandStarted(t *testing.T) {
+	requireKillTestsOnMac(t)
 	tiers := []struct {
 		name string
 		box  func(ws string) (sandbox.Sandbox, string)
@@ -109,6 +110,7 @@ func TestBashCancelEndsWhatTheCommandStarted(t *testing.T) {
 // returns, rather than waiting for the job, and the job is ended with it:
 // nothing a command starts outlives it.
 func TestBashReturnsWhenABackgroundJobHoldsTheOutput(t *testing.T) {
+	requireKillTestsOnMac(t)
 	s, dir := setup(t)
 	pidFile := filepath.Join(dir, "bg.pid")
 	start := time.Now()
@@ -188,6 +190,7 @@ func alive(pid int) bool {
 
 // A failing command's background job is ended too, and its exit status kept.
 func TestBashBackgroundNoteOnAFailingCommand(t *testing.T) {
+	requireKillTestsOnMac(t)
 	s, dir := setup(t)
 	pidFile := filepath.Join(dir, "bg.pid")
 	res := run(t, Bash{}, s, bashArgs{Command: `sleep 30 & echo $! > ` + pidFile + `; exit 3`, Description: "background job"})
@@ -268,6 +271,7 @@ func runsHere(box sandbox.Sandbox, ws, why string) string {
 // A command that times out ends with everything it started, even a child
 // that left its group and session with setsid while its parent still ran.
 func TestBashTimeoutEndsADetachedChild(t *testing.T) {
+	requireKillTestsOnMac(t)
 	if _, err := exec.LookPath("perl"); err != nil {
 		t.Skip("perl is not installed")
 	}
@@ -455,6 +459,7 @@ func init() {
 // is still ended with the command at its timeout: it carries the command's
 // marker in its environment, whoever its parent is now.
 func TestBashTimeoutEndsADaemon(t *testing.T) {
+	requireKillTestsOnMac(t)
 	for _, tier := range []string{"host", "none", "process"} {
 		t.Run(tier, func(t *testing.T) {
 			s, dir := setup(t)
@@ -570,5 +575,16 @@ func TestBashRecordsWhatItsSandboxNoteNames(t *testing.T) {
 	}
 	if res := run(t, Bash{}, s, bashArgs{Command: `echo "x: Operation not permitted"; exit 1`, Description: "print"}); res.SandboxNote != "" {
 		t.Errorf("a note on the host: %q", res.SandboxNote)
+	}
+}
+
+// requireKillTestsOnMac skips on macOS unless ABHED_TEST_PROCESS_KILL=1: the
+// test ends real process trees and sweeps for what they left, which is done
+// only on a throwaway runner, never on a person's own machine. Linux runs it
+// in CI and in containers.
+func requireKillTestsOnMac(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "darwin" && os.Getenv("ABHED_TEST_PROCESS_KILL") != "1" {
+		t.Skip("ends real process trees: set ABHED_TEST_PROCESS_KILL=1 on a throwaway runner to run it on macOS")
 	}
 }

@@ -307,10 +307,13 @@ asserted. Current state:
       command's: its marker only narrows that set, so an app that inherited or had planted
       the marker is reported, never signalled (`TestWatchSignalsOnlyTheCommandsOwnTree`,
       `TestMarkerNarrowsNeverWidens`, `TestSessionProofIsTheSessionOnly`,
-      `TestClosingSignalsNoMarkedProcessOfAnUnwatchedCommand` against fake process
-      tables; `TestNothingACommandStartsOutlivesIt`, `TestAnEscapedProcessIsReportedNotEnded`,
+      `TestClosingSignalsNoMarkedProcessOfAnUnwatchedCommand`,
+      `TestAReusedPidIsNeverSignalled`, `TestAChildOfAReusedParentPidIsNotFollowed`,
+      `TestAStopThatLandsOnAReusedPidIsUndone` against fake process tables; `TestNothingACommandStartsOutlivesIt`, `TestAnEscapedProcessIsReportedNotEnded`,
       `TestClosingTheSandboxEndsItsCommands` end real processes, so they build only on
-      Linux and run on throwaway runners with `ABHED_TEST_PROCESS_KILL=1`). A child handed
+      Linux and run on throwaway runners with `ABHED_TEST_PROCESS_KILL=1`, the process tier
+      under bubblewrap in the privileged `sandbox` job; on macOS every test that ends a real
+      process tree is skipped unless that is set, as it is only on CI's throwaway runner). A child handed
       to launchd before a read saw it is followed by its parent's unique id
       (`TestAReparentedChildIsFollowedByItsOrigin`). Open: a process that takes a session
       of its own and whose parent was born and gone within one 20 ms read escapes (on

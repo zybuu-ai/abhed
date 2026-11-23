@@ -84,9 +84,10 @@ func ancestorNames() []string {
 	return out
 }
 
-// marked lists this user's processes, other than this one, whose arguments or
-// environment hold marker followed by its terminating NUL.
-func marked(marker string) []int {
+// marked lists this user's processes started at or after since, other than
+// this one, whose arguments or environment hold marker followed by its
+// terminating NUL. An older process's arguments are never read.
+func marked(marker string, since uint64) []int {
 	procs, err := unix.SysctlKinfoProcSlice("kern.proc.ruid", os.Getuid())
 	if err != nil {
 		return nil
@@ -96,6 +97,10 @@ func marked(marker string) []int {
 	for _, p := range procs {
 		pid := int(p.Proc.P_pid)
 		if pid <= 1 || pid == os.Getpid() || p.Proc.P_stat == 5 {
+			continue
+		}
+		t := p.Proc.P_starttime
+		if uint64(t.Sec)*1_000_000+uint64(t.Usec) < since { // #nosec G115 -- a time since 1970 is positive
 			continue
 		}
 		if args, ok := procArgs(p.Proc.P_pid); ok && bytes.Contains(args, want) {
@@ -174,4 +179,19 @@ func processOrigin(pid int) (o procOrigin, ok bool) {
 	o.parent = binary.LittleEndian.Uint64(buf[procParentUniqOffset:])
 	o.start = binary.LittleEndian.Uint64(buf[procStartOffset:])*1_000_000 + binary.LittleEndian.Uint64(buf[procStartOffset+8:])
 	return o, o.uniq != 0
+}
+
+// pinProcess names pid by number: macOS has no pidfd, so callers check the
+// start time before and after a stop.
+func pinProcess(pid int) (send func(syscall.Signal) error, release func(), err error) {
+	return func(sig syscall.Signal) error { return syscall.Kill(pid, sig) }, func() {}, nil
+}
+
+// processName is pid's command name, or "".
+func processName(pid int) string {
+	p, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil || int(p.Proc.P_pid) != pid {
+		return ""
+	}
+	return unix.ByteSliceToString(p.Proc.P_comm[:])
 }

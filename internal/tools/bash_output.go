@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,12 +26,14 @@ type bashOutput struct {
 	to   io.Writer // set once the command is moved to the background
 	done chan struct{}
 	// waited has cmd.Wait's result once the command has ended, and every
-	// process it started with it; left says what could not be ended.
+	// process it started with it; left names what was ended and what could
+	// not be.
 	waited chan error
 	left   string
 }
 
-// leftNote says what the command started that could not be ended, or "".
+// leftNote names what the command started that was ended with it, and what
+// could not be ended, or "".
 func (o *bashOutput) leftNote() string {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -118,6 +121,10 @@ func (o *bashOutput) run(cmd *exec.Cmd, delay time.Duration, started func(), det
 	watch := sandbox.StartWatch(cmd)
 	go func() {
 		left, err := watch.Wait()
+		if ended := watch.EndedNote(); ended != "" {
+			left = strings.TrimPrefix(ended+"; "+left, "; ")
+			left = strings.TrimSuffix(left, "; ")
+		}
 		o.mu.Lock()
 		o.left = left
 		o.mu.Unlock()

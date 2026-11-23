@@ -14,6 +14,9 @@ func StartWatch(cmd *exec.Cmd) *Watch { return &Watch{cmd: cmd} }
 
 func (w *Watch) Wait() (string, error) { return "", w.cmd.Wait() }
 
+// EndedNote is empty: nothing is ended here but the command.
+func (w *Watch) EndedNote() string { return "" }
+
 type commandSet struct{ mu sync.Mutex }
 
 func (c *commandSet) add(*exec.Cmd) {}

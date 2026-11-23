@@ -156,6 +156,9 @@ for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
     signal.signal(s, end)
 os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
 end()
+# Once reaped, the group id may be another process group: no signal may reach it.
+for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(s, signal.SIG_IGN)
 code = os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])
 sys.exit(128 - code if code < 0 else code)
 ' env -i "${envs[@]}" "$bin" "${args[@]}" < "$stdin" > "$ev/run.jsonl" 2> "$ev/stderr.log" || code=$?

@@ -5,6 +5,7 @@ package sandbox
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -19,13 +20,23 @@ type fakeTable struct {
 	starts  map[int]uint64
 	sent    []int
 	kill    func(int, syscall.Signal) error
+	pin     func(int) (func(syscall.Signal) error, func(), error)
+	sigs    []syscall.Signal
+	// after runs under the table's lock once a signal is recorded.
+	after func(pid int, sig syscall.Signal)
 	// origins are macOS's unique ids, by pid; a pid without one has none.
 	origins map[int]procOrigin
 }
 
 func (f *fakeTable) install(t *testing.T) {
 	oldP, oldS, oldK, oldG := watchParents, watchStart, watchKill, sweepGrace
-	oldSs, oldO := watchStarts, watchOrigin
+	oldSs, oldO, oldPin, oldN := watchStarts, watchOrigin, watchPin, watchName
+	// The pin sends through the fake kill below; names are the fake's.
+	watchPin = func(pid int) (func(syscall.Signal) error, func(), error) {
+		return func(sig syscall.Signal) error { return watchKill(pid, sig) }, func() {}, nil
+	}
+	f.pin = watchPin
+	watchName = func(pid int) string { return fmt.Sprintf("p%d", pid-fakeBase) }
 	watchStarts = func() map[int]uint64 {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -70,6 +81,10 @@ func (f *fakeTable) install(t *testing.T) {
 			panic(fmt.Sprintf("the watch would signal %d, which is not in the fake table", pid))
 		}
 		f.sent = append(f.sent, pid)
+		f.sigs = append(f.sigs, sig)
+		if f.after != nil {
+			f.after(pid, sig)
+		}
 		if sig == killSignal {
 			delete(f.parents, pid)
 			delete(f.starts, pid)
@@ -80,7 +95,7 @@ func (f *fakeTable) install(t *testing.T) {
 	f.kill = watchKill
 	t.Cleanup(func() {
 		watchParents, watchStart, watchKill, sweepGrace = oldP, oldS, oldK, oldG
-		watchStarts, watchOrigin = oldSs, oldO
+		watchStarts, watchOrigin, watchPin, watchName = oldSs, oldO, oldPin, oldN
 	})
 }
 
@@ -91,7 +106,8 @@ const fakeBase = 10_000_000
 // stillFake fails the test unless the Watch's signal function is the fake.
 func (f *fakeTable) stillFake(t *testing.T) {
 	t.Helper()
-	if reflect.ValueOf(watchKill).Pointer() != reflect.ValueOf(f.kill).Pointer() {
+	if reflect.ValueOf(watchKill).Pointer() != reflect.ValueOf(f.kill).Pointer() ||
+		reflect.ValueOf(watchPin).Pointer() != reflect.ValueOf(f.pin).Pointer() {
 		t.Fatal("the Watch's signal function is not the fake: stopping before a real pid is signalled")
 	}
 }
@@ -189,5 +205,135 @@ func TestAReparentedChildIsFollowedByItsOrigin(t *testing.T) {
 	}
 	if got[app] || got[reused] {
 		t.Errorf("signalled a launchd child the command did not fork: sent %v", f.sent)
+	}
+}
+
+// A followed process exits and its pid is taken by an app carrying the
+// command's marker (inherited or planted). The start time read before the
+// signal is all that tells them apart, and the app is never signalled.
+func TestAReusedPidIsNeverSignalled(t *testing.T) {
+	const (
+		root  = fakeBase + 100
+		child = fakeBase + 101
+	)
+	f := &fakeTable{
+		parents: map[int]int{root: fakeBase + 50, child: root, fakeBase + 50: 1},
+		starts:  map[int]uint64{fakeBase + 50: 1, root: 10, child: 11},
+	}
+	f.install(t)
+	fakeMarked(t, f, map[int]string{child: testMarker})
+	fakeSessions(t, f, nil)
+	w := &Watch{root: root, seen: map[int]uint64{root: 10}, stop: make(chan struct{}), polled: make(chan struct{})}
+	w.poll()
+	// The child exits; an app launchd starts takes its pid, with the marker.
+	f.mu.Lock()
+	f.parents[child], f.starts[child] = 1, 77
+	f.mu.Unlock()
+	f.stillFake(t)
+	if n := endMarked(testMarker, 0, w.owns); n != 1 {
+		t.Errorf("reported %d unproven, want the app at the reused pid", n)
+	}
+	if len(f.sent) > 0 {
+		t.Errorf("signalled %v: the app at a followed process's reused pid", f.sent)
+	}
+	if err := w.signal(child, killSignal); err == nil {
+		t.Error("signal allowed a reused pid")
+	}
+}
+
+// A followed parent exits and its pid is taken by an unrelated process,
+// whose child is then read: it is not followed, nor ever signalled.
+func TestAChildOfAReusedParentPidIsNotFollowed(t *testing.T) {
+	const (
+		root     = fakeBase + 100
+		parent   = fakeBase + 101
+		stranger = fakeBase + 200
+	)
+	f := &fakeTable{
+		parents: map[int]int{root: fakeBase + 50, parent: root, fakeBase + 50: 1},
+		starts:  map[int]uint64{fakeBase + 50: 1, root: 10, parent: 11},
+	}
+	f.install(t)
+	w := &Watch{root: root, seen: map[int]uint64{root: 10}, stop: make(chan struct{}), polled: make(chan struct{})}
+	w.poll()
+	f.mu.Lock()
+	f.parents[parent], f.starts[parent] = 1, 88 // the pid, taken by another process
+	f.parents[stranger], f.starts[stranger] = parent, 89
+	f.mu.Unlock()
+	w.poll()
+	f.stillFake(t)
+	if _, followed := w.seen[stranger]; followed {
+		t.Error("followed the child of a process at a reused parent pid")
+	}
+	_ = w.endFollowed()
+	if len(f.sent) > 0 {
+		t.Errorf("signalled %v", f.sent)
+	}
+}
+
+// What a command's end stops is named in its result, with how to keep a
+// program running.
+func TestEndedProcessesAreNamed(t *testing.T) {
+	f := &fakeTable{
+		parents: map[int]int{fakeBase + 100: fakeBase + 50, fakeBase + 101: fakeBase + 100, fakeBase + 50: 1},
+		starts:  map[int]uint64{fakeBase + 50: 1, fakeBase + 100: 10, fakeBase + 101: 11},
+	}
+	f.install(t)
+	w := &Watch{root: fakeBase + 100, seen: map[int]uint64{fakeBase + 100: 10}, stop: make(chan struct{}), polled: make(chan struct{})}
+	w.poll()
+	f.stillFake(t)
+	_ = w.endFollowed()
+	note := w.EndedNote()
+	for _, want := range []string{"ended 1 processes", "p101", "run_in_background", "open -a"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("the note %q lacks %q", note, want)
+		}
+	}
+	if got := endedNote([]string{"a", "a", "b", "c", "d", "e", "f", "g"}); !strings.Contains(got, "a ×2") || !strings.Contains(got, "and 2 more") {
+		t.Errorf("summary %q", got)
+	}
+}
+
+// A pid taken by another process between the check and the stop is
+// continued at once, and reported as not the command's.
+func TestAStopThatLandsOnAReusedPidIsUndone(t *testing.T) {
+	const root, child = fakeBase + 100, fakeBase + 101
+	f := &fakeTable{
+		parents: map[int]int{root: fakeBase + 50, child: root, fakeBase + 50: 1},
+		starts:  map[int]uint64{fakeBase + 50: 1, root: 10, child: 11},
+	}
+	f.install(t)
+	w := &Watch{root: root, seen: map[int]uint64{root: 10}, stop: make(chan struct{}), polled: make(chan struct{})}
+	w.poll()
+	f.after = func(pid int, sig syscall.Signal) {
+		if pid == child && sig == stopSignal {
+			f.starts[child] = 99 // the child exited and its pid was taken in between
+		}
+	}
+	f.stillFake(t)
+	if err := w.signal(child, stopSignal); err == nil {
+		t.Error("a stop that landed on a reused pid was reported as the command's")
+	}
+	if len(f.sigs) != 2 || f.sigs[1] != syscall.SIGCONT {
+		t.Errorf("the stranger was not continued: %v", f.sigs)
+	}
+}
+
+// Until the command is known exited and unreaped, its session id proves
+// nothing, and no member is signalled through it.
+func TestSessionProofWaitsForTheExitedRoot(t *testing.T) {
+	const root, member = fakeBase + 100, fakeBase + 700
+	f := &fakeTable{
+		parents: map[int]int{root: fakeBase + 50, member: 1, fakeBase + 50: 1},
+		starts:  map[int]uint64{fakeBase + 50: 1, root: 10, member: 70},
+	}
+	f.install(t)
+	fakeMarked(t, f, map[int]string{member: testMarker})
+	fakeSessions(t, f, map[int]int{member: root})
+	w := &Watch{root: root, seen: map[int]uint64{root: 10}, leader: Leader{Pid: root, start: 10, ok: true},
+		stop: make(chan struct{}), polled: make(chan struct{})}
+	f.stillFake(t)
+	if n := endMarked(testMarker, 0, w.owns); n != 1 || len(f.sent) > 0 {
+		t.Errorf("signalled %v through a session not yet proven (unproven %d)", f.sent, n)
 	}
 }

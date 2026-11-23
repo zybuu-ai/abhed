@@ -620,8 +620,12 @@ All notable changes to Abhed are recorded here. The format follows
   takes a session of its own and whose parent was born and gone within one
   20 ms read of the process table escapes (on Linux's `none` tier, one that
   loses its parent within one read); see the Sandbox section of the
-  configuration guide. Terminal shells are not ended when a sandbox closes:
-  they end with their terminal. Commands on that tier also get an
+  configuration guide. The result names the processes that were ended, and
+  says to start a program with `run_in_background`, or an app with
+  `open -a`, to keep it running. A background command's leftovers are
+  ended the same way when it ends or is stopped, before it is reaped,
+  rather than by their process group's number afterwards. Terminal shells
+  are not ended when a sandbox closes: they end with their terminal. Commands on that tier also get an
   `xcrun_db` of the sandbox's own.
 
 - On macOS, the process sandbox keeps the account's own home unreadable to

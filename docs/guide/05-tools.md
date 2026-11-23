@@ -100,8 +100,11 @@ is given, Abhed ends the processes in the session the command leads and
 every descendant it followed while the command ran; one that only carries
 its `ABHED_COMMAND_ID` is named in the result, not ended (on macOS, which has no process namespace for it, the residual
 case is in [Sandbox](02-configuration.md#sandbox)); under bubblewrap on
-Linux the command's process namespace ends them all. To keep a server
-running, start it with `run_in_background`.
+Linux the command's process namespace ends them all. The result names
+what was ended. To keep a server running, start it with
+`run_in_background`; to keep an app open (a new editor window started by
+`code .`, say), open it with `open -a`, which hands it to the system
+rather than to the command.
 
 ### Background commands
 

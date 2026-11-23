@@ -43,6 +43,11 @@ type Watch struct {
 	uniq    map[uint64]bool
 	origins map[int]origin
 	done    bool
+	// exited is set once the root is known exited and unreaped, so the
+	// session it led is still its own.
+	exited bool
+	// ended names the processes the command started that were ended with it.
+	ended []string
 
 	stop   chan struct{}
 	polled chan struct{}
@@ -59,6 +64,11 @@ var (
 	watchKill    = syscall.Kill
 	watchStarts  = processStarts
 	watchOrigin  = processOrigin
+	// watchPin names a pid for signalling: a pidfd on Linux, so the start
+	// time read after it and the signal reach the same process.
+	watchPin = pinProcess
+	// watchName is a process's command name, for the result.
+	watchName = processName
 )
 
 // procOrigin is what processOrigin reads of a process: its unique id, its
@@ -201,6 +211,9 @@ func (w *Watch) Wait() (left string, err error) {
 	exitErr := waitExited(w.root)
 	close(w.stop)
 	<-w.polled
+	w.mu.Lock()
+	w.exited = exitErr == nil
+	w.mu.Unlock()
 	var notes []string
 	if exitErr == nil && w.leader.ok {
 		if r := w.leader.sweep(); r != "" {
@@ -213,7 +226,7 @@ func (w *Watch) Wait() (left string, err error) {
 	// The marker narrows what is proven, never widens it: one carrying it
 	// that was never followed nor is in the session is reported, not ended.
 	if m := markerIn(w.cmd.Env); m != "" {
-		if r := unprovenNote(endMarked(m, w.owns)); r != "" {
+		if r := unprovenNote(endMarked(m, w.seen[w.root], w.owns)); r != "" {
 			notes = append(notes, r)
 		}
 	}
@@ -250,17 +263,18 @@ func (w *Watch) endFollowed() string {
 		}
 		w.mu.Unlock()
 		for _, pid := range pids {
+			// signal reads the start time again once stopped, and continues a
+			// pid freed and taken meanwhile.
 			if !still(pid) || w.signal(pid, stopSignal) != nil {
-				continue
-			}
-			// Read again once stopped: a pid freed and taken meanwhile is
-			// someone else's, and is continued.
-			if !still(pid) {
-				_ = w.signal(pid, syscall.SIGCONT)
 				continue
 			}
 			stopped[pid] = true
 			fresh++
+			if name := watchName(pid); name != "" {
+				w.mu.Lock()
+				w.ended = append(w.ended, name)
+				w.mu.Unlock()
+			}
 		}
 		// A child a stopped member forked before it stopped descends from it.
 		w.mu.Lock()
@@ -301,7 +315,8 @@ func (w *Watch) endFollowed() string {
 
 // signal sends sig to pid only if pid is a process this Watch followed from
 // the command's root (never the root itself here, never pid 1 or this
-// process) and is still the process seen at that pid.
+// process) and is still the process seen at that pid. A stop is checked
+// again once in effect, and undone if the pid was taken meanwhile.
 func (w *Watch) signal(pid int, sig syscall.Signal) error {
 	w.mu.Lock()
 	st, followed := w.seen[pid]
@@ -309,20 +324,74 @@ func (w *Watch) signal(pid int, sig syscall.Signal) error {
 	if !followed || pid <= 1 || pid == w.root || pid == os.Getpid() || pid == os.Getppid() {
 		return syscall.EPERM
 	}
+	send, release, err := watchPin(pid)
+	if err != nil {
+		return syscall.ESRCH
+	}
+	defer release()
 	if cur, ok := watchStart(pid); !ok || cur != st {
 		return syscall.ESRCH
 	}
-	return watchKill(pid, sig)
+	if err := send(sig); err != nil {
+		return err
+	}
+	if sig == stopSignal {
+		if cur, ok := watchStart(pid); !ok || cur != st {
+			_ = send(syscall.SIGCONT)
+			return syscall.ESRCH
+		}
+	}
+	return nil
 }
 
 // owns signals pid only if it is proven the command's own: followed from the
 // command's start (see signal), or a member of the session the command
-// created, while the exited command is unreaped and holds its id (Wait).
+// created, while the command is known exited and unreaped, so the session id
+// is still its own (Wait).
 func (w *Watch) owns(pid int, sig syscall.Signal) bool {
 	if w.signal(pid, sig) == nil {
 		return true
 	}
-	return w.leader.ok && inSession(w.root)(pid, sig)
+	w.mu.Lock()
+	exited := w.exited
+	w.mu.Unlock()
+	return w.leader.ok && exited && inSession(w.root)(pid, sig)
+}
+
+// EndedNote names what the command started that was ended with it, and how
+// to keep such a program running, or "" when nothing was.
+func (w *Watch) EndedNote() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return endedNote(w.ended)
+}
+
+// endedNote is EndedNote's text for names.
+func endedNote(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	counts := map[string]int{}
+	var order []string
+	for _, n := range names {
+		if counts[n] == 0 {
+			order = append(order, n)
+		}
+		counts[n]++
+	}
+	var parts []string
+	for i, n := range order {
+		if i == 5 {
+			parts = append(parts, fmt.Sprintf("and %d more", len(order)-5))
+			break
+		}
+		if counts[n] > 1 {
+			n = fmt.Sprintf("%s ×%d", n, counts[n])
+		}
+		parts = append(parts, n)
+	}
+	return fmt.Sprintf("ended %d processes the command started (%s); to keep a program running, start it with run_in_background, or an app with `open -a`",
+		len(names), strings.Join(parts, ", "))
 }
 
 // end stops the command and everything it started, for a sandbox closing

@@ -19,14 +19,6 @@ import (
 // decisions are tested against fake process tables (watch_unit_test.go,
 // marked_unit_test.go).
 
-// requireKillTests skips unless ABHED_TEST_PROCESS_KILL=1.
-func requireKillTests(t *testing.T) {
-	t.Helper()
-	if os.Getenv("ABHED_TEST_PROCESS_KILL") != "1" {
-		t.Skip("set ABHED_TEST_PROCESS_KILL=1 on a throwaway runner or in a container to run it")
-	}
-}
-
 // runWatched runs command as the bash tool does: its own session and marker,
 // followed from its start, and waited on through the Watch.
 func runWatched(t *testing.T, s Sandbox, ws, command string) (string, error) {
@@ -41,19 +33,35 @@ func runWatched(t *testing.T, s Sandbox, ws, command string) (string, error) {
 	return StartWatch(cmd).Wait()
 }
 
-// sandboxes are the tiers a command's processes are followed on: the
-// unsandboxed one, where the Watch is the only net, and the process tier when
-// it can run here.
-func sandboxes(t *testing.T, ws string) map[string]Sandbox {
-	out := map[string]Sandbox{"none": NewNone(DefaultPolicy(ws))}
-	if p := NewProcess(DefaultPolicy(ws)); func() bool { ok, _ := p.Available(); return ok }() {
-		out["process"] = p
+// tierFor is a sandbox of tier ("none" or "process") for commands run in ws,
+// closed when the test ends; ok is false when the process tier cannot run
+// here, which fails the test where ABHED_REQUIRE_PROCESS_TIER=1 (CI's
+// privileged sandbox job), so a skipped bubblewrap tier never reads as a pass.
+func tierFor(t *testing.T, tier, ws string) (s Sandbox, ok bool) {
+	t.Helper()
+	var c interface{ Close() error }
+	switch tier {
+	case "none":
+		n := NewNone(DefaultPolicy(ws))
+		s, c = n, n
+	default:
+		p := NewProcess(DefaultPolicy(ws))
+		if avail, why := p.Available(); !avail {
+			if os.Getenv("ABHED_REQUIRE_PROCESS_TIER") == "1" {
+				t.Fatalf("the process tier cannot run here: %s", why)
+			}
+			t.Logf("process tier not run: %s", why)
+			return nil, false
+		}
+		s, c = p, p
 	}
-	for _, s := range out {
-		t.Cleanup(func() { _ = s.(interface{ Close() error }).Close() })
-	}
-	return out
+	t.Cleanup(func() { _ = c.Close() })
+	return s, true
 }
+
+// watchTiers are the tiers a command's processes are followed on: the
+// unsandboxed one, where the Watch is the only net, and the process tier.
+var watchTiers = []string{"none", "process"}
 
 // Nothing a command starts outlives it when it is proven the command's own: a
 // child left behind with nohup and &, one that cleared its environment, one
@@ -61,8 +69,12 @@ func sandboxes(t *testing.T, ws string) map[string]Sandbox {
 // to write a file after the command ends.
 func TestNothingACommandStartsOutlivesIt(t *testing.T) {
 	requireKillTests(t)
-	for tier, s := range sandboxes(t, workspace(t)) {
+	for _, tier := range watchTiers {
 		ws := workspace(t)
+		s, ok := tierFor(t, tier, ws)
+		if !ok {
+			continue
+		}
 		for name, command := range map[string]string{
 			"nohup":       `(nohup sh -c 'sleep 2; touch late-nohup' >/dev/null 2>&1 &)`,
 			"cleared env": `(env -i /bin/sh -c 'sleep 2; touch late-env' >/dev/null 2>&1 &)`,
@@ -92,9 +104,9 @@ func TestNothingACommandStartsOutlivesIt(t *testing.T) {
 // same marker is never signalled.
 func TestAnEscapedProcessIsReportedNotEnded(t *testing.T) {
 	requireKillTests(t)
-	s := NewNone(DefaultPolicy(workspace(t)))
-	t.Cleanup(func() { _ = s.Close() })
 	ws := workspace(t)
+	s := NewNone(DefaultPolicy(ws))
+	t.Cleanup(func() { _ = s.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	cmd := EndWithCommand(s.Command(ctx, ws, `exec sleep 30`))
@@ -125,8 +137,12 @@ func TestAnEscapedProcessIsReportedNotEnded(t *testing.T) {
 // A sandbox closing ends a command still running, with what it started.
 func TestClosingTheSandboxEndsItsCommands(t *testing.T) {
 	requireKillTests(t)
-	for tier, s := range sandboxes(t, workspace(t)) {
+	for _, tier := range watchTiers {
 		ws := workspace(t)
+		s, ok := tierFor(t, tier, ws)
+		if !ok {
+			continue
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		cmd := EndWithCommand(s.Command(ctx, ws, `(sleep 2; touch late-close) & sleep 30`))
 		cmd.Dir = ws
