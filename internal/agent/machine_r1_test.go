@@ -227,3 +227,89 @@ func TestDroppedAndUnheldPastesAreNamed(t *testing.T) {
 		t.Fatalf("unheld: %q %q", text, pasted)
 	}
 }
+
+// A value the session holds from a paste, printed by a background shell, is
+// withheld from its output, its end notice, the listing, the record and what
+// the model is sent, as a stored secret's value is.
+func TestABackgroundShellPrintingAHeldValueIsWithheld(t *testing.T) {
+	const held = "q8Zt3kLm9PxR2vWn7YbC4dFg"
+	a := &stepAdapter{steps: []func(model.Request) scriptedTurn{
+		func(model.Request) scriptedTurn {
+			return scriptedTurn{calls: []model.ToolCall{{ID: "c1", Name: "bash", Args: json.RawMessage(
+				`{"command":"printf 'held=q8Zt3kLm9P''xR2vWn7YbC4dFg'","description":"print it","run_in_background":true}`)}}}
+		},
+		func(req model.Request) scriptedTurn {
+			return scriptedTurn{calls: []model.ToolCall{{ID: "c2", Name: "shell_output", Args: json.RawMessage(
+				`{"shell_id":"` + lastShellID(req) + `","wait_ms":5000}`)}}}
+		},
+	}}
+	r := newShellRig(t, WakeNotify, policy.ModeBypass, BackgroundPolicy{}, a)
+	if id := tools.HoldPasted(r.l.Session, tools.Pasted{Kind: "a cluster token", Value: held}); id != "P1" {
+		t.Fatalf("held as %q", id)
+	}
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.l.Run(context.Background(), "next"); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range r.events(t) {
+		if strings.Contains(string(e.Payload), held) {
+			t.Fatalf("the record holds the value in %s: %s", e.Type, e.Payload)
+		}
+	}
+	for _, ti := range r.l.Background.Tasks() {
+		if strings.Contains(ti.LastLine, held) {
+			t.Fatalf("listing: %+v", ti)
+		}
+	}
+	for _, n := range r.l.Background.peekNotices() {
+		if strings.Contains(n.Content, held) {
+			t.Fatal("the end notice holds the value")
+		}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	named := false
+	for _, req := range a.reqs {
+		for _, m := range req.Messages {
+			if m.Role == model.RoleAssistant {
+				continue
+			}
+			if strings.Contains(m.Content, held) {
+				t.Fatalf("the model was sent the value: %q", m.Content)
+			}
+			named = named || strings.Contains(m.Content, "held=[pasted:P1]")
+		}
+	}
+	if !named {
+		t.Fatal("the shell's output was not seen withheld")
+	}
+}
+
+// An error a run returns, and a folder's memory, are withheld the same way.
+func TestRedactErrWithholdsAHeldValue(t *testing.T) {
+	sess, _ := tools.NewSession(t.TempDir())
+	l := NewLoop(&scriptedAdapter{}, tools.NewRegistry(), policy.New(policy.ModeDefault), AutoApprove{}, sess, NewRecorder(NewMemStore(), "s", ""), DefaultConfig())
+	tools.HoldPasted(sess, tools.Pasted{Value: "q8Zt3kLm9PxR2vWn7YbC4dFg"})
+	err := l.redactErr(fmt.Errorf("provider said q8Zt3kLm9PxR2vWn7YbC4dFg is bad"))
+	if strings.Contains(err.Error(), "q8Zt3kLm9PxR2vWn7YbC4dFg") || !strings.Contains(err.Error(), "[pasted:P1]") {
+		t.Fatalf("%v", err)
+	}
+}
+
+// A dropped message names the held values it withheld, and the history
+// file's redaction withholds a bare re-mention of one.
+func TestDroppedNamesHeldValuesAndHistoryWithholdsThem(t *testing.T) {
+	const held = "q8Zt3kLm9PxR2vWn7YbC4dFg"
+	sess, _ := tools.NewSession(t.TempDir())
+	l := NewLoop(&scriptedAdapter{}, tools.NewRegistry(), policy.New(policy.ModeDefault), AutoApprove{}, sess, NewRecorder(NewMemStore(), "s", ""), DefaultConfig())
+	tools.HoldPasted(sess, tools.Pasted{Kind: "a cluster token", Value: held})
+	d := l.dropped(DroppedMessage{Text: "it was " + held})
+	if strings.Contains(d.Text, held) || d.Pasted != "P1:a cluster token" {
+		t.Fatalf("dropped %+v", d)
+	}
+	if got := WithheldFor(nil, sess, "again "+held); strings.Contains(got, held) || !strings.Contains(got, "[pasted:P1]") {
+		t.Fatalf("history %q", got)
+	}
+}

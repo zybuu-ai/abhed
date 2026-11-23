@@ -90,11 +90,16 @@ func (l *Loop) withholdHeld(text string) string {
 // what was withheld named so the sender can be told.
 func (l *Loop) dropped(d DroppedMessage) DroppedMessage {
 	text, secrets := l.withholdSecrets(d.Text)
+	var kinds []string
+	for _, p := range tools.PastedHeld(l.Session) {
+		if len(p.Value) >= minHeld && strings.Contains(text, p.Value) {
+			kinds = append(kinds, p.ID+":"+p.Kind)
+		}
+	}
 	text = l.withholdHeld(text)
 	found := secretfiles.FindPasted(text)
-	var kinds []string
 	for i := len(found) - 1; i >= 0; i-- {
-		kinds = append([]string{":" + found[i].Kind}, kinds...)
+		kinds = append(kinds, ":"+found[i].Kind)
 		text = text[:found[i].Start] + "[pasted credential]" + text[found[i].End:]
 	}
 	d.Text, d.SecretsWithheld, d.Pasted = text, secrets, strings.Join(kinds, ",")

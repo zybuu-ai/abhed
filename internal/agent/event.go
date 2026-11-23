@@ -7,6 +7,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -726,7 +727,14 @@ type Recorder struct {
 	Gate func() error
 	// endSealed drops any later session.ended: see SealEnd.
 	endSealed bool
+	// held, when set, are the credentials the session holds from a paste,
+	// each with its placeholder: withheld by every redaction this recorder
+	// makes, the record's included, as a stored secret's value is.
+	held func() []heldValue
 }
+
+// heldValue is one held credential and the placeholder it is withheld as.
+type heldValue struct{ value, placeholder string }
 
 // SealEnd makes every later session.ended a no-op. A CLI exiting on a second
 // Ctrl-C records the end itself, while the stopping turn may still record its own.
@@ -756,7 +764,52 @@ func (r *Recorder) redactor() Redactor {
 	if r == nil {
 		return nil
 	}
+	base := usableRedactor(r.Redact)
+	if r.held == nil {
+		return base
+	}
+	return heldRedactor{base: base, held: r.held}
+}
+
+// storedRedactor is the secrets store's redactor alone, nil when none is set.
+func (r *Recorder) storedRedactor() Redactor {
+	if r == nil {
+		return nil
+	}
 	return usableRedactor(r.Redact)
+}
+
+// heldRedactor is the store's redactor, then the session's held values.
+type heldRedactor struct {
+	base Redactor
+	held func() []heldValue
+}
+
+func (h heldRedactor) Redact(raw []byte) []byte {
+	if h.base != nil {
+		raw = h.base.Redact(raw)
+	}
+	for _, v := range h.held() {
+		// Matched as JSON writes it inside a string.
+		val, err1 := json.Marshal(v.value)
+		ph, err2 := json.Marshal(v.placeholder)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		raw = bytes.ReplaceAll(raw, val[1:len(val)-1], ph[1:len(ph)-1])
+	}
+	return raw
+}
+
+func (h heldRedactor) Span() int {
+	n := 0
+	if h.base != nil {
+		n = h.base.Span()
+	}
+	for _, v := range h.held() {
+		n = max(n, len(v.value))
+	}
+	return n
 }
 
 // usableRedactor is red, or nil when it is nil or holds a nil pointer, which

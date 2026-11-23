@@ -727,7 +727,9 @@ var secretLabel = regexp.MustCompile(`\[secret:([A-Z][A-Z0-9_]*)\]`)
 // secret's value replaced by [secret:NAME] as in the record, and the names of
 // those replaced, comma-separated. A store that cannot be read withholds it all.
 func (l *Loop) withholdSecrets(text string) (string, string) {
-	red := l.Recorder.redactor()
+	// The store's values only: a held paste's is withheld after its shape is
+	// read, so a corrected re-paste is seen as one.
+	red := l.Recorder.storedRedactor()
 	if red == nil {
 		return text, ""
 	}
@@ -751,6 +753,21 @@ func (l *Loop) withholdSecrets(text string) (string, string) {
 func WithheldText(red Redactor, text string) string {
 	if red = usableRedactor(red); red != nil {
 		text = redactedText(red.Redact, text)
+	}
+	return withholdShapes(text)
+}
+
+// WithheldFor is WithheldText with the credentials sess holds from a paste
+// withheld too, for what a surface keeps outside the record, such as the
+// terminal's prompt history.
+func WithheldFor(red Redactor, sess *tools.Session, text string) string {
+	if red = usableRedactor(red); red != nil {
+		text = redactedText(red.Redact, text)
+	}
+	for _, p := range tools.PastedHeld(sess) {
+		if len(p.Value) >= minHeld {
+			text = strings.ReplaceAll(text, p.Value, "[pasted:"+p.ID+"]")
+		}
 	}
 	return withholdShapes(text)
 }
@@ -849,6 +866,19 @@ func NewLoop(a model.Adapter, reg *tools.Registry, pol *policy.Engine,
 	}
 	if cfg.OffloadAt > 0 {
 		l.Offloader = NewOffloader(cfg.OffloadAt)
+	}
+	// What the session holds from a paste is withheld by every redaction the
+	// record and the loop make, as a stored secret's value is.
+	if rec != nil && sess != nil && rec.held == nil {
+		rec.held = func() []heldValue {
+			var out []heldValue
+			for _, p := range tools.PastedHeld(sess) {
+				if len(p.Value) >= minHeld {
+					out = append(out, heldValue{p.Value, "[pasted:" + p.ID + "]"})
+				}
+			}
+			return out
+		}
 	}
 	// Start-up files are read from the HOME the session's bash gives a command.
 	if pol != nil && pol.Home == nil && reg != nil {

@@ -813,22 +813,31 @@ func MessageNote(secrets, pasted string) string {
 }
 
 // PastedNote says which pasted credentials were withheld, from ID:kind
-// pairs, comma-separated; the value is never shown.
+// pairs, comma-separated; the value is never shown. One with no ID was not
+// held for use.
 func PastedNote(pasted string) string {
 	if pasted == "" {
 		return ""
 	}
-	var what []string
+	var held, unheld []string
 	for _, p := range strings.Split(pasted, ",") {
 		id, kind, _ := strings.Cut(p, ":")
 		if id == "" {
-			what = append(what, VisibleLine(kind))
+			unheld = append(unheld, VisibleLine(kind))
 			continue
 		}
-		what = append(what, VisibleLine(kind)+" ("+VisibleLine(id)+")")
+		held = append(held, VisibleLine(kind)+" ("+VisibleLine(id)+")")
 	}
-	return "your message held " + strings.Join(what, ", ") + "; it was not sent to the model or kept in the " +
-		"record, and is held in memory for this session only, for a login you approve"
+	var parts []string
+	if len(held) > 0 {
+		parts = append(parts, "your message held "+strings.Join(held, ", ")+"; it was not sent to the model or kept in the "+
+			"record, and is held in memory for this session only, for a login you approve")
+	}
+	if len(unheld) > 0 {
+		parts = append(parts, "your message held "+strings.Join(unheld, ", ")+"; it was not sent to the model or kept in the "+
+			"record, and is not held anywhere, so paste it again to use it")
+	}
+	return strings.Join(parts, "; ")
 }
 
 // WithheldNote tells the sender which stored secrets their message held, by
