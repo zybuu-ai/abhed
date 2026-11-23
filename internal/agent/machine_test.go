@@ -305,3 +305,24 @@ func TestPastedLoginIsWithheldAndHeld(t *testing.T) {
 		t.Fatalf("held %+v %v", p, ok)
 	}
 }
+
+// Off the person's own machine a first use offers no "always", and an
+// answer that grants nothing keeps nothing in the operator's state.
+func TestFirstUseOffTheMachineKeepsNothing(t *testing.T) {
+	machineGrants(t)
+	kc, _ := fakeKube(t, "tok-server-0011223344")
+	reg := tools.NewRegistry(k8s.GetTool{M: k8s.NewManager(k8s.Config{Kubeconfig: kc, FirstUseAll: true})})
+	sess, _ := tools.NewSession(t.TempDir())
+	appr := &firstUseApprover{always: true}
+	l := NewLoop(&scriptedAdapter{turns: []scriptedTurn{k8sGet("c1"), {text: "ok"}}}, reg, policy.New(policy.ModeDefault), appr, sess,
+		NewRecorder(NewMemStore(), "s", ""), DefaultConfig())
+	if _, err := l.Run(context.Background(), "pods"); err != nil {
+		t.Fatal(err)
+	}
+	if appr.count() != 1 || appr.asks[0].Offer() != "" || appr.asks[0].Keeps != "" {
+		t.Fatalf("asks %+v", appr.asks)
+	}
+	if gs, _ := machinegrant.List(); len(gs) != 0 {
+		t.Fatalf("kept %v off the person's machine", gs)
+	}
+}

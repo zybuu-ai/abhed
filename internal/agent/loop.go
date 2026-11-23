@@ -2275,7 +2275,7 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 			l.noteReviewed(call.ID)
 		}
 		if firstUse != nil {
-			l.firstUseApproved(tool, *firstUse, answer.Granted == firstUse.Scope, approvedBy)
+			l.firstUseApproved(tool, *firstUse, firstUse.Scope != "" && answer.Granted == firstUse.Scope, approvedBy)
 		}
 	}
 	if ok, res := l.planClaim(call, planned, approvedBy); !ok {
