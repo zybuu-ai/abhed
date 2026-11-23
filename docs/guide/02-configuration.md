@@ -569,6 +569,68 @@ gets the note only when it ran a network client (`curl`, `wget`, `git fetch`,
 `npm`, `pip` and the like) and the failure is in its last five lines, so
 output that merely mentions such an error, a log being read, does not.
 
+### Choosing the tier
+
+```json
+"sandbox": { "tier": "process" }
+```
+
+With no `tier`, Abhed uses the strongest tier available that meets
+`sandbox.min_tier`. `tier` chooses one instead: `process`, `container`, `vm`
+or `fence`. That tier is used or the session is refused; no other tier stands
+in for it, and it may not be weaker than `min_tier`, the managed file's
+included (`"tier": "process"` under a managed `"min_tier": "container"` is
+refused at load). It is your own setting: set it with
+`/config set sandbox.tier process|container|vm|fence|auto` (a chosen tier
+asks first; `auto` and a stronger tier do not), or in `~/.abhed/config.json`.
+A workspace file cannot set it, and the managed file pins it when it does.
+
+On a Mac, with no `tier` and nothing in the managed file setting `tier` or
+`min_tier`, a container tier whose image has no `git` is passed over for the
+process tier, which still meets the minimum: with podman running, the bare
+default image (`debian:bookworm-slim`, no git, curl, ping or node, and no
+network to install them) is no place for your own workspace. The default
+image is known to lack them; another is looked in once per process, as
+`abhed doctor` does, and a look that fails keeps the container. Choose
+`"tier": "container"` to use the container anyway, or set `sandbox.image` to
+an image that has git. `abhed doctor` says why the tier was chosen, what the
+image lacks, and how to choose another within the minimum.
+
+### Opening the network from a session
+
+Commands have no network by default, and that stays the default. Where the
+network is off and the managed file does not set `sandbox.allow_network`,
+`sandbox.network` or `egress`, you can open it without editing a file: when a
+command fails for the network, or before one needs it, the agent calls
+`network_access` and you are asked through the ordinary approval, and Studio
+offers the same choices itself (Allow Network for This Workspace, Only a Host,
+This Chat Only).
+
+- **This workspace:** any host, over http and https.
+- **One host:** that host, over http and https.
+- **This chat only:** any host, or one, for this chat; not kept.
+
+Commands reach what you opened through the session's egress proxy, so deny
+rules still win, and ssh, ping and other protocols still fail. A workspace or
+host choice is kept with the workspace's other kept approvals
+(`~/.abhed/state/workspace-grants.json`), applied before the first command of
+a later session there, listed in Manage Kept Approvals, and revoked there
+(`_abhed/grants/revoke` with id `network`); a revoke applies to new chats.
+Where the managed file holds the network nothing is offered and nothing kept
+is used. A tier that cannot hold the proxy (a container tier on a VM without
+`control_plane.relay_binary`) says so instead.
+
+### What the session tells the model
+
+With the first message you send, the model is told what this session can do,
+from its real state: the tier, the network (off, open, an allowlist, or what
+you opened), that git remote operations (fetch, pull, push, clone) are not
+brokered and need the network, the Kubernetes clusters configured, and the
+tools the container image lacks. It is asked not to find these limits by
+trial, nor to dispute them with you. It is told again when they change (after
+you open the network), after a compaction and on a resume; subagents are not.
+It is part of your message in the record.
+
 ### The container tier's image
 
 The container tier runs each command in `docker.io/library/debian:bookworm-slim`

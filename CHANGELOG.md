@@ -176,6 +176,40 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- A person chooses the sandbox tier: `sandbox.tier` now takes `process`,
+  `container` and `vm` as well as `fence`, set with `/config set sandbox.tier`
+  (or `auto`). The chosen tier is used or the session is refused, and it may
+  not be weaker than `sandbox.min_tier`, the managed minimum included. A
+  workspace file still cannot set it. `abhed doctor` says why the tier was
+  chosen, what the container image lacks, and how to choose another.
+- The network on the person's word, without a config edit. Where it is off
+  and the managed file does not hold it, the agent's `network_access` tool
+  asks through the ordinary approval, and Studio offers it when a command
+  fails for the network (`_abhed/sandbox/network_refused`,
+  `_abhed/sandbox/network`): any host for the workspace, one host, or this
+  chat alone. Commands reach it through the session's egress proxy, so deny
+  rules still win and ssh and ping still fail. Workspace and host choices are
+  kept with the workspace's kept approvals and revoked there. Default-deny
+  stays the default.
+- The session tells the model, with the first message, what it can do from
+  its real state: the tier, the network, that git remote operations are not
+  brokered, the clusters configured and the tools the image lacks, and asks it
+  not to find these by trial or dispute them with the person. Told again when
+  they change, after a compaction and on a resume.
+- Settings changed while chats are open are said: Studio gets
+  `_abhed/config/changed` (applies to new chats) and can give an open chat
+  the models added and the new default (`_abhed/config/apply`, recorded
+  `config.applied`); the command line says so after the task and
+  `/config apply` offers the added models. Nothing that widens what the agent
+  may do is applied to an open chat.
+- A provider's refusal is said with the provider's own words and the next
+  step (key, credit or quota, retired or not-found model, rate limit),
+  naming configured models whose key is at hand: in Studio's chat
+  (`_meta.providerError`), at the terminal and in `abhed doctor`. Anything
+  key-shaped in the message is redacted. A model the provider called retired
+  or not found is remembered for two weeks and named before the first call
+  (session/new `_meta.modelWarning`, the command line's start, doctor).
+
 - Plugin bundles: `abhed plugin install|approve|list|show|remove|publishers|
   trusted-root|pack`. A plugin bundles agent definitions, skills, custom
   commands, simple hooks and MCP servers under one manifest. The manifest lists
@@ -596,6 +630,16 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- On a Mac, with no `sandbox.tier` and nothing managed setting the tier or
+  its minimum, a container tier whose image has no git is passed over for the
+  process tier: with podman running, the bare default image left the agent
+  without git, curl or node, and no network to get them. Set
+  `"tier": "container"` to use it anyway, or `sandbox.image` to an image with
+  git.
+- Where the network may be opened from a session, commands get the session's
+  egress proxy, closed until it is opened, also when toolchains or their
+  registries are off.
+
 - Providers of type `ollama` now send one request at a time unless
   `max_concurrent_requests` says more, matching Ollama's documented
   `OLLAMA_NUM_PARALLEL` default of 1; the rest wait in Abhed. Set the key to
@@ -663,6 +707,17 @@ All notable changes to Abhed are recorded here. The format follows
   `-no-browser` to only print the sign-in address.
 
 ### Fixed
+
+- The verifier labelled a greeting ("I'm Abhed, your technical assistant")
+  an unverified observed claim, and strict mode asked for a revision of it. A
+  self-introduction or a general statement of what the assistant can do is
+  now no claim about the session's work; one with anything of the session in
+  it is checked as before. The false-claim corpus gains these cases and its
+  floors rise.
+- The supervisor asked about every later call that could reach the network
+  as credential-egress once `.git/config` had been read, with only plain
+  remote URLs in it. A git config now counts only when it holds a credential:
+  a URL with a password or a token-shaped user, or an authorization header.
 
 - `abhed -p -mode acceptEdits` was refused ("unknown -mode"), although
   `-permission-mode acceptEdits` was taken. `-mode` now takes

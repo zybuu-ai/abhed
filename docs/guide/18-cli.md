@@ -194,7 +194,8 @@ provider is refused under a managed `model.default`, as `/model` is.
 | `/evidence [N \| #seq]` | the checks on the last answer: every statement with its verdict, or the record behind statement N, or one entry of the record — [Verified answers](29-verified-answers.md#where-you-see-it) |
 | `/copy` | put the last reply on the clipboard through the terminal (OSC 52); `cli.copy: false` turns it off — [The terminal](20-terminal.md#the-title-notifications-and-the-clipboard) |
 | `/config` | each setting and where it comes from: managed, a file, or the default |
-| `/config set KEY VALUE` | set `model.default`, `permissions.mode`, `sandbox.allow_network`, `limits.max_turns`, `tools.syntax_check` or `statusline.command` in your own `~/.abhed/config.json`, for the next session |
+| `/config set KEY VALUE` | set `model.default`, `permissions.mode`, `sandbox.allow_network`, `sandbox.tier`, `limits.max_turns`, `tools.syntax_check` or `statusline.command` in your own `~/.abhed/config.json`, for the next session |
+| `/config apply` | offer this session the models added to your own file since it started; nothing else of the file applies to it. When the file changes, the session says so after the task: a change applies to new sessions |
 
 `/config set` refuses a setting the managed configuration makes, and asks
 before a change that lets the agent do more: a broader mode, network on
