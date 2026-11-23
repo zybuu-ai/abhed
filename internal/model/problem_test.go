@@ -26,6 +26,9 @@ func TestProblemOf(t *testing.T) {
 		{503, `upstream connect error`, ProblemUnavailable, "upstream connect error"},
 		{400, `{"detail":"max_tokens is too large"}`, ProblemOther, "max_tokens"},
 		{404, ``, ProblemOther, "Not Found"},
+		{400, `{"error":{"message":"This model's maximum context length is 8192 tokens.","code":"context_length_exceeded"}}`, ProblemTooLarge, "maximum context length"},
+		{400, `{"type":"error","error":{"message":"prompt is too long: 210000 tokens > 200000 maximum"}}`, ProblemTooLarge, "prompt is too long"},
+		{413, `request too large`, ProblemTooLarge, "request too large"},
 		{404, `404 page not found`, ProblemOther, "page not found"},
 		{404, `{"error":{"message":"The model 'gpt-x' does not exist"}}`, ProblemRetired, "does not exist"},
 	} {

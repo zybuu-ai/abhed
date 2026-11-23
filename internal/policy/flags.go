@@ -22,6 +22,9 @@ type flagForm struct {
 
 var shortCluster = regexp.MustCompile(`^-[A-Za-z0-9]+$`)
 
+// shortClusterStar is a cluster a rule's glob ends with a star: -rf*.
+var shortClusterStar = regexp.MustCompile(`^-[A-Za-z0-9]+\*$`)
+
 // longFlag reports a long option with no value glued to it.
 func longFlag(w string) bool {
 	return len(w) > 2 && strings.HasPrefix(w, "--") && !strings.Contains(w, "=")
@@ -35,11 +38,11 @@ func parseFlagForm(glob string) *flagForm {
 	i := 0
 	for ; i < len(fields); i++ {
 		w := fields[i]
-		if strings.ContainsAny(w, "*?") {
-			return nil
-		}
 		if strings.HasPrefix(w, "-") {
 			break
+		}
+		if strings.ContainsAny(w, "*?") {
+			return nil
 		}
 		f.prefix = append(f.prefix, w)
 	}
@@ -56,6 +59,14 @@ flags:
 			}
 		case longFlag(w):
 			f.long[w] = true
+		case shortClusterStar.MatchString(w):
+			// -rf* in bash(rm -rf*): the flags, then anything; the star
+			// stands for the rest, which may be more flags or operands.
+			for j := 1; j < len(w)-1; j++ {
+				f.short[w[j]] = true
+			}
+			fields[i] = "*"
+			break flags
 		default:
 			break flags
 		}

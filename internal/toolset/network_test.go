@@ -240,3 +240,40 @@ func TestSessionNoteSaysWhyGitIsNotBrokered(t *testing.T) {
 		t.Fatalf("note: %s", note)
 	}
 }
+
+// A host named opens that host alone at every scope; only a scope with no
+// host opens every host. What is kept matches what was opened.
+func TestNamedHostOpensOnlyThatHostAtEveryScope(t *testing.T) {
+	for _, scope := range []string{"workspace", "host", "once"} {
+		n := NewNetwork(config.Default(), offSandbox(t))
+		var keptAll bool
+		var keptHosts []string
+		n.Keep = func(all bool, host string) error {
+			keptAll = keptAll || all
+			if host != "" {
+				keptHosts = append(keptHosts, host)
+			}
+			return nil
+		}
+		if _, err := n.Open(scope, "Example.com", true); err != nil {
+			t.Fatalf("%s: %v", scope, err)
+		}
+		pol := n.policy()
+		reach := func(h string) bool {
+			return pol.DecideHost(egress.Request{Host: h, Port: 443, Tunnel: true}).Decision == egress.Allow
+		}
+		if !reach("example.com") || reach("wikipedia.org") || pol.AnyGranted() || keptAll {
+			t.Fatalf("%s with a host: example.com %v, wikipedia.org %v, any %v, kept all %v", scope, reach("example.com"), reach("wikipedia.org"), pol.AnyGranted(), keptAll)
+		}
+		wantKept := scope != "once"
+		if (len(keptHosts) == 1 && keptHosts[0] == "example.com") != wantKept {
+			t.Fatalf("%s: kept %v", scope, keptHosts)
+		}
+	}
+	for _, scope := range []string{"workspace", "once"} {
+		n := NewNetwork(config.Default(), offSandbox(t))
+		if _, err := n.Open(scope, "", false); err != nil || !n.policy().AnyGranted() {
+			t.Fatalf("%s with no host: %v", scope, err)
+		}
+	}
+}

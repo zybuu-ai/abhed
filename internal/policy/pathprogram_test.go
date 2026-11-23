@@ -52,6 +52,16 @@ func TestRuleFlagsMatchMovedOrSplit(t *testing.T) {
 		{"bash(chmod -R *)", "chmod 644 x -R", true},
 		{"bash(chmod -R *)", "chmod 644 x", false},
 		{"bash(rm -rf /*)", "rm /etc -r -f", true},
+		// The star glued to the flags, as an org file writes it.
+		{"bash(rm -rf*)", "rm -r -f build", true},
+		{"bash(rm -rf*)", "rm -fr build", true},
+		{"bash(rm -rf*)", "rm build -f -r", true},
+		{"bash(rm -rf*)", "rm -rfv build", true},
+		{"bash(rm -rf*)", "rm -r build", false},
+		{"bash(rm -rf*)", "rmdir -r -f build", false},
+		{"bash(chmod -R*)", "chmod 644 x -R", true},
+		{"bash(git push -f*)", "git push origin main -f", true},
+		{"bash(git push -f*)", "git pull -f", false},
 	} {
 		kinds := []string{"deny"}
 		if strings.HasPrefix(c.rule, "bash(chmod") {
@@ -70,6 +80,16 @@ func TestRuleFlagsMatchMovedOrSplit(t *testing.T) {
 			if got := res.Step == kind; got != c.want {
 				t.Errorf("%s %s, %q = %s at %s (%s)", kind, c.rule, c.command, res.Decision, res.Step, res.Reason)
 			}
+		}
+	}
+	// Allow rules match only as written, a starred cluster's too.
+	for _, cmd := range []string{"rm -r -f build", "rm -fr build", "rm build -rf"} {
+		e := New(ModeDefault)
+		if err := e.AddAllow("bash(rm -rf*)"); err != nil {
+			t.Fatal(err)
+		}
+		if res := e.Evaluate("bash", true, args(map[string]string{"command": cmd})); res.Decision == Allow && res.Step == "allow" {
+			t.Errorf("allow bash(rm -rf*) let %q through", cmd)
 		}
 	}
 	// Allow rules match only as written.
