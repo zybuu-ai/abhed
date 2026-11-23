@@ -34,8 +34,8 @@ type msgOutcome struct {
 	reason string
 }
 
-func (o msgOutcome) meta() map[string]any {
-	m := map[string]any{"userMessageSeq": nil}
+func (o msgOutcome) meta(sessionID string) map[string]any {
+	m := map[string]any{"sessionId": sessionID, "userMessageSeq": nil}
 	if o.seq != nil {
 		m["userMessageSeq"] = *o.seq
 	} else {
@@ -141,5 +141,5 @@ func (c *acpConn) noteUserMessage(s *acpSession, ev abhed.Event) {
 	p.got = &out
 	p.mu.Unlock()
 	c.notification("_abhed/session/userMessage", map[string]any{"sessionId": s.id, "requestId": prompt,
-		"_meta": map[string]any{acpMetaKey: out.meta()}})
+		"_meta": map[string]any{acpMetaKey: out.meta(s.id)}})
 }

@@ -1103,7 +1103,7 @@ func (c *acpConn) steer(msg rpcMessage) {
 		}
 	}
 	res := map[string]any{"queueId": qid}
-	for k, v := range out.meta() {
+	for k, v := range out.meta(s.id) {
 		metaOf(res)[k] = v
 	}
 	c.reply(msg.ID, res, nil)

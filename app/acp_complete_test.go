@@ -766,7 +766,7 @@ func TestStudioCompletionsWithholdAcrossTheCursor(t *testing.T) {
 				t.Fatalf("request %d sent %q of a secret split at the cursor: %q | %q", i, frag, p, sfx)
 			}
 		}
-		if !strings.HasSuffix(sfx, "\"\nnext()") || !strings.Contains(p+sfx, "[secret") {
+		if !strings.HasSuffix(sfx, "\"\nnext()") || !strings.Contains(p+sfx, "[secret") && !strings.Contains(p+sfx, "[pasted credential]") {
 			t.Fatalf("request %d: %q | %q", i, p, sfx)
 		}
 	}

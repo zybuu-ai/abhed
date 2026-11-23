@@ -1263,20 +1263,14 @@ func (LoginTool) FixedArgs() {}
 func (LoginTool) SecretArgs() []string { return []string{"token_secret"} }
 
 func (t LoginTool) Description() string {
-	d := "Authenticate to a Kubernetes or OpenShift cluster with a token. Pass the cluster's name, " +
-		"never a token or a server URL. When the user pastes an `oc login --token=... --server=...` " +
-		"command or a token, Abhed withholds it from you and tells you its id (such as P1): offer to " +
-		"log in, and call this with pasted set to that id and a short cluster name. That one approval " +
-		"stores the token as a secret, keeps the cluster for the user's later sessions and logs in. " +
-		"Never ask the user to paste a token again or repeat one back. For a token already stored with " +
-		"`abhed secret set NAME`, pass token_secret. A cluster the user kept a login for needs no " +
-		"token_secret, and k8s_get and k8s_apply sign in to it themselves. " +
-		"Do NOT run `oc login` through bash: the sandbox blocks access to the kubeconfig, " +
-		"and a login inside a bash call does not survive to the next one."
+	d := "Log in to a Kubernetes or OpenShift cluster by name, never with a token or URL. When the user " +
+		"pastes an `oc login` or a token, Abhed withholds it and names it (P1): call this with pasted=P1 and a " +
+		"short cluster name; one approval stores it, keeps the cluster and logs in. Never ask for it again. " +
+		"Otherwise pass token_secret, a stored secret's NAME. Do not run `oc login` through bash."
 	if names := t.clusterNames(); len(names) > 0 {
 		d += " Clusters: " + strings.Join(names, ", ") + "."
 	} else {
-		d += " No clusters are declared or kept for login yet."
+		d += " No clusters yet."
 	}
 	if len(t.SecretNames) > 0 {
 		d += " Stored secrets: " + strings.Join(t.SecretNames, ", ") + "."
@@ -1288,11 +1282,11 @@ func (LoginTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type":"object",
   "properties":{
-    "cluster":{"type":"string","description":"Name of a declared or kept cluster, e.g. prod; with pasted, the short name to keep the new cluster under. Not a URL."},
-    "token_secret":{"type":"string","description":"NAME of the stored secret holding the bearer token, e.g. OCP_TOKEN. Never the token."},
-    "pasted":{"type":"string","description":"Id of a credential the user pasted, e.g. P1, as Abhed's note names it. Never the token."},
-    "store_as":{"type":"string","description":"With pasted: the secret NAME to store the token under. Default K8S_<CLUSTER>_TOKEN."},
-    "namespace":{"type":"string","description":"Default namespace for later calls."}
+    "cluster":{"type":"string","description":"Cluster name, not a URL."},
+    "token_secret":{"type":"string","description":"A stored secret's NAME."},
+    "pasted":{"type":"string","description":"A pasted credential's id, e.g. P1."},
+    "store_as":{"type":"string","description":"With pasted: the secret NAME to store it as."},
+    "namespace":{"type":"string"}
   },
   "required":["cluster"]
 }`)

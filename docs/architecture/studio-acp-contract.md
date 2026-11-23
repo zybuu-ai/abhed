@@ -802,8 +802,10 @@ interface AskMeta {
   `user.message` the engine records by `seq`. A `session/prompt`'s message
   is announced as soon as it is recorded, by the notification
   `_abhed/session/userMessage {sessionId, requestId, _meta.abhed:
-  {userMessageSeq}}`, where `requestId` is the prompt's JSON-RPC id, and the
-  prompt's reply repeats it as `_meta.abhed.userMessageSeq`. The reply to
+  {sessionId, userMessageSeq}}`, where `requestId` is the prompt's JSON-RPC
+  id, and the prompt's reply repeats it as `_meta.abhed.userMessageSeq`,
+  with `_meta.abhed.sessionId` beside it wherever it is sent. The seq is
+  always that message's own `user.message` event's in the session's record. The reply to
   `_abhed/session/steer` comes once its message is recorded, at the run's
   next turn boundary, with `{queueId, _meta.abhed.userMessageSeq}`. A
   message that is not recorded gets `userMessageSeq: null` and

@@ -1586,7 +1586,7 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	} else if err != nil {
 		notRecorded = redacted(err.Error())
 	}
-	for k, v := range s.pairing.endPrompt(notRecorded).meta() {
+	for k, v := range s.pairing.endPrompt(notRecorded).meta(s.id) {
 		metaOf(res)[k] = v
 	}
 	end()
