@@ -219,12 +219,16 @@ type Profile struct {
 	// image sent to a text-only server is a 400 at best and silently ignored
 	// at worst, and "the model did not mention the screenshot" is a much
 	// harder failure to diagnose than a clear refusal.
-	SupportsVision  bool               `json:"supports_vision"`
-	ToolCallFormat  string             `json:"tool_call_format"` // json | xml | pythonic | harmony
-	ReasoningTokens bool               `json:"reasoning_tokens"`
-	GuidedDecoding  bool               `json:"guided_decoding"`
-	CachePrefix     bool               `json:"cache_prefix"`
-	Conformance     map[string]float64 `json:"conformance,omitempty"`
+	SupportsVision  bool   `json:"supports_vision"`
+	ToolCallFormat  string `json:"tool_call_format"` // json | xml | pythonic | harmony
+	ReasoningTokens bool   `json:"reasoning_tokens"`
+	// StreamsReasoning marks a local server known to stream a model's
+	// reasoning, which is then counted in what came back; a cut call to it is
+	// not charged its whole output bound without a dollar cap.
+	StreamsReasoning bool               `json:"streams_reasoning,omitempty"`
+	GuidedDecoding   bool               `json:"guided_decoding"`
+	CachePrefix      bool               `json:"cache_prefix"`
+	Conformance      map[string]float64 `json:"conformance,omitempty"`
 	// Sampling reports which decoding knobs this provider honours, so a
 	// config naming one it does not is rejected rather than ignored.
 	Sampling Sampling `json:"-"`

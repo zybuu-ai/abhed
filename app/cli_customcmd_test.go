@@ -10,6 +10,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/customcmd"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -365,5 +366,21 @@ func TestCustomCommandModelHonoursTheManagedPin(t *testing.T) {
 	typeLine(t, st, "/fast")
 	if turn := st.takeTurn(); turn != nil || st.appCfg.Model.Default != "a" {
 		t.Fatalf("ran on %q past the managed pin (turn %+v)", st.appCfg.Model.Default, turn)
+	}
+}
+
+// A command's review shows its description, or its first body line, never
+// the front matter's opening "---".
+func TestCommandSummary(t *testing.T) {
+	for _, c := range []struct{ data, want string }{
+		{"---\ndescription: explain a file\n---\nExplain $ARGUMENTS", "explain a file"},
+		{"---\nargument-hint: <file>\n---\n\nExplain $ARGUMENTS in five bullets", "Explain $ARGUMENTS in five bullets"},
+		{"Review the diff", "Review the diff"},
+		// A key a command may not set: shown past its front matter all the same.
+		{"---\nmode: auto\n---\nDo it", "Do it"},
+	} {
+		if got := commandSummary(customcmd.File{Rel: "x.md", Key: ".abhed/commands/x.md", Data: []byte(c.data)}); got != c.want {
+			t.Errorf("%q: %q", c.data, got)
+		}
 	}
 }

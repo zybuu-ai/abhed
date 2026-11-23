@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -42,7 +43,10 @@ func init() {
 }
 
 // offTopic says why an answer seems not to address the question, or "".
-func offTopic(question, answer string) string {
+// tools are the session's tool names: a question that names one ("call the
+// ssh_connect tool") names how to work, not what to answer about, so such a
+// name is no anchor, and with no other the topic words decide.
+func offTopic(question, answer string, tools ...string) string {
 	q, a := strings.TrimSpace(question), strings.ToLower(answer)
 	if q == "" || strings.TrimSpace(answer) == "" || strings.HasPrefix(q, "/") {
 		return ""
@@ -60,6 +64,11 @@ func offTopic(question, answer string) string {
 			anchors = append(anchors, m)
 		}
 	}
+	isTool := map[string]bool{}
+	for _, t := range tools {
+		isTool[strings.ToLower(t)] = true
+	}
+	anchors = slices.DeleteFunc(anchors, func(an string) bool { return isTool[strings.ToLower(an)] })
 	if len(anchors) > 0 {
 		for _, an := range anchors {
 			if strings.Contains(a, strings.ToLower(an)) {

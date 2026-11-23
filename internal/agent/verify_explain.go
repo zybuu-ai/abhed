@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -253,6 +254,17 @@ func unsaid(ix *recordIndex, c Claim, v ClaimVerdict) string {
 			continue // a time, not a thing an output says
 		}
 		w = w[strings.LastIndexByte(w, ' ')+1:]
+		// "I fixed the bugs in src/a.py": a fix is shown by the change to the
+		// file it names and a test run that passed after the last change.
+		if fixWords[w] && len(f.paths) > 0 {
+			shown := true
+			for _, p := range f.paths {
+				shown = shown && ix.changedPath(p).out == matched && ix.fixShown(p)
+			}
+			if shown {
+				continue
+			}
+		}
 		said := false
 		for _, seq := range v.Evidence {
 			if o := ix.bySeq[seq]; o != nil && o.evidence().hasLiteral(w) {
@@ -264,4 +276,137 @@ func unsaid(ix *recordIndex, c Claim, v ClaimVerdict) string {
 		}
 	}
 	return ""
+}
+
+// fixWords say a fault is gone.
+var fixWords = wordSet(`fixed resolved solved addressed corrected patched`)
+
+var (
+	// rationaleRe says why or how code behaves.
+	rationaleRe = regexp.MustCompile(`\b(?:ensures?|handles?|allows?|lets|so that|which means|because|instead of|correctly|incorrectly|naturally|by (?:splitting|using|calling|checking|keeping|adding|discarding|collapsing)|the (?:previous|old|original|new) (?:implementation|code|logic|version|loop|function))\b`)
+	// rationaleSubjectRe is code named by its age, which is no event.
+	rationaleSubjectRe = regexp.MustCompile(`\b(?:new|previous|old|original)\s+(?:implementation|code|logic|version|loop|function)\b`)
+	// passiveInfinitiveRe is what code does said as "to be added".
+	passiveInfinitiveRe = regexp.MustCompile(`\b(?:to be|be|being|is|are)\s+([a-z]+)\b`)
+	// rationaleCondRe is a condition in a rationale ("if it didn't fit"):
+	// its "not" is the condition's.
+	rationaleCondRe = regexp.MustCompile(`\b(?:if|unless|when|even if|even when|even though)\b[^.;]*`)
+	// rationaleJudgeRe are rationale words that are not judgements of work.
+	rationaleJudgeRe = regexp.MustCompile(`\b(?:correctly|incorrectly)\b`)
+)
+
+// rationale reports an unverified, uncited claim that only explains how or
+// why code the session read or changed behaves: a rationale word, no pass,
+// count, number, change, deed, run, file:line, state, outcome, judgement or
+// citation, no event but a few that say what code does, and a code span or
+// word of its own in one of the session's reads or edits.
+func rationale(ix *recordIndex, c Claim) bool {
+	if len(c.Evidence) > 0 || c.Quote != "" {
+		return false
+	}
+	text := citeRe.ReplaceAllString(c.Text, " ")
+	f := extractFacts(text)
+	plain := normText(backtickRe.ReplaceAllString(text, " "))
+	if f.success || f.changed || f.deed || f.proof || f.changeWord || len(f.ran) > 0 || len(f.fileLines) > 0 ||
+		len(f.counted) > 0 || len(f.numbers) > 0 || len(f.hosts) > 0 || f.presentState || f.mergeClean || f.overclaim ||
+		f.observe || !rationaleRe.MatchString(plain) || stateRe.MatchString(plain) || outcomeRe.MatchString(plain) ||
+		judgeRe.MatchString(rationaleJudgeRe.ReplaceAllString(plain, " ")) || negationRe.MatchString(rationaleCondRe.ReplaceAllString(plain, " ")) {
+		return false
+	}
+	// Events may only be what code does: a participle code does, "to be
+	// added", or code named by its age.
+	allowed := map[string]bool{}
+	for _, m := range passiveInfinitiveRe.FindAllStringSubmatch(plain, -1) {
+		allowed[m[1]] = true
+	}
+	ev := eventWords(rationaleSubjectRe.ReplaceAllString(normText(text), " "))
+	for _, w := range ev {
+		if !codeParticiple[w] && !allowed[w] && !strings.HasSuffix(w, "ing") {
+			return false
+		}
+	}
+	// It must be about something the session read or changed.
+	var hay []string
+	for _, o := range ix.obs {
+		if o.usable() && (shownTools[o.tool] || o.tool == "edit" || o.tool == "write") {
+			hay = append(hay, strings.ToLower(o.content))
+		}
+	}
+	for _, m := range ix.mutations {
+		if m.tool == "edit" || m.tool == "write" {
+			hay = append(hay, strings.ToLower(m.text))
+		}
+	}
+	for _, sp := range codeSpans(c.Text) {
+		for _, h := range hay {
+			if strings.Contains(h, strings.ToLower(strings.TrimSpace(sp))) {
+				return true
+			}
+		}
+	}
+	for _, w := range wordRe.FindAllString(plain, -1) {
+		if len(w) < 4 || rationaleRe.MatchString(w) || notUnits[w] || qualStop[w] || commonClaimWords[w] {
+			continue
+		}
+		for _, h := range hay {
+			if strings.Contains(h, w) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+var (
+	// ownChangeSubjectRe names the session's change as what does something.
+	ownChangeSubjectRe = regexp.MustCompile(`\b(?:the\s+(?:new|updated|changed|fixed|rewritten|current)\s+(?:code|implementation|logic|version|loop|function|method|regex|check|handling)|this|these changes|the (?:fix|change|changes|patch|edit|edits|update|rewrite)|my (?:fix|change|changes|edit)|our (?:fix|change|changes|edit))\b`)
+	// capabilityRe says code works, or can do something.
+	capabilityRe = regexp.MustCompile(`\b(?:correctly|properly|now|works?|working|allows?|lets|supports?|fixes|ensures?|prevents?|handles?|can now)\b`)
+	// oldBehaviourRe says what code did before the change.
+	oldBehaviourRe = regexp.MustCompile(`\b(?:previous|previously|old|original|originally|before the (?:change|fix|edit))\b`)
+)
+
+// saysOwnChangeWorks reports a claim that the session's own change is
+// correct or can do something: its subject is the new code, "this", the fix
+// or change, or a function or file the session edited, with a correctness,
+// capability or outcome word. Said of what the code did before the change,
+// it is not.
+func saysOwnChangeWorks(ix *recordIndex, text string) bool {
+	low := normText(backtickRe.ReplaceAllString(text, " "))
+	if !capabilityRe.MatchString(low) || oldBehaviourRe.MatchString(low) {
+		return false
+	}
+	if ownChangeSubjectRe.MatchString(low) {
+		return true
+	}
+	for _, sp := range codeSpans(text) {
+		if ix.editedName(strings.TrimSpace(sp)) {
+			return true
+		}
+	}
+	return false
+}
+
+// editedName reports a name the session's own edits put in, or the base
+// name of a file they changed.
+func (ix *recordIndex) editedName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, m := range ix.mutations {
+		if m.failed || m.person {
+			continue
+		}
+		if m.path != "" && (filepath.Base(m.path) == name || strings.HasSuffix(m.path, "/"+name)) {
+			return true
+		}
+		var a struct {
+			New     string `json:"new_string"`
+			Content string `json:"content"`
+		}
+		if json.Unmarshal([]byte(m.text), &a) == nil && (strings.Contains(a.New, name) || strings.Contains(a.Content, name)) {
+			return true
+		}
+	}
+	return false
 }
