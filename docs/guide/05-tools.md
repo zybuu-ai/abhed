@@ -276,14 +276,20 @@ paste a login, so a pasted `oc login` works on any machine and costs nothing
 until then; `k8s_get` and `k8s_apply` are offered once a login exists. `k8s_apply` is offered
 unless a file sets `k8s.allow_writes`. Setting `k8s.enabled` or
 `ssh.enabled` to `false`, in any file a workspace's included, turns it off.
-Under an organisation's managed configuration none of this is automatic:
-only what the configuration turns on is offered. With `k8s.enabled: true`
-the kubeconfig's contexts are reachable as before, a context whose
-credential helper Abhed would run asks before its first use, and only the
-organisation's `k8s.clusters` take a token: no login is kept, and a pasted
-token cannot be kept. With `ssh.enabled: true` only `ssh.hosts` and
-`ssh_connect` are offered, never the person's `~/.ssh/config`. `abhed serve`
-never offers its operator's own setup to the sessions it runs.
+A managed configuration or org policy changes none of this unless it
+decides for the organisation: it sets a `k8s` key, an `ssh` key, or
+`machine_setup: false` (which covers both). A managed file that only turns
+on web search, say, leaves your own setup and your kept logins as they are.
+Where it sets any `k8s` key, only what it configures counts on the
+machine: its own `k8s.enabled` (a person's or workspace's `true` is not
+taken), its `k8s.clusters`, which take a token through `k8s_login`, and a
+kubeconfig only where it names one in `k8s.kubeconfig`; otherwise no
+kubeconfig is read at all. No login is kept, and a pasted login is still
+withheld, the model is told logins are off and why, and a login it tries
+anyway is refused with the reason ("your organisation's configuration sets
+k8s…; ask your administrator"), never as an unknown tool. Where it sets `ssh`, only `ssh.hosts` and `ssh_connect` are
+offered, never the person's `~/.ssh/config`. `abhed serve` never offers its
+operator's own setup to the sessions it runs.
 
 `abhed doctor` lists the contexts with their servers (and the program a
 credential helper runs), the `~/.ssh/config` hosts and what is kept, by name,

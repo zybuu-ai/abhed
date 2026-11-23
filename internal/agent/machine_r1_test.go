@@ -313,3 +313,37 @@ func TestDroppedNamesHeldValuesAndHistoryWithholdsThem(t *testing.T) {
 		t.Fatalf("history %q", got)
 	}
 }
+
+// Where the organisation's configuration sets k8s, a pasted login is still
+// withheld, and the login the model makes is refused with the reason, never
+// as an unknown tool.
+func TestAPastedLoginRefusedByTheOrganisationSaysWhy(t *testing.T) {
+	why := "your organisation's configuration (/etc/abhed/config.json) sets k8s, so only what it configures is offered here; ask your administrator"
+	reg := tools.NewRegistry(k8s.LoginTool{M: k8s.NewManager(k8s.Config{Off: why, HiddenUntilLogin: true})})
+	sess, _ := tools.NewSession(t.TempDir())
+	store := NewMemStore()
+	ad := &scriptedAdapter{turns: []scriptedTurn{
+		{calls: []model.ToolCall{{ID: "c1", Name: "k8s_login", Args: json.RawMessage(`{"cluster":"lab","pasted":"P1"}`)}}},
+		{text: "ok"},
+	}}
+	l := NewLoop(ad, reg, policy.New(policy.ModeDefault), &firstUseApprover{}, sess, NewRecorder(store, "s", ""), DefaultConfig())
+	if _, err := l.Run(context.Background(), "oc login --token="+pinTok+" --server=https://api.x.example:6443"); err != nil {
+		t.Fatal(err)
+	}
+	sent := ""
+	for _, m := range ad.gotRequests[len(ad.gotRequests)-1].Messages {
+		sent += m.Content
+	}
+	if strings.Contains(sent, pinTok) || strings.Contains(sent, "nknown tool") || !strings.Contains(sent, "ask your administrator") {
+		t.Fatalf("the model was told: %q", sent)
+	}
+	// The note on the paste already says logins are off, and why.
+	first := ""
+	for _, m := range ad.gotRequests[0].Messages {
+		first += m.Content
+	}
+	if !strings.Contains(first, "Cluster logins are off on this machine") || !strings.Contains(first, "ask your administrator") ||
+		strings.Contains(first, "offer to log in") {
+		t.Fatalf("the paste's note: %q", first)
+	}
+}

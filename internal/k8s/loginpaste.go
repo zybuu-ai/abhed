@@ -78,6 +78,9 @@ func (t LoginTool) planPasted(ctx context.Context, sess *tools.Session, a loginA
 	if t.M == nil || sess == nil {
 		return fmt.Errorf("k8s_login needs a session to use a pasted token")
 	}
+	if t.M.cfg.PastedOff != "" {
+		return fmt.Errorf("a pasted token cannot be used on this machine: %s. Tell the user so; do not ask them to paste it again", t.M.cfg.PastedOff)
+	}
 	if !t.M.cfg.KeptLogins && !t.M.cfg.SessionLogins {
 		return fmt.Errorf("a pasted token can be used only where Abhed runs on the user's own machine; here, " +
 			"ask the user to store it with `abhed secret set NAME` and pass that NAME as token_secret")

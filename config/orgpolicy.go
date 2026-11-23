@@ -194,6 +194,7 @@ var orgRules = map[string]orgRule{
 	"web_fetch.max_chars":      {orgTighten, ""},
 	"web_fetch":                {orgRefuse, "names hosts fetched without asking"},
 	"k8s.enabled":              {orgTighten, ""},
+	"machine_setup":            {orgTighten, ""},
 	"k8s.allow_writes":         {orgTighten, ""},
 	"k8s":                      {orgRefuse, "names this machine's clusters and their files"},
 	"ssh.enabled":              {orgTighten, ""},

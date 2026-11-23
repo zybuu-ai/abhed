@@ -49,13 +49,18 @@ type Config struct {
 	Subagents   SubagentsConfig   `json:"subagents"`
 	K8s         K8sConfig         `json:"k8s,omitempty"`
 	SSH         SSHConfig         `json:"ssh,omitempty"`
-	Limits      LimitsConfig      `json:"limits"`
-	Sandbox     SandboxConfig     `json:"sandbox"`
-	MCP         MCPConfig         `json:"mcp"`
-	Retrieval   RetrievalConfig   `json:"retrieval"`
-	WebSearch   WebSearchConfig   `json:"web_search"`
-	WebFetch    WebFetchConfig    `json:"web_fetch,omitempty"`
-	Extensions  []ExtensionConfig `json:"extensions,omitempty"`
+	// MachineSetup false, in the managed configuration or an org policy,
+	// turns off the person's own machine setup (their kubeconfig contexts,
+	// ~/.ssh/config hosts and pasted cluster logins); see MachineSetupOff.
+	// Set anywhere else it changes nothing.
+	MachineSetup *bool             `json:"machine_setup,omitempty"`
+	Limits       LimitsConfig      `json:"limits"`
+	Sandbox      SandboxConfig     `json:"sandbox"`
+	MCP          MCPConfig         `json:"mcp"`
+	Retrieval    RetrievalConfig   `json:"retrieval"`
+	WebSearch    WebSearchConfig   `json:"web_search"`
+	WebFetch     WebFetchConfig    `json:"web_fetch,omitempty"`
+	Extensions   []ExtensionConfig `json:"extensions,omitempty"`
 	// CustomProviders adds model providers without a rebuild.
 	CustomProviders []CustomProviderConfig `json:"custom_providers,omitempty"`
 	Storage         StorageConfig          `json:"storage"`

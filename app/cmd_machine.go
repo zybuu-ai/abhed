@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -65,8 +66,8 @@ func machineCmd(args []string, out, errw io.Writer) int {
 func machineDoctor(cfg config.Config) []string {
 	var out []string
 	switch {
-	case cfg.Managed && !cfg.K8s.Enabled:
-		out = append(out, "kubeconfig  not offered: the managed configuration decides")
+	case cfg.MachineSetupOff("k8s") != "" && !cfg.ManagedSets("k8s.kubeconfig") && !cfg.FromOrg("k8s.kubeconfig"):
+		out = append(out, "kubeconfig  not used: "+cfg.MachineSetupOff("k8s"))
 	case cfg.Sets("k8s.enabled") && !cfg.K8s.Enabled:
 		out = append(out, "kubeconfig  not offered: k8s.enabled is false")
 	case toolset.MachineK8s(cfg, true) || cfg.K8s.Enabled:
@@ -113,6 +114,43 @@ func machineDoctor(cfg config.Config) []string {
 		for _, g := range gs {
 			out = append(out, "            "+g.Kind+" "+ui.VisibleLine(g.Name)+": "+ui.VisibleLine(g.What))
 		}
+	}
+	return out
+}
+
+// k8sDoctor is what doctor says of the configured Kubernetes access. Where
+// the organisation sets k8s it follows the same rule the tools do: its own
+// k8s.enabled, and no kubeconfig read unless it names one. Servers are shown
+// without any user, query or fragment.
+func k8sDoctor(cfg config.Config) []string {
+	enabled, noKubeconfig := toolset.OrgK8s(cfg)
+	if !enabled {
+		return nil
+	}
+	writes := "read-only"
+	if cfg.K8s.AllowWrites {
+		writes = "reads + writes (every write needs approval)"
+	}
+	out := []string{"kubernetes  " + writes}
+	if noKubeconfig != "" {
+		out = append(out, "            no kubeconfig read: "+noKubeconfig)
+	} else if c, err := k8s.Open(k8s.Config{Kubeconfig: cfg.K8s.Kubeconfig,
+		Context: cfg.K8s.Context, Namespace: cfg.K8s.Namespace,
+		Token: os.Getenv("ABHED_K8S_TOKEN")}); err != nil {
+		out = append(out, fmt.Sprintf("            UNAVAILABLE — %v", err))
+	} else {
+		out = append(out, fmt.Sprintf("            context %s\n            namespace %s · server %s",
+			ui.VisibleLine(c.Name), ui.VisibleLine(c.Namespace), k8s.DisplayURL(c.Server)))
+		if c.Insecure() {
+			out = append(out, "            ⚠ the kubeconfig skips TLS verification for this cluster")
+		}
+	}
+	for _, lc := range toolset.LoginClusters(cfg) {
+		warn := ""
+		if lc.InsecureSkipTLSVerify {
+			warn = "  ⚠ TLS verification disabled"
+		}
+		out = append(out, fmt.Sprintf("k8s login   %s → %s%s", ui.VisibleLine(lc.Name), k8s.DisplayURL(lc.Server), warn))
 	}
 	return out
 }

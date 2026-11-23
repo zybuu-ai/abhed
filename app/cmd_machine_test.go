@@ -97,3 +97,41 @@ func TestGuestCannotForgetAMachineGrant(t *testing.T) {
 		t.Fatalf("machine list was refused: %v", err)
 	}
 }
+
+// Under the organisation's k8s setting, doctor's kubernetes section reads no
+// personal kubeconfig, and shows every server without its user or query.
+func TestDoctorK8sFollowsTheOrgRule(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("KUBECONFIG", "")
+	kc := filepath.Join(home, ".kube", "config")
+	_ = os.MkdirAll(filepath.Dir(kc), 0o700)
+	if err := os.WriteFile(kc, []byte("current-context: personal\nclusters:\n- name: p\n  cluster:\n    server: https://personal.example:6443\n"+
+		"contexts:\n- name: personal\n  context:\n    cluster: p\n    user: me\nusers:\n- name: me\n  user:\n    token: personal-secret-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	org := config.Config{Managed: true, ManagedKeys: []string{"k8s.enabled", "k8s.clusters"}, SetKeys: []string{"k8s.enabled", "k8s.clusters"}}
+	org.K8s.Enabled = true
+	org.K8s.Clusters = []config.K8sClusterConfig{{Name: "orgprod", Server: "https://u:pw@orgprod.example:6443/?token=abc"}}
+	out := strings.Join(k8sDoctor(org), "\n")
+	for _, bad := range []string{"personal", "pw", "token=abc", "personal-secret-token"} {
+		if strings.Contains(out, bad) {
+			t.Fatalf("doctor shows %q under the org's k8s setting:\n%s", bad, out)
+		}
+	}
+	if !strings.Contains(out, "no kubeconfig read") || !strings.Contains(out, "orgprod → https://orgprod.example:6443") {
+		t.Fatalf("doctor:\n%s", out)
+	}
+	// A lower layer's k8s.enabled is not taken where the org sets k8s.
+	lower := config.Config{Managed: true, ManagedKeys: []string{"k8s.allow_writes"}, SetKeys: []string{"k8s.allow_writes", "k8s.enabled"}}
+	lower.K8s.Enabled = true
+	if out := k8sDoctor(lower); len(out) != 0 {
+		t.Fatalf("doctor took a person's k8s.enabled under the org's k8s setting: %v", out)
+	}
+	// With no org setting, the person's own kubeconfig is read as before.
+	own := config.Config{SetKeys: []string{"k8s.enabled"}}
+	own.K8s.Enabled = true
+	if out := strings.Join(k8sDoctor(own), "\n"); !strings.Contains(out, "context personal") || strings.Contains(out, "personal-secret-token") {
+		t.Fatalf("doctor without an org setting:\n%s", out)
+	}
+}
