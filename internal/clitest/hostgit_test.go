@@ -40,7 +40,13 @@ func TestHeadlessPullIsBrokered(t *testing.T) {
 		}
 	}
 	gc := filepath.Join(person, "gitconfig")
-	setup := func(_, ws string) {
+	// The person's Abhed folder is theirs alone too: the harness's home is
+	// under /tmp, where commands write, so the run uses a copy here.
+	home := filepath.Join(person, "home")
+	setup := func(harnessHome, ws string) {
+		if out, err := exec.Command("cp", "-Rp", harnessHome, home).CombinedOutput(); err != nil {
+			t.Fatalf("copy the home: %v\n%s", err, out)
+		}
 		root := filepath.Dir(ws)
 		remotes := filepath.Join(root, "remotes")
 		bare := filepath.Join(remotes, "team", "app.git")
@@ -75,7 +81,8 @@ func TestHeadlessPullIsBrokered(t *testing.T) {
 	}
 	cfg := strings.Replace(DefaultUserConfig, `{"min_tier":"none"}`, `{"min_tier":"process","allow_network":true}`, 1)
 	h := piped(t, Opts{UserConfig: cfg, Setup: setup,
-		Env:    []string{"GIT_CONFIG_GLOBAL=" + gc, "GIT_CONFIG_NOSYSTEM=1"},
+		Env: []string{"GIT_CONFIG_GLOBAL=" + gc, "GIT_CONFIG_NOSYSTEM=1",
+			"HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config")},
 		Args:   []string{"-p", "pull", "-allow", "bash(git*)", "-output-format", "stream-json"},
 		Script: "tool bash {\"command\":\"git pull --ff-only\"}\n\ntext \"done\""})
 	brokered := false
