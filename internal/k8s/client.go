@@ -91,6 +91,9 @@ type Config struct {
 	KeptLogins bool
 	// Secret reads a kept login's token from the secrets store; nil reads none.
 	Secret func(name string) (string, error)
+	// SessionLogins lets a pasted token log this session in, stored in the
+	// person's vault but kept nowhere else: a guest's, which go when they quit.
+	SessionLogins bool
 	// HiddenUntilLogin keeps k8s_get and k8s_apply from the model until a
 	// session of this manager logs in, or a kept login exists: offered for
 	// k8s_login alone, on a machine with nothing else to reach.

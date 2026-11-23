@@ -18,6 +18,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/agentdefs"
 	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/index"
 	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/machinegrant"
@@ -422,8 +423,10 @@ func InfraToolsFor(cfg config.Config, vault *secrets.Store, warn func(string, ..
 			HiddenUntilLogin: loginOnly,
 			// Under a managed configuration only the organisation's
 			// k8s.clusters take a token: no login is kept or offered.
-			KeptLogins: machine && !cfg.Managed,
-			Secret:     secret,
+			KeptLogins: machine && !cfg.Managed && !machinegrant.Guest(),
+			// A guest may log in with a paste for the session; nothing is kept.
+			SessionLogins: machine && !cfg.Managed && machinegrant.Guest(),
+			Secret:        secret,
 		})
 		for _, c := range cfg.K8s.Clusters {
 			if c.InsecureSkipTLSVerify {
@@ -602,11 +605,11 @@ func OpenIndexWithheld(ctx context.Context, cfg config.Config, workspace string,
 // builds: under ~/.abhed, which sandboxed commands cannot write, one file per
 // workspace and embedding model. "" when there is no home directory.
 func VectorCachePath(cfg config.Config, workspace string) string {
-	home, err := os.UserHomeDir()
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%d", tools.RealPath(workspace),
+		cfg.Retrieval.EmbedBaseURL, cfg.Retrieval.EmbedModel, cfg.Retrieval.EmbedDims)))
+	p, err := home.PersonPath("index", "vectors-"+hex.EncodeToString(sum[:8])+".gob")
 	if err != nil {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%d", tools.RealPath(workspace),
-		cfg.Retrieval.EmbedBaseURL, cfg.Retrieval.EmbedModel, cfg.Retrieval.EmbedDims)))
-	return filepath.Join(home, ".abhed", "index", "vectors-"+hex.EncodeToString(sum[:8])+".gob")
+	return p
 }

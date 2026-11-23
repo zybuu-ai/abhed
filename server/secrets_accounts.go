@@ -166,7 +166,7 @@ func (a *accountSecrets) mount(s *Server, mux *http.ServeMux) {
 			return
 		}
 		if secrets.Held(name) {
-			WriteError(w, http.StatusBadRequest, "names beginning "+secrets.HeldPrefix+" are kept by Abhed itself")
+			WriteError(w, http.StatusBadRequest, "names beginning "+secrets.HeldPrefix+" or "+secrets.ModelKeyPrefix+" are kept by Abhed itself")
 			return
 		}
 		var req struct {
@@ -205,7 +205,7 @@ func (a *accountSecrets) mount(s *Server, mux *http.ServeMux) {
 		}
 		name := r.PathValue("name")
 		if secrets.Held(name) {
-			WriteError(w, http.StatusBadRequest, "names beginning "+secrets.HeldPrefix+" are kept by Abhed itself; a login goes with abhed mcp logout")
+			WriteError(w, http.StatusBadRequest, "names beginning "+secrets.HeldPrefix+" or "+secrets.ModelKeyPrefix+" are kept by Abhed itself; a login goes with abhed mcp logout or abhed provider logout")
 			return
 		}
 		if err := v.Remove(name); err != nil {

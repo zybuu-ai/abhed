@@ -96,6 +96,13 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	fmt.Printf("provider    %s (%s)\n", cfg.Model.Default, provider.Type)
 	fmt.Printf("endpoint    %s\n", provider.BaseURL)
 	fmt.Printf("model       %s\n", provider.Model)
+	if status, detail, ok := modelKeyCheck(provider); ok {
+		mark := ""
+		if status != "ok" {
+			mark = "⚠ "
+		}
+		fmt.Printf("key         %s%s\n", mark, detail)
+	}
 	fmt.Printf("mode        %s\n", modeLabel(cfg))
 	if line := managedLine(cfg); line != "" {
 		fmt.Printf("managed     %s\n", line)

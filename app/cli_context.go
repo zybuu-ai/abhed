@@ -17,6 +17,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/customcmd"
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -77,8 +78,11 @@ var sessionMemory atomic.Pointer[agent.Memory]
 // files, which a deny keeps out of the prompt as it keeps them from a read.
 func memoryOptions(cfg config.Config, pol *policy.Engine, workspace string) agent.MemoryOptions {
 	o := agent.MemoryOptions{Workspace: workspace, ImportDepth: cfg.MemoryImportDepth(), RuleDirs: cfg.Rules.Dirs, ManagedOnly: cfg.Bare}
-	if home, err := os.UserHomeDir(); err == nil && cfg.Memory.Auto {
-		o.Auto = tools.AutoMemoryPath(home, workspace)
+	if p, err := tools.AutoMemoryFor(workspace); err == nil && cfg.Memory.Auto {
+		o.Auto = p
+	}
+	if p, err := userMemoryPath(); err == nil {
+		o.UserFile = p
 	}
 	o.Allow = agent.ReadAllowed(pol)
 	return o
@@ -387,13 +391,17 @@ func appendUserNote(note string) (string, error) {
 	return writeUserMemory(func(before []byte) []byte { return appendItem(before, note) })
 }
 
-// userMemoryPath is ~/.abhed/ABHED.md.
-func userMemoryPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+// userMemoryPath is the person's ABHED.md: ~/.abhed/ABHED.md before sign-in.
+func userMemoryPath() (string, error) { return home.PersonPath(agent.MemoryFileName) }
+
+// shownPath is path as a person reads it: under ~ when it is in the home folder.
+func shownPath(path string) string {
+	if h, err := os.UserHomeDir(); err == nil && h != "" {
+		if rel, err := filepath.Rel(h, path); err == nil && filepath.IsLocal(rel) {
+			return "~/" + filepath.ToSlash(rel)
+		}
 	}
-	return filepath.Join(home, ".abhed", "ABHED.md"), nil
+	return path
 }
 
 // writeUserMemory rewrites ~/.abhed/ABHED.md with change.
@@ -415,7 +423,7 @@ func writeUserMemory(change func([]byte) []byte) (string, error) {
 	if err := writeFileAtomic(path, change(before), 0o600); err != nil {
 		return "", err
 	}
-	return "~/.abhed/ABHED.md", nil
+	return shownPath(path), nil
 }
 
 // appendItem adds note to content as a list item on a line of its own.
@@ -595,11 +603,11 @@ func withAutoMemory(reg *tools.Registry, cfg config.Config, workspace string, in
 	if !cfg.Memory.Auto || !interactive {
 		return reg
 	}
-	home, err := os.UserHomeDir()
+	path, err := tools.AutoMemoryFor(workspace)
 	if err != nil {
 		return reg
 	}
-	autoMemory = &tools.MemoryWrite{Path: tools.AutoMemoryPath(home, workspace)}
+	autoMemory = &tools.MemoryWrite{Path: path}
 	out := reg.Clone()
 	out.Replace(autoMemory)
 	return out
@@ -613,12 +621,7 @@ func bindAutoMemory(st *cliState) {
 	}
 	loop := st.loop
 	autoMemory.Bind(func(s string) string { return redactFor(loop, s) }, func(path, kind string) error {
-		shown := path
-		if home, err := os.UserHomeDir(); err == nil {
-			if rel, err := filepath.Rel(home, path); err == nil && filepath.IsLocal(rel) {
-				shown = "~/" + filepath.ToSlash(rel)
-			}
-		}
+		shown := shownPath(path)
 		if _, err := loop.Recorder.Record(agent.EvMemoryWritten, agent.ActorAgent, agent.Untrusted,
 			agent.MemoryWritten{Path: shown, Kind: kind, By: "agent"}); err != nil {
 			return err
@@ -656,6 +659,9 @@ func AskAutoMemory(ctx context.Context, sf ui.Surface, cfg config.Config) (bool,
 // setUserAutoMemory sets memory.auto in ~/.abhed/config.json, keeping every
 // other setting as it is.
 func setUserAutoMemory(on bool) error {
+	if err := guestRefusal("changing this machine's configuration"); err != nil {
+		return err
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -737,8 +743,8 @@ func loadStyles() []outputStyle {
 	var out []outputStyle
 	seen := map[string]bool{}
 	dirs := [][2]string{{managed.StylesDir, "managed"}}
-	if home, err := os.UserHomeDir(); err == nil {
-		dirs = append(dirs, [2]string{filepath.Join(home, ".abhed", "styles"), "user"})
+	if dir, err := home.PersonPath("styles"); err == nil {
+		dirs = append(dirs, [2]string{dir, "user"})
 	}
 	for _, d := range dirs {
 		files, _ := customcmd.ReadDir(d[0])

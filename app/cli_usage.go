@@ -274,6 +274,7 @@ func slashStatus(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 	}
 	rows := [][]string{{"", ""},
 		{"model", fmt.Sprintf("%s (%s)", m.Model, m.Provider)},
+		{"signed in", currentPrincipal().Display()},
 		{"mode", mode},
 		{"workspace", st.workspace},
 		{"branch", orDefault(m.GitBranch, "-")},

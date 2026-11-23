@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/model"
 )
 
 // OpenAIEmbedder calls an OpenAI-compatible /embeddings endpoint.
@@ -71,6 +72,8 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 		req.Header.Set("Authorization", "Bearer "+e.APIKey)
 	}
 
+	// An embedding is use of a local model server too.
+	defer model.LocalRequest(e.BaseURL)()
 	resp, err := e.HTTP.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("call embeddings endpoint: %w", err)

@@ -386,3 +386,42 @@ func TestReadsAppearOnceASessionLogsIn(t *testing.T) {
 		t.Fatal("hidden where it was not asked to be")
 	}
 }
+
+// A guest's pasted login holds for the session only: the approval says so,
+// and nothing is stored or kept.
+func TestAGuestsPastedLoginIsForTheSessionOnly(t *testing.T) {
+	grantsIn(t)
+	const token = "sha256~guest-token-value-0123456789abcdef"
+	srv, _ := tlsCluster(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		fmt.Fprint(w, `{"kind":"NamespaceList","items":[{"metadata":{"name":"web"}}]}`)
+	}))
+	store := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
+	m := NewManager(Config{Kubeconfig: filepath.Join(t.TempDir(), "none"), SessionLogins: true, Secret: store.Value})
+	login := LoginTool{M: m, Secret: store.Value, Store: store}
+	sess := newSession(t)
+	id := tools.HoldPasted(sess, tools.Pasted{Kind: "an OpenShift token", Value: token, Server: srv.URL})
+	raw := json.RawMessage(fmt.Sprintf(`{"cluster":"lab","pasted":%q}`, id))
+	if err := login.PrecheckContext(context.Background(), sess, raw); err != nil {
+		t.Fatal(err)
+	}
+	if target := login.Target(sess, raw); !strings.Contains(target, "for this session only") || !strings.Contains(target, "guest") {
+		t.Fatalf("the approval does not say it is for the session only: %s", target)
+	}
+	if res := login.Run(context.Background(), sess, raw); res.IsError || !strings.Contains(res.Content, "nothing is stored or kept") {
+		t.Fatalf("%+v", res)
+	}
+	if names, _ := store.Names(); len(names) != 0 {
+		t.Fatalf("stored %v", names)
+	}
+	if len(machinegrant.Logins()) != 0 {
+		t.Fatal("a guest's login was kept")
+	}
+	out := GetTool{M: m}.Run(context.Background(), sess, json.RawMessage(`{"cluster":"lab","resource":"namespaces"}`))
+	if out.IsError || !strings.Contains(out.Content, "web") {
+		t.Fatalf("the session's login does not work: %+v", out)
+	}
+}

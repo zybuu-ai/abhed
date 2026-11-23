@@ -28,6 +28,8 @@ import (
 	"time"
 	"unicode/utf8"
 	"weak"
+
+	"github.com/zybuu-ai/abhed/internal/home"
 )
 
 // EnvFile names the environment variable that overrides the store's location.
@@ -43,8 +45,14 @@ func ValidName(name string) bool { return validName.MatchString(name) }
 // command or tool by name, and set only by Abhed (SetHeld), never by a person.
 const HeldPrefix = "MCP_OAUTH_"
 
+// ModelKeyPrefix begins the names of model provider keys Abhed keeps for
+// itself when there is no Keychain (abhed provider login); held as above.
+const ModelKeyPrefix = "MODEL_KEY_"
+
 // Held reports whether name is one Abhed keeps for itself.
-func Held(name string) bool { return strings.HasPrefix(name, HeldPrefix) }
+func Held(name string) bool {
+	return strings.HasPrefix(name, HeldPrefix) || strings.HasPrefix(name, ModelKeyPrefix)
+}
 
 // Store is a file of named values, readable by its owner only. Every Store
 // opened on one path in this process shares one lock, so a server that opens
@@ -105,11 +113,7 @@ func DefaultPath() (string, error) {
 	if p := os.Getenv(EnvFile); p != "" {
 		return p, nil
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".abhed", "secrets.json"), nil
+	return home.PersonPath("secrets.json")
 }
 
 func Open(path string) *Store { return &Store{path: path, mu: lockFor(path)} }
@@ -241,7 +245,7 @@ func (s *Store) Set(name, value string) error {
 		return fmt.Errorf("secret names are upper-case identifiers such as GITHUB_TOKEN, not %q", name)
 	}
 	if Held(name) {
-		return fmt.Errorf("names beginning %s are kept by Abhed itself (abhed mcp login); choose another", HeldPrefix)
+		return fmt.Errorf("names beginning %s or %s are kept by Abhed itself (abhed mcp login, abhed provider login); choose another", HeldPrefix, ModelKeyPrefix)
 	}
 	return s.set(name, value)
 }
@@ -587,6 +591,8 @@ type freshStamp struct {
 	mode os.FileMode
 	// digest stands for a source's values, which have no file to stat.
 	digest [32]byte
+	// extra is extraGen: a value added by AlsoRedact rebuilds the redactor.
+	extra uint64
 }
 
 // Fresh returns a redactor over the store that starts from first, the
@@ -598,6 +604,12 @@ func (s *Store) Fresh(first *Redactor) *Fresh {
 }
 
 func (f *Fresh) stat() freshStamp {
+	st := f.statStore()
+	st.extra = extraGen()
+	return st
+}
+
+func (f *Fresh) statStore() freshStamp {
 	if f.store.src != nil {
 		return f.store.sourceStamp()
 	}
@@ -715,6 +727,7 @@ func (s *Store) LoadRedactor() (*Redactor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("refusing to start: the secrets store cannot be loaded, so stored values could not be redacted: %w. %s", err, s.hint())
 	}
+	m = withExtra(m)
 	if len(m) == 0 {
 		return &Redactor{}, nil
 	}

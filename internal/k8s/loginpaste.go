@@ -78,8 +78,8 @@ func (t LoginTool) planPasted(ctx context.Context, sess *tools.Session, a loginA
 	if t.M == nil || sess == nil {
 		return fmt.Errorf("k8s_login needs a session to use a pasted token")
 	}
-	if !t.M.cfg.KeptLogins {
-		return fmt.Errorf("a pasted token can be kept only where Abhed runs on the user's own machine; here, " +
+	if !t.M.cfg.KeptLogins && !t.M.cfg.SessionLogins {
+		return fmt.Errorf("a pasted token can be used only where Abhed runs on the user's own machine; here, " +
 			"ask the user to store it with `abhed secret set NAME` and pass that NAME as token_secret")
 	}
 	p, ok := tools.PastedValue(sess, a.Pasted)
@@ -248,6 +248,11 @@ func (t LoginTool) pastedTarget(sess *tools.Session, a loginArgs) string {
 	if !ok {
 		return ""
 	}
+	if !t.M.cfg.KeptLogins {
+		return fmt.Sprintf("logs this session in to cluster %s at %s with the token you pasted (%s, %s), for this "+
+			"session only: as a guest, nothing is kept, and the token goes when you quit; %s. The token is never "+
+			"shown to the agent", p.cluster, displayURL(p.server), a.Pasted, p.kind, p.how)
+	}
 	return fmt.Sprintf("stores the token you pasted (%s, %s) as secret %s, keeps cluster %s at %s for you "+
 		"(in your own state, not the workspace) so k8s_login may send that secret to that server only, and logs "+
 		"this session in; %s. The token is never shown to the agent", a.Pasted, p.kind, p.storeAs, p.cluster,
@@ -272,6 +277,16 @@ func (t LoginTool) runPasted(ctx context.Context, sess *tools.Session, a loginAr
 	defer c.client.CloseIdleConnections()
 	if _, err := c.Do(ctx, "GET", "/version", nil); err != nil {
 		return errf("Could not authenticate to %s with the pasted token: %v. Nothing was stored.", displayURL(p.server), err)
+	}
+	if !t.M.cfg.KeptLogins {
+		// A guest: the session logs in, and nothing is stored or kept.
+		if err := t.M.login(sess, sessionCred{token: pasted.Value, cluster: lc, namespace: p.namespace}); err != nil {
+			return errf("%v", err)
+		}
+		tools.DropPasted(sess, a.Pasted)
+		return tools.Result{Content: fmt.Sprintf("Logged in to cluster %s at %s (namespace %s, %s) for this session only: "+
+			"as a guest, nothing is stored or kept. Name it as cluster %q in k8s_get and k8s_apply.",
+			p.cluster, displayURL(p.server), c.Namespace, lc.Verification(""), p.cluster)}
 	}
 	if err := t.Store.Set(p.storeAs, pasted.Value); err != nil {
 		return errf("The token works, but it could not be stored as %s: %v. Nothing was kept.", p.storeAs, err)

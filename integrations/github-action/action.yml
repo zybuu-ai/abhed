@@ -1,0 +1,343 @@
+name: Abhed
+description: Run a task, or review a pull request, with Abhed, the secure harness for deep agents, from a pinned and checksum-verified release.
+author: Zybuu
+branding:
+  icon: shield
+  color: orange
+
+# Every input reaches a script through the environment, never pasted into a
+# command line, so a task or a branch name cannot inject shell.
+inputs:
+  mode:
+    description: "run (do the task) or review (review the pull request's diff and post one review)"
+    default: run
+  task:
+    description: The task, for mode run.
+    default: ""
+  workspace:
+    description: The checkout the agent works in.
+    default: ${{ github.workspace }}
+
+  abhed-version:
+    description: An Abhed release to install, such as v1.3.0. Empty installs the version this action pins.
+    default: ""
+  abhed-sha256:
+    description: The SHA-256 of that release's archive for this runner, from its SHA256SUMS. Needed for any version but the pinned one.
+    default: ""
+  abhed-path:
+    description: An abhed binary already on the runner, used instead of downloading one.
+    default: ""
+  verify-signature:
+    description: Also check the release's Sigstore signature over SHA256SUMS with cosign (releases from v1.2.8).
+    default: "true"
+  install-sandbox:
+    description: "auto (on a GitHub-hosted Linux runner only), true (on a self-hosted one too, where sudo needs no password) or false: install bubblewrap and let it make user namespaces under Ubuntu's AppArmor restriction, so commands run in the process sandbox."
+    default: auto
+
+  model-provider:
+    description: The provider type, such as anthropic, openai or openai-compatible. Empty uses the policy file's model.
+    default: ""
+  model:
+    description: The model id.
+    default: ""
+  model-base-url:
+    description: The provider's base URL, for openai-compatible and self-hosted types.
+    default: ""
+  model-api-key:
+    description: The provider's API key. Pass a secret; it reaches Abhed through one environment variable and is masked in logs.
+    default: ""
+
+  policy:
+    description: Settings as inline JSON, laid over policy-file. The workflow's own input, never read from the checkout.
+    default: ""
+  policy-file:
+    description: "A JSON settings file (permissions, sandbox, limits, model) for the run, as -settings takes it. One in the workspace is read from the pull request's base commit on a pull_request event and in review mode, never from the change under review."
+    default: ""
+  permission-mode:
+    description: "default, accept-edits, plan or auto. In default nothing that changes a file or runs a command is allowed unless an allow rule names it. Review always runs in plan."
+    default: default
+  allow:
+    description: Allow rules, one per line (or comma-separated), such as bash(go test*).
+    default: ""
+  deny:
+    description: Deny rules, one per line. A deny rule always wins.
+    default: ""
+  verify:
+    description: "off, label or strict. Empty is strict for run (exit 8 on an unverified answer) and label for review."
+    default: ""
+  max-turns:
+    description: End the run after this many turns.
+    default: ""
+  max-budget-usd:
+    description: End the run once it has cost this many US dollars; refuses a model with no price.
+    default: ""
+  env-passthrough:
+    description: Names of runner environment variables the agent's process may see, comma-separated. Nothing else of the runner's environment reaches it, and GitHub tokens never do.
+    default: ""
+  isolate-home:
+    description: Give the run a home of its own, so the runner's ~/.abhed neither loosens the run nor holds its record.
+    default: "true"
+  allow-persisted-credentials:
+    description: Run even though actions/checkout left a token in the checkout's git configuration, where the agent can read it.
+    default: "false"
+  allow-pull-request-target:
+    description: Run on a pull_request_target event. Off by default; that event runs with secrets and a write token, so it must never be given a pull request's code.
+    default: "false"
+  fail-on-error:
+    description: Fail the job when abhed exits non-zero.
+    default: "true"
+
+  upload-evidence:
+    description: Upload the run's output, its exported record and transcript as an artifact.
+    default: "true"
+  evidence-name:
+    description: The artifact's name.
+    default: abhed-evidence
+  evidence-retention-days:
+    description: How long GitHub keeps the artifact.
+    default: "30"
+
+  github-token:
+    description: "For review: the token that posts the review, used only in the posting step. Needs pull-requests write."
+    default: ${{ github.token }}
+  pr-number:
+    description: "For review outside a pull_request event (workflow_dispatch): the pull request to review."
+    default: ""
+  post-review:
+    description: "For review: post the review. Off, the review is only in the evidence."
+    default: "true"
+  request-changes-on:
+    description: "For review: never (the default, the review is a comment), or the lowest severity (critical, major, minor, nit) that makes it request changes. It never approves."
+    default: never
+  review-instructions:
+    description: "For review: what your maintainers want checked, added to the review task."
+    default: ""
+
+outputs:
+  exit-code:
+    description: abhed's exit code (0 completed, 8 unverified under strict; see the Automation guide).
+    value: ${{ steps.run.outputs.exit-code }}
+  session-id:
+    description: The session's id in the record.
+    value: ${{ steps.run.outputs.session-id }}
+  verdict:
+    description: verified or unverified, when answers are checked.
+    value: ${{ steps.run.outputs.verdict }}
+  subtype:
+    description: How the run ended (completed, max_turns, unverified, ...).
+    value: ${{ steps.run.outputs.subtype }}
+  result:
+    description: The final answer.
+    value: ${{ steps.run.outputs.result }}
+  evidence-dir:
+    description: The folder holding run.jsonl, record.jsonl, transcript.html and summary.json.
+    value: ${{ steps.prep.outputs.evidence }}
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare
+      id: prep
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        EVENT: ${{ github.event_name }}
+        ALLOW_PRT: ${{ inputs.allow-pull-request-target }}
+        KEY: ${{ inputs.model-api-key }}
+        PROVIDER: ${{ inputs.model-provider }}
+        POLICY: ${{ inputs.policy-file }}
+      run: |
+        set -euo pipefail
+        case "$MODE" in run|review) ;; *) echo "::error::abhed: mode must be run or review, not $MODE"; exit 2 ;; esac
+        if [ "$EVENT" = pull_request_target ] && [ "$ALLOW_PRT" != true ]; then
+          echo "::error::abhed: refusing to run on pull_request_target, which has secrets and a write token; use pull_request (see the PR review guide)"
+          exit 2
+        fi
+        # The key is masked line by line before anything could print it.
+        if [ -n "$KEY" ]; then
+          while IFS= read -r l; do [ -n "$l" ] && echo "::add-mask::$l"; done <<< "$KEY"
+        fi
+        dir="$RUNNER_TEMP/abhed-action"
+        rm -rf "$dir" && mkdir -p "$dir/evidence" && chmod 700 "$dir"
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
+        echo "evidence=$dir/evidence" >> "$GITHUB_OUTPUT"
+        # A pull request from a fork gets no secrets: a review then has no
+        # model to call, and says so rather than failing.
+        skip=false
+        if [ "$MODE" = review ] && [ -n "$PROVIDER" ] && [ -z "$KEY" ]; then
+          case "$PROVIDER" in ollama|vllm|llamacpp|tgi|sglang|openai-compatible) ;; *)
+            echo "::notice::abhed review skipped: no model key. A pull request from a fork gets no secrets; a maintainer can run the review with workflow_dispatch (see the PR review guide)."
+            skip=true ;;
+          esac
+        fi
+        echo "skip=$skip" >> "$GITHUB_OUTPUT"
+
+    - name: Install cosign
+      if: ${{ steps.prep.outputs.skip != 'true' && inputs.abhed-path == '' && inputs.verify-signature == 'true' }}
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      with:
+        cosign-release: v3.1.3
+
+    - name: Install bubblewrap
+      if: ${{ steps.prep.outputs.skip != 'true' && runner.os == 'Linux' && inputs.install-sandbox != 'false' }}
+      shell: bash
+      env:
+        WANT: ${{ inputs.install-sandbox }}
+      run: |
+        set -euo pipefail
+        # A self-hosted runner's packages and AppArmor profiles are its
+        # owner's: changed only when install-sandbox is true, not by default.
+        if [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ] && [ "$WANT" != true ]; then
+          command -v bwrap >/dev/null || echo "::warning::abhed: no bubblewrap on this self-hosted runner; install it (and allow its user namespaces) or set install-sandbox: true"
+          exit 0
+        fi
+        sudo -n true 2>/dev/null || exit 0
+        if ! command -v bwrap >/dev/null; then
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends bubblewrap
+        fi
+        # Ubuntu 24.04 grants user namespaces only to profiled programs, and
+        # bubblewrap needs one: profile bwrap alone, as Abhed's own CI does,
+        # rather than lift the restriction for every process.
+        if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = 1 ]; then
+          printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
+            "profile abhed-action-bwrap $(command -v bwrap) flags=(unconfined) {" '  userns,' '}' |
+            sudo tee /etc/apparmor.d/abhed-action-bwrap > /dev/null
+          sudo apparmor_parser -r /etc/apparmor.d/abhed-action-bwrap
+        fi
+
+    - name: Install Abhed
+      id: install
+      if: ${{ steps.prep.outputs.skip != 'true' }}
+      shell: bash
+      env:
+        ABHED_VERSION: ${{ inputs.abhed-version }}
+        ABHED_SHA256: ${{ inputs.abhed-sha256 }}
+        ABHED_PATH: ${{ inputs.abhed-path }}
+        ABHED_VERIFY_SIGNATURE: ${{ inputs.verify-signature }}
+      run: bash "$GITHUB_ACTION_PATH/lib/install.sh"
+
+    - name: Review context
+      id: review
+      if: ${{ steps.prep.outputs.skip != 'true' && inputs.mode == 'review' }}
+      shell: bash
+      env:
+        DIR: ${{ steps.prep.outputs.dir }}
+        WS: ${{ inputs.workspace }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        INSTRUCTIONS: ${{ inputs.review-instructions }}
+        ABHED_REVIEW_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        ctx="$(python3 "$GITHUB_ACTION_PATH/lib/abhed_action.py" review-context --pr "$PR_NUMBER" --workspace "$WS")"
+        echo "$ctx" >> "$GITHUB_OUTPUT"
+        base="$(sed -n 's/^base=//p' <<< "$ctx")"
+        head="$(sed -n 's/^head=//p' <<< "$ctx")"
+        python3 "$GITHUB_ACTION_PATH/lib/abhed_action.py" review-prep --workspace "$WS" \
+          --base "$base" --head "$head" --out "$DIR/review" --instructions "$INSTRUCTIONS"
+
+    - name: Settings
+      if: ${{ steps.prep.outputs.skip != 'true' }}
+      shell: bash
+      env:
+        DIR: ${{ steps.prep.outputs.dir }}
+        MODE: ${{ inputs.mode }}
+        POLICY: ${{ inputs.policy-file }}
+        POLICY_JSON: ${{ inputs.policy }}
+        WS: ${{ inputs.workspace }}
+        BASE: ${{ steps.review.outputs.base }}
+        PROVIDER: ${{ inputs.model-provider }}
+        MODEL: ${{ inputs.model }}
+        BASE_URL: ${{ inputs.model-base-url }}
+        KEY: ${{ inputs.model-api-key }}
+      run: |
+        set -euo pipefail
+        # A policy file in the workspace is read from the pull request's base
+        # commit on a pull request (and always for a review), never from the
+        # checkout the change under review wrote.
+        args=(settings --out "$DIR/settings.json" --workspace "$WS" --provider-type "$PROVIDER" --model "$MODEL"
+              --base-url "$BASE_URL" --policy "$POLICY" --policy-json "$POLICY_JSON" --trusted-ref "$BASE")
+        [ -n "$KEY" ] && args+=(--key-env ABHED_ACTION_MODEL_KEY)
+        [ "$MODE" = review ] && args+=(--review)
+        python3 "$GITHUB_ACTION_PATH/lib/abhed_action.py" "${args[@]}"
+
+    - name: Run Abhed
+      id: run
+      if: ${{ steps.prep.outputs.skip != 'true' }}
+      shell: bash
+      env:
+        ABHED_BIN: ${{ steps.install.outputs.path }}
+        ABHED_BIN_SHA256: ${{ steps.install.outputs.bin-sha256 }}
+        ABHED_WORKSPACE: ${{ inputs.workspace }}
+        ABHED_EVIDENCE_DIR: ${{ steps.prep.outputs.evidence }}
+        ABHED_SETTINGS: ${{ steps.prep.outputs.dir }}/settings.json
+        ABHED_MODE_INPUT: ${{ inputs.mode }}
+        ABHED_TASK_INPUT: ${{ inputs.task }}
+        ABHED_PERMISSION_MODE_INPUT: ${{ inputs.permission-mode }}
+        ABHED_VERIFY_INPUT: ${{ inputs.verify }}
+        ABHED_ALLOW: ${{ inputs.allow }}
+        ABHED_DENY: ${{ inputs.deny }}
+        ABHED_MAX_TURNS: ${{ inputs.max-turns }}
+        ABHED_MAX_BUDGET_USD: ${{ inputs.max-budget-usd }}
+        ABHED_ENV_PASSTHROUGH: ${{ inputs.env-passthrough }}
+        ABHED_ISOLATE_HOME: ${{ inputs.isolate-home }}
+        ABHED_ALLOW_PERSISTED_CREDENTIALS: ${{ inputs.allow-persisted-credentials }}
+        ABHED_KEY_ENV: ${{ inputs.model-api-key != '' && 'ABHED_ACTION_MODEL_KEY' || '' }}
+        ABHED_ACTION_MODEL_KEY: ${{ inputs.model-api-key }}
+        REVIEW_DIR: ${{ steps.prep.outputs.dir }}/review
+      run: |
+        set -euo pipefail
+        if [ "$ABHED_MODE_INPUT" = review ]; then
+          # Read only: the agent may read, search and list, nothing else, and
+          # takes no instructions from the repository's memory files or skills.
+          export ABHED_TASK="$(cat "$REVIEW_DIR/task.txt")"
+          export ABHED_STDIN_FILE="$REVIEW_DIR/pr.diff"
+          export ABHED_JSON_SCHEMA="$(cat "$REVIEW_DIR/schema.json")"
+          export ABHED_PERMISSION_MODE=plan ABHED_TOOLS="read,glob,grep" ABHED_BARE=true
+          # Before 1.3.0, which has no -tools: every other built-in tool denied.
+          export ABHED_TOOLS_FALLBACK_DENY="bash,write,edit,web_fetch,web_search,search,task,tasks,task_status,task_cancel,ssh,ssh_connect,ssh_get,ssh_put,memory_write,recall,todo,toolchain,skill,ask_user,shell_output,shell_kill,tool_search"
+          export ABHED_VERIFY="${ABHED_VERIFY_INPUT:-label}"
+        else
+          export ABHED_TASK="$ABHED_TASK_INPUT"
+          export ABHED_PERMISSION_MODE="$ABHED_PERMISSION_MODE_INPUT"
+          export ABHED_VERIFY="${ABHED_VERIFY_INPUT:-strict}"
+        fi
+        bash "$GITHUB_ACTION_PATH/lib/run.sh"
+
+    - name: Post the review
+      id: post
+      if: ${{ !cancelled() && steps.prep.outcome == 'success' && steps.prep.outputs.skip != 'true' && inputs.mode == 'review' && inputs.post-review == 'true' && steps.run.outcome == 'success' }}
+      shell: bash
+      env:
+        ABHED_REVIEW_TOKEN: ${{ inputs.github-token }}
+        EV: ${{ steps.prep.outputs.evidence }}
+        DIR: ${{ steps.prep.outputs.dir }}
+        PR: ${{ steps.review.outputs.pr }}
+        HEAD: ${{ steps.review.outputs.head }}
+        REPO: ${{ github.repository }}
+        API: ${{ github.api_url }}
+        REQUEST_CHANGES_ON: ${{ inputs.request-changes-on }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        python3 "$GITHUB_ACTION_PATH/lib/abhed_action.py" review-post --result "$EV/run.jsonl" \
+          --diff "$DIR/review/pr.diff" --repo "$REPO" --pr "$PR" --commit "$HEAD" --api "$API" \
+          --request-changes-on "$REQUEST_CHANGES_ON" --run-url "$RUN_URL"
+
+    - name: Upload the evidence
+      id: upload
+      if: ${{ !cancelled() && steps.prep.outcome == 'success' && steps.prep.outputs.skip != 'true' && inputs.upload-evidence == 'true' }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ inputs.evidence-name }}
+        path: ${{ steps.prep.outputs.evidence }}
+        retention-days: ${{ inputs.evidence-retention-days }}
+        if-no-files-found: warn
+
+    - name: Fail on a non-zero exit
+      id: fail
+      if: ${{ !cancelled() && steps.prep.outcome == 'success' && steps.prep.outputs.skip != 'true' && inputs.fail-on-error == 'true' && steps.run.outputs.exit-code != '0' }}
+      shell: bash
+      env:
+        CODE: ${{ steps.run.outputs.exit-code }}
+      run: |
+        echo "::error::abhed exited ${CODE:-without an exit code}; the evidence artifact holds the run and its record"
+        exit 1

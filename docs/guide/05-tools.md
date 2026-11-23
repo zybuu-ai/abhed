@@ -94,6 +94,18 @@ handed to that one command as environment variables when a
 `secret(NAME)` rule allows it. The model never sees a value; see
 [Secrets](04-permissions.md#secrets).
 
+A command run in the foreground ends with everything it started: a job
+left behind with `&` or `nohup`, a daemon, a double fork. Before its result
+is given, Abhed ends the processes in the session the command leads and
+every descendant it followed while the command ran; one that only carries
+its `ABHED_COMMAND_ID` is named in the result, not ended (on macOS, which has no process namespace for it, the residual
+case is in [Sandbox](02-configuration.md#sandbox)); under bubblewrap on
+Linux the command's process namespace ends them all. The result names
+what was ended. To keep a server running, start it with
+`run_in_background`; to keep an app open (a new editor window started by
+`code .`, say), open it with `open -a`, which hands it to the system
+rather than to the command.
+
 ### Background commands
 
 `bash` with `run_in_background: true` starts the command and returns at once

@@ -371,6 +371,23 @@ type acpConn struct {
 	recDir             string
 	recUser, recTenant string
 
+	// identMu orders who is working against everything that works as them:
+	// authenticate holds it from its check through the switch, and every other
+	// method but initialize takes it once to mark the connection started, after
+	// which who is working is fixed. initialize reads the record fields under it.
+	identMu      sync.Mutex
+	identStarted bool
+	// switching is a server sign-in waiting on its network or browser part,
+	// with identMu released; switchCancel ends it (under identMu), and
+	// switchCancelUnlocked is the same for _abhed/auth/cancel (under switchMu).
+	switching bool
+	// signedOut is set by _abhed/auth/signout: nothing more works as anyone.
+	signedOut            bool
+	switchCancel         context.CancelFunc
+	switchGen            int
+	switchMu             sync.Mutex
+	switchCancelUnlocked context.CancelFunc
+
 	sessMu   sync.Mutex
 	sessions map[string]*acpSession
 	// pending are the agent→client requests waiting for an answer, by id.
@@ -978,13 +995,39 @@ func (c *acpConn) request(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errNoMethod, "method not found: %s", msg.Method))
 		return
 	}
+	if !acpBeforeSignIn[msg.Method] {
+		// Waits for an authenticate in progress, so this works as whoever it settles on.
+		c.identMu.Lock()
+		if c.signedOut {
+			c.identMu.Unlock()
+			c.reply(msg.ID, nil, &rpcError{Code: errRefused, Message: "signed out; restart the engine to sign in again",
+				Data: map[string]any{"authRequired": true, "signedOut": true}})
+			return
+		}
+		if c.switching {
+			c.identMu.Unlock()
+			c.reply(msg.ID, nil, &rpcError{Code: errRefused, Message: "a sign-in is in progress; try again when it has finished",
+				Data: map[string]any{"signingIn": true}})
+			return
+		}
+		err := pendingSignIn()
+		if err == nil {
+			c.identStarted = true
+		}
+		c.identMu.Unlock()
+		if err != nil {
+			c.reply(msg.ID, nil, &rpcError{Code: errRefused, Message: "Authentication required: " + err.Error(),
+				Data: map[string]any{"authRequired": true}})
+			return
+		}
+	}
 	h(c, msg)
 }
 
 // acpMethods are the requests the engine answers; anything else is -32601.
 var acpMethods = map[string]func(*acpConn, rpcMessage){
 	"initialize":                (*acpConn).initialize,
-	"authenticate":              func(c *acpConn, m rpcMessage) { c.reply(m.ID, map[string]any{}, nil) },
+	"authenticate":              (*acpConn).authenticate,
 	"session/new":               (*acpConn).newSession,
 	"session/prompt":            (*acpConn).prompt,
 	"session/set_config_option": (*acpConn).setConfigOption,
@@ -1209,7 +1252,7 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 	}
 	// The editor's own files in the workspace are out of the agent's reach (§2.6).
 	s.protected = protectedPaths(o.cwd)
-	settings := embedded.Settings{Protect: s.protected, ProtectGit: true, Surface: "acp", PlanExit: true}
+	settings := embedded.Settings{Protect: s.protected, ProtectGit: true, Surface: "acp", PlanExit: true, Principal: principalStart()}
 	if c.durable() {
 		rec, err := c.record()
 		if err != nil {
@@ -1567,7 +1610,7 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	stop, reason := stopReason(ctx, err)
 	var ended *abhed.EndedError
 	if stop == "refusal" && err != nil && !errors.As(err, &ended) {
-		c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "agent_message_chunk", "content": textBlock("\n" + err.Error())})
+		c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "agent_message_chunk", "content": textBlock("\n" + err.Error() + sessionKeyHint(s, err))})
 	} else if stop == "refusal" && errors.As(err, &ended) && ended.Reason != agent.TermPromptRefused {
 		// The reason is said in the chat, so the editor has something to point to.
 		why := ui.EndedText(ended.Reason, ended.Detail)

@@ -241,19 +241,19 @@ func userFileConfig() (config.Config, error) {
 // writeUserSetting sets one dotted path in ~/.abhed/config.json, keeping
 // everything else in the file.
 func writeUserSetting(path string, v any) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	if err := guestRefusal("changing this machine's configuration"); err != nil {
 		return "", err
 	}
-	file := filepath.Join(home, ".abhed", "config.json")
-	doc := map[string]any{}
-	if data, err := os.ReadFile(file); err == nil { // #nosec G304 -- the person's own ~/.abhed/config.json
-		if err := json.Unmarshal(data, &doc); err != nil {
-			return file, fmt.Errorf("%s is not valid JSON, so it was not changed: %w", file, err)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	doc, file, err := readUserDoc()
+	if err != nil {
 		return file, err
 	}
+	setDocPath(doc, path, v)
+	return file, writeUserDoc(file, doc)
+}
+
+// setDocPath sets one dotted path in doc, making the objects on the way.
+func setDocPath(doc map[string]any, path string, v any) {
 	parts := strings.Split(path, ".")
 	m := doc
 	for _, p := range parts[:len(parts)-1] {
@@ -265,25 +265,66 @@ func writeUserSetting(path string, v any) (string, error) {
 		m = next
 	}
 	m[parts[len(parts)-1]] = v
+}
+
+// writeUserDoc replaces the person's own file with doc: written to a fresh
+// temporary file beside it, synced, given the old file's mode, then renamed
+// over it, so a reader sees the old file or the new one, never part of one.
+// The old content is kept as config.json.bak first. A link is followed to the
+// file it names, so a linked dotfile stays linked.
+func writeUserDoc(file string, doc map[string]any) error {
+	if err := guestRefusal("changing this machine's configuration"); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
-		return file, err
+		return err
 	}
+	data = append(data, '\n')
 	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
-		return file, err
+		return err
 	}
-	// A fresh name each time: a fixed one could be a planted link.
-	tmp, err := os.CreateTemp(filepath.Dir(file), "config.json.*.tmp")
+	target, mode := file, os.FileMode(0o600)
+	if real, err := filepath.EvalSymlinks(file); err == nil {
+		target = real
+	}
+	old, err := os.ReadFile(target) // #nosec G304 -- the person's own ~/.abhed/config.json
+	switch {
+	case err == nil:
+		if fi, err := os.Stat(target); err == nil {
+			mode = fi.Mode().Perm()
+		}
+		if err := atomicWrite(target+".bak", old, 0o600); err != nil {
+			return fmt.Errorf("the backup %s could not be written, so %s was not changed: %w", target+".bak", file, err)
+		}
+	case !errors.Is(err, os.ErrNotExist):
+		return err
+	}
+	return atomicWrite(target, data, mode)
+}
+
+// atomicWrite writes data to path through a fresh temporary name beside it:
+// a fixed one could be a planted link.
+func atomicWrite(path string, data []byte, mode os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
 	if err != nil {
-		return file, err
+		return err
 	}
 	defer func() { _ = os.Remove(tmp.Name()) }()
-	if _, err := tmp.Write(append(data, '\n')); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		return file, err
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
 	}
 	if err := tmp.Close(); err != nil {
-		return file, err
+		return err
 	}
-	return file, os.Rename(tmp.Name(), file)
+	return os.Rename(tmp.Name(), path)
 }

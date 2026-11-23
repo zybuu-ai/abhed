@@ -8,6 +8,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A profile's client followed a redirect from https to plain http on the
+  same host, sending the server token in clear. Such a redirect is now
+  refused.
 - A wildcard entry in `ssh.read_commands` approved more than it named.
   `*` matched any text, spaces included, so `tail -n * /var/log/app/app.log`
   also ran `tail -n 100 /etc/shadow /var/log/app/app.log` without asking,
@@ -105,6 +108,24 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.9
 
+- The first interactive start asks who is working. With anything 1.2.9
+  kept in `~/.abhed` (sessions, history, memory, secrets, sign-ins, trust,
+  skills, plugins), choose **Create my account and bring my data**: it
+  moves into the account, every session's chain verified before and
+  after. Until then, a run that cannot ask (`-p`, rpc, scripts) works as
+  1.2.9 did where `~/.abhed` holds sessions or history, with one line on
+  stderr; after it, such
+  a run uses your remembered sign-in. On a machine with no earlier data and
+  no sign-in, such as a fresh CI runner, a run is guest and keeps nothing
+  (`-guest` silences the note); a script that read the record afterwards
+  (`abhed logs`, `-c`) should sign in once, or pass `-account NAME` to fail
+  with code 10 instead. Before going back to 1.2.x, run `abhed account
+  unmigrate`.
+- Your sessions are now recorded as `device:<username>` (or `guest:<id>`)
+  rather than `$USER`; those recorded before sign-in stay the adopting
+  account's.
+- `abhed login` on a machine no one is signed in to makes that server's
+  account the one working here.
 - Under `-verify strict`, a statement that only explains code the session
   read and did not change ("the running total is 0 because nothing has been
   added yet"), or what changed code did before, no longer fails the
@@ -250,6 +271,69 @@ All notable changes to Abhed are recorded here. The format follows
   its role: with the cluster or SSH tools offered, the system prompt says to
   use them, explains the approvals to expect, and never to run `kubectl`, `oc`
   or `ssh` through `bash`.
+- Model keys without environment variables: `abhed provider login|logout|status`.
+  `login` asks for a hosted provider's key without echo and keeps it in the
+  macOS Keychain, or where there is none in Abhed's secret store (mode 600)
+  under a name Abhed keeps for itself. A provider finds it by
+  `api_key_secret`, by its `api_key_env` name, or, naming neither, by its
+  type's own name at its official endpoint, so Studio started from the Dock
+  has the key. The environment variable still wins when set; `abhed doctor`
+  says which source was used, never the value, and an auth or credit refusal
+  says when a different key is stored than the one exported. The key is never
+  written to config and is redacted from tool output, messages and the record.
+  A hosted type's stored key goes only to that type's own endpoint, and a
+  model a workspace's file defines gets a stored key only when your own
+  configuration names that key for the same endpoint and token URL, and an
+  exported hosted key only at its type's own endpoint. A guest keeps no key:
+  `provider login|logout` and every other way to the store are refused.
+- Models without editing JSON: `abhed models add PROVIDER MODEL...`, `abhed
+  models default NAME`, `list`, `remove` and `known`. They write only your own
+  `~/.abhed/config.json`, atomically, with a `config.json.bak` backup and the
+  file's mode and other keys kept; never the workspace or managed file. A
+  hosted default is confirmed first; a guest may not add, remove or choose a
+  model. Studio's model picker gains Add Model…, Set as Default and Add API
+  Key…, which tell a guest to sign in instead.
+- `model.ollama.auto_start` (`false`: Ollama is never started without a click,
+  and "always start" is not offered) and `model.ollama.idle_stop_minutes`.
+- Sign-in first. Every start answers who is working before anything else
+  runs: an account on this machine, an account on an Abhed server, or
+  guest. In a terminal with no one signed in, the start asks; a sign-in is
+  remembered until sign-out, a password change or removal, and each start
+  says who is signed in (`/account` signs out or switches). An account on
+  this machine (`abhed account create`, `signin`, `signout`, `whoami`,
+  `list`, `passwd`, `reset`, `rm`) keeps its record, history, memory,
+  secrets, server sign-ins, trust decisions and plugins in a folder of its own under
+  `~/.abhed/accounts/`; the password is bcrypt-hashed, a recovery code
+  resets it, and so can the OS user, which the next sign-in reports. An
+  account is a separate space, not encryption. A guest keeps nothing: its
+  folder is removed as the run ends, and by the next start after a crash.
+  Policy, the sandbox, egress and approvals are the same for all three. A
+  run that cannot ask uses the remembered sign-in, or runs as guest with a
+  note, and exits 10 where the organisation requires sign-in; `-guest`,
+  `ABHED_GUEST=1`, `-account` and `ABHED_ACCOUNT` choose outright, and are
+  handed to MCP servers and process-tier commands, so an Abhed they start
+  only narrows who works; a server's `env` cannot set or clear them. A
+  server sign-in that is cancelled or refused before it is kept has its
+  token ended on the server. `abhed
+  rpc` answers `auth.status`, `auth.signin`, `auth.register` and
+  `auth.guest`, and ACP clients such as Studio sign in through ACP's
+  `authMethods` and `authenticate`. The managed configuration and the org
+  policy can require sign-in, require a server's, turn guest off, and bound
+  how long a sign-in is remembered (`auth.client`). See [Signing
+  in](docs/guide/38-signing-in.md).
+- Guests on a server's console: `auth.guest` (off by default) offers
+  Continue as guest on the sign-in page. A guest is an identity of its own
+  with no groups, under every rule anyone has; its sessions are stopped and
+  removed when it signs out or after `auth.guest_hours` (8), a running one
+  stopped first; a restart ends every guest, and with guests on the server
+  removes what ended guests left at start and hourly, never another
+  server's live guests on a shared Postgres; a server that finds another
+  running under its own `control_plane.ha.node_id` logs an error and does
+  not take that id's sessions for its earlier run's. One address starts at most five guests an hour. It needs
+  `auth.mode` `local` or `oidc`.
+- `abhed serve` in a terminal, with no sign-in on an address other machines
+  can reach, asks first: set up local accounts, serve on this machine only,
+  or serve as configured.
 - Abhed Studio opens a folder on an SSH host with the engine running there
   (**Abhed: Reopen Folder on SSH Host…**). `abhed ssh-acp` connects with
   the engine's SSH client (the host key must already be in known_hosts;
@@ -720,6 +804,61 @@ All notable changes to Abhed are recorded here. The format follows
   or by an org with pinned keys. Any other price from such an org is set
   aside, as before. Under a managed or org dollar cap, an unpriced model's
   refusal says an administrator sets the price.
+- `abhed rpc` can put approvals to its caller. `start` with
+  `"approvals": true` sends each call that needs approval as an `approval`
+  line (the recorded request id, tool, arguments, reason, policy step and
+  rule, the scope offered, and whether the command is destructive or its
+  arguments hide characters), answered by an `approve` request with
+  `decision` `allow` or `deny`, an optional `approver`, and `remember` to
+  keep the offered scope for the session. An ask still open when stdin ends
+  is refused; one open when its run is stopped ends as interrupted, and an
+  answer arriving with the stop is not applied. Without `approvals`, a call needing approval
+  is refused as before.
+- A GitHub Action, `integrations/github-action`. It installs a pinned
+  Abhed release, checked against the SHA-256 the action pins and, by
+  default, the release's Sigstore signature, before it runs; runs `abhed -p`
+  with `-verify strict` by default; uploads the run's output, its exported
+  record (verifiable with `abhed record verify`) and a transcript as an
+  artifact; and fails the job on a non-zero exit. Inputs take the task, the
+  model provider (its key from a secret, masked, in one variable, its entry
+  never merged with a policy's), a policy as `-settings` (a file in the
+  repository, read with git alone at the pull request's base commit on a
+  pull request and at `HEAD` otherwise, never from the disk; a symbolic link
+  is refused),
+  allow and deny rules, limits, and the variables to pass through. The
+  agent runs under `env -i`: no GitHub token reaches it, and a checkout that
+  kept its token in `.git/config` is refused. Its home is a fresh folder
+  outside the runner's temp folder, and its `TMPDIR` is bubblewrap's
+  private `/tmp` on Linux and the account's temp folder on macOS, never the
+  runner's; one hash over the binary and its
+  helpers is checked again before every later run of them. A flag newer than the pinned
+  release is refused before the run. `pull_request_target` is refused.
+  See [The GitHub Action](docs/guide/38-github-action.md).
+- Pull request review, the action's `mode: review`. It takes the diff
+  between the pull request's base and head with hooks and textconv off,
+  reviews it read-only (`plan`, the `read`, `glob` and `grep` tools only,
+  `-bare`, the workspace's configuration untrusted, a JSON schema for the
+  findings) and posts one review: `COMMENT`, or `REQUEST_CHANGES` at a
+  severity you set, never `APPROVE`, with an inline comment on each finding
+  whose line is in the diff. Every `@` in the model's text is defused, and
+  every `&`, `<` and `>` outside code escaped; code blocks and spans are
+  rebuilt with delimiters nothing inside can close. From a policy a review takes only deny and
+  ask rules and limits; its model comes from the action's inputs alone. Only the posting step holds the token. On a release
+  before 1.3.0, which lacks `-tools` and `-bare`, deny rules narrow the
+  tools instead. On
+  `pull_request` a fork's pull request has no model key and is skipped with
+  a notice; a maintainer reviews it with `workflow_dispatch`. See
+  [Pull request review](docs/guide/39-pr-review.md), with its threat model.
+- TypeScript and Python SDKs, `sdk/typescript` (`abhed-sdk` on npm) and
+  `sdk/python` (`abhed-sdk`, imported as `abhed_sdk`). Each drives
+  `abhed rpc` as a child process: start a session, prompt or stream its
+  events, steer, answer approvals with a handler or from the stream,
+  verdicts and `RunError` with the terminal reason, usage, export,
+  background tasks and wake, and `visible` and `args_hidden` ported from the
+  engine's escaper and tested against its answers
+  (`sdk/testdata/visible.json`). No runtime dependencies and no network call
+  of their own. Not yet published. See
+  [TypeScript and Python SDKs](docs/guide/40-sdk-typescript-python.md).
 - MCP `readOnlyHint` can be honoured for a server the operator opts in:
   the managed file's entry for it sets `"trust_read_only_hint": true`, and
   the entry in force is exactly that one. A tool such a server marks
@@ -735,6 +874,54 @@ All notable changes to Abhed are recorded here. The format follows
   a note only: the outcome and the exit code are unchanged.
 
 ### Changed
+
+- An `ollama serve` that Abhed or Studio started itself is now stopped by
+  Abhed, by its own process id only: after 10 minutes with no session using a
+  local model (chat, completions, next edits, commit messages or embeddings;
+  `model.ollama.idle_stop_minutes`), and when the Abhed that started it
+  exits, on a signal too, as when Studio quits. Abhed says so when it starts one.
+  An Ollama it did not start is never stopped.
+- Model endpoints no longer follow a redirect to another host, port or
+  scheme, since the key would go with it; such a request fails and says
+  where it was sent. Under `completion.local_only` both checks apply.
+- An `anthropic` provider at its own endpoint with no `api_key_env` now reads
+  `ANTHROPIC_API_KEY`, as the other hosted types read theirs.
+- Writes to `~/.abhed/config.json` (`/config set`, `abhed mcp add|remove`) now
+  keep the file's mode and numbers as written, sync before the rename, and
+  keep the previous file as `config.json.bak`.
+- On macOS's process tier, a process a command started no longer outlives
+  it. It used to keep running, and writing the workspace and the shared
+  temp folders, after the command, the session and its record had ended
+  (bubblewrap on Linux always ended it). When a foreground command ends, Abhed now
+  ends the processes in the session it leads and every descendant it
+  followed while the command ran, and waits for them to go before the
+  command is reported finished; closing a sandbox ends what its foreground
+  commands still run. Only processes proven to descend from the command are
+  signalled. Its random marker (`ABHED_COMMAND_ID`) is no such proof, since
+  an app started from a command's terminal inherits it and `launchctl
+  setenv` can plant it, so a marked process that is neither followed nor in
+  the session is named in the command's result and left running. A process
+  handed to launchd before a read saw it is still ended when the process
+  that forked it was followed (macOS keeps the parent's unique id). One that
+  takes a session of its own and whose parent was born and gone within one
+  20 ms read of the process table escapes (on Linux's `none` tier, one that
+  loses its parent within one read); see the Sandbox section of the
+  configuration guide. The result names the processes that were ended, and
+  says to start a program with `run_in_background`, or an app with
+  `open -a`, to keep it running. A background command's leftovers are
+  ended the same way when it ends or is stopped, before it is reaped,
+  rather than by their process group's number afterwards. Terminal shells
+  are not ended when a sandbox closes: they end with their terminal. Commands on that tier also get an
+  `xcrun_db` of the sandbox's own.
+
+- On macOS, the process sandbox keeps the account's own home unreadable to
+  commands when `HOME` names another folder, as well as `$HOME`: its state
+  folder and credential paths too, and, whatever the user database says,
+  the `/Users/NAME` folder that holds `$HOME`. Moving `HOME` (as a CI run
+  given a fresh one does) no longer opens the real home's `~/.ssh` and the
+  rest to the agent's commands. `/Users/Shared` is not taken for a home. A
+  failed lookup of the account is said in the sandbox's description, which
+  `abhed doctor` shows and the record keeps.
 
 - The `served` field of the `next_edit.summary` record event now includes
   renames finished from the file, which are also counted in `local`; before,

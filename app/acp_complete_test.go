@@ -690,7 +690,9 @@ func TestStudioCompletionsRedirectsUnderLocalOnly(t *testing.T) {
 		follows          bool
 	}{
 		{"openai-compatible local_only", "openai-compatible", `,"completion":{"local_only":true}`, false},
-		{"openai-compatible", "openai-compatible", "", true},
+		// Model endpoints never follow a redirect to another host, port or scheme,
+		// local_only or not: the key would follow it.
+		{"openai-compatible", "openai-compatible", "", false},
 		{"anthropic local_only", "anthropic", `,"completion":{"local_only":true}`, false},
 		{"gemini local_only", "gemini", `,"completion":{"local_only":true}`, false},
 	} {

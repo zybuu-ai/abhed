@@ -1,10 +1,13 @@
 package machinegrant
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/home"
 )
 
 // useTemp points the store at a file in a throwaway folder.
@@ -114,5 +117,58 @@ func TestLoginsAreTheKeptLogins(t *testing.T) {
 func TestIdentityIsUnambiguous(t *testing.T) {
 	if Identity("ab", "c") == Identity("a", "bc") {
 		t.Fatal("parts run together")
+	}
+}
+
+// personFolder makes ~/.abhed/<kind>/<name> in the test's home and makes it
+// the person's folder.
+func personFolder(t *testing.T, kind, name string) {
+	t.Helper()
+	m, err := home.Machine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(m, kind, name)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := home.SetPerson(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = home.SetPerson("") })
+}
+
+// One account's grants are its own: another account never sees them.
+func TestGrantsArePerPerson(t *testing.T) {
+	personFolder(t, home.AccountsDir, "alice")
+	if err := Keep(Grant{Kind: KindSSHHost, Name: "box", Identity: "i"}); err != nil {
+		t.Fatal(err)
+	}
+	if !Kept(KindSSHHost, "box", "i") {
+		t.Fatal("alice's grant is not kept")
+	}
+	personFolder(t, home.AccountsDir, "bob")
+	if Kept(KindSSHHost, "box", "i") {
+		t.Fatal("bob sees alice's grant")
+	}
+	if gs, _ := List(); len(gs) != 0 {
+		t.Fatalf("bob lists %v", gs)
+	}
+}
+
+// A guest keeps nothing and forgets nothing.
+func TestAGuestKeepsNothing(t *testing.T) {
+	personFolder(t, home.GuestDir, "g1")
+	if !Guest() {
+		t.Fatal("not taken for a guest")
+	}
+	if err := Keep(Grant{Kind: KindSSHHost, Name: "box", Identity: "i"}); !errors.Is(err, ErrGuest) {
+		t.Fatalf("Keep for a guest: %v", err)
+	}
+	if _, err := Forget(KindSSHHost, "box"); !errors.Is(err, ErrGuest) {
+		t.Fatalf("Forget for a guest: %v", err)
+	}
+	if gs, _ := List(); len(gs) != 0 {
+		t.Fatalf("a guest has %v", gs)
 	}
 }

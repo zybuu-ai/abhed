@@ -109,8 +109,13 @@ func machineFirstUse(r *Registry, sess *tools.Session, host string) (tools.First
 	}
 	why += "), signing in with your ssh-agent or the key it names; the key never reaches the agent or the sandbox, " +
 		"and the host's key must already be in known_hosts"
+	scope := tools.FirstUseScope(machinegrant.KindSSHHost, mh.Alias)
+	if machinegrant.Guest() {
+		scope = "" // a guest keeps nothing: no "always" is offered
+		why += "; as a guest, approving holds for this session only"
+	}
 	return tools.FirstUse{
-		Scope:  tools.FirstUseScope(machinegrant.KindSSHHost, mh.Alias),
+		Scope:  scope,
 		What:   "host " + mh.Alias + " (" + mh.User + "@" + mh.Addr() + ")",
 		Reason: why, Kind: machinegrant.KindSSHHost, Name: mh.Alias, Identity: id,
 	}, true

@@ -341,7 +341,7 @@ func TestTrustFlagAfterTheSubcommand(t *testing.T) {
 func TestSubcommandsDeclareTrust(t *testing.T) {
 	never := map[string]bool{"init": true, "trust": true, "providers": true, "secret": true, "machine": true, "admin": true, "version": true,
 		"login": true, "logout": true, "profile": true, "policy": true, "pki": true, "sandbox": true, "egress-proxy": true,
-		"ssh-acp": true}
+		"provider": true, "models": true, "account": true, "ssh-acp": true}
 	for _, c := range subcommands {
 		if c.trust == never[c.name] {
 			t.Errorf("%s: trust %v; a subcommand that loads the workspace configuration takes the flag, one that does not never does", c.name, c.trust)

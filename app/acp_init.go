@@ -65,7 +65,7 @@ func (c *acpConn) agentMeta() map[string]any {
 	return map[string]any{
 		"apiLevel": acpAPILevel, "edition": c.build.Edition, "version": c.build.Version,
 		"commit": c.build.Commit, "features": c.acpFeatures(), "record": store,
-		"managed": c.managed(),
+		"managed": c.managed(), "identity": acpIdentity(),
 	}
 }
 
@@ -77,6 +77,9 @@ func (c *acpConn) managed() bool {
 }
 
 func (c *acpConn) initialize(msg rpcMessage) {
+	// authenticate rewrites the record fields this reads.
+	c.identMu.Lock()
+	defer c.identMu.Unlock()
 	caps := map[string]any{
 		"loadSession":        c.durable(),
 		"promptCapabilities": map[string]any{"image": false, "audio": false, "embeddedContext": true},
@@ -91,7 +94,7 @@ func (c *acpConn) initialize(msg rpcMessage) {
 		"protocolVersion":   acpProtocolVersion,
 		"agentCapabilities": caps,
 		"agentInfo":         map[string]any{"name": "abhed", "title": "Abhed", "version": c.version},
-		"authMethods":       []any{},
+		"authMethods":       acpAuthMethods(),
 	}, nil)
 }
 

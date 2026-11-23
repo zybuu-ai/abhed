@@ -25,6 +25,7 @@ import (
 // A cancelled command ends everything it started, in every tier: the turn
 // stops promptly and no child is left running on the host.
 func TestBashCancelEndsWhatTheCommandStarted(t *testing.T) {
+	requireKillTestsOnMac(t)
 	tiers := []struct {
 		name string
 		box  func(ws string) (sandbox.Sandbox, string)
@@ -106,8 +107,10 @@ func TestBashCancelEndsWhatTheCommandStarted(t *testing.T) {
 }
 
 // A command that exits and leaves a background job holding its output
-// returns, rather than waiting for the job.
+// returns, rather than waiting for the job, and the job is ended with it:
+// nothing a command starts outlives it.
 func TestBashReturnsWhenABackgroundJobHoldsTheOutput(t *testing.T) {
+	requireKillTestsOnMac(t)
 	s, dir := setup(t)
 	pidFile := filepath.Join(dir, "bg.pid")
 	start := time.Now()
@@ -118,14 +121,25 @@ func TestBashReturnsWhenABackgroundJobHoldsTheOutput(t *testing.T) {
 	if time.Since(start) > 10*time.Second {
 		t.Fatalf("waited %s for a background job", time.Since(start))
 	}
-	if b, err := os.ReadFile(pidFile); err == nil {
-		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-		}
-	}
-	if res.IsError || res.ExitCode == nil || *res.ExitCode != 0 || !strings.Contains(res.Content, "started") ||
-		!strings.Contains(res.Content, "still running") {
+	requireEnded(t, pidFile)
+	if res.IsError || res.ExitCode == nil || *res.ExitCode != 0 || !strings.Contains(res.Content, "started") {
 		t.Fatalf("result: %+v", res)
+	}
+}
+
+// requireEnded fails unless the job whose pid the command wrote is gone.
+func requireEnded(t *testing.T, pidFile string) {
+	t.Helper()
+	b, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 1 {
+		t.Fatalf("no pid in %s", pidFile)
+	}
+	if alive(pid) {
+		t.Errorf("the background job %d outlived its command", pid)
 	}
 }
 
@@ -174,17 +188,14 @@ func alive(pid int) bool {
 	return !errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
 }
 
-// The note that a job still holds the output is given whatever the exit status.
+// A failing command's background job is ended too, and its exit status kept.
 func TestBashBackgroundNoteOnAFailingCommand(t *testing.T) {
+	requireKillTestsOnMac(t)
 	s, dir := setup(t)
 	pidFile := filepath.Join(dir, "bg.pid")
 	res := run(t, Bash{}, s, bashArgs{Command: `sleep 30 & echo $! > ` + pidFile + `; exit 3`, Description: "background job"})
-	if b, err := os.ReadFile(pidFile); err == nil {
-		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-		}
-	}
-	if res.ExitCode == nil || *res.ExitCode != 3 || !strings.Contains(res.Content, "still running") {
+	requireEnded(t, pidFile)
+	if res.ExitCode == nil || *res.ExitCode != 3 {
 		t.Fatalf("result: %+v", res)
 	}
 }
@@ -260,6 +271,7 @@ func runsHere(box sandbox.Sandbox, ws, why string) string {
 // A command that times out ends with everything it started, even a child
 // that left its group and session with setsid while its parent still ran.
 func TestBashTimeoutEndsADetachedChild(t *testing.T) {
+	requireKillTestsOnMac(t)
 	if _, err := exec.LookPath("perl"); err != nil {
 		t.Skip("perl is not installed")
 	}
@@ -447,6 +459,7 @@ func init() {
 // is still ended with the command at its timeout: it carries the command's
 // marker in its environment, whoever its parent is now.
 func TestBashTimeoutEndsADaemon(t *testing.T) {
+	requireKillTestsOnMac(t)
 	for _, tier := range []string{"host", "none", "process"} {
 		t.Run(tier, func(t *testing.T) {
 			s, dir := setup(t)
@@ -486,14 +499,22 @@ func TestBashTimeoutEndsADaemon(t *testing.T) {
 			if sid, err := unix.Getsid(pid); err != nil || sid != pid {
 				t.Fatalf("the daemon did not start a session of its own: sid %d, %v", sid, err)
 			}
+			var res Result
 			select {
-			case <-done:
+			case res = <-done:
 			case <-time.After(10 * time.Second):
 				t.Fatal("the command held the call past its timeout")
 			}
 			for deadline := time.Now().Add(2 * time.Second); alive(pid); time.Sleep(20 * time.Millisecond) {
 				if time.Now().After(deadline) {
-					t.Fatalf("the daemon %d outlived the timeout", pid)
+					// Off macOS a process keeps no record of the parent that forked
+					// it, so one that left the session and lost its parent before a
+					// read saw it is not proven the command's: the result names it,
+					// and it is never ended by its marker alone.
+					if runtime.GOOS != "darwin" && strings.Contains(res.Content, "carrying the command's marker were left running") {
+						return
+					}
+					t.Fatalf("the daemon %d outlived the timeout, and the result does not say so: %q", pid, res.Content)
 				}
 			}
 		})
@@ -554,5 +575,16 @@ func TestBashRecordsWhatItsSandboxNoteNames(t *testing.T) {
 	}
 	if res := run(t, Bash{}, s, bashArgs{Command: `echo "x: Operation not permitted"; exit 1`, Description: "print"}); res.SandboxNote != "" {
 		t.Errorf("a note on the host: %q", res.SandboxNote)
+	}
+}
+
+// requireKillTestsOnMac skips on macOS unless ABHED_TEST_PROCESS_KILL=1: the
+// test ends real process trees and sweeps for what they left, which is done
+// only on a throwaway runner, never on a person's own machine. Linux runs it
+// in CI and in containers.
+func requireKillTestsOnMac(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "darwin" && os.Getenv("ABHED_TEST_PROCESS_KILL") != "1" {
+		t.Skip("ends real process trees: set ABHED_TEST_PROCESS_KILL=1 on a throwaway runner to run it on macOS")
 	}
 }

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/zybuu-ai/abhed/internal/home"
 )
 
 // History is the prompts a person has submitted, newest last, kept per
@@ -39,8 +41,8 @@ const (
 // workspace, named by a hash of its resolved path, so a workspace reached
 // through a link shares its history.
 func HistoryPath(workspace string) string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	dir, err := home.PersonPath("history")
+	if err != nil {
 		return ""
 	}
 	ws := filepath.Clean(workspace)
@@ -48,7 +50,7 @@ func HistoryPath(workspace string) string {
 		ws = real
 	}
 	sum := sha256.Sum256([]byte(ws))
-	return filepath.Join(home, ".abhed", "history", hex.EncodeToString(sum[:8])+".jsonl")
+	return filepath.Join(dir, hex.EncodeToString(sum[:8])+".jsonl")
 }
 
 // LoadHistory reads the history at path; a missing or unreadable file is an

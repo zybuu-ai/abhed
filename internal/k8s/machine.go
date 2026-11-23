@@ -150,9 +150,12 @@ func (m *Manager) firstUse(sess *tools.Session, raw json.RawMessage) (tools.Firs
 		Reason: why, Kind: machinegrant.KindK8sContext, Name: info.Name, Identity: info.Identity,
 	}
 	if !m.cfg.KeptLogins {
-		// Not the person's own machine (a server's operator kubeconfig): asked
-		// in each session, and nothing is kept in the operator's state.
+		// Not the person's own machine (a server's operator kubeconfig), or a
+		// guest: asked in each session, and nothing is kept.
 		g.Scope = ""
+		if m.cfg.SessionLogins {
+			g.Reason += "; as a guest, approving holds for this session only"
+		}
 	}
 	return g, true
 }

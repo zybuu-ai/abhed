@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/filelock"
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/nlink"
 )
 
@@ -74,14 +75,22 @@ type file struct {
 	Grants  []Grant `json:"grants"`
 }
 
-// Path is where grants are kept; tests replace it.
+// Path is where grants are kept: the person's own state, so one account's
+// grants are never another's; tests replace it.
 var Path = func() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	p, err := home.PersonPath("state", "machine-grants.json")
+	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".abhed", "state", "machine-grants.json")
+	return p
 }
+
+// ErrGuest refuses keeping anything for a guest, whose folder goes when they
+// quit: what they approve holds for the session alone.
+var ErrGuest = errors.New("a guest keeps nothing: it holds for this session only")
+
+// Guest reports whether the person working is a guest; tests replace it.
+var Guest = home.Guest
 
 var mu sync.Mutex
 
@@ -179,6 +188,9 @@ func Kept(kind, name, identity string) bool {
 
 // Keep keeps g, replacing one of the same kind and name.
 func Keep(g Grant) error {
+	if Guest() {
+		return ErrGuest
+	}
 	if g.Kind == "" || g.Name == "" || g.Identity == "" {
 		return errors.New("a grant needs a kind, a name and an identity")
 	}
@@ -199,6 +211,9 @@ func Keep(g Grant) error {
 
 // Forget drops the grant of kind for name, and reports whether there was one.
 func Forget(kind, name string) (bool, error) {
+	if Guest() {
+		return false, ErrGuest
+	}
 	found := false
 	err := change(func(f *file) bool {
 		out := f.Grants[:0]

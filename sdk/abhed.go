@@ -610,6 +610,9 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		if org := toolset.OrgPolicyState(cfg); org != nil {
 			start["org_policy"] = org
 		}
+		if x.Principal != nil {
+			start["principal"] = x.Principal
+		}
 		if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, start); err != nil {
 			return fail(fmt.Errorf("abhed: recording the session start: %w", err))
 		}

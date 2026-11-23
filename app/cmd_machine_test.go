@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/machinegrant"
 )
 
@@ -75,5 +76,24 @@ func TestDoctorShowsTheMachineSetupWithoutSecrets(t *testing.T) {
 	t.Setenv("HOME", empty)
 	if out := strings.Join(machineDoctor(config.Config{}), "\n"); !strings.Contains(out, "k8s_login is offered") {
 		t.Fatalf("with nothing set up: %s", out)
+	}
+}
+
+// A guest may not forget a kept grant from the command line.
+func TestGuestCannotForgetAMachineGrant(t *testing.T) {
+	endGuest()
+	if err := usePrincipal(identity.GuestPrincipal()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(endGuest)
+	// What a guest approves "always" is not kept anywhere.
+	if err := machinegrant.Keep(machinegrant.Grant{Kind: machinegrant.KindSSHHost, Name: "box", Identity: "i"}); err == nil {
+		t.Fatal("a guest's grant was kept")
+	}
+	if err := guestSubcommand([]string{"machine", "forget", "ssh-host", "box"}); err == nil {
+		t.Fatal("machine forget was not refused for a guest")
+	}
+	if err := guestSubcommand([]string{"machine", "list"}); err != nil {
+		t.Fatalf("machine list was refused: %v", err)
 	}
 }

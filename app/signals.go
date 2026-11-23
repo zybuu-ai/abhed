@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/ollama"
 )
 
 // stopWait bounds how long a stopped command waits for its work to end
@@ -98,6 +99,11 @@ func (s *stopper) watch(then onStop) {
 		return
 	}
 	s.cancel(stoppedBy{sig})
+	if then == stopExits {
+		// TERM now to an Ollama this process started: an editor's kill may follow within
+		// seconds. Not while draining: the sessions draining may be using it.
+		ollama.TermOwned()
+	}
 	switch then {
 	case stopReturns:
 		signal.Stop(s.sigs)
