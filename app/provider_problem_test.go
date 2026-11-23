@@ -1,11 +1,15 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -181,5 +185,35 @@ func TestTooLargeIsSaidAsTooLarge(t *testing.T) {
 	over := &agent.ContextOverflowError{Model: "m-small", Limit: 8192, Err: &model.StatusError{Status: 400, Body: "context_length_exceeded"}}
 	if got := friendlyModelError(fmt.Errorf("x: %w", over), "small", p); !strings.Contains(got, "too long for m-small") || strings.Contains(got, "abhed doctor") {
 		t.Fatalf("overflow: %s", got)
+	}
+}
+
+// A base URL's user, password and query never reach the text Studio shows,
+// nor the reply's _meta.
+func TestUnreachableTextStripsTheEndpointsSecrets(t *testing.T) {
+	for _, base := range []string{
+		"http://bob:hunter2pw@127.0.0.1:9/v1?api_key=sk-abcdefghijklmnop&x=1#frag",
+		"http://tok3n-only@127.0.0.1:9/v1?key=AIzaSyAbcdefghijklmnopqrstuvwxyz0123456",
+		"127.0.0.1:9/v1?token=abcdef123456",
+	} {
+		p := config.ProviderConfig{Type: "openai-compatible", BaseURL: base, Model: "m"}
+		err := fmt.Errorf("model call failed: %w", &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)})
+		cfg := config.Default()
+		cfg.Model.Providers = map[string]config.ProviderConfig{"down": p}
+		pp := explainProvider(cfg, "down", err)
+		if pp == nil {
+			t.Fatalf("%s: not explained", base)
+		}
+		b, _ := json.Marshal(pp)
+		for _, s := range []string{pp.Text(), string(b), friendlyModelError(err, "down", p)} {
+			for _, secret := range []string{"bob", "hunter2pw", "sk-abcdefghijklmnop", "tok3n-only", "AIzaSy", "abcdef123456", "frag", "api_key", "token="} {
+				if strings.Contains(s, secret) {
+					t.Fatalf("%s: %q shows %q", base, s, secret)
+				}
+			}
+		}
+		if !strings.Contains(pp.Text(), "127.0.0.1:9/v1") {
+			t.Fatalf("%s: the host is gone too: %s", base, pp.Text())
+		}
 	}
 }
