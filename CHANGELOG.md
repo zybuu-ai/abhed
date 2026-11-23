@@ -186,6 +186,9 @@ All notable changes to Abhed are recorded here. The format follows
   says which source was used, never the value, and an auth or credit refusal
   says when a different key is stored than the one exported. The key is never
   written to config and is redacted from tool output, messages and the record.
+  A hosted type's stored key goes only to that type's own endpoint, and a
+  model a workspace's file defines gets a stored key only when your own
+  configuration names that key for the same host.
 - Models without editing JSON: `abhed models add PROVIDER MODEL...`, `abhed
   models default NAME`, `list`, `remove` and `known`. They write only your own
   `~/.abhed/config.json`, atomically, with a `config.json.bak` backup and the
@@ -682,8 +685,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 - An `ollama serve` that Abhed or Studio started itself is now stopped by
   Abhed, by its own process id only: after 10 minutes with no session using a
-  local model (`model.ollama.idle_stop_minutes`), and when the Abhed that
-  started it exits, as when Studio quits. Abhed says so when it starts one.
+  local model (chat, completions, next edits, commit messages or embeddings;
+  `model.ollama.idle_stop_minutes`), and when the Abhed that started it
+  exits, on a signal too, as when Studio quits. Abhed says so when it starts one.
   An Ollama it did not start is never stopped.
 - An `anthropic` provider at its own endpoint with no `api_key_env` now reads
   `ANTHROPIC_API_KEY`, as the other hosted types read theirs.
