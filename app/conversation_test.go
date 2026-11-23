@@ -74,7 +74,9 @@ func startCLI(t *testing.T) *cliSession {
 func startCLIWith(t *testing.T, reply func(w io.Writer, n int, body string)) *cliSession {
 	t.Helper()
 	return startCLIConfig(t, reply, func(url string) string {
-		return `{"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + url + `","model":"m","context_window":8192}}}}`
+		// k8s is off: replies are scripted by request number for the stub's small
+		// window, and k8s_login, offered on every machine, would move where it compacts.
+		return `{"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + url + `","model":"m","context_window":8192}}},"k8s":{"enabled":false}}`
 	})
 }
 
