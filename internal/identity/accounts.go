@@ -679,18 +679,17 @@ func (s *Store) Remember(id string) error {
 	b := make([]byte, 32)
 	_, _ = rand.Read(b)
 	token := hex.EncodeToString(b)
-	if err := s.change(func(f *accountsFile) error {
+	// The file is written under the accounts lock, so a ForgetIf of someone
+	// else never removes it between its check and its removal.
+	return s.change(func(f *accountsFile) error {
 		e := findID(f, id)
 		if e == nil {
 			return ErrNoAccount
 		}
 		e.RememberDigest, e.RememberRev = digest(token), e.Revocations
 		e.LastUsed = s.now().UTC()
-		return nil
-	}); err != nil {
-		return err
-	}
-	return writeJSON(s.rememberedFile(), remembered{ID: id, Token: token, IssuedAt: s.now().UTC()})
+		return writeJSON(s.rememberedFile(), remembered{ID: id, Token: token, IssuedAt: s.now().UTC()})
+	})
 }
 
 // Remembered is the sign-in this machine starts with, if one is held and
@@ -721,31 +720,42 @@ func (s *Store) Remembered(maxDays *int) (Entry, bool, error) {
 
 // Forget ends the remembered sign-in: the next start asks again.
 func (s *Store) Forget() error {
-	var r remembered
-	if ok, _ := readJSON(s.rememberedFile(), &r); ok {
-		_ = s.change(func(f *accountsFile) error {
-			if e := findID(f, r.ID); e != nil {
-				e.RememberDigest = ""
-			}
-			return nil
-		})
-	}
-	if err := os.Remove(s.rememberedFile()); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
+	_, err := s.forget("")
+	return err
 }
 
 // ForgetIf ends the remembered sign-in only when it is id's: a process
 // signs out who it works as, never someone another process signed in since.
 // It reports whether it did.
 func (s *Store) ForgetIf(id string) (bool, error) {
-	var r remembered
-	ok, err := readJSON(s.rememberedFile(), &r)
-	if err != nil || !ok || r.ID != id {
-		return false, err
-	}
-	return true, s.Forget()
+	return s.forget(id)
+}
+
+// forget checks and removes the remembered sign-in under the accounts lock,
+// as Remember writes it: only when it is id's, unless id is "".
+func (s *Store) forget(id string) (bool, error) {
+	done := false
+	err := s.change(func(f *accountsFile) error {
+		var r remembered
+		ok, err := readJSON(s.rememberedFile(), &r)
+		if err != nil && id != "" {
+			return err
+		}
+		if id != "" && (!ok || r.ID != id) {
+			return nil
+		}
+		if ok {
+			if e := findID(f, r.ID); e != nil {
+				e.RememberDigest = ""
+			}
+		}
+		if err := os.Remove(s.rememberedFile()); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		done = true
+		return nil
+	})
+	return done, err
 }
 
 // SignOutEverywhere ends every remembered sign-in of the account.
