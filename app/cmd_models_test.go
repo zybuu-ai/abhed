@@ -17,9 +17,23 @@ import (
 
 type memKeychain map[string]string
 
-func (m memKeychain) Get(n string) (string, bool, error) { v, ok := m[n]; return v, ok, nil }
-func (m memKeychain) Set(n, v string) error              { m[n] = v; return nil }
-func (m memKeychain) Delete(n string) (bool, error)      { _, ok := m[n]; delete(m, n); return ok, nil }
+func keySlot(s, n string) string {
+	if s == modelkeys.Service {
+		return n
+	}
+	return s + "|" + n
+}
+
+func (m memKeychain) Get(s, n string) (string, bool, error) {
+	v, ok := m[keySlot(s, n)]
+	return v, ok, nil
+}
+func (m memKeychain) Set(s, n, v string) error { m[keySlot(s, n)] = v; return nil }
+func (m memKeychain) Delete(s, n string) (bool, error) {
+	_, ok := m[keySlot(s, n)]
+	delete(m, keySlot(s, n))
+	return ok, nil
+}
 
 const testKey = "sk-ant-api03-secretvalue-0123456789"
 
@@ -324,5 +338,28 @@ func TestGuestRefusedModelCommandsFromMain(t *testing.T) {
 		if code == 0 || !strings.Contains(out, "a guest keeps nothing") {
 			t.Errorf("%v: %d %q", args, code, out)
 		}
+	}
+}
+
+// A guest is given no stored key, the machine's from before sign-in
+// included; a key in the environment still works.
+func TestGuestGetsNoStoredKey(t *testing.T) {
+	modelsHome(t, "", 0)
+	chain := memKeychain{"ANTHROPIC_API_KEY": "sk-legacy-0123456789"}
+	defer modelkeys.Use(chain, "")()
+	if p := config.ResolveKey(config.ProviderConfig{Type: "anthropic", Model: "m"}); p.APIKey != "sk-legacy-0123456789" {
+		t.Fatalf("legacy lost its key: %+v", p.KeySource)
+	}
+	endGuest()
+	if err := usePrincipal(identity.GuestPrincipal()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(endGuest)
+	if p := config.ResolveKey(config.ProviderConfig{Type: "anthropic", Model: "m"}); p.APIKey != "" {
+		t.Fatal("a guest was given a stored key")
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "sk-env-0123456789")
+	if p := config.ResolveKey(config.ProviderConfig{Type: "anthropic", Model: "m"}); p.APIKey != "sk-env-0123456789" {
+		t.Fatalf("a guest lost the environment's key: %+v", p.KeySource)
 	}
 }

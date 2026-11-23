@@ -163,6 +163,7 @@ func createAndAdopt(s *identity.Store, p *prompter) (identity.Principal, error) 
 		return identity.Principal{}, err
 	}
 	fmt.Fprintf(p.out, "Moved %d item(s) into your account; %d session record(s) verified before and after.\n", res.Moved, res.Sessions)
+	adoptLegacyKeys(e.ID, p.out)
 	return s.Principal(e), nil
 }
 

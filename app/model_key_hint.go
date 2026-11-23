@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -121,4 +122,27 @@ func modelKeyCheck(p config.ProviderConfig) (status, detail string, ok bool) {
 func noteLocalModelUse() {
 	f := ollama.Using
 	model.LocalUse.Store(&f)
+}
+
+// adoptLegacyKeys has account id take over the model keys stored in the
+// Keychain before sign-in, as it takes over the rest of that data (the secret
+// store moves with its folder): every hosted type's key name and every name
+// a configured model reads. It says what moved, or why not, on out.
+func adoptLegacyKeys(id string, out io.Writer) {
+	names := modelkeys.HostedKeyNames()
+	if own, err := userFileConfig(); err == nil {
+		for _, p := range own.Model.Providers {
+			if n := p.KeyName(); n != "" {
+				names = append(names, n)
+			}
+		}
+	}
+	moved, err := modelkeys.AdoptLegacy(id, names)
+	if err != nil {
+		fmt.Fprintf(out, "The model keys from before sign-in were not all moved to your account (%v); abhed provider login stores one again.\n", err)
+		return
+	}
+	if len(moved) > 0 {
+		fmt.Fprintf(out, "Moved %d model key(s) in the Keychain to your account: %s.\n", len(moved), strings.Join(moved, ", "))
+	}
 }

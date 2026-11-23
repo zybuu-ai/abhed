@@ -100,9 +100,15 @@ abhed provider status              # where each key comes from; never the key
 abhed provider logout anthropic
 ```
 
-The key goes into the macOS Keychain (service "Abhed model key", account
-`ANTHROPIC_API_KEY`), or where there is no Keychain into Abhed's secret store
-(`~/.abhed/secrets.json`, mode 600) under a name Abhed keeps for itself: it is
+A stored key is your Abhed account's, not the machine user's. It goes into
+the macOS Keychain under a service of your account's (`Abhed model key:
+<account id>`, account `ANTHROPIC_API_KEY`; before anyone signs in, `Abhed
+model key`), or where there is no Keychain into your account's secret store
+(`~/.abhed/accounts/<id>/secrets.json`, mode 600; `~/.abhed/secrets.json`
+before sign-in). Another account never sees it, a guest keeps and is given
+no stored key (a key in the environment still works), and the first account
+takes over the keys stored before sign-in with the rest of that data. In
+the secret store a key is kept under a name Abhed keeps for itself: it is
 never offered to a command, `abhed secret list` does not show it, and `abhed
 secret set` cannot overwrite it. The key is never written to configuration,
 printed, sent to the model or recorded: once read, it is redacted from tool

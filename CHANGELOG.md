@@ -237,8 +237,12 @@ All notable changes to Abhed are recorded here. The format follows
   A hosted type's stored key goes only to that type's own endpoint, and a
   model a workspace's file defines gets a stored key only when your own
   configuration names that key for the same endpoint and token URL, and an
-  exported hosted key only at its type's own endpoint. A guest keeps no key:
-  `provider login|logout` and every other way to the store are refused.
+  exported hosted key only at its type's own endpoint. A stored key is the
+  Abhed account's: the Keychain service and the secret store are the
+  account's own, so another account never sees it, and the first account
+  takes over the keys stored before sign-in. A guest keeps and is given no
+  stored key: `provider login|logout` and every other way to the store are
+  refused; a key in the environment still works.
 - Models without editing JSON: `abhed models add PROVIDER MODEL...`, `abhed
   models default NAME`, `list`, `remove` and `known`. They write only your own
   `~/.abhed/config.json`, atomically, with a `config.json.bak` backup and the

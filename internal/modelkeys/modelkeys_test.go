@@ -7,17 +7,39 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 )
 
 // fakeChain is a Keychain in memory; no test reaches the real one.
 type fakeChain struct{ m map[string]string }
 
-func (f *fakeChain) Get(n string) (string, bool, error) { v, ok := f.m[n]; return v, ok, nil }
-func (f *fakeChain) Set(n, v string) error              { f.m[n] = v; return nil }
-func (f *fakeChain) Delete(n string) (bool, error) {
-	_, ok := f.m[n]
-	delete(f.m, n)
+// slot keys a legacy item by its name, as the tests read it, and another
+// service's by service|name.
+func slot(s, n string) string {
+	if s == Service {
+		return n
+	}
+	return s + "|" + n
+}
+
+func (f *fakeChain) Get(s, n string) (string, bool, error) {
+	if s == "" {
+		// As find-generic-password with no service: any item of that account.
+		for k, v := range f.m {
+			if k == n || strings.HasSuffix(k, "|"+n) {
+				return v, true, nil
+			}
+		}
+		return "", false, nil
+	}
+	v, ok := f.m[slot(s, n)]
+	return v, ok, nil
+}
+func (f *fakeChain) Set(s, n, v string) error { f.m[slot(s, n)] = v; return nil }
+func (f *fakeChain) Delete(s, n string) (bool, error) {
+	_, ok := f.m[slot(s, n)]
+	delete(f.m, slot(s, n))
 	return ok, nil
 }
 
@@ -135,13 +157,13 @@ if [ "$1" = "delete-generic-password" ]; then [ -s "` + dir + `/item" ] || exit 
 		t.Fatal(err)
 	}
 	s := Security{Program: stub}
-	if _, ok, err := s.Get("ANTHROPIC_API_KEY"); ok || err != nil {
+	if _, ok, err := s.Get(Service, "ANTHROPIC_API_KEY"); ok || err != nil {
 		t.Fatalf("Get before Set = %v %v", ok, err)
 	}
-	if err := s.Set("ANTHROPIC_API_KEY", key); err != nil {
+	if err := s.Set(Service, "ANTHROPIC_API_KEY", key); err != nil {
 		t.Fatal(err)
 	}
-	if v, ok, err := s.Get("ANTHROPIC_API_KEY"); !ok || v != key || err != nil {
+	if v, ok, err := s.Get(Service, "ANTHROPIC_API_KEY"); !ok || v != key || err != nil {
 		t.Fatalf("Get = %q %v %v", v, ok, err)
 	}
 	b, _ := os.ReadFile(log)
@@ -150,10 +172,10 @@ if [ "$1" = "delete-generic-password" ]; then [ -s "` + dir + `/item" ] || exit 
 			t.Fatalf("the key was in a command line: %s", line)
 		}
 	}
-	if ok, err := s.Delete("ANTHROPIC_API_KEY"); !ok || err != nil {
+	if ok, err := s.Delete(Service, "ANTHROPIC_API_KEY"); !ok || err != nil {
 		t.Fatalf("Delete = %v %v", ok, err)
 	}
-	if err := s.Set("ANTHROPIC_API_KEY", `bad"quote-0123456`); err == nil {
+	if err := s.Set(Service, "ANTHROPIC_API_KEY", `bad"quote-0123456`); err == nil {
 		t.Fatal("a value that would break the command was accepted")
 	}
 }
@@ -199,5 +221,109 @@ func TestGuardRefusesStoreAndRemove(t *testing.T) {
 	}
 	if v, _, _ := Lookup("X_KEY"); v != key {
 		t.Fatal("a lookup is not a change and is not refused")
+	}
+}
+
+// personHome makes a home with an account folder for each id and a guest
+// folder, and returns a func that makes one the person working.
+func personHome(t *testing.T, ids ...string) func(kind, id string) {
+	t.Helper()
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv(secrets.EnvFile, "")
+	m := filepath.Join(h, ".abhed")
+	for _, id := range ids {
+		if err := os.MkdirAll(filepath.Join(m, home.AccountsDir, id), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(m, home.GuestDir, "g1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = home.SetPerson("") })
+	return func(kind, id string) {
+		t.Helper()
+		root := ""
+		switch kind {
+		case "account":
+			root = filepath.Join(m, home.AccountsDir, id)
+		case "guest":
+			root = filepath.Join(m, home.GuestDir, "g1")
+		}
+		if err := home.SetPerson(root); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Stored keys are the Abhed account's, not the machine user's: B never sees
+// A's, a guest sees none, and before sign-in nothing changes.
+func TestKeysBelongToTheAccount(t *testing.T) {
+	for _, withChain := range []bool{true, false} {
+		t.Run(map[bool]string{true: "keychain", false: "store"}[withChain], func(t *testing.T) {
+			be := personHome(t, "alice", "bob")
+			chain := &fakeChain{m: map[string]string{}}
+			var k Keychain
+			if withChain {
+				k = chain
+			}
+			defer Use(k, "")()
+			be("account", "alice")
+			if _, err := Store("ANTHROPIC_API_KEY", "sk-alice-0123456789"); err != nil {
+				t.Fatal(err)
+			}
+			if v, _, _ := Lookup("ANTHROPIC_API_KEY"); v != "sk-alice-0123456789" {
+				t.Fatalf("alice lost her key: %q", v)
+			}
+			be("account", "bob")
+			if v, _, _ := Lookup("ANTHROPIC_API_KEY"); v != "" {
+				t.Fatalf("bob sees alice's key")
+			}
+			if from, _ := Remove("ANTHROPIC_API_KEY"); len(from) != 0 {
+				t.Fatalf("bob removed alice's key from %v", from)
+			}
+			be("guest", "")
+			if v, _, _ := Lookup("ANTHROPIC_API_KEY"); v != "" {
+				t.Fatal("a guest sees a stored key")
+			}
+			if _, err := Store("ANTHROPIC_API_KEY", key); !errors.Is(err, ErrGuest) {
+				t.Fatalf("a guest stored a key: %v", err)
+			}
+			be("legacy", "")
+			if v, _, _ := Lookup("ANTHROPIC_API_KEY"); v != "" {
+				t.Fatal("legacy sees an account's key")
+			}
+			if _, err := Store("ANTHROPIC_API_KEY", "sk-legacy-0123456789"); err != nil {
+				t.Fatal(err)
+			}
+			if withChain && chain.m["ANTHROPIC_API_KEY"] != "sk-legacy-0123456789" {
+				t.Fatalf("legacy is not under the old service and name: %v", chain.m)
+			}
+			be("account", "alice")
+			if v, _, _ := Lookup("ANTHROPIC_API_KEY"); v != "sk-alice-0123456789" {
+				t.Fatalf("alice sees %q", v)
+			}
+		})
+	}
+}
+
+// The first account takes over the Keychain keys from before sign-in.
+func TestAdoptLegacyKeys(t *testing.T) {
+	be := personHome(t, "alice")
+	chain := &fakeChain{m: map[string]string{"ANTHROPIC_API_KEY": "sk-old-0123456789", "CORP_KEY": "corp-old-0123456789"}}
+	defer Use(chain, "")()
+	moved, err := AdoptLegacy("alice", append(HostedKeyNames(), "CORP_KEY"))
+	if err != nil || len(moved) != 2 {
+		t.Fatalf("moved %v %v", moved, err)
+	}
+	if _, left := chain.m["ANTHROPIC_API_KEY"]; left {
+		t.Fatal("the legacy item was left")
+	}
+	be("account", "alice")
+	if v, _, _ := Lookup("CORP_KEY"); v != "corp-old-0123456789" {
+		t.Fatalf("alice did not get the earlier key: %q", v)
+	}
+	if _, err := AdoptLegacy("../x", nil); err == nil {
+		t.Fatal("a bad account id was taken")
 	}
 }

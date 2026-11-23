@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 )
 
@@ -140,14 +142,61 @@ func ValidName(name string) bool {
 
 // Keychain keeps generic passwords for Abhed. The macOS login Keychain is the
 // real one; tests give their own, so none of them reaches it.
+//
+// service is the person's: Service before sign-in, ServiceFor(id) for an
+// account, so one person's lookups never see another's keys.
 type Keychain interface {
 	// Get is the value stored for name, and whether there is one.
-	Get(name string) (string, bool, error)
+	Get(service, name string) (string, bool, error)
 	// Set stores value for name, replacing any.
-	Set(name, value string) error
+	Set(service, name, value string) error
 	// Delete removes name, reporting whether it was there.
-	Delete(name string) (bool, error)
+	Delete(service, name string) (bool, error)
 }
+
+// Service is the Keychain service model keys were kept under before sign-in,
+// and still are when no one has signed in; the account is the key's name.
+const Service = "Abhed model key"
+
+// ServiceFor is the Keychain service of the Abhed account id.
+func ServiceFor(id string) string { return Service + ": " + id }
+
+// A person is who keys are kept for: kind is legacy (no sign-in), account
+// or guest; id is the account's.
+type person struct{ kind, id string }
+
+// currentPerson is who is working in this process, from its person folder.
+var currentPerson = func() person {
+	if home.Legacy() {
+		return person{kind: "legacy"}
+	}
+	p, err := home.Person()
+	m, merr := home.Machine()
+	if err != nil || merr != nil {
+		return person{kind: "guest"}
+	}
+	rel, err := filepath.Rel(m, p)
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	if err != nil || len(parts) != 2 || parts[0] != home.AccountsDir {
+		// A guest, or a folder that is no account's: no stored key is anyone's here.
+		return person{kind: "guest"}
+	}
+	return person{kind: "account", id: parts[1]}
+}
+
+// service is the Keychain service for who, "" for a guest, who keeps none.
+func (who person) service() string {
+	switch who.kind {
+	case "legacy":
+		return Service
+	case "account":
+		return ServiceFor(who.id)
+	}
+	return ""
+}
+
+// ErrGuest refuses a stored key to a guest: a guest keeps nothing.
+var ErrGuest = errors.New("a guest keeps no stored key; sign in to keep one (abhed account signin), or set the key in the environment")
 
 var (
 	mu sync.Mutex
@@ -307,39 +356,45 @@ func Lookup(name string) (value, kind string, err error) {
 	if !ValidName(name) {
 		return "", "", fmt.Errorf("%q is not a key name (upper-case letters, digits and _)", name)
 	}
+	who := currentPerson()
+	if who.kind == "guest" {
+		return "", "", nil
+	}
+	ck := who.service() + "\x00" + name
 	mu.Lock()
-	if c, ok := cache[name]; ok && time.Since(c.at) < cacheFor {
+	if c, ok := cache[ck]; ok && time.Since(c.at) < cacheFor {
 		mu.Unlock()
 		return c.value, c.kind, nil
 	}
 	k, store := keychain(), fileStore()
 	mu.Unlock()
 	if k != nil {
-		v, ok, err := k.Get(name)
+		v, ok, err := k.Get(who.service(), name)
 		if err != nil {
 			return "", "", fmt.Errorf("the Keychain could not be read for %s: %w", name, err)
 		}
 		if ok && v != "" {
-			return remember(name, v, KindKeychain), KindKeychain, nil
+			return remember(ck, name, v, KindKeychain), KindKeychain, nil
 		}
 	}
+	// The secret store is the person's own file (home.PersonPath).
 	v, ok, err := store.HeldValue(secrets.ModelKeyPrefix + name)
 	if err != nil {
 		return "", "", err
 	}
 	if ok && v != "" {
-		return remember(name, v, KindFile), KindFile, nil
+		return remember(ck, name, v, KindFile), KindFile, nil
 	}
 	// A miss is not kept: a key stored a moment later is found at once.
 	return "", "", nil
 }
 
-func remember(name, value, kind string) string {
+func remember(ck, name, value, kind string) string {
 	if value != "" {
 		secrets.AlsoRedact(name, value)
 	}
 	mu.Lock()
-	cache[name] = cached{value: value, kind: kind, at: time.Now()}
+	cache[ck] = cached{value: value, kind: kind, at: time.Now()}
 	mu.Unlock()
 	return value
 }
@@ -365,13 +420,17 @@ func Store(name, value string) (string, error) {
 	if strings.ContainsFunc(value, func(r rune) bool { return r < 0x21 || r > 0x7e }) {
 		return "", errors.New("a key is printable characters with no spaces")
 	}
+	who := currentPerson()
+	if who.kind == "guest" {
+		return "", ErrGuest
+	}
 	mu.Lock()
 	k, store := keychain(), fileStore()
-	delete(cache, name)
+	delete(cache, who.service()+"\x00"+name)
 	mu.Unlock()
 	secrets.AlsoRedact(name, value)
 	if k != nil {
-		if err := k.Set(name, value); err != nil {
+		if err := k.Set(who.service(), name, value); err != nil {
 			return "", fmt.Errorf("the key could not be stored in the Keychain: %w", err)
 		}
 		if err := store.UpdateHeld(func(func(string) (string, bool)) (map[string]string, []string, error) {
@@ -396,13 +455,17 @@ func Remove(name string) ([]string, error) {
 	if !ValidName(name) {
 		return nil, fmt.Errorf("%q is not a key name (upper-case letters, digits and _)", name)
 	}
+	who := currentPerson()
+	if who.kind == "guest" {
+		return nil, ErrGuest
+	}
 	mu.Lock()
 	k, store := keychain(), fileStore()
-	delete(cache, name)
+	delete(cache, who.service()+"\x00"+name)
 	mu.Unlock()
 	var from []string
 	if k != nil {
-		ok, err := k.Delete(name)
+		ok, err := k.Delete(who.service(), name)
 		if err != nil {
 			return nil, fmt.Errorf("the Keychain item could not be removed: %w", err)
 		}
@@ -422,4 +485,59 @@ func Remove(name string) ([]string, error) {
 		from = append(from, KindFile)
 	}
 	return from, nil
+}
+
+// AdoptLegacy moves the Keychain keys named names from before sign-in to the
+// account id, as the first account takes over the rest of that data (the
+// secret store moves with the account's folder). A key the account already
+// has is left as it is. It returns the names moved.
+func AdoptLegacy(id string, names []string) ([]string, error) {
+	if !validID(id) {
+		return nil, fmt.Errorf("%q is not an account id", id)
+	}
+	mu.Lock()
+	k := keychain()
+	cache = map[string]cached{}
+	mu.Unlock()
+	if k == nil {
+		return nil, nil
+	}
+	var moved []string
+	for _, name := range names {
+		if !ValidName(name) || slices.Contains(moved, name) {
+			continue
+		}
+		v, ok, err := k.Get(Service, name)
+		if err != nil {
+			return moved, err
+		}
+		if !ok || v == "" {
+			continue
+		}
+		if _, have, err := k.Get(ServiceFor(id), name); err != nil {
+			return moved, err
+		} else if !have {
+			if err := k.Set(ServiceFor(id), name, v); err != nil {
+				return moved, err
+			}
+		}
+		if _, err := k.Delete(Service, name); err != nil {
+			return moved, err
+		}
+		moved = append(moved, name)
+	}
+	return moved, nil
+}
+
+var accountID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+
+func validID(id string) bool { return accountID.MatchString(id) }
+
+// HostedKeyNames are the key names of every hosted type.
+func HostedKeyNames() []string {
+	out := make([]string, 0, len(hosted))
+	for _, h := range hosted {
+		out = append(out, h.Key)
+	}
+	return out
 }
