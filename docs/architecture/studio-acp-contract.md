@@ -1476,8 +1476,15 @@ conversation rewind is `_abhed/session/fork` at the turn's seq.
 
 ### 7.6 Queue, steer and stop
 
-- `_abhed/session/steer {sessionId, text}` → `{}`: "send now" while a prompt
-  runs; recorded as a `user.message` with `meta.steered: true`.
+- `_abhed/session/steer {sessionId, text}` → `{queueId}`: "send now" while a
+  prompt runs; recorded as a `user.message` with `meta.steered: true`. It is
+  an error only when the message was not queued: no such session, no prompt
+  running, the session closed, or empty text; nothing of it is then in the
+  record, and Studio puts the text back in the input. Once queued, every
+  outcome is a successful reply: delivered (`_meta.userMessageSeq`), or not
+  (`userMessageSeq: null` with `userMessageReason`: withdrawn, dropped by a
+  hook, the turn ended before it was delivered, the session or the
+  connection closed).
 - `_abhed/queue/list {sessionId}` → `{items: {id, text, queued}[]}` and
   `_abhed/queue/cancel {sessionId, id}` → `{}`.
 - Stop is spec `session/cancel`, which also cancels background tasks (done).
