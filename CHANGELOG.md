@@ -330,7 +330,8 @@ All notable changes to Abhed are recorded here. The format follows
   exported hosted key only at its type's own endpoint. A stored key is the
   Abhed account's: the Keychain service and the secret store are the
   account's own, so another account never sees it, and the first account
-  takes over the keys stored before sign-in. A guest keeps and is given no
+  takes over the keys stored before sign-in (a key held in both places with
+  different values is kept twice and named). A guest keeps and is given no
   stored key: `provider login|logout` and every other way to the store are
   refused; a key in the environment still works.
 - Models without editing JSON: `abhed models add PROVIDER MODEL...`, `abhed

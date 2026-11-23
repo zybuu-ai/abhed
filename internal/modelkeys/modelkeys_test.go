@@ -352,3 +352,27 @@ func TestReturnLegacyKeys(t *testing.T) {
 		t.Fatal("a bad account id was taken")
 	}
 }
+
+// A key in both places with different values keeps both and says so; the
+// same value in both is one key.
+func TestMoveKeepsBothWhenTheyDiffer(t *testing.T) {
+	personHome(t, "alice")
+	chain := &fakeChain{m: map[string]string{
+		"ANTHROPIC_API_KEY":                        "sk-old-0123456789",
+		ServiceFor("alice") + "|ANTHROPIC_API_KEY": "sk-new-0123456789",
+		"OPENAI_API_KEY":                           "sk-same-0123456789",
+		ServiceFor("alice") + "|OPENAI_API_KEY":    "sk-same-0123456789",
+	}}
+	defer Use(chain, "")()
+	moved, err := ReturnLegacy("alice", HostedKeyNames())
+	var both *KeptBothError
+	if !errors.As(err, &both) || len(both.Names) != 1 || both.Names[0] != "ANTHROPIC_API_KEY" {
+		t.Fatalf("err %v", err)
+	}
+	if chain.m[ServiceFor("alice")+"|ANTHROPIC_API_KEY"] != "sk-new-0123456789" || chain.m["ANTHROPIC_API_KEY"] != "sk-old-0123456789" {
+		t.Fatalf("a copy was replaced or removed: %v", chain.m)
+	}
+	if len(moved) != 1 || moved[0] != "OPENAI_API_KEY" {
+		t.Fatalf("moved %v", moved)
+	}
+}

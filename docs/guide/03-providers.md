@@ -109,7 +109,13 @@ model key`), or where there is no Keychain into your account's secret store
 (`~/.abhed/accounts/<id>/secrets.json`, mode 600; `~/.abhed/secrets.json`
 before sign-in). Another account never sees it, a guest keeps and is given
 no stored key (a key in the environment still works), and the first account
-takes over the keys stored before sign-in with the rest of that data. In
+takes over the keys stored before sign-in with the rest of that data. This
+separation holds within Abhed: accounts on one macOS user are that user to
+the system, so a program the user runs outside Abhed can still read another
+account's Keychain item with `security find-generic-password`. Abhed Studio
+runs its model and key commands as the window's account (`ABHED_ACCOUNT`);
+when that account is not the one signed in on the machine, they are refused,
+never run as another. In
 the secret store a key is kept under a name Abhed keeps for itself: it is
 never offered to a command, `abhed secret list` does not show it, and `abhed
 secret set` cannot overwrite it. The key is never written to configuration,

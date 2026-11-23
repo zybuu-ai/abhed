@@ -13,6 +13,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/modelkeys"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 )
 
 type memKeychain map[string]string
@@ -361,5 +362,60 @@ func TestGuestGetsNoStoredKey(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-env-0123456789")
 	if p := config.ResolveKey(config.ProviderConfig{Type: "anthropic", Model: "m"}); p.APIKey != "sk-env-0123456789" {
 		t.Fatalf("a guest lost the environment's key: %+v", p.KeySource)
+	}
+}
+
+// A command run for B's window (ABHED_ACCOUNT=b1) with A signed in on the
+// machine never works as A: it is refused, and A's key and configuration are
+// untouched.
+func TestWindowAccountIsNeverAnother(t *testing.T) {
+	signInTest(t)
+	chain := memKeychain{}
+	defer modelkeys.Use(chain, "")()
+	for _, who := range []string{"b1", "a1"} {
+		if code, _, e := runAccount(t, "correct horse\ncorrect horse\n", "create", who); code != 0 {
+			t.Fatal(e)
+		}
+	}
+	s, _ := identity.Open()
+	if rem, ok, _ := s.Remembered(nil); !ok || rem.Username != "a1" {
+		t.Fatalf("a1 is not the one remembered: %+v", rem)
+	}
+	endGuest()
+	t.Setenv(EnvAccount, "b1")
+	out, code := stderrOf(t, []string{"models", "add", "anthropic", "claude-opus-5-5"})
+	if code == 0 || !strings.Contains(out, "b1 is not signed in") {
+		t.Fatalf("b1's command ran: %d %q", code, out)
+	}
+	if p := currentPrincipal(); p.Kind == identity.Account && p.Entry.Username == "a1" {
+		t.Fatal("the command worked as a1")
+	}
+	if len(chain) != 0 {
+		t.Fatalf("a key was stored: %v", chain)
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".abhed", "config.json")); err == nil {
+		b, _ := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".abhed", "config.json"))
+		if strings.Contains(string(b), "claude-opus-5-5") {
+			t.Fatal("a model was added as a1")
+		}
+	}
+}
+
+// A sign-in asked for one account refuses another that signs in instead.
+func TestIsSelected(t *testing.T) {
+	a := identity.Principal{Kind: identity.Account, Entry: identity.Entry{Username: "a1"}}
+	if !isSelected(a, "A1") || isSelected(a, "b1") || isSelected(identity.GuestPrincipal(), "a1") {
+		t.Fatal("isSelected misjudges")
+	}
+}
+
+// An account's secrets are its own folder's: a secrets file named in the
+// environment is dropped for it, as for a guest.
+func TestAccountDropsTheSecretsFileVariable(t *testing.T) {
+	t.Setenv(secrets.EnvFile, "/tmp/shared-secrets.json")
+	t.Setenv(EnvAccount, "")
+	handDown(identity.Principal{Kind: identity.Account, Entry: identity.Entry{Username: "a1"}})
+	if os.Getenv(secrets.EnvFile) != "" || os.Getenv(EnvAccount) != "a1" {
+		t.Fatalf("secrets file %q account %q", os.Getenv(secrets.EnvFile), os.Getenv(EnvAccount))
 	}
 }

@@ -518,9 +518,9 @@ func moveKeys(from, to string, names []string) ([]string, error) {
 	if k == nil {
 		return nil, nil
 	}
-	var moved []string
+	var moved, kept []string
 	for _, name := range names {
-		if !ValidName(name) || slices.Contains(moved, name) {
+		if !ValidName(name) || slices.Contains(moved, name) || slices.Contains(kept, name) {
 			continue
 		}
 		v, ok, err := k.Get(from, name)
@@ -530,9 +530,13 @@ func moveKeys(from, to string, names []string) ([]string, error) {
 		if !ok || v == "" {
 			continue
 		}
-		if _, have, err := k.Get(to, name); err != nil {
+		if cur, have, err := k.Get(to, name); err != nil {
 			return moved, err
-		} else if !have {
+		} else if have && cur != "" && cur != v {
+			// Both kept: which one is current is the person's to say.
+			kept = append(kept, name)
+			continue
+		} else if !have || cur == "" {
 			if err := k.Set(to, name, v); err != nil {
 				return moved, err
 			}
@@ -542,7 +546,19 @@ func moveKeys(from, to string, names []string) ([]string, error) {
 		}
 		moved = append(moved, name)
 	}
+	if len(kept) > 0 {
+		return moved, &KeptBothError{Names: kept}
+	}
 	return moved, nil
+}
+
+// KeptBothError names keys the destination already holds a different value
+// of: neither copy was removed or replaced.
+type KeptBothError struct{ Names []string }
+
+func (e *KeptBothError) Error() string {
+	return strings.Join(e.Names, ", ") + " stored both before sign-in and in the account, with different values; both were kept. " +
+		"Run abhed provider login to store the current one"
 }
 
 var accountID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)

@@ -130,7 +130,10 @@ func noteLocalModelUse() {
 // a configured model reads. It says what moved, or why not, on out.
 func adoptLegacyKeys(id string, out io.Writer) {
 	moved, err := modelkeys.AdoptLegacy(id, modelKeyNames())
-	if err != nil {
+	var both *modelkeys.KeptBothError
+	if errors.As(err, &both) {
+		fmt.Fprintf(out, "Model keys: %v.\n", err)
+	} else if err != nil {
 		fmt.Fprintf(out, "The model keys from before sign-in were not all moved to your account (%v); abhed provider login stores one again.\n", err)
 		return
 	}
@@ -157,7 +160,10 @@ func modelKeyNames() []string {
 // service from before sign-in, as unmigrate moves the rest back.
 func returnLegacyKeys(id string, out io.Writer) {
 	moved, err := modelkeys.ReturnLegacy(id, modelKeyNames())
-	if err != nil {
+	var both *modelkeys.KeptBothError
+	if errors.As(err, &both) {
+		fmt.Fprintf(out, "Model keys: %v.\n", err)
+	} else if err != nil {
 		fmt.Fprintf(out, "The model keys were not all moved back from the account (%v); abhed provider login stores one again.\n", err)
 		return
 	}
