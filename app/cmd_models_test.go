@@ -1,0 +1,227 @@
+package app
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/modelkeys"
+)
+
+type memKeychain map[string]string
+
+func (m memKeychain) Get(n string) (string, bool, error) { v, ok := m[n]; return v, ok, nil }
+func (m memKeychain) Set(n, v string) error              { m[n] = v; return nil }
+func (m memKeychain) Delete(n string) (bool, error)      { _, ok := m[n]; delete(m, n); return ok, nil }
+
+const testKey = "sk-ant-api03-secretvalue-0123456789"
+
+// modelsHome is a throwaway home with the person's file holding body.
+func modelsHome(t *testing.T, body string, mode os.FileMode) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if body != "" {
+		dir := filepath.Join(home, ".abhed")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(body), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return filepath.Join(home, ".abhed", "config.json")
+}
+
+func runModels(t *testing.T, in string, terminal bool, args ...string) (int, string, string) {
+	t.Helper()
+	var out, errb bytes.Buffer
+	code := modelsCmd(args, modelsIO{in: strings.NewReader(in), out: &out, err: &errb, terminal: terminal})
+	return code, out.String(), errb.String()
+}
+
+func TestModelsAddKeepsTheRestOfTheFile(t *testing.T) {
+	orig := `{"future_key": {"x": 1}, "limits": {"max_turns": 12345678901234567}, "model": {"default": "local", "providers": {"local": {"type": "ollama", "model": "qwen3:30b", "context_window": 65536}}}}`
+	file := modelsHome(t, orig, 0o640)
+	code, out, errs := runModels(t, "", false, "add", "-json", "--", "anthropic", "claude-sonnet-5-5", "claude-opus-5-5")
+	if code != 0 {
+		t.Fatalf("add: %d %s", code, errs)
+	}
+	var res modelsResult
+	if err := json.Unmarshal([]byte(out), &res); err != nil || len(res.Added) != 2 {
+		t.Fatalf("result %s: %v", out, err)
+	}
+	data, _ := os.ReadFile(file)
+	s := string(data)
+	for _, want := range []string{`"future_key"`, `12345678901234567`, `"claude-opus-5-5"`, `"qwen3:30b"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the file lost %s:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "api_key\"") {
+		t.Error("a key field was written")
+	}
+	fi, _ := os.Stat(file)
+	if fi.Mode().Perm() != 0o640 {
+		t.Errorf("mode %v, want 0640 kept", fi.Mode().Perm())
+	}
+	bak, err := os.ReadFile(file + ".bak")
+	if err != nil || string(bak) != orig {
+		t.Errorf("backup = %q, %v", bak, err)
+	}
+	// No temporary file is left beside it.
+	ents, _ := os.ReadDir(filepath.Dir(file))
+	for _, e := range ents {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("left %s", e.Name())
+		}
+	}
+	// Adding again is no change; a clash under another type is refused.
+	if code, out, _ := runModels(t, "", false, "add", "anthropic", "claude-opus-5-5"); code != 0 || !strings.Contains(out, "already configured") {
+		t.Errorf("re-add: %d %s", code, out)
+	}
+	if code, _, _ := runModels(t, "", false, "add", "openai", "claude-opus-5-5"); code == 0 {
+		t.Error("a clashing name was replaced")
+	}
+}
+
+func TestModelsAddFromConfiguredShareKeyName(t *testing.T) {
+	file := modelsHome(t, `{"model":{"providers":{"corp":{"type":"openai","base_url":"https://llm.corp.example/v1","model":"a","api_key_secret":"CORP_KEY","api_key":"literal-should-not-copy"}}}}`, 0o600)
+	if code, _, errs := runModels(t, "", false, "add", "corp", "b-model"); code != 0 {
+		t.Fatal(errs)
+	}
+	doc, _, _ := readUserDoc()
+	e := userProviders(doc)["b-model"].(map[string]any)
+	if e["base_url"] != "https://llm.corp.example/v1" || e["api_key_secret"] != "CORP_KEY" || e["api_key"] != nil {
+		t.Fatalf("entry %v", e)
+	}
+	_ = file
+}
+
+func TestModelsDefaultConfirmsHosted(t *testing.T) {
+	modelsHome(t, `{"model":{"default":"local","providers":{"local":{"type":"ollama","model":"q"},"c":{"type":"anthropic","model":"claude-sonnet-5-5"},"l2":{"type":"ollama","model":"r"}}}}`, 0o600)
+	code, out, _ := runModels(t, "", false, "default", "-check", "-json", "--", "c")
+	if code != 0 || !strings.Contains(out, `"widens":true`) {
+		t.Fatalf("check: %d %s", code, out)
+	}
+	// No terminal, no yes: refused, nothing written.
+	if code, _, _ := runModels(t, "", false, "default", "c"); code == 0 {
+		t.Fatal("a hosted default was set with no confirmation")
+	}
+	if code, _, _ := runModels(t, "n\n", true, "default", "c"); code == 0 {
+		t.Fatal("a no set the default")
+	}
+	own, _ := userFileConfig()
+	if own.Model.Default != "local" {
+		t.Fatalf("default changed to %s", own.Model.Default)
+	}
+	if code, _, errs := runModels(t, "y\n", true, "default", "c"); code != 0 {
+		t.Fatal(errs)
+	}
+	// A local one narrows: no question.
+	if code, _, errs := runModels(t, "", false, "default", "l2"); code != 0 {
+		t.Fatal(errs)
+	}
+	own, _ = userFileConfig()
+	if own.Model.Default != "l2" {
+		t.Fatalf("default = %s", own.Model.Default)
+	}
+	if code, _, _ := runModels(t, "", false, "remove", "l2"); code == 0 {
+		t.Fatal("the default was removed")
+	}
+	if code, _, errs := runModels(t, "", false, "remove", "c"); code != 0 {
+		t.Fatal(errs)
+	}
+}
+
+func TestModelsRefusesManaged(t *testing.T) {
+	modelsHome(t, "", 0)
+	managedConfig(t, `{"model":{"default":"corp","providers":{"corp":{"type":"anthropic","model":"claude-sonnet-5-5"}},"allowed":["anthropic/claude-sonnet-5-5"]}}`)
+	if code, _, errs := runModels(t, "y\n", true, "default", "corp"); code == 0 || !strings.Contains(errs, "managed") {
+		t.Fatalf("managed default: %d %s", code, errs)
+	}
+	if code, _, _ := runModels(t, "", false, "add", "anthropic", "claude-opus-5-5"); code == 0 {
+		t.Fatal("a model the managed list refuses was added")
+	}
+}
+
+func TestModelsParseFlags(t *testing.T) {
+	f, err := parseModelsFlags([]string{"-confirm-fd", "3", "-json", "--", "-name-like-id"})
+	if err != nil || f.confirmFD != 3 || !f.json || len(f.words) != 1 || f.words[0] != "-name-like-id" {
+		t.Fatalf("%+v %v", f, err)
+	}
+	if _, err := parseModelsFlags([]string{"-confirm-fd", "1"}); err == nil {
+		t.Fatal("a descriptor under 3 was taken")
+	}
+}
+
+func TestProviderLoginKeepsKeyOutOfConfigAndOutput(t *testing.T) {
+	file := modelsHome(t, `{"model":{"default":"c","providers":{"c":{"type":"anthropic","model":"claude-sonnet-5-5"}}}}`, 0o600)
+	chain := memKeychain{}
+	defer modelkeys.Use(chain, filepath.Join(filepath.Dir(file), "secrets.json"))()
+	var out, errb bytes.Buffer
+	pio := providerIO{out: &out, err: &errb, readKey: func(string) (string, error) { return testKey, nil }}
+	if code := providerCmd([]string{"login", "--", "anthropic"}, pio); code != 0 {
+		t.Fatalf("login: %s", errb.String())
+	}
+	if chain["ANTHROPIC_API_KEY"] != testKey {
+		t.Fatal("the key was not stored in the Keychain")
+	}
+	cfgData, _ := os.ReadFile(file)
+	changes, _ := os.ReadFile(filepath.Join(filepath.Dir(file), "config-changes.jsonl"))
+	var status bytes.Buffer
+	if err := providerStatus(true, &status); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := userFileConfig()
+	p, err := cfg.ProviderNamed("c")
+	if err != nil || p.APIKey != testKey {
+		t.Fatalf("resolve: %v", err)
+	}
+	_, detail, _ := modelKeyCheck(p)
+	for name, text := range map[string]string{"config": string(cfgData), "change log": string(changes), "login output": out.String() + errb.String(),
+		"status": status.String(), "doctor": detail} {
+		if strings.Contains(text, testKey) {
+			t.Errorf("the key is in the %s: %s", name, text)
+		}
+	}
+	if !strings.Contains(detail, "Keychain") {
+		t.Errorf("doctor does not say the source: %s", detail)
+	}
+	// Without a terminal nothing is read.
+	if code := providerCmd([]string{"login", "anthropic"}, providerIO{out: &out, err: &errb}); code == 0 {
+		t.Fatal("a key was taken with no terminal")
+	}
+}
+
+func TestKeyMismatchHintOnlyOnRefusal(t *testing.T) {
+	defer modelkeys.Use(memKeychain{"ANTHROPIC_API_KEY": "sk-stored-0123456789"}, filepath.Join(t.TempDir(), "s.json"))()
+	t.Setenv("ANTHROPIC_API_KEY", "sk-stale-0123456789")
+	p := config.ResolveKey(config.ProviderConfig{Type: "anthropic", Model: "m"})
+	credit := &model.StatusError{Status: 400, Body: `{"error":{"message":"Your credit balance is too low to access the Anthropic API."}}`}
+	if h := keyMismatchHint(credit, p); !strings.Contains(h, "unset ANTHROPIC_API_KEY") {
+		t.Fatalf("credit hint = %q", h)
+	}
+	if h := keyMismatchHint(&model.StatusError{Status: 401}, p); h == "" {
+		t.Fatal("no hint on 401")
+	}
+	for _, err := range []error{&model.StatusError{Status: 500}, &model.StatusError{Status: 400, Body: "bad tool"}, errors.New("dial")} {
+		if h := keyMismatchHint(err, p); h != "" {
+			t.Errorf("hint on %v: %s", err, h)
+		}
+	}
+	if strings.Contains(keyMismatchHint(credit, p), "sk-") {
+		t.Error("the hint shows a key")
+	}
+	// Same key in both places: no mismatch.
+	t.Setenv("ANTHROPIC_API_KEY", "sk-stored-0123456789")
+	if h := keyMismatchHint(credit, config.ResolveKey(config.ProviderConfig{Type: "anthropic", Model: "m"})); h != "" {
+		t.Errorf("hint with the same key: %s", h)
+	}
+}

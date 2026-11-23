@@ -87,7 +87,7 @@ func (a *Agent) SwitchModelNamed(name string) error {
 		return fmt.Errorf("abhed: %s", redactText(a.redact, err.Error()))
 	}
 	if p.APIKey == "" && p.APIKeyEnv != "" {
-		return fmt.Errorf("abhed: model %q reads its key from %s, which is not set", name, p.APIKeyEnv)
+		return fmt.Errorf("abhed: model %q reads its key from %s, which is not set and not stored; run `abhed provider login %s`", name, p.APIKeyEnv, p.Type)
 	}
 	next, err := p.Adapter()
 	if err != nil {

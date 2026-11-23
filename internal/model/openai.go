@@ -353,6 +353,7 @@ func (c *OpenAICompatible) Complete(ctx context.Context, req Request) (<-chan Ch
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
+	noteLocalUse(c.BaseURL)
 	newRequest := func() (*http.Request, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 			c.BaseURL+"/chat/completions", bytes.NewReader(body))

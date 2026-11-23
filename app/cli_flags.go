@@ -14,6 +14,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/zybuu-ai/abhed/internal/ollama"
+	"golang.org/x/term"
 	"io"
 	"math"
 	"os"
@@ -260,6 +262,9 @@ func (f *cliFlags) task() string {
 func Main(args []string, opts ...Option) int {
 	// No background shell outlives the process that started it.
 	defer endAtExit()
+	// Nor an Ollama server it started itself; one it did not start is never stopped.
+	defer ollama.StopOwned("the Abhed that started it exited")
+	noteLocalModelUse()
 	a := newApp(opts...)
 	recordAnchors = a.anchors
 	var f cliFlags
@@ -436,6 +441,10 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return a.doctor(workspace, set, timeout)
 	case "providers":
 		return providersCmd()
+	case "provider":
+		return providerCmd(rest[1:], stdProviderIO())
+	case "models":
+		return modelsCmd(rest[1:], modelsIO{in: os.Stdin, out: os.Stdout, err: os.Stderr, terminal: term.IsTerminal(int(os.Stdin.Fd()))})
 	case "ollama":
 		return ollamaCmd(workspace, rest[1:], a.trust, os.Stdin, os.Stdout, os.Stderr)
 	case "toolchain":
@@ -556,6 +565,7 @@ var permissionModes = map[string]string{
 var ownsHelp = map[string]bool{
 	"sandbox": true, "bg": true, "secret": true, "mcp": true, "record": true, "logs": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
 	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true, "ollama": true,
+	"provider": true, "models": true,
 }
 
 func isHelpArg(s string) bool {

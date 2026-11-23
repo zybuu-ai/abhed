@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/defaults"
 	"github.com/zybuu-ai/abhed/internal/egress"
@@ -821,6 +822,31 @@ type OllamaConfig struct {
 	// install or download) or off (say what is wrong and the steps, and do
 	// nothing). A managed configuration that sets it holds it.
 	Assist string `json:"assist,omitempty"`
+	// AutoStart false never starts Ollama without the person's click each
+	// time: a standing "always start" is neither offered nor honoured.
+	// Unset is true.
+	AutoStart *bool `json:"auto_start,omitempty"`
+	// IdleStopMinutes is how long a server Abhed started itself runs with no
+	// session using a local model before Abhed stops it: 0 is 10 minutes, -1
+	// never (it is still stopped when the Abhed that started it exits).
+	IdleStopMinutes int `json:"idle_stop_minutes,omitempty"`
+}
+
+// OllamaAutoStart is model.ollama.auto_start, true when unset.
+func (c Config) OllamaAutoStart() bool {
+	return c.Model.Ollama.AutoStart == nil || *c.Model.Ollama.AutoStart
+}
+
+// OllamaIdleStop is how long a server Abhed started may sit unused; 0 means never.
+func (c Config) OllamaIdleStop() time.Duration {
+	switch m := c.Model.Ollama.IdleStopMinutes; {
+	case m < 0:
+		return 0
+	case m == 0:
+		return 10 * time.Minute
+	default:
+		return time.Duration(m) * time.Minute
+	}
 }
 
 // OllamaAssist is model.ollama.assist, ask when unset.
@@ -836,15 +862,22 @@ type ProviderConfig struct {
 	// Type names a registered provider — run `abhed providers` for the list.
 	// "openai-compatible" remains the generic escape hatch for any endpoint
 	// speaking that API.
-	Type            string   `json:"type"`
-	BaseURL         string   `json:"base_url"`
-	Model           string   `json:"model"`
-	APIKey          string   `json:"api_key,omitempty"`
-	APIKeyEnv       string   `json:"api_key_env,omitempty"`
-	ContextWindow   int      `json:"context_window"`
-	MaxOutputTokens int      `json:"max_output_tokens,omitempty"`
-	ToolCallFormat  string   `json:"tool_call_format,omitempty"`
-	ReasoningTags   []string `json:"reasoning_tags,omitempty"`
+	Type      string `json:"type"`
+	BaseURL   string `json:"base_url"`
+	Model     string `json:"model"`
+	APIKey    string `json:"api_key,omitempty"`
+	APIKeyEnv string `json:"api_key_env,omitempty"`
+	// APIKeySecret names a key stored with `abhed provider login`, in the
+	// Keychain or Abhed's secret store; api_key_env, when set in the
+	// environment, wins over it. With neither, a hosted type at its official
+	// endpoint uses its own name (ANTHROPIC_API_KEY for anthropic).
+	APIKeySecret string `json:"api_key_secret,omitempty"`
+	// KeySource says where the key came from once resolved, never the key.
+	KeySource       KeySource `json:"-"`
+	ContextWindow   int       `json:"context_window"`
+	MaxOutputTokens int       `json:"max_output_tokens,omitempty"`
+	ToolCallFormat  string    `json:"tool_call_format,omitempty"`
+	ReasoningTags   []string  `json:"reasoning_tags,omitempty"`
 	// Think turns a hybrid-reasoning model's thinking phase on or off.
 	// Omit to leave the server's default alone. Ollama reads this; an
 	// OpenAI-style server uses reasoning_effort instead.
@@ -2108,8 +2141,8 @@ func ValidateProvider(p ProviderConfig) error {
 	if p.Model == "" {
 		return fmt.Errorf("watsonx needs model (e.g. openai/gpt-oss-120b)")
 	}
-	if p.APIKey == "" && p.APIKeyEnv == "" {
-		return fmt.Errorf("watsonx needs api_key_env naming the variable holding the key")
+	if p.APIKey == "" && p.APIKeyEnv == "" && p.APIKeySecret == "" {
+		return fmt.Errorf("watsonx needs api_key_env or api_key_secret naming the key")
 	}
 	if p.ProjectID == "" && p.SpaceID == "" {
 		return fmt.Errorf("watsonx needs either project_id or space_id")
@@ -2158,9 +2191,7 @@ func (c Config) providerNamed(name string) (ProviderConfig, error) {
 			"model %q is not defined. Available: %s",
 			name, strings.Join(providerNames(c.Model.Providers), ", "))
 	}
-	if p.APIKey == "" && p.APIKeyEnv != "" {
-		p.APIKey = os.Getenv(p.APIKeyEnv)
-	}
+	p = ResolveKey(p)
 	if err := ValidateProvider(p); err != nil {
 		return p, fmt.Errorf("model %q: %w", name, err)
 	}

@@ -1401,7 +1401,7 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	stop, reason := stopReason(ctx, err)
 	var ended *abhed.EndedError
 	if stop == "refusal" && err != nil && !errors.As(err, &ended) {
-		c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "agent_message_chunk", "content": textBlock("\n" + err.Error())})
+		c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "agent_message_chunk", "content": textBlock("\n" + err.Error() + sessionKeyHint(s, err))})
 	} else if stop == "refusal" && errors.As(err, &ended) && ended.Reason != agent.TermPromptRefused {
 		// The reason is said in the chat, so the editor has something to point to.
 		why := ui.EndedText(ended.Reason, ended.Detail)

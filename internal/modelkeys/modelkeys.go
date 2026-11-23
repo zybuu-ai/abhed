@@ -1,0 +1,347 @@
+// Package modelkeys keeps the API keys of hosted model providers out of the
+// environment and out of configuration: `abhed provider login` stores a key
+// in the macOS Keychain where there is one, else in Abhed's own secret store
+// (mode 600) under a name Abhed keeps for itself, never offered to a command.
+// A provider's configuration names the key; the value is looked up when the
+// provider is resolved, and every redactor in the process redacts it from then on.
+package modelkeys
+
+import (
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/zybuu-ai/abhed/internal/secrets"
+)
+
+// Where a key came from. None of them is the key.
+const (
+	// KindConfig is a key written in the configuration, or ABHED_API_KEY.
+	KindConfig = "config"
+	// KindEnv is the environment variable the provider names.
+	KindEnv = "env"
+	// KindKeychain is the macOS Keychain.
+	KindKeychain = "keychain"
+	// KindFile is Abhed's own secret store.
+	KindFile = "file"
+)
+
+// Hosted is a provider type whose official endpoint takes a key: the name
+// the key goes by (its customary environment variable) and the endpoint's host.
+type Hosted struct {
+	Type string `json:"type"`
+	Key  string `json:"key"`
+	Host string `json:"host"`
+}
+
+// hosted are the types a key is looked up for when the configuration names
+// none, and only at their official endpoint: a key meant for one host is never
+// sent to another.
+var hosted = []Hosted{
+	{"anthropic", "ANTHROPIC_API_KEY", "api.anthropic.com"},
+	{"openai", "OPENAI_API_KEY", "api.openai.com"},
+	{"gemini", "GEMINI_API_KEY", "generativelanguage.googleapis.com"},
+	{"groq", "GROQ_API_KEY", "api.groq.com"},
+	{"together", "TOGETHER_API_KEY", "api.together.xyz"},
+	{"openrouter", "OPENROUTER_API_KEY", "openrouter.ai"},
+	{"mistral", "MISTRAL_API_KEY", "api.mistral.ai"},
+	{"deepseek", "DEEPSEEK_API_KEY", "api.deepseek.com"},
+	{"xai", "XAI_API_KEY", "api.x.ai"},
+}
+
+// HostedTypes are the provider types `abhed provider login` knows by type.
+func HostedTypes() []Hosted { return slices.Clone(hosted) }
+
+// HostedType is the entry for typ.
+func HostedType(typ string) (Hosted, bool) {
+	i := slices.IndexFunc(hosted, func(h Hosted) bool { return h.Type == typ })
+	if i < 0 {
+		return Hosted{}, false
+	}
+	return hosted[i], true
+}
+
+// DefaultName is the key name a provider of type typ at baseURL uses when its
+// configuration names none: the type's own name, only at its official
+// endpoint (an empty baseURL is that endpoint). "" otherwise.
+func DefaultName(typ, baseURL string) string {
+	h, ok := HostedType(typ)
+	if !ok {
+		return ""
+	}
+	if strings.TrimSpace(baseURL) == "" {
+		return h.Key
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Scheme != "https" || !strings.EqualFold(u.Hostname(), h.Host) || u.Port() != "" {
+		return ""
+	}
+	return h.Key
+}
+
+// ValidName reports whether name can be a stored key's name.
+func ValidName(name string) bool {
+	return secrets.ValidName(secrets.ModelKeyPrefix+name) && !strings.HasPrefix(name, secrets.ModelKeyPrefix)
+}
+
+// Keychain keeps generic passwords for Abhed. The macOS login Keychain is the
+// real one; tests give their own, so none of them reaches it.
+type Keychain interface {
+	// Get is the value stored for name, and whether there is one.
+	Get(name string) (string, bool, error)
+	// Set stores value for name, replacing any.
+	Set(name, value string) error
+	// Delete removes name, reporting whether it was there.
+	Delete(name string) (bool, error)
+}
+
+var (
+	mu sync.Mutex
+	// chain is the Keychain in use; nil where there is none.
+	chain     Keychain
+	chainSet  bool
+	fileStore = secrets.Default
+	// cache holds lookups briefly, as a provider is resolved several times
+	// while a session starts and the Keychain is a process each time.
+	cache = map[string]cached{}
+)
+
+type cached struct {
+	value, kind string
+	at          time.Time
+}
+
+const cacheFor = 15 * time.Second
+
+// Use has this process keep keys in k (nil for no Keychain) and in the
+// store at file ("" keeps Abhed's own store), and returns what undoes it. For
+// tests, and for a program that keeps keys elsewhere.
+func Use(k Keychain, file string) (restore func()) {
+	mu.Lock()
+	defer mu.Unlock()
+	oldChain, oldSet, oldFile := chain, chainSet, fileStore
+	chain, chainSet = k, true
+	if file != "" {
+		fileStore = func() *secrets.Store { return secrets.Open(file) }
+	}
+	cache = map[string]cached{}
+	return func() {
+		mu.Lock()
+		defer mu.Unlock()
+		chain, chainSet, fileStore = oldChain, oldSet, oldFile
+		cache = map[string]cached{}
+	}
+}
+
+// keychain is the Keychain to use now, under mu.
+func keychain() Keychain {
+	if chainSet {
+		return chain
+	}
+	if why := NoKeychain(); why != "" {
+		return nil
+	}
+	return systemKeychain()
+}
+
+// NoKeychain says why the system Keychain is not used in this process, or "".
+// Never in a test binary, under a temporary home (a test's or a harness's),
+// inside an agent's command, or with ABHED_KEYCHAIN=off.
+func NoKeychain() string {
+	switch {
+	case testing.Testing():
+		return "this is a test"
+	case os.Getenv("ABHED_TESTENV") != "":
+		return "this runs under a test"
+	case os.Getenv("ABHED_SANDBOX") != "":
+		return "this runs inside an agent's command"
+	case strings.EqualFold(os.Getenv("ABHED_KEYCHAIN"), "off"):
+		return "ABHED_KEYCHAIN is off"
+	case tempHome():
+		return "the home folder is a temporary one"
+	case systemKeychain() == nil:
+		return "this system has no Keychain Abhed uses"
+	}
+	return ""
+}
+
+// tempHome reports a home folder inside a temporary folder.
+func tempHome() bool {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return true
+	}
+	if r, err := filepath.EvalSymlinks(home); err == nil {
+		home = r
+	}
+	for _, root := range []string{os.TempDir(), "/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp", "/var/folders", "/private/var/folders"} {
+		if r, err := filepath.EvalSymlinks(root); err == nil {
+			root = r
+		}
+		if rel, err := filepath.Rel(root, home); err == nil && rel != "." && filepath.IsLocal(rel) {
+			return true
+		}
+	}
+	return false
+}
+
+// Where says where Store would keep a key now: KindKeychain or KindFile.
+func Where() string {
+	mu.Lock()
+	defer mu.Unlock()
+	if keychain() != nil {
+		return KindKeychain
+	}
+	return KindFile
+}
+
+// Label is a plain name for a kind, for messages.
+func Label(kind string) string {
+	switch kind {
+	case KindKeychain:
+		return "the macOS Keychain"
+	case KindFile:
+		path := "Abhed's secret store"
+		if s := currentFile(); s != "" {
+			path += " (" + s + ")"
+		}
+		return path
+	case KindEnv:
+		return "the environment"
+	case KindConfig:
+		return "the configuration"
+	}
+	return "nowhere"
+}
+
+func currentFile() string {
+	mu.Lock()
+	f := fileStore
+	mu.Unlock()
+	return f().Path()
+}
+
+// Lookup is the key stored under name and where it was found, Keychain
+// first; "" with no error when none is stored. The value is redacted by
+// every redactor in this process from now on.
+func Lookup(name string) (value, kind string, err error) {
+	if !ValidName(name) {
+		return "", "", fmt.Errorf("%q is not a key name (upper-case letters, digits and _)", name)
+	}
+	mu.Lock()
+	if c, ok := cache[name]; ok && time.Since(c.at) < cacheFor {
+		mu.Unlock()
+		return c.value, c.kind, nil
+	}
+	k, store := keychain(), fileStore()
+	mu.Unlock()
+	if k != nil {
+		v, ok, err := k.Get(name)
+		if err != nil {
+			return "", "", fmt.Errorf("the Keychain could not be read for %s: %w", name, err)
+		}
+		if ok && v != "" {
+			return remember(name, v, KindKeychain), KindKeychain, nil
+		}
+	}
+	v, ok, err := store.HeldValue(secrets.ModelKeyPrefix + name)
+	if err != nil {
+		return "", "", err
+	}
+	if ok && v != "" {
+		return remember(name, v, KindFile), KindFile, nil
+	}
+	remember(name, "", "")
+	return "", "", nil
+}
+
+func remember(name, value, kind string) string {
+	if value != "" {
+		secrets.AlsoRedact(name, value)
+	}
+	mu.Lock()
+	cache[name] = cached{value: value, kind: kind, at: time.Now()}
+	mu.Unlock()
+	return value
+}
+
+// ErrShort is a value too short to be a key, which redaction would match in
+// ordinary text.
+var ErrShort = fmt.Errorf("a key is at least %d characters", secrets.MinLength)
+
+// Store keeps value under name: in the Keychain when there is one, else in
+// Abhed's secret store. It returns where; a copy in the other place is removed,
+// so a lookup never finds an old key first.
+func Store(name, value string) (string, error) {
+	if !ValidName(name) {
+		return "", fmt.Errorf("%q is not a key name (upper-case letters, digits and _)", name)
+	}
+	value = strings.TrimSpace(value)
+	if len(value) < secrets.MinLength {
+		return "", ErrShort
+	}
+	if strings.ContainsFunc(value, func(r rune) bool { return r < 0x21 || r > 0x7e }) {
+		return "", errors.New("a key is printable characters with no spaces")
+	}
+	mu.Lock()
+	k, store := keychain(), fileStore()
+	delete(cache, name)
+	mu.Unlock()
+	secrets.AlsoRedact(name, value)
+	if k != nil {
+		if err := k.Set(name, value); err != nil {
+			return "", fmt.Errorf("the key could not be stored in the Keychain: %w", err)
+		}
+		if err := store.UpdateHeld(func(func(string) (string, bool)) (map[string]string, []string, error) {
+			return nil, []string{secrets.ModelKeyPrefix + name}, nil
+		}); err != nil {
+			return KindKeychain, fmt.Errorf("stored in the Keychain, but an older copy in %s could not be removed: %w", store.Path(), err)
+		}
+		return KindKeychain, nil
+	}
+	if err := store.SetHeld(secrets.ModelKeyPrefix+name, value); err != nil {
+		return "", err
+	}
+	return KindFile, nil
+}
+
+// Remove deletes the key stored under name from the Keychain and the store,
+// and says where it was.
+func Remove(name string) ([]string, error) {
+	if !ValidName(name) {
+		return nil, fmt.Errorf("%q is not a key name (upper-case letters, digits and _)", name)
+	}
+	mu.Lock()
+	k, store := keychain(), fileStore()
+	delete(cache, name)
+	mu.Unlock()
+	var from []string
+	if k != nil {
+		ok, err := k.Delete(name)
+		if err != nil {
+			return nil, fmt.Errorf("the Keychain item could not be removed: %w", err)
+		}
+		if ok {
+			from = append(from, KindKeychain)
+		}
+	}
+	held := secrets.ModelKeyPrefix + name
+	if _, ok, err := store.HeldValue(held); err != nil {
+		return from, err
+	} else if ok {
+		if err := store.UpdateHeld(func(func(string) (string, bool)) (map[string]string, []string, error) {
+			return nil, []string{held}, nil
+		}); err != nil {
+			return from, err
+		}
+		from = append(from, KindFile)
+	}
+	return from, nil
+}
