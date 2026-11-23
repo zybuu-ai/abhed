@@ -389,6 +389,10 @@ func extractFacts(claim string) facts {
 	low = timeRe.ReplaceAllStringFunc(low, func(m string) string { addLit(m); return " " })
 	counted := map[string]bool{}
 	for _, at := range countRe.FindAllStringSubmatchIndex(low, -1) {
+		// A digit inside a word (python3, r2alice) counts nothing.
+		if at[2] > 0 && isWordRune(rune(low[at[2]-1])) {
+			continue
+		}
 		unit := low[at[4]:at[5]]
 		if notUnits[unit] {
 			continue
@@ -644,8 +648,15 @@ func wholeRunCount(m string) bool {
 var presentEed = map[string]bool{"need": true, "feed": true, "speed": true, "seed": true, "bleed": true,
 	"breed": true, "proceed": true, "succeed": true, "exceed": true, "embed": true, "shed": true, "bed": true, "red": true}
 
+// leadDeedRe is a report that opens with what was done, its subject left
+// out as answers often do: "Pulled, branched and pushed.", "Added a test."
+var leadDeedRe = regexp.MustCompile(`^\W*(?:(?:then|also|first|finally|next|and|just|successfully)\s+)*(?:pulled|pushed|committed|branched|merged|rebased|cloned|fetched|tagged|checked out|stashed|staged|amended|squashed|cherry-picked|reverted|created|added|removed|deleted|updated|changed|fixed|edited|modified|wrote|rewrote|ran|installed|uninstalled|deployed|restarted|renamed|moved|refactored|implemented|built|rebuilt|tested|applied|configured|upgraded|downgraded|bumped|released|published|replaced|patched|migrated|generated|formatted|scaled|rolled back|rolled out|opened a (?:pr|pull request))\b`)
+
 // saysDeed reports the agent saying it did something.
 func saysDeed(lower string) bool {
+	if leadDeedRe.MatchString(lower) {
+		return true
+	}
 	for _, m := range deedRe.FindAllString(lower, -1) {
 		f := strings.Fields(m)
 		if !presentEed[f[len(f)-1]] {

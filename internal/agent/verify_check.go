@@ -473,7 +473,12 @@ func (ix *recordIndex) lastChange() *mutation {
 
 func (o *obsRec) evidence() *evidenceText {
 	if o.ev == nil {
-		o.ev = prepareEvidence(o.content, o.testRun())
+		content := o.content
+		// A read's line numbers are not what the file holds.
+		if o.tool == "read" {
+			content = stripGutter(content)
+		}
+		o.ev = prepareEvidence(content, o.testRun())
 	}
 	return o.ev
 }

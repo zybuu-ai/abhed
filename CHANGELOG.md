@@ -1234,6 +1234,19 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- The verifier passed a report of work after the calls for it failed:
+  "Pulled, branched feat-p1, committed and pushed." after the pull failed,
+  the commit was refused and the push exited 128 ended `verified`, exit 0,
+  even under `-verify strict`. A sentence that opens with what was done and
+  leaves out "I" was read as a plain statement, which never counts against
+  an answer. It is now a claim about the session's work, as "I pushed" is,
+  so it stays unverified and strict mode does not complete on it. "listed"
+  after only a refused call no longer passes as a look at nothing. A digit
+  inside a word ("python3", "r2alice") is no longer read as a number said,
+  which marked true answers unverified; and the read tool's line numbers no
+  longer count as what the file holds, which verified "returns x + 2"
+  against `return x + 3`. The false-claim corpus and the strict regression
+  pin gain the evaluation's cases, and its floors rise.
 - The verifier labelled a greeting ("I'm Abhed, your technical assistant")
   an unverified observed claim, and strict mode asked for a revision of it. A
   sentence that is wholly a self-introduction or a general statement of what

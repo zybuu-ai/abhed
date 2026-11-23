@@ -739,6 +739,10 @@ func (ix *recordIndex) observed(f facts) finding {
 			cur = append(cur, o)
 		}
 	}
+	// Looking at something needs a read, listing or search that ran.
+	if len(cur) == 0 {
+		return finding{out: missing, why: "it says something was looked at, and no read, listing or search this session returned a result"}
+	}
 	isSearch := func(o *obsRec) bool { return o.tool == "grep" || o.tool == "glob" || o.tool == "web_search" }
 	pathNamed := func(o *obsRec, p string) bool {
 		for _, a := range []string{o.path, o.argMap["path"], o.argMap["dir"], o.argMap["root"]} {
