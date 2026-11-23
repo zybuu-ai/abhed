@@ -228,6 +228,8 @@ type acpSession struct {
 	wake chan struct{}
 	// window is the review window a person opened for held asks (§6.3).
 	window *reviewWindow
+	// pairing gives the editor each message's seq (acp_usermsg.go).
+	pairing msgPairing
 	// waiting counts held asks by background task.
 	waiting map[string]int
 	// notes are what the record said about each background task.
@@ -1546,8 +1548,10 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	undo = append(undo, func() { _ = attachImages(s.agent, nil) })
 	defer promptExit()
 	s.undo.BeginTurn()
+	s.pairing.beginPrompt(msg.ID)
+	asCommand := false
 	if cmdErr, handled := c.slashCommand(ctx, s, text, withAttached); handled {
-		err = cmdErr
+		err, asCommand = cmdErr, true
 	} else {
 		// The person's own words, not what they attached, are what a note is judged on.
 		_, err = s.agent.Run(agent.WithTyped(ctx, text), withAttached(text))
@@ -1575,6 +1579,15 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	res := map[string]any{"stopReason": stop}
 	if reason != "" {
 		metaOf(res)["reason"] = reason
+	}
+	notRecorded := "the prompt ended before its message was recorded"
+	if asCommand {
+		notRecorded = "it was a command, which is not recorded as a message"
+	} else if err != nil {
+		notRecorded = redacted(err.Error())
+	}
+	for k, v := range s.pairing.endPrompt(notRecorded).meta() {
+		metaOf(res)[k] = v
 	}
 	end()
 	c.reply(msg.ID, res, nil)

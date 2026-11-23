@@ -1075,11 +1075,38 @@ func (c *acpConn) steer(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errRefused, "no prompt is running; send it as a prompt"))
 		return
 	}
-	if parts.Loop.QueueMessage(agent.Message{Text: p.Text, Typed: p.Text, Steered: true}) == "" {
+	// The reply waits for the message to be recorded, at the turn's next
+	// boundary, or dropped, so it can name the seq the editor pairs it by.
+	s.mu.Lock()
+	turn := s.turn
+	s.mu.Unlock()
+	var turnDone <-chan struct{}
+	if turn != nil {
+		turnDone = turn.Done()
+	}
+	qid := parts.Loop.QueueMessage(agent.Message{Text: p.Text, Typed: p.Text, Steered: true})
+	if qid == "" {
 		c.reply(msg.ID, nil, refusal(errParams, "the message is empty"))
 		return
 	}
-	c.reply(msg.ID, map[string]any{}, nil)
+	ch := s.pairing.awaitSteer(qid)
+	var out msgOutcome
+	select {
+	case out = <-ch:
+	case <-turnDone:
+		// The turn ended with it still waiting: it goes with the next prompt.
+		s.pairing.forgetSteer(qid)
+		select {
+		case out = <-ch:
+		default:
+			out = msgOutcome{reason: "the turn ended before it was delivered; it waits for the next prompt"}
+		}
+	}
+	res := map[string]any{"queueId": qid}
+	for k, v := range out.meta() {
+		metaOf(res)[k] = v
+	}
+	c.reply(msg.ID, res, nil)
 }
 
 func (c *acpConn) queueList(msg rpcMessage) {
@@ -1119,5 +1146,7 @@ func (c *acpConn) queueCancel(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errParams, "no waiting message %q; it may have been delivered", ui.VisibleLine(p.ID)))
 		return
 	}
+	// A steer still waiting for its seq is answered: it will never be recorded.
+	s.pairing.settleSteer(p.ID, msgOutcome{reason: "the person cancelled it before it was delivered"})
 	c.reply(msg.ID, map[string]any{}, nil)
 }

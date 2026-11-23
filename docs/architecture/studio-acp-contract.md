@@ -798,6 +798,20 @@ interface AskMeta {
   shutdown or a hand-over) gets the note too, for its `message.dropped`
   event, with `dropped: true`, so the editor redraws the bubble it drew as
   typed in every case. No update carries a value.
+- **Message seq (1.3.0).** The editor pairs the message it drew with the
+  `user.message` the engine records by `seq`. A `session/prompt`'s message
+  is announced as soon as it is recorded, by the notification
+  `_abhed/session/userMessage {sessionId, requestId, _meta.abhed:
+  {userMessageSeq}}`, where `requestId` is the prompt's JSON-RPC id, and the
+  prompt's reply repeats it as `_meta.abhed.userMessageSeq`. The reply to
+  `_abhed/session/steer` comes once its message is recorded, at the run's
+  next turn boundary, with `{queueId, _meta.abhed.userMessageSeq}`. A
+  message that is not recorded gets `userMessageSeq: null` and
+  `userMessageReason`: a prompt a hook or the policy refused, one that was
+  a command, a prompt whose turn ended before its message was recorded, a
+  steer the person cancelled (`_abhed/queue/cancel`) or that was dropped,
+  and a steer still waiting when the turn ends, which goes with the next
+  prompt. A request refused with an error records nothing.
 - `_abhed/machine/list` items for a `k8s-login` also carry `login: {server,
   secret, caFingerprint?}`: the server as displayed (no user, query or
   fragment), the stored secret's name (never its value), which stays stored

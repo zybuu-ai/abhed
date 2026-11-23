@@ -19,6 +19,7 @@ func (c *acpConn) forward(s *acpSession, ev abhed.Event) {
 	for _, u := range c.updates(s, ev, false) {
 		c.sessionUpdate(s.id, u)
 	}
+	c.noteUserMessage(s, ev)
 	c.taskEvent(s, ev)
 	c.lspNoteAction(s, ev)
 }
