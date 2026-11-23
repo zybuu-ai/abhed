@@ -202,7 +202,8 @@ to configure:
 - **First use asks once.** The first call to each context asks, in every
   mode but bypass, plan and auto included, even for a read. Approving it
   covers the rest of the session; *always for this cluster* keeps it for
-  you in `~/.abhed/state/machine-grants.json`, outside every workspace, so
+  you in `state/machine-grants.json` in your own account's folder (never a
+  guest's, which keeps nothing), outside every workspace, so
   later sessions do not ask. A grant covers the context as it was approved:
   if its server, CA, user or credential helper changes, it is asked about
   again. An allow rule such as `k8s_get(context:lab/*)` answers the ask as
@@ -242,8 +243,9 @@ to configure:
 This is on when no configuration file sets `k8s.enabled` (or `ssh.enabled`)
 and no managed configuration is in force, and the machine has a kubeconfig
 or kept logins (or an `~/.ssh/config` naming a host). With neither, your own
-surface still offers `k8s_login`, so a pasted `oc login` works on any
-machine; `k8s_get` and `k8s_apply` are offered once a login exists. `k8s_apply` is offered
+surface still has `k8s_login`, offered to the model from the moment you
+paste a login, so a pasted `oc login` works on any machine and costs nothing
+until then; `k8s_get` and `k8s_apply` are offered once a login exists. `k8s_apply` is offered
 unless a file sets `k8s.allow_writes`. Setting `k8s.enabled` or
 `ssh.enabled` to `false`, in any file a workspace's included, turns it off.
 Under an organisation's managed configuration none of this is automatic:

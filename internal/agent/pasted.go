@@ -50,6 +50,13 @@ func (l *Loop) withholdPasted(text string) (string, string, string) {
 	}
 	b.WriteString(text[last:])
 	out := l.withholdHeld(b.String())
+	if len(lines) > 0 && l.Tools != nil {
+		for _, t := range l.Tools.All() {
+			if n, ok := t.(tools.PasteNoticer); ok {
+				n.NotePasted()
+			}
+		}
+	}
 	if len(lines) == 0 {
 		return out, strings.Join(ids, ","), ""
 	}

@@ -224,3 +224,25 @@ func TestACPSteerReplyNeverHangs(t *testing.T) {
 		t.Fatal("the steer's reply hung after its session closed")
 	}
 }
+
+// On the default configuration with nothing to reach, k8s_login costs the
+// model nothing until a login is pasted; from then on it is offered.
+func TestK8sLoginIsOfferedOnceALoginIsPasted(t *testing.T) {
+	r := newStudioRig(t, "")
+	r.model.script(say("hi"), say("I can log you in"))
+	id := r.open()
+	r.prompt(id, "hello")
+	r.prompt(id, "oc login --token=sha256~Zq1cP3xYv8mN0aB4dE6fG7hI9jK2lM5nO8pQrStUvWx --server=https://api.lab.example:6443")
+	r.model.mu.Lock()
+	bodies := append([]string(nil), r.model.bodies...)
+	r.model.mu.Unlock()
+	if len(bodies) < 2 {
+		t.Fatalf("%d model calls", len(bodies))
+	}
+	if strings.Contains(bodies[0], `"name":"k8s_login"`) {
+		t.Fatal("k8s_login was offered before anything was pasted")
+	}
+	if !strings.Contains(bodies[len(bodies)-1], `"name":"k8s_login"`) {
+		t.Fatal("k8s_login was not offered once a login was pasted")
+	}
+}

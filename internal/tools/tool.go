@@ -268,6 +268,20 @@ func (r *Registry) Names() []string {
 	return out
 }
 
+// OfferedNames are the names of the tools offered now, leaving out those
+// hidden for now (a deferred MCP tool, a cluster tool with nothing yet to
+// reach): what a prompt built now may tell the model it has.
+func (r *Registry) OfferedNames() []string {
+	out := make([]string, 0, len(r.order))
+	for _, n := range r.order {
+		if h, ok := r.tools[n].(Hidden); ok && h.Hidden() {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
 func (r *Registry) All() []Tool {
 	out := make([]Tool, 0, len(r.order))
 	for _, n := range r.order {

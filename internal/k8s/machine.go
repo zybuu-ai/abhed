@@ -240,3 +240,15 @@ func (t GetTool) Hidden() bool { return t.M.hidden() }
 
 // Hidden keeps k8s_apply from the model until there is a cluster to change.
 func (t ApplyTool) Hidden() bool { return t.M.hidden() }
+
+// Hidden keeps k8s_login from the model, and its tokens out of every
+// request, on a machine with nothing to reach until a paste is held: the
+// pasted login it is there for is the first thing that needs it.
+func (t LoginTool) Hidden() bool { return t.M.hidden() && !t.M.pasted.Load() }
+
+// NotePasted offers k8s_login from the next request on.
+func (t LoginTool) NotePasted() {
+	if t.M != nil {
+		t.M.pasted.Store(true)
+	}
+}

@@ -47,8 +47,9 @@ type Manager struct {
 	clusters map[string]*Cluster
 	// listing names the kubeconfig's contexts, read once, for the descriptions.
 	listing func() string
-	// loggedIn is set once any session of this manager logs in.
-	loggedIn atomic.Bool
+	// loggedIn is set once any session of this manager logs in; pasted once
+	// one holds a paste.
+	loggedIn, pasted atomic.Bool
 	// keptNames are the kept logins as they were when first asked, so the
 	// tools' descriptions and what is offered stay the same for the life of
 	// the session, and its prompt cache with them; a login kept since is

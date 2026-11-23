@@ -544,7 +544,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	switch {
 	case system != "":
 	case opts.ConfiguredTools:
-		system = toolset.SystemPrompt(opts.Workspace, adapter, set.SkillListing, registry.Names())
+		system = toolset.SystemPrompt(opts.Workspace, adapter, set.SkillListing, registry.OfferedNames())
 	default:
 		// No ABHED.md: an embedder running on repositories it does not own
 		// takes the workspace's instructions only by opting in.

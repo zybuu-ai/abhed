@@ -86,10 +86,23 @@ func TestWithNothingToReachOnlyK8sLoginIsOffered(t *testing.T) {
 		slices.Sort(out)
 		return out
 	}
-	// A pasted `oc login` must work on any machine: k8s_login is there, and
-	// the reads and writes wait for a cluster.
-	if got := offered(true); !slices.Equal(got, []string{"k8s_login"}) {
-		t.Fatalf("a machine with nothing to reach offers %v", got)
+	// A pasted `oc login` must work on any machine: k8s_login is registered,
+	// offered once a paste is held, and the reads and writes wait for a cluster.
+	if got := offered(true); len(got) != 0 {
+		t.Fatalf("a machine with nothing to reach and nothing pasted offers %v", got)
+	}
+	reg := tools.NewRegistry(InfraToolsFor(config.Config{}, nil, func(string, ...any) {}, true)...)
+	for _, tl := range reg.All() {
+		if n, ok := tl.(tools.PasteNoticer); ok {
+			n.NotePasted()
+		}
+	}
+	var pasted []string
+	for _, d := range reg.Definitions() {
+		pasted = append(pasted, d.Name)
+	}
+	if !slices.Equal(pasted, []string{"k8s_login"}) {
+		t.Fatalf("once a login is pasted it offers %v", pasted)
 	}
 	if got := offered(false); len(got) != 0 {
 		t.Fatalf("a server offers %v", got)
@@ -153,10 +166,10 @@ func TestTheNextSessionSeesAKeptLogin(t *testing.T) {
 		Login: &machinegrant.Login{Server: "https://lab.example:6443", Secret: "K8S_LAB_TOKEN"}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := names(first); !slices.Equal(got, []string{"k8s_login"}) {
+	if got := names(first); len(got) != 0 {
 		t.Fatalf("the open session's tools changed: %v", got)
 	}
-	if got := names(sub); !slices.Equal(got, []string{"k8s_login"}) {
+	if got := names(sub); len(got) != 0 {
 		t.Fatalf("its subagents' copy changed: %v", got)
 	}
 	next := build()

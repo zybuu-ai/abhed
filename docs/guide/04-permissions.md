@@ -1309,8 +1309,10 @@ would otherwise run unasked
 is a first use, names the context and its server (or the host, its user and
 address) and how it signs in, never the credential, and names the program a
 credential helper would run. Its "always" answer is *always for this
-cluster* or host: it is kept for you, in `~/.abhed/state/machine-grants.json`,
-not for the session or the workspace, and it covers that cluster or host as
+cluster* or host: it is kept for you, in your own state
+(`state/machine-grants.json` in your account's folder), not for the session,
+the workspace or another account; a guest is not offered it, and what a
+guest approves holds for the session only, and it covers that cluster or host as
 it was, so a changed server, CA (by its content), credential helper (by
 the program `PATH` finds), address, user, key, `known_hosts` entry or jump
 host asks again. It never covers a command or a write: those ask as they

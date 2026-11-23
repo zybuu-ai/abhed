@@ -24,6 +24,12 @@ type Pasted struct {
 
 type pastedKey struct{}
 
+// PasteNoticer is a tool told when its session holds a paste, such as
+// k8s_login, offered on a machine with nothing to reach only from then on.
+type PasteNoticer interface {
+	NotePasted()
+}
+
 type pastedSet struct {
 	mu    sync.Mutex
 	items map[string]Pasted

@@ -247,7 +247,7 @@ func (d *deferredTool) Run(ctx context.Context, sess *tools.Session, args json.R
 func deferrable(t tools.Tool) bool {
 	switch t.(type) {
 	case tools.SecretArgs, tools.SecretPaths, tools.SecretWithholder, tools.ModeScoped, tools.FixedArgs, tools.StoreBound, tools.PlanPrechecker, tools.Cloner, tools.Rebinder,
-		tools.FirstUser, tools.BoundSecrets, tools.CertificatePinner:
+		tools.FirstUser, tools.BoundSecrets, tools.CertificatePinner, tools.PasteNoticer:
 		return false
 	}
 	return true

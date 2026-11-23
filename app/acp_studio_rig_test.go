@@ -284,9 +284,9 @@ type studioRig struct {
 func newStudioRig(t *testing.T, extra string, frames ...string) *studioRig {
 	t.Helper()
 	m := newScriptModel(t, frames...)
-	// k8s is off: the scripts are sized to the stub's small context window,
-	// and k8s_login, offered on every machine, would move where it compacts.
-	userCfg := `{"model":{"default":"m","providers":{"m":` + stubProvider(m.URL, "m-1") + `}},"k8s":{"enabled":false}` + extra + `}`
+	// The default configuration: the person's machine setup is on, and with
+	// nothing to reach and nothing pasted it offers the model nothing.
+	userCfg := `{"model":{"default":"m","providers":{"m":` + stubProvider(m.URL, "m-1") + `}}` + extra + `}`
 	acpModelsEnv(t, userCfg)
 	ws := t.TempDir()
 	if real, err := filepath.EvalSymlinks(ws); err == nil {

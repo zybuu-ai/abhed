@@ -234,7 +234,7 @@ All notable changes to Abhed are recorded here. The format follows
   in with your ssh-agent. Every credential is read in Abhed's own process
   and never reaches the sandbox, the record or the model. The first use of
   each context or host asks once, in every mode but bypass; *always for this
-  cluster* (or host) keeps it for you in `~/.abhed/state/machine-grants.json`,
+  cluster* (or host) keeps it for you in your own `state/machine-grants.json`,
   outside every workspace, until its server, CA, credential helper, address
   or user changes. A context whose credential helper Abhed would run names
   the program and asks before it runs, even where `k8s.enabled` turned the
@@ -243,9 +243,11 @@ All notable changes to Abhed are recorded here. The format follows
   Cluster writes still ask each time. It is on where no file sets
   `k8s.enabled` or `ssh.enabled` and no managed configuration is in force;
   setting either to `false`, a workspace included, turns it off.
-  With no kubeconfig, `k8s_login` is still offered, so a pasted `oc login`
-  works on any machine, and the other cluster tools appear once a login
-  exists. `abhed rpc` offers the same as the terminal. `abhed doctor` lists
+  With no kubeconfig, `k8s_login` is offered from the moment a login is
+  pasted, so a pasted `oc login` works on any machine and costs nothing
+  until then, and the other cluster tools appear once a login exists. A
+  guest's approvals and pasted logins hold for the session only; grants are
+  kept per person. `abhed rpc` offers the same as the terminal. `abhed doctor` lists
   the contexts, hosts and kept grants, never a credential;
   `abhed machine list` and `abhed machine forget KIND NAME` show and drop
   what is kept, as do ACP's `_abhed/machine/list` and `_abhed/machine/forget`.
