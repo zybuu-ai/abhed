@@ -75,6 +75,10 @@ type Bash struct {
 	// Given the call's launch key (sandbox.Launch.Key), it keeps what it
 	// judged, and the command runs only on that.
 	HostAsk func(key, cwd, command string) (reason, step, bind string, err error)
+	// HostGitOn, when set, says whether remote git is brokered now, for a
+	// sandbox still being chosen when the tool was made; unset, HostAsk and
+	// the isolation's tier say.
+	HostGitOn func() bool
 	// NotFound, when set, says what a command run in dir that could not
 	// find program can do about it, such as install the toolchain; "" says nothing.
 	NotFound func(dir, program string) string
@@ -111,6 +115,9 @@ func (Bash) Mutates() bool { return true }
 func (b Bash) Description() string {
 	d := "Run a shell command in the session workspace. Use for builds, tests, git, and package managers. Prefer read/glob/grep for file inspection — they are cheaper and safer. Note: a call that is just `cd <folder>` sets the working directory for later calls; shell state (variables, functions) and a cd inside a longer command do not carry over."
 	hostGit := b.HostAsk != nil && (b.Isolation.Tier == "process" || b.Isolation.Tier == "fence")
+	if b.HostGitOn != nil {
+		hostGit = b.HostAsk != nil && b.HostGitOn()
+	}
 	switch b.network() {
 	case networkOff:
 		if hostGit {
