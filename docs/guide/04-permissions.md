@@ -1278,9 +1278,21 @@ It is off, too, where `sandbox.host_git` is `false` (any layer may set it;
 none can set it back), and where the managed configuration holds the
 network off (`sandbox.allow_network`, `sandbox.network` or `egress` set in
 it, with commands' network off): a person cannot open that network, so
-host git does not reach it either. Such a call is refused with the reason,
-"ask your administrator" where the organisation set it. Under a managed
-allowlist host git is held to it, as above.
+host git does not reach it either. There remote git runs in the sandbox,
+as in 1.2.9, and the session tells the model why ("ask your administrator"
+where the organisation set it). Under a managed allowlist host git is held
+to it, as above.
+
+A line you type yourself is yours to run. On the workbench terminal of
+`abhed serve`, in lines mode, it is judged and recorded as an agent's call
+would be, and run in the sandbox: remote git is not brokered there, and a
+worktree or submodule command typed there is brokered on the same terms as
+an agent's. In Abhed Studio's own terminal, in lines mode, a typed `git
+fetch`, `pull`, `push`, `clone` or `ls-remote` goes through your own git on
+the host like an agent's, without the question again (the network-off one
+included), still refused where an agent's would be and recorded the same
+way. In an interactive terminal, Studio's or the workbench's, lines run in
+the sandbox's shell as typed, and none is brokered.
 
 No hook runs on the host. A brokered `git push` runs your own pre-push hook,
 the one in the folder a `core.hooksPath` in your system or global

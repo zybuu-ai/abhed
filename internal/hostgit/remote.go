@@ -70,9 +70,8 @@ type HostBroker struct {
 	// reports whether it holds a repository made during the session against
 	// commands started before; nil, or false, brokers none such.
 	holds, holdsNew func() bool
-	// remotes is false where remote commands are never brokered (a server's
-	// sessions), and off why they are refused (the configuration); a line
-	// left so goes to the sandbox, or is refused with off.
+	// noRemotes leaves remote commands to the sandbox (a server's sessions),
+	// as off does, saying why (the configuration turned it off).
 	noRemotes bool
 	off       string
 
@@ -131,8 +130,9 @@ func (b *HostBroker) NoRemotes() *HostBroker {
 	return b
 }
 
-// RemotesOff refuses every remote command on the host, saying why
-// (sandboxconfig.HostGitOff); "" leaves them brokered.
+// RemotesOff leaves every remote command to the sandbox, as before 1.3.0,
+// for why (sandboxconfig.HostGitOff), which the session facts give; ""
+// leaves them brokered.
 func (b *HostBroker) RemotesOff(why string) *HostBroker {
 	b.off = why
 	return b
@@ -202,11 +202,8 @@ func (b *HostBroker) held() bool { return b.holds != nil && b.holds() }
 // else as command builds it.
 func (b *HostBroker) Command(ctx context.Context, cwd, line string) *exec.Cmd {
 	if op, err, ok := parseRemote(line); ok {
-		if !b.onHost() || !b.held() || b.noRemotes {
+		if !b.onHost() || !b.held() || !b.BrokersRemoteCommands() {
 			return b.command(ctx, cwd, line)
-		}
-		if b.off != "" {
-			return &exec.Cmd{Err: fmt.Errorf("git %s: not run through your own git on the host: %s", op.verb, b.off)}
 		}
 		if err != nil {
 			return &exec.Cmd{Err: err}
@@ -248,11 +245,8 @@ func (b *HostBroker) Command(ctx context.Context, cwd, line string) *exec.Cmd {
 // settings it judged are kept for the call, and it runs only on those.
 func (b *HostBroker) Ask(key, cwd, line string) (reason, step, bind string, err error) {
 	op, perr, ok := parseRemote(line)
-	if !ok || !b.onHost() || !b.held() || b.noRemotes {
+	if !ok || !b.onHost() || !b.held() || !b.BrokersRemoteCommands() {
 		return "", "", "", nil
-	}
-	if b.off != "" {
-		return "", "", "", fmt.Errorf("git %s: not run through your own git on the host: %s", op.verb, b.off)
 	}
 	if perr != nil {
 		return "", "", "", perr

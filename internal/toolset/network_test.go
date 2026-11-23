@@ -221,3 +221,22 @@ func TestSessionNoteSaysGitIsBrokered(t *testing.T) {
 		t.Fatalf("note: %s", note)
 	}
 }
+
+// Where the configuration turns git through the user's credentials off,
+// the model is told remote git runs here, and why.
+func TestSessionNoteSaysWhyGitIsNotBrokered(t *testing.T) {
+	cfg := config.Default()
+	off := false
+	cfg.Sandbox.HostGit = &off
+	cfg.ManagedKeys = []string{"sandbox.host_git"}
+	pol, err := egress.Compile(egress.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb := sandbox.NewProcess(sandbox.Policy{Workspace: t.TempDir(), MinTier: sandbox.TierProcess, Egress: pol, ProtectGit: true})
+	n := NewNetwork(cfg, sb)
+	note := SessionNote(cfg, n.sb, n)
+	if !strings.Contains(note, "Git remotes not brokered: ") || !strings.Contains(note, "ask your administrator") {
+		t.Fatalf("note: %s", note)
+	}
+}

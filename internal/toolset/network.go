@@ -263,9 +263,12 @@ func SessionNote(cfg config.Config, sb sandbox.Sandbox, n *Network) string {
 	} else if !sandboxconfig.NetworkOpen(cfg) && s.Tier() != sandbox.TierNone {
 		b.WriteString("; cannot be opened: " + why)
 	}
-	if hostgit.BrokersRemotes(s) && sandboxconfig.HostGitOff(cfg) == "" {
+	switch off := sandboxconfig.HostGitOff(cfg); {
+	case hostgit.BrokersRemotes(s) && off == "":
 		b.WriteString(". Git fetch, pull, push and clone reach remotes through the user's own git on the host (their pre-push hook runs here).")
-	} else {
+	case hostgit.BrokersRemotes(s):
+		b.WriteString(". Git remotes not brokered: " + off + ".")
+	default:
 		b.WriteString(". Git remotes not brokered.")
 	}
 	if missing, known := sandbox.MissingTools(s); known && len(missing) > 0 {

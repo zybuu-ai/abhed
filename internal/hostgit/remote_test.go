@@ -958,12 +958,17 @@ func TestBrokerNoRemotesAndRemotesOff(t *testing.T) {
 	if !Brokered("git worktree prune") {
 		t.Fatal("worktree commands are no longer the broker's")
 	}
+	// Turned off by the configuration, remote lines run in the sandbox, as in
+	// 1.2.9, asked about by no one; the session facts say why.
 	off := r.broker(Network{Open: true}).RemotesOff("ask your administrator")
-	if _, _, _, err := off.Ask(r.key("c"), r.ws, "git fetch"); err == nil || !strings.Contains(err.Error(), "ask your administrator") {
+	if reason, _, _, err := off.Ask(r.key("c"), r.ws, "git fetch"); reason != "" || err != nil {
+		t.Fatalf("turned off, it was asked about: %q %v", reason, err)
+	}
+	if _, err := runCmd(t, off.Command(r.ctx("c"), r.ws, "git fetch")); err != nil {
 		t.Fatalf("turned off: %v", err)
 	}
-	if _, err := runCmd(t, off.Command(r.ctx("c"), r.ws, "git fetch")); err == nil || !strings.Contains(err.Error(), "ask your administrator") {
-		t.Fatalf("turned off: %v", err)
+	if len(r.inner) != 5 || off.BrokersRemoteCommands() {
+		t.Fatalf("turned off, the sandbox ran %v", r.inner)
 	}
 	if log, _ := os.ReadFile(r.sshLog); len(log) != 0 {
 		t.Fatalf("host ssh ran while turned off:\n%s", log)
