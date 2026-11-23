@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -54,6 +56,13 @@ func mcpLogin(workspace string, trust config.TrustChoice, name string, cio mcpIO
 	if !cio.terminal {
 		return errors.New("abhed mcp login signs in through your browser and needs a person at a terminal")
 	}
+	if cio.byEditor {
+		// The editor asked already; no yes on the descriptor is a failure.
+		line, _ := bufio.NewReader(cio.in).ReadString('\n')
+		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+			return errors.New("no yes was read from -confirm-fd; nothing was signed in")
+		}
+	}
 	cfg, err := loadNetworked(workspace, config.LoadOptions{Trust: trust, Quiet: true})
 	if err != nil {
 		return err
@@ -77,8 +86,8 @@ func mcpLogin(workspace string, trust config.TrustChoice, name string, cio mcpIO
 		defer egress.Install(guard)()
 	}
 	o.HTTP = mcpOAuthHTTP(guard)
-	// With -no-browser, or no browser here, the address is only printed.
-	if !cio.noBrowser && canOpenBrowser() {
+	// With -no-browser, no browser here, or an editor that asked (it opens the address itself), it is only printed.
+	if !cio.byEditor && !cio.noBrowser && canOpenBrowser() {
 		o.Open = openBrowser
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -86,7 +95,11 @@ func mcpLogin(workspace string, trust config.TrustChoice, name string, cio mcpIO
 	if err := mcpauth.Login(ctx, openVault(), o); err != nil {
 		return fmt.Errorf("sign in to MCP server %s: %w", s.Name, err)
 	}
-	logMCPAuth("login", s, cio)
+	by := "login"
+	if cio.byEditor {
+		by = "login -confirm-fd"
+	}
+	logMCPAuth(by, s, cio)
 	return nil
 }
 

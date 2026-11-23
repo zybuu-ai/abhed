@@ -483,6 +483,9 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return adminCmd(rest[1:], os.Stdout, os.Stderr)
 	case "mcp":
 		return mcpCmd(workspace, rest[1:], a.trust, stdMCPIO())
+	case "ssh-acp":
+		// An editor's engine on an SSH host, ACP carried on this stdio.
+		return sshACPCmd(rest[1:], os.Stdin, os.Stdout, os.Stderr)
 	case "plugin":
 		return pluginCmd(workspace, rest[1:], a.trust, stdPluginIO())
 	case "index":
@@ -555,7 +558,7 @@ var permissionModes = map[string]string{
 // ownsHelp are the subcommands that print their own usage for -h.
 var ownsHelp = map[string]bool{
 	"sandbox": true, "bg": true, "secret": true, "mcp": true, "record": true, "logs": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
-	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true, "ollama": true,
+	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true, "ollama": true, "ssh-acp": true,
 }
 
 func isHelpArg(s string) bool {

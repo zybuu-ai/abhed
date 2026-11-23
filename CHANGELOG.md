@@ -176,6 +176,72 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Abhed Studio opens a folder on an SSH host with the engine running there
+  (**Abhed: Reopen Folder on SSH Host…**). `abhed ssh-acp` connects with
+  the engine's SSH client (the host key must already be in known_hosts;
+  nothing is forwarded and no environment is sent), checks the engine on
+  the host against a pinned SHA-256 at every start (uploading a local build
+  first when asked), and carries ACP on its stdio. The editor's files,
+  search, a polling watch and a read-only SCM view come from that engine
+  through the new `_abhed/fs/*` methods (feature `fs`), so its read, write
+  and delete rules hold for the person's file operations and saves are
+  recorded on the host; delete and rename act on the entry named (a link,
+  never its target), and a folder rename is judged for every entry in it.
+  The SCM view's git runs in the session's sandbox with every `GIT_*`
+  unset and submodules ignored. The engine runs from a copy in the
+  account's private `~/.abhed/bin`, checked (owner, mode, links, hash) and
+  exec'd in one step. In an SSH window every path the engine reports is
+  mapped to the host's folder or refused, and no laptop file is sent to
+  the host's engine. The engine's SSH client now asks for the host key
+  types known_hosts records, and says a changed key apart from an unknown
+  one. `.git/modules`, `config.worktree` and `info/attributes` are
+  protected from the agent like `.git/config`.
+
+- Abhed Studio can run a trusted folder's engine in a dev container:
+  **Abhed: Reopen Folder in Dev Container…** runs the image
+  `devcontainer.json` names with the folder at the same path, Studio's own
+  read-only copy of a pinned Linux engine, and a fresh volume as the
+  engine's home, and starts `abhed acp` inside through the runtime's `exec`
+  with that home and the image's ABHED_* variables blanked. The image's
+  `~/.abhed` is not read (the volume is never filled from the image), its
+  `/etc/abhed` is hidden under an empty read-only mount, and no program of
+  the image's is run for Studio. The sandbox inside uses the image's own
+  bubblewrap, so it is only as strong as the image, and the process tier
+  says so ("image-supplied bubblewrap", `ABHED_IMAGE_BWRAP`). Before
+  every start Studio re-hashes its copy and inspects the container, refusing
+  another image, engine mount, folder mount or home. The image is code with
+  the folder (and `.git`) writable, and the default network reaches the
+  laptop's services; `abhed.devContainer.network: none` gives it none. No
+  credential or environment is passed in. Design and threat model:
+  `docs/architecture/studio-remote.md`.
+
+- Abhed Studio's settings import also takes another editor of the same
+  family found by its folder's layout (an AI editor built on it: settings,
+  keybindings and extension list, through the same filters), and other agent
+  tools' MCP servers, slash commands and agent definitions: a project's
+  `.mcp.json`, a home-folder JSON file listing `mcpServers` (with its
+  per-project servers), and a dot-folder's `mcp.json`, `commands/` and
+  `agents/`. Each is mapped to Abhed's shape or left out with why; they land
+  in the folder's `.abhed`, untrusted until reviewed and trusted, never
+  through a symbolic link. Environment variables are passed by name, and a
+  server is left out when its command or URL holds a credential in a shape
+  Studio recognises (a known token, the value after a secret-named flag, a
+  secret-named `NAME=VALUE`, an Authorization, Basic or Bearer header, a
+  secret-named query parameter); other shapes are not recognised, which the
+  modal says. A command's or agent's header is always one Studio builds.
+  Items from the home folder start unpicked, with a warning that the folder
+  may be committed.
+
+- Abhed Studio signs in to a remote MCP server with OAuth.
+  `abhed mcp login` takes `-confirm-fd N`: the yes is read from an inherited
+  descriptor in place of a terminal, and the browser is left to the editor
+  that asked. Studio's engine host process runs it after a modal whose
+  default is No and opens the printed address; the tokens stay in the
+  engine's store, and Studio never sees one. `_abhed/capabilities` gives
+  each URL server an `auth` object (state, issuer, expiry, a refused
+  refresh, and whether a sign-in is wanted), never a token; feature
+  `mcp.login`.
+
 - Plugin bundles: `abhed plugin install|approve|list|show|remove|publishers|
   trusted-root|pack`. A plugin bundles agent definitions, skills, custom
   commands, simple hooks and MCP servers under one manifest. The manifest lists
@@ -663,6 +729,12 @@ All notable changes to Abhed are recorded here. The format follows
   `-no-browser` to only print the sign-in address.
 
 ### Fixed
+
+- `abhed mcp list` said "(signed in)" after the authorization server had
+  refused the refresh token. The refusal is now kept with the login, the
+  refused token is not sent again, and the list reads "not signed in: the
+  login was refused at refresh" with the time until `abhed mcp login` runs
+  again; a login that ended with no refresh token reads "the login ended".
 
 - `abhed -p -mode acceptEdits` was refused ("unknown -mode"), although
   `-permission-mode acceptEdits` was taken. `-mode` now takes
