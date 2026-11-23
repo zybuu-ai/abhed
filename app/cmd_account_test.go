@@ -10,6 +10,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/identity"
+	"github.com/zybuu-ai/abhed/internal/modelkeys"
 	"github.com/zybuu-ai/abhed/store"
 	"github.com/zybuu-ai/abhed/store/local"
 )
@@ -121,6 +122,9 @@ func TestAccountAdoptAndUnmigrate(t *testing.T) {
 	if err := os.WriteFile(legacy, []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// A model key in the Keychain from before sign-in goes with the rest, and back.
+	chain := memKeychain{"ANTHROPIC_API_KEY": "sk-legacy-0123456789"}
+	defer modelkeys.Use(chain, "")()
 	if code, _, e := runAccount(t, "correct horse\ncorrect horse\n", "create", "a1"); code != 0 {
 		t.Fatal(e)
 	}
@@ -131,11 +135,17 @@ func TestAccountAdoptAndUnmigrate(t *testing.T) {
 	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
 		t.Fatal("the history stayed in ~/.abhed")
 	}
+	if _, left := chain["ANTHROPIC_API_KEY"]; left || len(chain) != 1 {
+		t.Fatalf("the legacy key was not taken over: %v", chain)
+	}
 	if code, out, errOut := runAccount(t, "", "unmigrate"); code != 0 || !strings.Contains(out, "back") {
 		t.Fatalf("unmigrate: %d %q %q", code, out, errOut)
 	}
 	if _, err := os.Stat(legacy); err != nil {
 		t.Fatal("the history did not come back")
+	}
+	if chain["ANTHROPIC_API_KEY"] != "sk-legacy-0123456789" || len(chain) != 1 {
+		t.Fatalf("the key did not come back: %v", chain)
 	}
 }
 

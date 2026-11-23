@@ -129,6 +129,19 @@ func noteLocalModelUse() {
 // store moves with its folder): every hosted type's key name and every name
 // a configured model reads. It says what moved, or why not, on out.
 func adoptLegacyKeys(id string, out io.Writer) {
+	moved, err := modelkeys.AdoptLegacy(id, modelKeyNames())
+	if err != nil {
+		fmt.Fprintf(out, "The model keys from before sign-in were not all moved to your account (%v); abhed provider login stores one again.\n", err)
+		return
+	}
+	if len(moved) > 0 {
+		fmt.Fprintf(out, "Moved %d model key(s) in the Keychain to your account: %s.\n", len(moved), strings.Join(moved, ", "))
+	}
+}
+
+// modelKeyNames are every hosted type's key name and every name a model in
+// the person's own configuration reads.
+func modelKeyNames() []string {
 	names := modelkeys.HostedKeyNames()
 	if own, err := userFileConfig(); err == nil {
 		for _, p := range own.Model.Providers {
@@ -137,12 +150,18 @@ func adoptLegacyKeys(id string, out io.Writer) {
 			}
 		}
 	}
-	moved, err := modelkeys.AdoptLegacy(id, names)
+	return names
+}
+
+// returnLegacyKeys moves account id's model keys in the Keychain back to the
+// service from before sign-in, as unmigrate moves the rest back.
+func returnLegacyKeys(id string, out io.Writer) {
+	moved, err := modelkeys.ReturnLegacy(id, modelKeyNames())
 	if err != nil {
-		fmt.Fprintf(out, "The model keys from before sign-in were not all moved to your account (%v); abhed provider login stores one again.\n", err)
+		fmt.Fprintf(out, "The model keys were not all moved back from the account (%v); abhed provider login stores one again.\n", err)
 		return
 	}
 	if len(moved) > 0 {
-		fmt.Fprintf(out, "Moved %d model key(s) in the Keychain to your account: %s.\n", len(moved), strings.Join(moved, ", "))
+		fmt.Fprintf(out, "Moved %d model key(s) in the Keychain back: %s.\n", len(moved), strings.Join(moved, ", "))
 	}
 }

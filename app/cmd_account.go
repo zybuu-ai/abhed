@@ -326,12 +326,16 @@ and answers are read from the terminal, or one per line from stdin.`)
 		adoptLegacyKeys(e.ID, out)
 		return 0
 	case "unmigrate":
+		owner, owned, _ := s.LegacyOwner()
 		n, err := identity.Unmigrate(s)
 		if err != nil {
 			return fail(err)
 		}
 		_ = s.Forget()
 		fmt.Fprintf(out, "Moved %d item(s) back to ~/.abhed, the record verified before and after. Earlier versions see them again, except the sessions recorded since sign-in: those are recorded as the account and an earlier version does not list them.\n", n)
+		if owned {
+			returnLegacyKeys(owner.ID, out)
+		}
 		return 0
 	case "rm", "remove":
 		if arg == "" {

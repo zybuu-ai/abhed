@@ -495,6 +495,22 @@ func AdoptLegacy(id string, names []string) ([]string, error) {
 	if !validID(id) {
 		return nil, fmt.Errorf("%q is not an account id", id)
 	}
+	return moveKeys(Service, ServiceFor(id), names)
+}
+
+// ReturnLegacy moves account id's Keychain keys named names back to the
+// service from before sign-in, as `abhed account unmigrate` moves the rest of
+// that data back. A key already there is left as it is.
+func ReturnLegacy(id string, names []string) ([]string, error) {
+	if !validID(id) {
+		return nil, fmt.Errorf("%q is not an account id", id)
+	}
+	return moveKeys(ServiceFor(id), Service, names)
+}
+
+// moveKeys moves the Keychain items named names from one service to another,
+// keeping one already at the destination, and returns the names moved.
+func moveKeys(from, to string, names []string) ([]string, error) {
 	mu.Lock()
 	k := keychain()
 	cache = map[string]cached{}
@@ -507,21 +523,21 @@ func AdoptLegacy(id string, names []string) ([]string, error) {
 		if !ValidName(name) || slices.Contains(moved, name) {
 			continue
 		}
-		v, ok, err := k.Get(Service, name)
+		v, ok, err := k.Get(from, name)
 		if err != nil {
 			return moved, err
 		}
 		if !ok || v == "" {
 			continue
 		}
-		if _, have, err := k.Get(ServiceFor(id), name); err != nil {
+		if _, have, err := k.Get(to, name); err != nil {
 			return moved, err
 		} else if !have {
-			if err := k.Set(ServiceFor(id), name, v); err != nil {
+			if err := k.Set(to, name, v); err != nil {
 				return moved, err
 			}
 		}
-		if _, err := k.Delete(Service, name); err != nil {
+		if _, err := k.Delete(from, name); err != nil {
 			return moved, err
 		}
 		moved = append(moved, name)

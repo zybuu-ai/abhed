@@ -327,3 +327,28 @@ func TestAdoptLegacyKeys(t *testing.T) {
 		t.Fatal("a bad account id was taken")
 	}
 }
+
+// Unmigrate moves the account's Keychain keys back to the service from before sign-in.
+func TestReturnLegacyKeys(t *testing.T) {
+	be := personHome(t, "alice")
+	chain := &fakeChain{m: map[string]string{}}
+	defer Use(chain, "")()
+	be("account", "alice")
+	if _, err := Store("ANTHROPIC_API_KEY", "sk-alice-0123456789"); err != nil {
+		t.Fatal(err)
+	}
+	moved, err := ReturnLegacy("alice", HostedKeyNames())
+	if err != nil || len(moved) != 1 {
+		t.Fatalf("moved %v %v", moved, err)
+	}
+	if v, _, _ := Lookup("ANTHROPIC_API_KEY"); v != "" {
+		t.Fatal("the account kept the key")
+	}
+	be("legacy", "")
+	if v, _, _ := Lookup("ANTHROPIC_API_KEY"); v != "sk-alice-0123456789" {
+		t.Fatalf("legacy does not see the key again: %q", v)
+	}
+	if _, err := ReturnLegacy("../x", nil); err == nil {
+		t.Fatal("a bad account id was taken")
+	}
+}
