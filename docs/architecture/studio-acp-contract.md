@@ -1741,7 +1741,11 @@ _abhed/complete/warm { sessionId } → { warmed: boolean, ms?: number, recent?: 
   the session closes (also when the editor quits: when its input ends, or a
   stop signal comes while it is still open, the completion and next-edit
   calls in flight are cancelled and every session is closed, its summaries
-  and `session.ended` recorded, within 3 seconds of a signal), which counts `superseded` (replaced before sending)
+  and `session.ended` recorded once, within 3 seconds of a signal; the
+  signal's close and the input's end share one close, and the exit waits
+  for it). A call cancelled as the session closes is in the summary, as it
+  is in the budget: the summary waits up to a second for it to be counted.
+  The summary counts `superseded` (replaced before sending)
   apart from `cancelled` (after), the answer times of requests answered
   (`latency_p50_ms`, `latency_p90_ms`, `latency_max_ms`, from the request
   reaching the engine, of requests sent to the model only), and `warmups`

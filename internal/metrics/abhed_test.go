@@ -176,6 +176,17 @@ func TestOtherDecisionEventsAreCounted(t *testing.T) {
 	}
 }
 
+// A summary from an older engine, whose served left local out, never counts
+// more empty answers than requests: served from the model is clamped at 0
+// for both lines.
+func TestOlderSummaryEmptyIsClamped(t *testing.T) {
+	m := New()
+	m.Observe(ev(agent.EvNextEditSummary, agent.CompletionSummary{Requests: 5, Served: 2, Local: 4}))
+	if served, empty := m.nextEdits.Value("served"), m.nextEdits.Value("empty"); served != 0 || empty != 5 {
+		t.Fatalf("served %v, empty %v; want 0 and 5 (no more than the requests)", served, empty)
+	}
+}
+
 // uncounted are the event types no metric counts, each because it decides
 // nothing; a new event type fails the test below until it is placed.
 var uncounted = []string{

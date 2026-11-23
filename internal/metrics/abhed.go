@@ -291,7 +291,9 @@ func (m *Abhed) Observe(ev agent.Event) {
 				count, tokens = m.nextEdits, m.nextEditTokens
 			}
 			// Outcomes are exclusive: served from the model apart from local (from the file).
-			count.Add(float64(max(0, p.Served-p.Local)), "served")
+			// Clamped once for both lines, as an older summary's served left local out.
+			fromModel := max(0, p.Served-p.Local)
+			count.Add(float64(fromModel), "served")
 			count.Add(float64(p.Refused), "refused")
 			count.Add(float64(p.Failed), "failed")
 			count.Add(float64(p.Cancelled), "cancelled")
@@ -302,7 +304,7 @@ func (m *Abhed) Observe(ev agent.Event) {
 			if p.LocalDropped > 0 {
 				count.Add(float64(p.LocalDropped), "local_dropped")
 			}
-			count.Add(float64(max(0, p.Requests-(p.Served-p.Local)-p.Failed-p.Cancelled)), "empty")
+			count.Add(float64(max(0, p.Requests-fromModel-p.Failed-p.Cancelled)), "empty")
 			tokens.Add(float64(p.TokensIn), "in")
 			tokens.Add(float64(p.TokensOut), "out")
 		}

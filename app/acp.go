@@ -192,6 +192,8 @@ type acpSession struct {
 	id    string
 	cwd   string
 	agent acpAgent
+	// shutOnce makes the session's close (its summaries and end) happen once.
+	shutOnce sync.Once
 	// parts are the SDK agent's insides; inner is false for a test's
 	// stand-in, whose session answers what needs them with a refusal.
 	parts embedded.Parts
@@ -403,6 +405,17 @@ type acpConn struct {
 	goneInit sync.Once
 	gone     chan struct{}
 	goneOnce sync.Once
+
+	// The one close of every session, whoever starts it (a stop signal or
+	// stdin ending); every caller waits for it. closing refuses sessions
+	// opened after it began.
+	shutOnce sync.Once
+	shutDone chan struct{}
+	shutAt   time.Time
+	closing  bool
+	// beforeShut, when set, runs once the sessions are taken and before they
+	// are shut; tests hold the close there.
+	beforeShut func()
 }
 
 // drainWait bounds how long the requests read before stdin closed may take
@@ -466,10 +479,12 @@ func acpCmd(workspace string, build acpBuild, trust config.TrustChoice) int {
 // run serves in, answers every request read from it, then closes every
 // session.
 func (c *acpConn) run(in io.Reader) error {
-	// Once stdin has ended, a stop signal waits for closeAll to record each
+	// Once stdin has ended, a stop signal waits for the close to record each
 	// session's end. A signal while stdin is open waits stdinGrace for it to
 	// end, as Studio ends stdin and signals at once and the signal can come
-	// first, and otherwise does not wait for this.
+	// first, and otherwise starts the close itself. Either way there is one
+	// close, and the exit is let go only once it has ended (or run out of
+	// signalCloseWait).
 	release := func() {}
 	if c.busy != nil {
 		var once sync.Once
@@ -488,7 +503,7 @@ func (c *acpConn) run(in io.Reader) error {
 			case <-time.After(stdinGrace):
 				// Stdin is still open: the sessions are closed here, their
 				// summaries and ends recorded, within signalCloseWait.
-				c.closeAllWithin(signalCloseWait)
+				c.closeOnce(signalCloseWait)
 				release()
 			}
 		case <-served:
@@ -505,7 +520,12 @@ func (c *acpConn) run(in io.Reader) error {
 	if !c.drain(wait) {
 		fmt.Fprintln(os.Stderr, "abhed: acp: stdin closed and some requests were still unanswered after "+wait.String())
 	}
-	c.closeAll()
+	// The close a signal began, if one did: waited for, never run again.
+	closeWait := time.Duration(0)
+	if c.root().Err() != nil {
+		closeWait = signalCloseWait
+	}
+	c.closeOnce(closeWait)
 	release()
 	return err
 }
@@ -518,14 +538,29 @@ const stdinGrace = 250 * time.Millisecond
 // it records (each session's summaries and end) is written, then the exit.
 const signalCloseWait = 3 * time.Second
 
-// closeAllWithin closes every session, waiting at most wait for it.
-func (c *acpConn) closeAllWithin(wait time.Duration) {
-	done := make(chan struct{})
-	go func() { c.closeAll(); close(done) }()
+// closeOnce closes every session, once for the connection whoever asks
+// first, and waits for that close: at most wait after it began, or until it
+// ends when wait is 0. It says whether the close ended.
+func (c *acpConn) closeOnce(wait time.Duration) bool {
+	c.shutOnce.Do(func() {
+		c.shutDone, c.shutAt = make(chan struct{}), time.Now()
+		go func() {
+			defer close(c.shutDone)
+			c.closeAll()
+		}()
+	})
+	if wait <= 0 {
+		<-c.shutDone
+		return true
+	}
+	t := time.NewTimer(time.Until(c.shutAt.Add(wait)))
+	defer t.Stop()
 	select {
-	case <-done:
-	case <-time.After(wait):
+	case <-c.shutDone:
+		return true
+	case <-t.C:
 		fmt.Fprintln(os.Stderr, "abhed: acp: the sessions were not all closed within "+wait.String())
+		return false
 	}
 }
 
@@ -819,7 +854,11 @@ func (c *acpConn) closeAll() {
 	c.sessMu.Lock()
 	all := c.sessions
 	c.sessions = map[string]*acpSession{}
+	c.closing = true
 	c.sessMu.Unlock()
+	if c.beforeShut != nil {
+		c.beforeShut()
+	}
 	for _, s := range all {
 		c.shut(s)
 	}
@@ -831,6 +870,10 @@ func (c *acpConn) closeAll() {
 // shut ends a session's hold: its prompt and review window stop, its
 // background tasks end as session_closed, and its record is let go.
 func (c *acpConn) shut(s *acpSession) {
+	s.shutOnce.Do(func() { c.shutNow(s) })
+}
+
+func (c *acpConn) shutNow(s *acpSession) {
 	// Contested-port joins held back are recorded first, before a running
 	// turn is cancelled and records its own end.
 	if s.inner && s.parts.Set != nil && s.parts.Set.FlushListen != nil {
@@ -1057,10 +1100,23 @@ func (c *acpConn) openSession(o openOptions) (*acpSession, *rpcError) {
 	if e := c.buildAgent(s, o); e != nil {
 		return nil, e
 	}
-	c.sessMu.Lock()
-	c.sessions[s.id] = s
-	c.sessMu.Unlock()
+	if !c.addSession(s) {
+		c.shut(s)
+		return nil, refusal(errParams, "the editor is closing; no session is opened")
+	}
 	return s, nil
+}
+
+// addSession adds s to the connection, unless every session is being
+// closed: false then, and s is the caller's to shut.
+func (c *acpConn) addSession(s *acpSession) bool {
+	c.sessMu.Lock()
+	defer c.sessMu.Unlock()
+	if c.closing {
+		return false
+	}
+	c.sessions[s.id] = s
+	return true
 }
 
 // buildAgent makes s's agent and wires its undo log and guard.
