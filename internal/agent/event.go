@@ -162,6 +162,9 @@ const (
 	// TermWakeLimit: a wake run used its turns. The session goes on, and so
 	// do its background children.
 	TermWakeLimit TerminalReason = "wake_limit"
+	// TermStdinLate: a headless run was stopped because input came on its
+	// stdin after the wait for it; an answer without that input is not given.
+	TermStdinLate TerminalReason = "stdin_late"
 )
 
 // RunsOnForQueued reports whether a run that ended this way goes on for a
@@ -193,6 +196,8 @@ func (r TerminalReason) ExitCode() int {
 		return 7
 	case TermUnverified:
 		return 8
+	case TermStdinLate:
+		return 9
 	default:
 		return 1
 	}

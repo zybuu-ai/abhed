@@ -261,3 +261,36 @@ func TestFirstRunWriteNeedsTheYesNumber(t *testing.T) {
 		}
 	}
 }
+
+// The first-run list is the same whatever order the server answers in, so
+// the default choice, [1], is too.
+func TestFirstRunModelOrderIsStable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls%2 == 1 {
+			_, _ = w.Write([]byte(`{"data":[{"id":"zeta:1b"},{"id":"bench-tight:7b"},{"id":"bench-full:7b"}]}`))
+		} else {
+			_, _ = w.Write([]byte(`{"data":[{"id":"bench-full:7b"},{"id":"zeta:1b"},{"id":"bench-tight:7b"}]}`))
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("OLLAMA_HOST", srv.URL)
+	var first string
+	for i := 0; i < 2; i++ {
+		var out strings.Builder
+		if err := firstRun(context.Background(), strings.NewReader("s\n"), &out); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "1) Ollama: bench-full:7b") {
+			t.Fatalf("not sorted:\n%s", out.String())
+		}
+		got := out.String()[strings.Index(out.String(), "1) Ollama"):]
+		if i == 0 {
+			first = got
+		} else if got != first {
+			t.Fatalf("the list changed between runs:\n%s\n---\n%s", first, got)
+		}
+	}
+}

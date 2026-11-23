@@ -24,8 +24,14 @@ func TestOffTopic(t *testing.T) {
 		{"say hi", "Hi!", false},                // too few words to judge
 		{"/explain foo.py", "Anything.", false}, // a command's text is not the question
 		{"fix it", "", false},
+		// The real-model check: a question that names a tool is about the
+		// work, not the tool; the answer gave the uptime.
+		{"Call the ssh_connect tool to connect to app1 first, then show me the uptime of app1.",
+			"app1 has been up for 3 days, 4 hours, with a load average of 0.12.", false},
+		{"Call the ssh_connect tool to connect to app1 first, then show me the uptime of app1.",
+			"Hello! How can I help you today?", true},
 	} {
-		why := offTopic(c.q, c.a)
+		why := offTopic(c.q, c.a, "ssh", "ssh_connect", "read", "grep")
 		if (why != "") != c.off {
 			t.Errorf("%q / %q: %q", c.q, c.a, why)
 		}

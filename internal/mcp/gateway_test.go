@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // Tool descriptions are third-party text injected into the model's context.
@@ -127,5 +128,25 @@ func TestRemoteToolSchemaDefaultsToObject(t *testing.T) {
 	}
 	if schema["type"] != "object" {
 		t.Fatalf("default schema should be an object, got %v", schema)
+	}
+}
+
+// A description cut at its bound ends on a whole character: a cut inside one
+// would send the provider invalid UTF-8.
+func TestSanitizeCutsOnACharacter(t *testing.T) {
+	for pad := 0; pad < 4; pad++ {
+		got := sanitizeDescription(strings.Repeat("a", pad) + strings.Repeat("é€😀", 400))
+		if !utf8.ValidString(got) {
+			t.Fatalf("pad %d: the description is not valid UTF-8 after the cut: %q", pad, got[len(got)-12:])
+		}
+		if len(got) > MaxDescription+len("…") {
+			t.Fatalf("pad %d: %d bytes", pad, len(got))
+		}
+	}
+	if got := CutUTF8("a€", 2); got != "a" {
+		t.Fatalf("CutUTF8 = %q", got)
+	}
+	if got := tailUTF8("€a", 2); got != "a" {
+		t.Fatalf("tailUTF8 = %q", got)
 	}
 }

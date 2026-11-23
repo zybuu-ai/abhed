@@ -176,6 +176,10 @@ func run(a *App, workspace string, f *cliFlags) int {
 			}
 			return newAdapter(p)
 		})
+		for _, name := range fallback.names {
+			p, _ := cfg.ProviderNamed(name)
+			fallback.limits = append(fallback.limits, p.MaxTools)
+		}
 		adapter = fallback
 	}
 	sess, err := tools.NewSession(workspace)

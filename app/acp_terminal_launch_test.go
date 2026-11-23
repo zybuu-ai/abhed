@@ -61,7 +61,7 @@ func TestStudioTerminalCommandsAreBoundToTheirSession(t *testing.T) {
 			return innerShell(ctx, cwd)
 		}
 	}
-	s.parts.Loop.Tools.Add(b)
+	s.parts.Loop.Tools.Replace(b)
 
 	var term struct {
 		TerminalID string `json:"terminalId"`

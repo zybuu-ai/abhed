@@ -149,3 +149,27 @@ func (b *timeoutBody) Close() error {
 	}
 	return err
 }
+
+// CallTimeout is the longest one request to the adapter may take.
+func (c *Anthropic) CallTimeout() time.Duration        { return clientCallTimeout(c.HTTP) }
+func (c *OpenAICompatible) CallTimeout() time.Duration { return clientCallTimeout(c.HTTP) }
+func (g *Gemini) CallTimeout() time.Duration           { return clientCallTimeout(g.HTTP) }
+func (w *WatsonX) CallTimeout() time.Duration          { return clientCallTimeout(w.client) }
+
+func clientCallTimeout(c *http.Client) time.Duration {
+	if c != nil {
+		if tr, ok := c.Transport.(*timeoutTransport); ok {
+			return tr.t.Call
+		}
+	}
+	return DefaultTimeouts().Call
+}
+
+// CallTimeoutOf is a's call timeout, through any wrapper that passes it on,
+// or the default for an adapter that does not say.
+func CallTimeoutOf(a Adapter) time.Duration {
+	if c, ok := a.(interface{ CallTimeout() time.Duration }); ok {
+		return c.CallTimeout()
+	}
+	return DefaultTimeouts().Call
+}

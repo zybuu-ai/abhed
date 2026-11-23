@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -397,6 +398,178 @@ const ClarifyNote = "[Abhed: this message mentions parallel work. If it is uncle
 	"wants independent pieces of work started as subagents, or the program itself changed to run " +
 	"concurrently, ask one short question before acting.]"
 
+// UnattendedClarifyNote is the clarify note for a run nobody can answer
+// (-p, rpc, a server's unattended run), given only to a vague request (see
+// vagueSpeedRequest): the question cannot be asked, and a real model went
+// straight to making the program concurrent. It stays conditional, as the
+// note that asks does, so work the message does ask for is still done.
+const UnattendedClarifyNote = "[Abhed: nobody can answer a question in this run. If this message only asks to " +
+	"speed things up or to run things in parallel, and names no concrete change, it is unclear whether the person " +
+	"wants independent pieces of work started as subagents or the program itself changed to run concurrently: " +
+	"then make no code edits for it, and answer with a short plan that describes both readings, or with the one " +
+	"question you would ask. Otherwise do the work it asks for.]"
+
+var (
+	// speedOrParallel names speed or parallelism itself.
+	speedOrParallel = regexp.MustCompile(`(?i)\b(in[ -]parallel|at the same time|at once|simultaneously|side[ -]by[ -]side|` +
+		`paralleli[sz]\w*|concurrent(ly)?|speed(s|ing)? up|faster|quicker|slow|slower|performance)\b`)
+	// concreteTask is a task the message names: an action with an object, a
+	// bug, or a file or symbol.
+	concreteTask = regexp.MustCompile(`(?i)\b(fix|fixes|fixing|delete|deletes|deleting|remove|removes|removing|update|updates|updating|` +
+		`bump|bumps|bumping|add|adds|adding|rename|renames|renaming|move|moves|moving|edit|edits|editing|change|changes|changing|` +
+		`replace|replaces|replacing|migrate|migrates|migrating|install|installs|upgrade|upgrades|upgrading|write|writes|writing|` +
+		`create|creates|creating|refactor|refactors|refactoring|review|reviews|reviewing|test|tests|testing|document|documents|` +
+		`translate|convert|converts|format|formats|lint|clean|cleans|generate|generates|handle|handles|handling|` +
+		`bug|bugs|crash|crashes|crashing|error|errors|fail|fails|failing|failure|broken|timeout|timeouts|regression|issue|issues)\b`)
+	// namedThing is a file, a path or an identifier.
+	namedThing = regexp.MustCompile(`[A-Za-z0-9_./-]*(?:[a-z][A-Z]|_[A-Za-z]|\.[A-Za-z]{1,5}\b|/[A-Za-z])[A-Za-z0-9_./-]*`)
+)
+
+// vagueSpeedRequest reports a message that names speed or parallelism and no
+// concrete task: no action with an object, bug, file or symbol, and no object
+// beyond generic ones ("things", "everything", "the project"). Only such a
+// message gets the unattended note; "Delete these three files at once" and
+// "Merge these three branches at once" are work to do. A list of verbs alone
+// kept missing the next one, so the object decides too.
+func vagueSpeedRequest(typed string) bool {
+	return speedOrParallel.MatchString(typed) && !concreteTask.MatchString(typed) &&
+		!namedThing.MatchString(typed) && !specificObject(typed)
+}
+
+var (
+	// parallelMark and speedMark stand in for the parallel and speed words
+	// while objects are looked for, so "at the same time" is no object and
+	// what "speed up" or "faster" acts on can be told apart.
+	parallelWords = regexp.MustCompile(`(?i)\b(` + phraseWords + `|paralleli[sz]\w*|concurrent(ly)?)\b`)
+	speedWords    = regexp.MustCompile(`(?i)\b(speed(s|ing)? up|faster|quicker|slow|slower|performance)\b`)
+	objectToken   = regexp.MustCompile(`[\p{L}\p{N}#]+(?:[.'-][\p{L}\p{N}]+)*|[` + parallelMark + speedMark + `,;:!?.()]`)
+	versionToken  = regexp.MustCompile(`^(v?\d+(\.\d+)+|v\d+)$`)
+	// determiners open a noun phrase whose head decides whether it is generic.
+	determiners = wordSet("the these those my our your their all both each every " +
+		"two three four five six seven eight nine ten eleven twelve several")
+	// quantifiers may stand between a determiner and its head.
+	quantifiers = wordSet("of the these those my our your their all both each every whole entire other " +
+		"two three four five six seven eight nine ten eleven twelve several first second third next last same")
+	// prepositions open an adjunct ("for the demo", "on 4 cores", "in the
+	// morning"): what follows one is not the work asked for.
+	prepositions = wordSet("for on with in into onto by during before after until till from to at via per " +
+		"within without across over under through about around since")
+	// notAnObject heads are generic nouns or words that end the phrase with no
+	// noun ("do these three at the same time", "run all in parallel").
+	notAnObject = wordSet("thing things stuff everything anything work project projects repo repos repository " +
+		"repositories codebase program system pipeline pipelines product products platform platforms site website " +
+		"tool tools agent agents subagents task tasks job jobs step steps stage stages part parts piece pieces " +
+		"bit bits chunk chunks item items load loads lot lots whole rest it them they this that in at on to by " +
+		"for with and or but up down out as so is are be same time way more less much now please then " +
+		"run runs running go do done speed")
+)
+
+const (
+	parallelMark = "\u00b7"
+	speedMark    = "\u00bb"
+)
+
+// specificObject reports something the message names to work on: a noun
+// phrase opened by a determiner or a count whose head is not generic ("the
+// three migrations", "these branches", "all three checks"), an issue number
+// ("#12"), a version ("v1.2"), a name with a number ("PR 12"), or a list of
+// two names ("nginx and redis"). A phrase after a preposition, a comma or a
+// parallel phrase is an adjunct or a new clause ("for the demo", ", the
+// deadline is close", "in parallel the first time"), and what "speed up" or
+// "faster" acts on is the vague part itself, so neither counts.
+func specificObject(typed string) bool {
+	marked := speedWords.ReplaceAllString(parallelWords.ReplaceAllString(typed, " "+parallelMark+" "), " "+speedMark+" ")
+	toks := objectToken.FindAllString(strings.ToLower(marked), -1)
+	at := func(i int) string {
+		if i < 0 || i >= len(toks) {
+			return ""
+		}
+		return toks[i]
+	}
+	// Every token is a word or one mark or punctuation character.
+	isWord := func(t string) bool {
+		return t != "" && !strings.ContainsAny(t, parallelMark+speedMark+",;:!?()") && t != "."
+	}
+	adjunct := func(prev string) bool { return prev != "" && (prepositions[prev] || !isWord(prev)) }
+	for i, w := range toks {
+		prev, next := at(i-1), at(i+1)
+		switch {
+		case len(w) > 1 && w[0] == '#' && isNumber(w[1:]):
+			return true
+		// A name is work only when the word before it is not an adjunct's
+		// or a vague subject's: "on Python 3", "with Go 1.22", ", top 3",
+		// "things quick and easy", "be smart and fast" are not.
+		case versionToken.MatchString(w) && !weakLead(prev, adjunct) && !weakLead(at(i-2), adjunct):
+			return true
+		case isNumber(w) && isWord(prev) && !weakLead(prev, adjunct) && !weakLead(at(i-2), adjunct) &&
+			!determiners[prev] && !quantifiers[prev] && (next == "" || next == "and" || next == "or" || !isWord(next)):
+			return true
+		case w == "and" && i >= 2 && namePart(prev) && namePart(next) && !weakLead(at(i-2), adjunct) &&
+			(at(i+2) == "" || !isWord(at(i+2))):
+			return true
+		}
+		if !determiners[w] && !isNumber(w) || adjunct(prev) {
+			continue
+		}
+		j := i + 1
+		for j < len(toks) && (quantifiers[toks[j]] || isNumber(toks[j])) {
+			j++
+		}
+		if head := at(j); isWord(head) && !notAnObject[head] && at(j+1) != speedMark {
+			return true
+		}
+	}
+	return false
+}
+
+// weakLead reports a word before a name that makes it no work to do: a
+// preposition, a mark or punctuation, a generic subject or a copula. ""
+// (the start of the message) is not one.
+func weakLead(t string, adjunct func(string) bool) bool {
+	return adjunct(t) || weakLeads[t]
+}
+
+// weakLeads are generic subjects, copulas and "using", which opens an adjunct
+// as a preposition does. "run" is not one: "Run alpha and beta at once" is
+// work.
+var weakLeads = wordSet("things thing stuff everything anything it them they this that " +
+	"be is are was were been being using like than")
+
+// namePart is a word that can be one of two names in a list.
+func namePart(t string) bool {
+	return isLetters(t) && !notAnObject[t] && !determiners[t] && !quantifiers[t] && !prepositions[t]
+}
+
+func isLetters(t string) bool {
+	for _, r := range t {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' && r != '\'' {
+			return false
+		}
+	}
+	return t != ""
+}
+
+func isNumber(w string) bool {
+	for _, r := range w {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return w != ""
+}
+
+// madeVague reports a message that codeWork passed over only for "make"
+// ("Can you make everything run in parallel?"), with a parallel phrase and
+// nothing more concrete: as vague as the request the unattended note is for.
+// Only codeWork gives a message with a parallel phrase no note, so with
+// "make" taken out a remaining match is code work.
+func madeVague(typed string) bool {
+	return !codeWork.MatchString(makeWord.ReplaceAllString(typed, " ")) && parallelPhrase.MatchString(typed) &&
+		vagueSpeedRequest(typed)
+}
+
+var makeWord = regexp.MustCompile(`(?i)\bmakes?\b`)
+
 // parallelNote is the note for the person's own words, typed, or "". Only a
 // top-level loop that can still start a subagent with tasks adds it: a
 // subagent's prompt is the model's writing, and a nested spawn is refused by
@@ -412,9 +585,19 @@ func (l *Loop) parallelNote(typed string) string {
 	case strongNote:
 		return ParallelNote
 	case clarifyNote:
-		// A question nobody can answer would end the run with it.
-		if !l.Unattended {
-			return ClarifyNote
+		// A question nobody can answer would end the run with it: an
+		// unattended run gets a note only for a vague request, which it
+		// answers with a plan or the question.
+		if l.Unattended {
+			if vagueSpeedRequest(typed) {
+				return UnattendedClarifyNote
+			}
+			return ""
+		}
+		return ClarifyNote
+	case noNote:
+		if l.Unattended && madeVague(typed) {
+			return UnattendedClarifyNote
 		}
 	}
 	return ""

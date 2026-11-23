@@ -176,7 +176,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `sandbox.toolchains_preapproved` | ignored: an install that needs no ask |
 | `sandbox.toolchains_registries` | **applied** only for `off` |
 | `limits.max_tokens`, `max_budget_tokens`, `max_budget_usd`, `max_subagents` | **applied** only when lower; zero means unlimited, so any positive value is lower |
-| `limits.reasoning_stall_tokens`, `reasoning_stall_seconds` | **applied** only when lower than the value in force (8000 and 600 by default); zero keeps it; the loop raises anything under 1000 tokens or 30 seconds to those floors |
+| `limits.reasoning_stall_tokens`, `reasoning_stall_seconds` | **applied** only when lower than the value in force (8000 and 300 by default); zero keeps it; the loop raises anything under 1000 tokens or 30 seconds to those floors |
 | `pricing` | ignored: it sets what a call costs, which a dollar budget is spent by |
 | `limits.max_turns` | **applied** only when lower; zero means no turns, so nothing is lower |
 | `limits.max_parallel_subagents` | **applied** only when lower; zero means the tool's cap of 8 |

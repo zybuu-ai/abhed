@@ -32,6 +32,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/webfetch"
 	"github.com/zybuu-ai/abhed/internal/websearch"
+	"github.com/zybuu-ai/abhed/plugin"
 )
 
 // MCPConfigs is the configuration's MCP servers in the gateway's terms.
@@ -42,7 +43,8 @@ func MCPConfigs(cfg config.Config) []mcp.ServerConfig {
 			Name: s.Name, Command: s.Command, Args: s.Args, Env: s.Env,
 			URL: s.URL, Headers: s.Headers, HeadersEnv: s.HeadersEnv,
 			Enabled: s.Enabled, AllowTools: s.AllowTools, Digest: s.Digest, HostFiles: s.HostFiles,
-			ReadOnlyHints: cfg.ReadOnlyHintTrusted(s),
+			ReadOnlyHints:  cfg.ReadOnlyHintTrusted(s),
+			StartupTimeout: time.Duration(s.StartupTimeoutSeconds) * time.Second,
 		})
 	}
 	return out
@@ -168,23 +170,7 @@ func LoadSkills(cfg config.Config, warn func(string, ...any)) (*skills.Registry,
 	}
 	// Plugins' skills rank right after the person's own, as everywhere: they
 	// never take an installed name, and a workspace's never takes theirs.
-	for _, l := range cfg.LoadedPlugins() {
-		for _, ps := range l.Skills {
-			s, err := skills.FromContent(ps.Dir, ps.SkillMD, ps.Pipeline)
-			if err != nil {
-				warn("skills: the plugin %s's skill %s: %v", l.Name, ps.Name, err)
-				continue
-			}
-			s.Source, s.Plugin = l.Root, l.Name
-			if !asciiName(s.Name) {
-				warn("skills: the plugin %s's skill %s is not loaded: a plugin skill's name is ASCII letters, digits, '-', '_' and '.'", l.Name, config.Printable(s.Name))
-				continue
-			}
-			if !reg.AddNew(s) {
-				warn("skills: the plugin %s's skill %s is not loaded: a skill the organisation or you installed has that name", l.Name, config.Printable(s.Name))
-			}
-		}
-	}
+	addPluginSkills(reg, cfg.LoadedPlugins(), warn)
 	// At home, .abhed/skills is ~/.abhed/skills, loaded above already.
 	if ws := cfg.Workspace; ws.SkillsTrusted && ws.SkillsReason != "home" && !cfg.Skills.DisableWorkspace {
 		for _, w := range ws.SkillFiles() {
@@ -201,6 +187,9 @@ func LoadSkills(cfg config.Config, warn func(string, ...any)) (*skills.Registry,
 			if err != nil {
 				warn("skills: %s: %v", config.Printable(w.Dir), err)
 				continue
+			}
+			if s.Cut != "" {
+				warn("skills: %s: %s", config.Printable(w.Dir), s.Cut)
 			}
 			s.Source = filepath.Join(ws.Workspace, filepath.FromSlash(config.WorkspaceSkillsDir))
 			// Only SKILL.md and pipeline.json are used: the folder is in .abhed,
@@ -219,6 +208,31 @@ func LoadSkills(cfg config.Config, warn func(string, ...any)) (*skills.Registry,
 		}
 	}
 	return reg, reg.Listing()
+}
+
+// addPluginSkills adds the approved plugins' skills to reg, each capped and
+// never taking a name reg already holds.
+func addPluginSkills(reg *skills.Registry, loaded []plugin.Loaded, warn func(string, ...any)) {
+	for _, l := range loaded {
+		for _, ps := range l.Skills {
+			s, err := skills.FromContent(ps.Dir, ps.SkillMD, ps.Pipeline)
+			if err != nil {
+				warn("skills: the plugin %s's skill %s: %v", l.Name, ps.Name, err)
+				continue
+			}
+			if s.Cut != "" {
+				warn("skills: the plugin %s's skill %s: %s", l.Name, ps.Name, s.Cut)
+			}
+			s.Source, s.Plugin = l.Root, l.Name
+			if !asciiName(s.Name) {
+				warn("skills: the plugin %s's skill %s is not loaded: a plugin skill's name is ASCII letters, digits, '-', '_' and '.'", l.Name, config.Printable(s.Name))
+				continue
+			}
+			if !reg.AddNew(s) {
+				warn("skills: the plugin %s's skill %s is not loaded: a skill the organisation or you installed has that name", l.Name, config.Printable(s.Name))
+			}
+		}
+	}
 }
 
 // asciiName reports a skill name of ASCII letters, digits, '-', '_' and '.'.

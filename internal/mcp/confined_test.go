@@ -18,6 +18,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/mcp"
+	"github.com/zybuu-ai/abhed/internal/mcp/mcptest"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/testenv"
 )
@@ -25,6 +26,10 @@ import (
 // TestMain lets this binary act as a stdio MCP server whose one tool
 // returns the proxy URL, credential included, it was started with.
 func TestMain(m *testing.M) {
+	// Started with mcptest's marker, the binary is a stub MCP server instead.
+	if mcptest.Serve() {
+		return
+	}
 	if os.Getenv("ABHED_MCP_FAKE_SERVER") == "1" {
 		fakeServer()
 		return

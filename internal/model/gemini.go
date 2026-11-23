@@ -63,6 +63,9 @@ func NewGemini(baseURL, apiKey, model string, p Profile) *Gemini {
 func (g *Gemini) Name() string     { return g.profile.Name }
 func (g *Gemini) Profile() Profile { return g.profile }
 
+// SetMaxTools sets the most tools one request may offer.
+func (g *Gemini) SetMaxTools(n int) { g.profile.MaxTools = n }
+
 type geminiPart struct {
 	Text             string          `json:"text,omitempty"`
 	FunctionCall     *geminiCall     `json:"functionCall,omitempty"`
@@ -259,6 +262,10 @@ type geminiStreamChunk struct {
 }
 
 func (g *Gemini) Complete(ctx context.Context, req Request) (<-chan Chunk, error) {
+	req, wire, err := toWire(req, ToolLimit(g.Profile()), g.Name())
+	if err != nil {
+		return nil, err
+	}
 	// Refuse an image the endpoint cannot read, rather than sending it and
 	// letting the provider 400 with its own wording — or silently ignore it.
 	if err := CheckVision(g.Profile(), req); err != nil {
@@ -301,7 +308,7 @@ func (g *Gemini) Complete(ctx context.Context, req Request) (<-chan Chunk, error
 
 	out := make(chan Chunk, 32)
 	go g.stream(ctx, resp, out)
-	return out, nil
+	return fromWire(out, wire), nil
 }
 
 func (g *Gemini) stream(ctx context.Context, resp *http.Response, out chan<- Chunk) {

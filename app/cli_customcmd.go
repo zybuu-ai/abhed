@@ -309,7 +309,7 @@ func trustCommands(ctx context.Context, st *cliState, sf ui.Surface) error {
 	}
 	rows := [][]string{{"file", "sha256", "first line"}}
 	for _, f := range cs.wsFiles {
-		first := strings.TrimSpace(strings.SplitN(strings.TrimSpace(string(f.Data)), "\n", 2)[0])
+		first := commandSummary(f)
 		rows = append(rows, []string{f.Key, shortSum(config.HashOf(f.Data)), first})
 	}
 	choice, err := sf.Dialog(ctx, ui.DialogSpec{
@@ -476,4 +476,38 @@ func headlessCustom(cs *customState, ws, task string) (*customcmd.Command, strin
 			c.Name, cs.wsReason, shellQuote(ws), cs.wsSum, shellQuote(ws))
 	}
 	return nil, "", nil
+}
+
+// commandSummary is what a review shows of a command file: its description,
+// or else the first line of its body, never the front matter's "---".
+func commandSummary(f customcmd.File) string {
+	if c, err := customcmd.Parse(f, customcmd.SourceWorkspace, nil); err == nil {
+		if d := strings.TrimSpace(c.Description); d != "" {
+			return d
+		}
+		for _, line := range strings.Split(c.Body, "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				return line
+			}
+		}
+		return ""
+	}
+	// A file that does not parse is shown by its first line past any front
+	// matter, or as it begins.
+	lines := strings.Split(string(f.Data), "\n")
+	start := 0
+	if len(lines) > 0 && strings.TrimSpace(lines[0]) == "---" {
+		for i := 1; i < len(lines); i++ {
+			if strings.TrimSpace(lines[i]) == "---" {
+				start = i + 1
+				break
+			}
+		}
+	}
+	for _, line := range lines[start:] {
+		if line = strings.TrimSpace(line); line != "" && line != "---" {
+			return line
+		}
+	}
+	return ""
 }
