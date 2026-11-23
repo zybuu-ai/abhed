@@ -48,6 +48,8 @@ func TestHostGuardRefusesRebinding(t *testing.T) {
 		{"none, localhost dot", none, "LOCALHOST.:8853", http.StatusAccepted},
 		{"none, named", named, "abhed.lan:8853", http.StatusAccepted},
 		{"none, localhost lookalike", none, "localhost.evil.example", http.StatusMisdirectedRequest},
+		{"none, no Host", none, "", http.StatusMisdirectedRequest},
+		{"signed, no Host", signed, "", http.StatusAccepted},
 		{"signed, rebinding name", signed, "rebind.evil.example", http.StatusMisdirectedRequest},
 		{"signed, IP address", signed, "10.0.0.7:8443", http.StatusAccepted},
 		{"signed, canonical", signed, "abhed.example.com", http.StatusAccepted},

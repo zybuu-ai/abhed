@@ -197,6 +197,14 @@ probes:
     failureThreshold: 3
     timeoutSeconds: 5
 
+# More names the server answers to. The server refuses a request whose Host
+# names it by a name it was not given (DNS rebinding); the chart adds the
+# Service's own names (<name>, <name>.<namespace>, .svc and .svc.<clusterDomain>),
+# the ingress hosts and the route host to server.allowed_hosts. Add any other
+# name a client uses here. The probes send Host: localhost.
+allowedHosts: []
+clusterDomain: cluster.local
+
 service:
   type: ClusterIP
   port: 8080

@@ -584,6 +584,12 @@
         }
       }
     },
+    "allowedHosts": {
+      "description": "More names the server answers to (server.allowed_hosts), beyond the Service's own DNS names and the ingress and route hosts, which the chart adds.",
+      "type": "array",
+      "items": { "$ref": "#/definitions/dnsName" }
+    },
+    "clusterDomain": { "$ref": "#/definitions/dnsName" },
     "service": {
       "type": "object",
       "additionalProperties": false,
