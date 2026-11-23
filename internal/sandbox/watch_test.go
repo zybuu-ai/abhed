@@ -111,18 +111,20 @@ func TestAnEscapedProcessIsReportedNotEnded(t *testing.T) {
 	defer cancel()
 	cmd := EndWithCommand(s.Command(ctx, ws, `exec sleep 30`))
 	cmd.Dir = ws
-	// A process of the test's own, started outside the command, that carries
-	// the command's marker: as an app that inherited it, or had it planted.
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	w := StartWatch(cmd)
+	// A process of the test's own, started outside the command while it runs
+	// (an older one is not even read), that carries the command's marker: as
+	// an app that inherited it, or had it planted.
+	time.Sleep(50 * time.Millisecond)
 	outsider := exec.Command("sleep", "30")
 	outsider.Env = append(os.Environ(), markerIn(cmd.Env))
 	if err := outsider.Start(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = outsider.Process.Kill(); _ = outsider.Wait() })
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	w := StartWatch(cmd)
 	time.Sleep(100 * time.Millisecond)
 	_ = cmd.Process.Kill()
 	left, _ := w.Wait()

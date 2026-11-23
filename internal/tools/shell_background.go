@@ -317,8 +317,10 @@ func EndBackgroundShells(wait time.Duration) {
 		procs = append(procs, k.(*ShellProc))
 		return true
 	})
+	// All are stopped first, then waited for together: each one's Watch ends
+	// what it left before it is reaped, under one deadline for them all.
 	for _, p := range procs {
-		p.Stop()
+		p.stop()
 	}
 	deadline := time.After(wait)
 	for _, p := range procs {

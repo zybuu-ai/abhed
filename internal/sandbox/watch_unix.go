@@ -37,6 +37,9 @@ type Watch struct {
 
 	mu   sync.Mutex
 	seen map[int]uint64 // pid -> start time, the root included
+	// rootStart is the root's start time, set once before any goroutine
+	// starts, so it is read without the lock.
+	rootStart uint64
 	// uniq holds the unique ids of followed processes (macOS), and origins
 	// what was read of launchd's children: a process reparented before a read
 	// saw it is still followed if the parent that forked it was.
@@ -97,7 +100,7 @@ func StartWatch(cmd *exec.Cmd) *Watch {
 		w.leader = Lead(cmd)
 	}
 	if st, ok := watchStart(w.root); ok {
-		w.seen[w.root] = st
+		w.seen[w.root], w.rootStart = st, st
 		w.noteUniq(w.root)
 	}
 	runningWatches.Store(cmd, w)
@@ -226,7 +229,7 @@ func (w *Watch) Wait() (left string, err error) {
 	// The marker narrows what is proven, never widens it: one carrying it
 	// that was never followed nor is in the session is reported, not ended.
 	if m := markerIn(w.cmd.Env); m != "" {
-		if r := unprovenNote(endMarked(m, w.seen[w.root], w.owns)); r != "" {
+		if r := unprovenNote(endMarked(m, w.rootStart, w.owns)); r != "" {
 			notes = append(notes, r)
 		}
 	}
@@ -405,7 +408,7 @@ func (w *Watch) end() {
 	}
 	// The root is this process's own child, unreaped until Wait: its pid is
 	// still its own.
-	if st, ok := watchStart(w.root); ok && st == w.seen[w.root] {
+	if st, ok := watchStart(w.root); ok && w.rootStart != 0 && st == w.rootStart {
 		endTree(w.root)
 		_ = watchKill(w.root, killSignal)
 	}

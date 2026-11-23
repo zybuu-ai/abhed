@@ -4,9 +4,12 @@ package sandbox
 
 import (
 	"fmt"
+	"os/exec"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -22,6 +25,10 @@ type fakeTable struct {
 	kill    func(int, syscall.Signal) error
 	pin     func(int) (func(syscall.Signal) error, func(), error)
 	sigs    []syscall.Signal
+	since   []uint64 // what each marker search was asked to start at
+	// unkillable pids stay in the table when killed, as a process the
+	// kernel has not yet removed.
+	unkillable map[int]bool
 	// after runs under the table's lock once a signal is recorded.
 	after func(pid int, sig syscall.Signal)
 	// origins are macOS's unique ids, by pid; a pid without one has none.
@@ -77,15 +84,20 @@ func (f *fakeTable) install(t *testing.T) {
 		defer f.mu.Unlock()
 		// Only a pid of the fake table is ever "signalled", and none is real:
 		// every fake pid is above any system's pid limit.
-		if _, ok := f.starts[pid]; !ok || pid < fakeBase {
+		if pid < fakeBase {
 			panic(fmt.Sprintf("the watch would signal %d, which is not in the fake table", pid))
+		}
+		// A fake process killed meanwhile (by a concurrent sweep) is gone,
+		// as kill(2) would say.
+		if _, ok := f.starts[pid]; !ok {
+			return syscall.ESRCH
 		}
 		f.sent = append(f.sent, pid)
 		f.sigs = append(f.sigs, sig)
 		if f.after != nil {
 			f.after(pid, sig)
 		}
-		if sig == killSignal {
+		if sig == killSignal && !f.unkillable[pid] {
 			delete(f.parents, pid)
 			delete(f.starts, pid)
 		}
@@ -335,5 +347,91 @@ func TestSessionProofWaitsForTheExitedRoot(t *testing.T) {
 	f.stillFake(t)
 	if n := endMarked(testMarker, 0, w.owns); n != 1 || len(f.sent) > 0 {
 		t.Errorf("signalled %v through a session not yet proven (unproven %d)", f.sent, n)
+	}
+}
+
+// A sandbox closing calls end while the command's Wait runs: neither may
+// touch the Watch's maps unguarded (-race reports it, and a concurrent map
+// read and write aborts the process).
+func TestWaitAndEndRunTogether(t *testing.T) {
+	for range 3 {
+		const root, kept = fakeBase + 100, fakeBase + 101
+		f := &fakeTable{
+			parents: map[int]int{root: fakeBase + 50, kept: root, fakeBase + 50: 1},
+			// The root's start reads as another process's, so end never
+			// reaches endTree's real kill(2); its followed child kept is
+			// the parent new children appear under.
+			starts: map[int]uint64{fakeBase + 50: 1, root: 99, kept: 20},
+			// kept outlives every kill, so new children keep being followed
+			// (seen written) after Wait has read the root's start.
+			unkillable: map[int]bool{kept: true},
+		}
+		f.install(t)
+		sweepGrace = 20 * time.Millisecond // kept never goes; each sweep gives up soon
+		fakeSessions(t, f, nil)
+		// The marker search, called just after Wait reads the root's start,
+		// returns only once end has followed (written seen) twice more. It
+		// waits on an atomic counter only, which orders end's writes before
+		// it but never its read before end's writes, so -race sees them as
+		// concurrent if the read is unguarded.
+		var wrote atomic.Int64
+		oldMarked := markedPids
+		markedPids = func(string, uint64) []int {
+			for start, deadline := wrote.Load(), time.Now().Add(2*time.Second); wrote.Load() < start+2 && time.Now().Before(deadline); {
+				runtime.Gosched()
+			}
+			return nil
+		}
+		t.Cleanup(func() { markedPids = oldMarked })
+		polled := make(chan struct{})
+		close(polled)
+		w := &Watch{cmd: &exec.Cmd{Path: "/bin/true", Env: []string{testMarker}}, root: root,
+			seen: map[int]uint64{root: 10, kept: 20}, rootStart: 10, uniq: map[uint64]bool{}, origins: map[int]origin{},
+			stop: make(chan struct{}), polled: polled}
+		f.stillFake(t)
+		quit := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		// Children keep appearing, and end keeps following them (writing
+		// seen) for as long as Wait runs.
+		go func() {
+			defer wg.Done()
+			for j := 0; ; j++ {
+				select {
+				case <-quit:
+					return
+				default:
+				}
+				f.mu.Lock()
+				pid := fakeBase + 1000 + j%5000
+				f.parents[pid], f.starts[pid] = kept, uint64(1000+j)
+				f.mu.Unlock()
+				time.Sleep(50 * time.Microsecond)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-quit:
+					return
+				default:
+				}
+				w.mu.Lock()
+				before := len(w.seen)
+				w.mu.Unlock()
+				w.poll()
+				w.end()
+				w.mu.Lock()
+				grew := len(w.seen) > before
+				w.mu.Unlock()
+				if grew {
+					wrote.Add(1)
+				}
+			}
+		}()
+		_, _ = w.Wait()
+		close(quit)
+		wg.Wait()
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"sort"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -14,12 +15,13 @@ import (
 // marker; no real process is read.
 func fakeMarked(t *testing.T, f *fakeTable, carriers map[int]string) {
 	old := markedPids
-	markedPids = func(marker string, _ uint64) []int {
+	markedPids = func(marker string, since uint64) []int {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		f.since = append(f.since, since)
 		var out []int
 		for pid, m := range carriers {
-			if _, live := f.starts[pid]; live && m == marker {
+			if st, live := f.starts[pid]; live && m == marker && st >= since {
 				out = append(out, pid)
 			}
 		}
@@ -173,5 +175,39 @@ func TestHostCommandsDoNotInheritAMarker(t *testing.T) {
 		if markerIn([]string{kv}) != "" {
 			t.Fatalf("a host command inherits %s", kv)
 		}
+	}
+}
+
+// The marker search reads only processes started since the command's root:
+// Wait passes the root's start, and an older marked process is never read,
+// counted or signalled.
+func TestTheMarkerSearchStartsAtTheRoot(t *testing.T) {
+	const root, older, newer = fakeBase + 100, fakeBase + 500, fakeBase + 600
+	f := &fakeTable{
+		parents: map[int]int{root: fakeBase + 50, older: 1, newer: 1, fakeBase + 50: 1},
+		starts:  map[int]uint64{fakeBase + 50: 1, root: 99, older: 5, newer: 60},
+	}
+	f.install(t)
+	fakeMarked(t, f, map[int]string{older: testMarker, newer: testMarker})
+	fakeSessions(t, f, nil)
+	polled := make(chan struct{})
+	close(polled)
+	w := &Watch{cmd: &exec.Cmd{Path: "/bin/true", Env: []string{testMarker}}, root: root,
+		seen: map[int]uint64{root: 50}, rootStart: 50, stop: make(chan struct{}), polled: polled}
+	f.stillFake(t)
+	left, _ := w.Wait()
+	if len(f.since) == 0 {
+		t.Fatal("the marker search was not run")
+	}
+	for _, s := range f.since {
+		if s != 50 {
+			t.Errorf("the marker search started at %d, not the root's start 50", s)
+		}
+	}
+	if !strings.Contains(left, "1 processes carrying") {
+		t.Errorf("want only the newer marked process reported: %q", left)
+	}
+	if len(f.sent) > 0 {
+		t.Errorf("signalled %v", f.sent)
 	}
 }
