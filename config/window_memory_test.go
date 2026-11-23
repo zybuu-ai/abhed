@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/model"
 )
 
@@ -150,5 +151,39 @@ func TestForgetWritesNothingWhenAbsent(t *testing.T) {
 	m.Forget("nothing")
 	if _, err := os.Stat(m.Path); !os.IsNotExist(err) {
 		t.Fatalf("a file was written: %v", err)
+	}
+}
+
+// One memory follows the person: after a sign-in it reads and makes its
+// files in the new person's folder, never with a secret read before it.
+func TestWindowMemoryFollowsThePerson(t *testing.T) {
+	h := t.TempDir()
+	if r, err := filepath.EvalSymlinks(h); err == nil {
+		h = r
+	}
+	t.Setenv("HOME", h)
+	t.Cleanup(func() { _ = home.SetPerson("") })
+	m := &WindowMemory{}
+	before := m.Secret()
+	if _, err := os.Stat(filepath.Join(h, ".abhed", "context-windows.key")); err != nil || before == nil {
+		t.Fatalf("legacy secret not at ~/.abhed: %v", err)
+	}
+	acct := filepath.Join(h, ".abhed", home.AccountsDir, "a1")
+	if err := os.MkdirAll(acct, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := home.SetPerson(acct); err != nil {
+		t.Fatal(err)
+	}
+	after := m.Secret()
+	if after == nil || string(after) == string(before) {
+		t.Fatal("the secret read before the sign-in was used after it")
+	}
+	if _, err := os.Stat(filepath.Join(acct, "context-windows.key")); err != nil {
+		t.Fatalf("the account's secret is not in its folder: %v", err)
+	}
+	m.Remember("k", 200_000)
+	if _, err := os.Stat(filepath.Join(acct, "context-windows.json")); err != nil {
+		t.Fatalf("the account's windows file is not in its folder: %v", err)
 	}
 }

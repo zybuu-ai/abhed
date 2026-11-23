@@ -250,15 +250,17 @@ All notable changes to Abhed are recorded here. The format follows
   `/compact` with what to keep, or `/model` for a larger window); it never
   loops. A limit under 2,048 tokens is not believed, and an OpenAI-shaped
   refusal of the reply cap rather than the prompt is not compacted for. A
-  limit of 16,384 or more that the provider named is kept in
-  `~/.abhed/context-windows.json` for 30 days, per provider type, endpoint,
-  model and account under an HMAC keyed by a random secret in
-  `~/.abhed/context-windows.key` (no URL, credential or query is written,
-  and the file alone confirms no guess of a credential),
+  limit of 16,384 or more that the provider named is kept for 30 days in
+  `context-windows.json` in the person's own folder (an account's under
+  `~/.abhed/accounts`, or `~/.abhed` where no one has signed in), per
+  provider type, endpoint, model and account under an HMAC keyed by a
+  random secret in `context-windows.key` beside it (no URL, credential or
+  query is written, and the file alone confirms no guess of a credential),
   so a restarted session starts within it rather than being refused once
-  more. A kept limit never lowers a configured `context_window`; `abhed
-  models` and `abhed doctor` show it with its date, and `abhed models
-  forget-window NAME` drops it. Anthropic's `prompt is too
+  more. A guest, and a machine command such as `abhed doctor`, keep none:
+  nothing is read or made. A kept limit never lowers a configured
+  `context_window`; `abhed models` shows it with its date, and `abhed
+  models forget-window NAME` drops it. Anthropic's `prompt is too
   long`, OpenAI's `context_length_exceeded`, Gemini's input token count and
   the wording of Bedrock, vLLM, llama.cpp, TGI, Mistral, Groq, watsonx and
   Ollama are recognised. A server that cuts an over-long prompt instead of

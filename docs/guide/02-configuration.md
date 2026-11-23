@@ -158,11 +158,16 @@ requested model`) lowers the window to four fifths of the refused request's
 size, which brings the retry to about two fifths of it, so it fits any limit
 down to about half the refused size. A limit under 2,048 tokens is not
 believed. A limit of 16,384 tokens or more that the provider named is kept in
-`~/.abhed/context-windows.json`, so the next session, after a restart too,
-starts within it instead of paying a refused call to learn it again. It is
+`context-windows.json` in the folder of the person working (an account's or a
+server sign-in's own folder under `~/.abhed/accounts`, or `~/.abhed` itself on
+a machine where no one has signed in), so their next session, after a restart
+too, starts within it instead of paying a refused call to learn it again. A
+guest keeps none: nothing is read, made or written for a guest, so a guest
+neither leaves the file behind nor sees an account's limits. A machine command
+such as `abhed doctor`, which no one signs in for, keeps none either. It is
 kept per provider type, endpoint, model and account, under a keyed hash of
-them (HMAC-SHA256 under a random secret made once in
-`~/.abhed/context-windows.key`, mode 0600): the file holds no URL, user,
+them (HMAC-SHA256 under a random secret made once in `context-windows.key`
+beside it, mode 0600, and used only for that folder): the file holds no URL, user,
 password, query or key, and without the secret it cannot confirm a guess of a
 credential, however short. When the secret cannot be read or made, nothing is
 kept and limits are learned per process. It lowers the table's or the
@@ -171,8 +176,8 @@ session still lowers that one for the session), and is learned again after 30
 days, since accounts are moved to larger windows. A smaller limit, which a
 gateway falling back to another model can relay, lasts only for the process,
 as does a limit Abhed only inferred (below a refusal that named none, or from
-a prompt a server cut). `abhed models` and `abhed doctor` show a kept limit
-as "named by the provider on" its date, and `abhed models forget-window NAME`
+a prompt a server cut). `abhed models` shows a kept limit as "named by the
+provider on" its date, and `abhed models forget-window NAME`
 drops it for the provider configured as NAME. The file is the person's own
 state: the agent cannot write it and a workspace cannot set it. An OpenAI-shaped refusal whose prompt was within the limit and whose
 reply cap was not (`N in the messages, M in the completion`) is not treated as

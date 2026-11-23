@@ -270,8 +270,9 @@ func Main(args []string, opts ...Option) int {
 	a := newApp(opts...)
 	recordAnchors = a.anchors
 	enableModelDiscovery()
-	// Limits providers named are kept in the person's own state.
-	model.SetWindowMemory(&config.WindowMemory{})
+	// No window memory until the sign-in gate says who is working
+	// (useWindowMemory); a machine command keeps none.
+	model.SetWindowMemory(nil)
 	var f cliFlags
 	fs := newFlagSet(&f)
 	// Sessions: the record keeps every one, so these pick which goes on.

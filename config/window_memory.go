@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/nlink"
 )
 
@@ -30,15 +31,12 @@ type learnedWindows struct {
 	Windows map[string]learnedWindow `json:"windows"`
 }
 
-// ContextWindowsPath is ~/.abhed/context-windows.json: the limits providers
-// named, kept in the person's own state, which the agent cannot reach and a
-// workspace cannot set.
+// ContextWindowsPath is context-windows.json in the folder of the person
+// working (home.PersonPath): an account's own folder, or ~/.abhed before
+// sign-in. It is asked on every use, so a sign-in during the process moves
+// it. The agent cannot reach it and a workspace cannot set it.
 func ContextWindowsPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".abhed", "context-windows.json"), nil
+	return home.PersonPath("context-windows.json")
 }
 
 // WindowMemory keeps learned context windows in ContextWindowsPath. It
@@ -52,6 +50,9 @@ type WindowMemory struct {
 
 	mu     sync.Mutex
 	secret []byte
+	// secretFrom is the file secret was read from: a secret is used only
+	// for the folder it came from, never one read before a sign-in.
+	secretFrom string
 }
 
 // secretPath is the key file beside the windows file:
@@ -70,20 +71,20 @@ func (m *WindowMemory) secretPath() (string, error) {
 // nil when it cannot be read or made, or the file is a link or the wrong
 // size: then the memory is not used, and limits are learned per process.
 func (m *WindowMemory) Secret() []byte {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.secret != nil {
-		return m.secret
-	}
 	path, err := m.secretPath()
 	if err != nil {
 		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.secret != nil && m.secretFrom == path {
+		return m.secret
 	}
 	s, err := loadOrMakeSecret(path)
 	if err != nil {
 		return nil
 	}
-	m.secret = s
+	m.secret, m.secretFrom = s, path
 	return s
 }
 

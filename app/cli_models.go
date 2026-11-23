@@ -627,7 +627,7 @@ func forgetWindowCmd(cfg config.Config, name string, w, errw io.Writer) int {
 	}
 	before := a.Profile()
 	if !model.ForgetWindow(a) {
-		fmt.Fprintln(errw, "abhed: no window memory in this build")
+		fmt.Fprintln(errw, "abhed: no limits are kept for whoever is working here: a guest keeps none")
 		return 1
 	}
 	if before.WindowSource != model.WindowLearned {
