@@ -126,6 +126,30 @@ All notable changes to Abhed are recorded here. The format follows
   account's.
 - `abhed login` on a machine no one is signed in to makes that server's
   account the one working here.
+- A laptop that takes its policy from an org server upgraded to this Enterprise
+  edition now needs a sign-in to that server: a run that cannot ask
+  (`-p`, rpc, CI) exits 10 until the person runs `abhed login SERVER` once.
+  The server's administrator can keep the 1.2.9 behaviour with
+  `ABHED_ORG_MACHINE_SIGN_IN=off`.
+- Stored model keys and secrets now belong to an account. After sign-in,
+  those stored before it are the first account's; other accounts on the
+  machine get none, and neither does a guest. A fresh CI runner, which runs
+  as guest (above), no longer finds a key through `api_key_secret` or a key
+  stored with `abhed provider login`. Environment variables still work:
+  export the key there, or sign the runner in.
+- Model endpoints no longer follow a redirect to another host, port or
+  scheme, since the key would go with it. A provider reached through a
+  gateway that redirects elsewhere now fails, naming where it was sent;
+  point `base_url` at the final address.
+- On your own machine (the terminal, Studio, `abhed rpc`), the `k8s` and
+  `ssh` tools are now on where no file sets them, reaching your kubeconfig
+  contexts and `~/.ssh/config` hosts after one approval each; `k8s_login`
+  is offered once a login is pasted. They count toward `max_tools`. A token
+  or other credential pasted into a message now reaches the model as
+  `[pasted:P1]`, not its value, so a 1.2.9 habit of pasting a token for the
+  model to use (in a `curl` header, say) no longer works: store it with
+  `abhed secret set` and name it in a `secret(NAME)` rule. Set
+  `k8s.enabled` or `ssh.enabled` to `false` to turn the tools off.
 - Under `-verify strict`, a statement that only explains code the session
   read and did not change ("the running total is 0 because nothing has been
   added yet"), or what changed code did before, no longer fails the
@@ -377,7 +401,7 @@ All notable changes to Abhed are recorded here. The format follows
   the `/models` listing of vLLM, SGLang, OpenRouter, Together, Groq and
   Mistral, llama.cpp's `/props`, TGI's `/info`, Ollama's `/api/ps` and
   `/api/show`), then a built-in table of published limits matched by model
-  family (every current Claude model, and the OpenAI, Gemini, Grok and
+  family (every current Claude model, and the OpenAI, Gemini and Grok
   families), and for a model none of these knows an assumed
   32,768 tokens, which the session says on its first turn and `abhed doctor`
   warns of. A server on this machine is never given its model's trained
@@ -423,8 +447,8 @@ All notable changes to Abhed are recorded here. The format follows
 - Claude Haiku 5.5 is priced, by prompt length as Anthropic bills it: a call
   whose prompt is over 100,000 tokens (cache reads and writes included) pays
   the long-prompt prices, each call on its own, so a dollar budget spends
-  what that call cost. Claude Opus 5, Opus 4.8, 4.7, 4.6 and 4.5, Sonnet 5
-  and 4.6, and Fable and Mythos 5, 5.1 and 5.2 are priced too, from
+  what that call cost. Claude Opus 5.5 and Sonnet 5.5, Opus 5, Opus 4.8,
+  4.7, 4.6 and 4.5, Sonnet 5 and 4.6, and Fable and Mythos 5, 5.1 and 5.2 are priced too, from
   Anthropic's pricing page on 23 November 2026.
 - Model keys without environment variables: `abhed provider login|logout|status`.
   `login` asks for a hosted provider's key without echo and keeps it in the
@@ -441,7 +465,9 @@ All notable changes to Abhed are recorded here. The format follows
   configuration names that key for the same endpoint and token URL, and an
   exported hosted key only at its type's own endpoint. A stored key is the
   Abhed account's: the Keychain service and the secret store are the
-  account's own, so another account never sees it, and the first account
+  account's own, so within Abhed another account never sees it (not from
+  the OS user: accounts on one macOS user are that user to the Keychain, and
+  any program it runs can read another account's item), and the first account
   takes over the keys stored before sign-in (a key held in both places with
   different values is kept twice and named). A guest keeps and is given no
   stored key: `provider login|logout` and every other way to the store are
@@ -469,6 +495,10 @@ All notable changes to Abhed are recorded here. The format follows
   resets it, and so can the OS user, which the next sign-in reports. An
   account is a separate space, not encryption. A guest keeps nothing: its
   folder is removed as the run ends, and by the next start after a crash.
+  What the organisation keeps is apart from that: an OCSF export the
+  managed configuration sets up still receives a guest's sessions, and a
+  server keeps each step's metadata after a console guest's content is
+  crypto-shredded.
   Policy, the sandbox, egress and approvals are the same for all three. A
   run that cannot ask uses the remembered sign-in, or runs as guest with a
   note, and exits 10 where the organisation requires sign-in; `-guest`,
@@ -481,8 +511,11 @@ All notable changes to Abhed are recorded here. The format follows
   `auth.guest`, and ACP clients such as Studio sign in through ACP's
   `authMethods` and `authenticate`. The managed configuration and the org
   policy can require sign-in, require a server's, turn guest off, and bound
-  how long a sign-in is remembered (`auth.client`). See [Signing
-  in](docs/guide/38-signing-in.md).
+  how long a sign-in is remembered (`auth.client`). Requiring it through
+  the managed configuration is part of the Community Edition; pushing it
+  from a signed org policy is the Enterprise edition's, and identity-provider
+  sign-in and SCIM are the Team edition's. See [Signing
+  in](docs/guide/42-signing-in.md).
 - Guests on a server's console: `auth.guest` (off by default) offers
   Continue as guest on the sign-in page. A guest is an identity of its own
   with no groups, under every rule anyone has; its sessions are stopped and
@@ -491,8 +524,9 @@ All notable changes to Abhed are recorded here. The format follows
   removes what ended guests left at start and hourly, never another
   server's live guests on a shared Postgres; a server that finds another
   running under its own `control_plane.ha.node_id` logs an error and does
-  not take that id's sessions for its earlier run's. One address starts at most five guests an hour. It needs
-  `auth.mode` `local` or `oidc`.
+  not take that id's sessions for its earlier run's. One address starts at
+  most five guests an hour. It needs `auth.mode` `local` (with the Team and
+  Enterprise edition's browser sign-in, `oidc` too).
 - `abhed serve` in a terminal, with no sign-in on an address other machines
   can reach, asks first: set up local accounts, serve on this machine only,
   or serve as configured.
@@ -893,8 +927,8 @@ All notable changes to Abhed are recorded here. The format follows
   says why none would, such as `denied by org policy; ask your admin`.
 - Cost in US dollars. Each model call is priced from its model's name, at
   the Standard-tier list price Abhed carries for some hosted models
-  (checked against OpenAI's and Anthropic's pricing pages on 9 November
-  2026; models priced by prompt length are left out) or at a price set under
+  (checked against Anthropic's pricing page on 23 November 2026 and
+  OpenAI's on 9 November 2026; models priced by prompt length are left out) or at a price set under
   `pricing` in the configuration. The cost is recorded on each call's
   `model.call` (`cost_usd`, or `unpriced`) and the session's end, for the
   turns, the critic, suggestions, compaction summaries and pipeline model

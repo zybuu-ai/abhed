@@ -21,7 +21,7 @@ more often a mistyped command than a task.
 | Flag | |
 |---|---|
 | `-C DIR` | the workspace (default: the current directory) |
-| `-guest` | work as guest: nothing is kept when the run ends (also `ABHED_GUEST=1`); see [Signing in](38-signing-in.md) |
+| `-guest` | work as guest: nothing is kept when the run ends (also `ABHED_GUEST=1`); see [Signing in](42-signing-in.md) |
 | `-account NAME` | work as this account on this machine, which must be signed in; a run that cannot ask exits 10 otherwise (also `ABHED_ACCOUNT`) |
 | `-model NAME` | a configured provider for this run |
 | `-fallback-model A,B` | configured providers to move to when the model is unavailable |

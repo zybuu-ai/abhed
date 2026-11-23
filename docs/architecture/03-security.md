@@ -29,7 +29,7 @@ Status: Draft · 2026-09-02
 | T7 | Resource exhaustion | Runaway loop, fork bomb | Denial of service |
 | T8 | Repository-supplied configuration | A `.abhed/config.json` shipped in a cloned repository | Mode, allow rules, model endpoint, processes and sandbox widened before any prompt; untrusted until the person trusts its contents ([Workspace trust](workspace-trust.md)) |
 
-**T2/T3 are the defining hazard of an agentic system.** A coding agent's entire job is to
+**T2/T3 are the defining hazard of an agentic system.** A deep agent's entire job is to
 read untrusted text and act on it. There is no known complete defense — which is exactly why
 the architecture assumes injection *sometimes succeeds* and constrains blast radius instead.
 

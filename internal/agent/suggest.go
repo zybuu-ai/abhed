@@ -48,7 +48,7 @@ type Suggester struct {
 	Hold func() bool
 }
 
-const suggestSystem = "You predict the next message a person will send to a coding agent. " +
+const suggestSystem = "You predict the next message a person will send to an agent. " +
 	"Reply with that message only: one short line of at most 80 characters, plain text, " +
 	"no quotes, no markdown, written as the person would type it, in the same language the person writes in. " +
 	"If no follow-up is natural, reply with NONE."

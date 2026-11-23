@@ -177,7 +177,7 @@ abhed plugin remove acme-review        # asks first; -yes to skip
 Plugins are each person's, as skills are. Signed in, the paths below are in
 your account's folder under `~/.abhed/accounts/` instead of `~/.abhed`; a
 guest can list plugins but not install, approve or remove one, and keeps
-none (see [Signing in](38-signing-in.md)).
+none (see [Signing in](42-signing-in.md)).
 
 | Path | What it holds |
 |---|---|

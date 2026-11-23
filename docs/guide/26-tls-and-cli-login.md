@@ -217,7 +217,7 @@ abhed profile rm staging
 
 On a machine no one is signed in to, `abhed login` is how you sign in: the
 server's account becomes who works here, until `abhed account signout`
-([Signing in](38-signing-in.md)). Signed in to an account on this machine,
+([Signing in](42-signing-in.md)). Signed in to an account on this machine,
 `abhed login` adds the server to that account.
 
 **Profiles** are kept in the signed-in account's `profiles.json` under

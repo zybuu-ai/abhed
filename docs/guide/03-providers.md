@@ -284,9 +284,10 @@ from the first of these that knows:
    failure or a slow answer (over 3 seconds) leaves the window as it was.
 3. Abhed's table of published limits, matched by the longest prefix of the
    model id once a gateway's `vendor/` prefix, a Bedrock region and vendor,
-   or a Vertex `@` version is removed: every current Claude model (1,000,000
-   tokens and 128,000-token replies for Claude Fable, Mythos, Opus 4.6 and
-   later, Sonnet 4.6 and later and Haiku 5.5; 200,000 for Claude Haiku 4.5,
+   or a Vertex `@` version is removed: every current Claude model (for Claude
+   Fable, Mythos, Opus 4.6 and later, Sonnet 4.6 and later and Haiku 5.5, the
+   long-context window and 128,000-token replies, up to the window the
+   provider reports or names for your account; 200,000 for Claude Haiku 4.5,
    Opus 4.5, Sonnet 4.5 and older), and the OpenAI, Gemini and Grok families.
    Open-weight models have no row: where they are served decides their
    window, and the servers that report one are asked. A server on this machine (`ollama`,

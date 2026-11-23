@@ -3,7 +3,7 @@
 Status: Draft · 2026-09-02 · Owner: @yuvraj-singh79
 
 Abhed is an on-prem, air-gap-capable deep agent platform. It targets the capability bar
-set by the leading cloud coding agents, with the enterprise deployment posture of other
+set by the leading cloud agent services, with the enterprise deployment posture of other
 enterprise agent platforms, and it is deliberately model-agnostic.
 
 Every principle below is tagged with its evidence status:
@@ -83,7 +83,7 @@ are required: summarization directives readable inside the memory file, and a
 ## P5 — Control-loop architectures are composable primitives. [V]
 
 The ReAct vs plan-and-execute vs CodeAct framing is a false trichotomy. A source-code
-taxonomy of 13 open-source coding agents found **11 of 13 compose multiple primitives**;
+taxonomy of 13 open-source agents found **11 of 13 compose multiple primitives**;
 7 of 13 use sequential ReAct as the primary spine, layering generate-test-repair,
 plan-execute, multi-attempt retry, and tree search on top.
 
@@ -91,7 +91,7 @@ plan-execute, multi-attempt retry, and tree search on top.
 composable strategies selectable per task class — not as an architecture to commit to once.
 
 > Scope caveat: that corpus covers open-source agents pinned to June 2023 – March 2025
-> commits. The vendors' own coding agents are essentially absent. Do not generalize the
+> commits. The vendors' own agents are essentially absent. Do not generalize the
 > counts to closed-source agents.
 
 ## P6 — Agent state is an event-sourced stream. [V]
@@ -142,7 +142,7 @@ GPUs, not merely a quality knob. Budget it explicitly.
 
 ## P9 — Prefer MoE for agent workloads. [C]
 
-Coding agents are prefill-heavy. Prefill cost scales with *active* parameters, so a
+Deep agents are prefill-heavy. Prefill cost scales with *active* parameters, so a
 sparse MoE model is dramatically cheaper per prefilled token than a dense model of similar
 quality. Prefilling 190k tokens on 8×H100: **612 ms** for a 117B/5.1B-active MoE vs
 **3,840 ms** for a 32B dense model — 6× faster despite 3.6× more total parameters.
