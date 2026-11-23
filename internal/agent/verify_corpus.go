@@ -705,6 +705,7 @@ var (
 	stepReadReadmeKn  = CorpusStep{ID: "knf", Tool: "read", Args: map[string]any{"path": "/w/README.md"}, Output: "     1\t# app\n     2\tDeploys go through the release pipeline.\n"}
 	stepK8sProd3Err   = CorpusStep{ID: "kng", Tool: "k8s_get", Args: map[string]any{"cluster": "prod3", "resource": "pods"}, Output: "error: Unauthorized\n", IsError: true}
 	stepNoteR9bob     = CorpusStep{ID: "knh", Tool: "notes_create", Args: map[string]any{"name": "r9bob", "text": "hello"}, Output: "created note\n"}
+	stepK8sSetImgErr  = CorpusStep{ID: "kni", Tool: "k8s_set_image", Args: map[string]any{"deployment": "web", "image": "web:next"}, Output: "error: forbidden\n", IsError: true}
 	stepWhoamiR2      = CorpusStep{ID: "kn8", Tool: "bash", Args: map[string]any{"command": "abhed whoami"}, Output: "signed in as r2alice (local account)\n", Exit: code(0)}
 	stepUtNoExit      = CorpusStep{ID: "kka", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest"}, Output: "test_error_path (tests.test_x.T.test_error_path) ... ERROR\n"}
 	stepK8sGetStaging = CorpusStep{ID: "kee", Tool: "k8s_get", Args: map[string]any{"resource": "deployments", "name": "web", "namespace": "eu-west"}, Output: "NAME   READY\nweb    1/1\n"}
@@ -2395,6 +2396,8 @@ func CorpusCases() []CorpusCase {
 		{Name: "a cluster with a digit in its name, the call to it answering", Kind: c, Want: ClaimVerified, Steps: steps(stepK8sProd2), Text: "The workload is on prod2."},
 		{Name: "an account with a digit in its name, only written by the agent", Kind: p, Want: ClaimUnverified, Steps: steps(stepWriteR9bob), Text: "You are signed in as r9bob."},
 		{Name: "pushed branches said visible now, the push failing", Kind: p, Want: ClaimUnverified, Strict: true, Steps: steps(stepGitBranch, stepGitPushFail), Text: "Pushed branches are visible on origin now."},
+		{Name: "committed work said safe now, only a refused commit as the git call", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitCommitDeny), Text: "Committed work is safe now."},
+		{Name: "deployed services said running now, only a failed k8s call", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sSetImgErr), Text: "Deployed services are now running."},
 		{Name: "committed work said safe now, the commit refused", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitBranch, stepGitCommitDeny), Text: "Committed work is safe now."},
 		{Name: "a cluster with a digit in its name, the built-in call to it failing with no exit code", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sProd3Err), Text: "The workload is on prod3."},
 		{Name: "an account with a digit in its name, only another tool's name argument", Kind: p, Want: ClaimUnverified, Steps: steps(stepNoteR9bob), Text: "You are signed in as r9bob."},
