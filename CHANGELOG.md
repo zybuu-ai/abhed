@@ -754,7 +754,13 @@ All notable changes to Abhed are recorded here. The format follows
   go before the summaries are written, and each is written once. A call
   cancelled as its session closes is counted in the summary, as it is
   charged to the budget, instead of being left out when its handler had
-  not yet counted it.
+  not yet counted it. The close cancels every session's editor calls first
+  and then waits for them once, up to 1 s for the whole close rather than
+  1 s for each feature of each session, so slow calls no longer use up the
+  3 s a signal allows. A stop signal during a close begun by the input's
+  end now bounds it to 3 s from the signal, and a session opened during
+  the close is refused and shut by the close, with its `session.ended`
+  recorded, before the exit.
 - `next_edit.summary` counted a rename finished from the file as `local`
   but not as `served`, so a session whose only next edit was such a rename
   showed `served: 0`. It now counts in both; the metrics keep `served`
