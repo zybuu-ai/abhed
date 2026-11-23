@@ -59,6 +59,7 @@ func (l *Loop) offloadIfNeeded() {
 		return
 	}
 	used, window := l.contextSize()
+	window = l.Compactor.Effective(window) // the ceiling applies to offloading too
 	if window == 0 || float64(used) < o.Threshold*float64(window) {
 		return
 	}

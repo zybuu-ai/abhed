@@ -99,6 +99,22 @@ func TestCompactAtBounds(t *testing.T) {
 			t.Errorf("compact_at %v must be rejected", v)
 		}
 	}
+	for _, n := range []int{-1, 1, 3, 100, MinCompactAtTokens - 1} {
+		c := Default()
+		c.Context.CompactAtTokens = n
+		if err := c.Validate(); err == nil {
+			t.Errorf("compact_at_tokens %d must be rejected", n)
+		}
+	}
+	c := Default()
+	c.Context.CompactAtTokens = MinCompactAtTokens
+	if err := c.Validate(); err != nil {
+		t.Errorf("compact_at_tokens at the floor: %v", err)
+	}
+	c.Context.CompactAtTokens = 1_000_000
+	if err := c.Validate(); err != nil {
+		t.Errorf("compact_at_tokens 1,000,000: %v", err)
+	}
 }
 
 func TestWriteDefaultRoundTrips(t *testing.T) {

@@ -122,6 +122,12 @@ func (r *Renderer) activityRows(ev agent.Event) []string {
 		return note(fmt.Sprintf("compacted · %s → %s tokens (%s)",
 			formatCount(c.BeforeTokens), formatCount(c.AfterTokens), field(orStr(c.Trigger, "auto"), 10)))
 
+	case agent.EvContextWindow, agent.EvContextOverflow, agent.EvContextRefit:
+		if text := agent.ContextNotice(ev); text != "" {
+			return note(field(text, 300))
+		}
+		return nil
+
 	case agent.EvModeChanged:
 		var m agent.ModeChanged
 		// A mode carried into a new conversation restates one already shown.

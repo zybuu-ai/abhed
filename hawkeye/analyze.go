@@ -205,6 +205,27 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				})
 			}
 
+		case agent.EvContextWindow:
+			var w agent.ContextWindowNote
+			_ = json.Unmarshal(e.Payload, &w)
+			r.Context = append(r.Context, ContextFit{Seq: e.Seq, Kind: "window", Action: w.Source, Model: w.Model, Window: w.Window})
+
+		case agent.EvContextOverflow:
+			var o agent.ContextOverflow
+			_ = json.Unmarshal(e.Payload, &o)
+			w := o.Window
+			if o.Limit > 0 {
+				w = o.Limit
+			}
+			r.Context = append(r.Context, ContextFit{Seq: e.Seq, Kind: "overflow", Action: o.Action, Model: o.Model,
+				Window: w, Before: o.BeforeTokens, After: o.AfterTokens})
+
+		case agent.EvContextRefit:
+			var f agent.ContextRefit
+			_ = json.Unmarshal(e.Payload, &f)
+			r.Context = append(r.Context, ContextFit{Seq: e.Seq, Kind: "refit", Action: f.Reason, Model: f.ToModel,
+				Window: f.ToWindow, Before: f.BeforeTokens, After: f.AfterTokens})
+
 		case agent.EvContextOffloaded:
 			var o agent.Offloaded
 			_ = json.Unmarshal(e.Payload, &o)
@@ -451,7 +472,7 @@ var beforeModel = map[agent.EventType]bool{
 	agent.EvUserMessage: true, agent.EvObservation: true, agent.EvActionDenied: true,
 	agent.EvSubagentNotice: true, agent.EvSessionWoken: true, agent.EvModelCall: true,
 	agent.EvCompactDone: true, agent.EvContextOffloaded: true, agent.EvModelSwitched: true, agent.EvModelFallback: true,
-	agent.EvModelWaiting: true,
+	agent.EvModelWaiting: true, agent.EvContextWindow: true, agent.EvContextOverflow: true, agent.EvContextRefit: true,
 }
 
 // deltaShaped reports whether a gap between prev and next could hold only deltas.
