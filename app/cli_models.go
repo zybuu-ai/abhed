@@ -17,7 +17,6 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/model"
-	"github.com/zybuu-ai/abhed/internal/testenv"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
@@ -35,7 +34,7 @@ func modelItems(st *cliState) []ui.PickItem {
 		p := st.appCfg.Model.Providers[name]
 		detail := []string{p.Model}
 		if w, _, src := model.ResolveLimits(p.Spec()); w > 0 {
-			ctx := fmt.Sprintf("%dk context", w/1000)
+			ctx := fmt.Sprintf("%dk context", w/1024)
 			if src == model.WindowFallback {
 				ctx += " (assumed)"
 			}
@@ -518,7 +517,7 @@ func recordModelRefused(st *cliState, source string, refused *config.ManagedErro
 // its context window. Off under a test (testenv.Marker), so no test reaches a
 // real server for it, and off with ABHED_NO_MODEL_DISCOVERY set.
 func enableModelDiscovery() {
-	if os.Getenv(testenv.Marker) != "" || os.Getenv("ABHED_NO_MODEL_DISCOVERY") != "" {
+	if os.Getenv(testEnvMarker) != "" || os.Getenv("ABHED_NO_MODEL_DISCOVERY") != "" {
 		return
 	}
 	model.EnableDiscovery()
@@ -578,3 +577,7 @@ func commaInt(n int) string {
 	}
 	return b.String()
 }
+
+// testEnvMarker is testenv.Marker, named here so the release binary does not
+// link the test environment package.
+const testEnvMarker = "ABHED_TESTENV"

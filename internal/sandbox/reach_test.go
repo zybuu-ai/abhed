@@ -72,6 +72,9 @@ var unfollowedCalls = map[string]string{
 	// The record's own hooks: the approval gate and the live tap, set where a
 	// session is built, to decide and to stream an event.
 	modulePath + "/internal/agent.Recorder.Gate": "field", modulePath + "/internal/agent.Recorder.tap": "field",
+	// The values a session holds from pastes, set in NewLoop to read the
+	// session's pasted values (tools.PastedHeld); it neither signals nor runs.
+	modulePath + "/internal/agent.Recorder.held": "field",
 	// The owner's callbacks, which SetListenWatch stores from app's
 	// watchListening, whose function literals the walk checks there.
 	sandboxPkg + "..sweepListeners: *f":         "callback",
