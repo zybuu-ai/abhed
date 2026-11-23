@@ -133,7 +133,7 @@ func Text(r Report) string {
 	for _, e := range r.Editor {
 		fmt.Fprintf(&b, "  editor    #%d %s %s: %d sent, %d served", e.Seq, e.Feature, e.Model, e.Requests, e.Served)
 		if e.Local > 0 {
-			fmt.Fprintf(&b, ", %d from the file", e.Local)
+			fmt.Fprintf(&b, ", %d of them from the file", e.Local)
 		}
 		if e.LocalDropped > 0 {
 			fmt.Fprintf(&b, ", %d rename(s) left to the person", e.LocalDropped)

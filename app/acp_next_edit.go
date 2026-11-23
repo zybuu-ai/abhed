@@ -180,7 +180,8 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 				empty("dropped", why)
 				return
 			}
-			k.count(func(s *agent.CompletionSummary) { s.Local++ })
+			// Offered like any suggestion: served, and of those, from the file.
+			k.count(func(s *agent.CompletionSummary) { s.Local++; s.Served++ })
 			c.reply(msg.ID, map[string]any{"edits": edits, "rename": true}, nil)
 			return
 		}

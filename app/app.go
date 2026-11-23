@@ -228,6 +228,7 @@ var subcommands = []subcommand{
 	{name: "migrate", about: "apply the database schema as the owning role", trust: true},
 	{name: "resolve", about: "work on a forge issue in its own branch and open a pull request", trust: true},
 	{name: "acp", about: "speak the Agent Client Protocol on stdio, for editors", trust: true},
+	{name: "ssh-acp", about: "run the engine's acp on an SSH host for an editor: strict host keys, a pinned engine, nothing forwarded"},
 	{name: "rpc", about: "take line-delimited JSON requests on stdin, answer on stdout", trust: true},
 	{name: "index", about: "embed the workspace ahead of a session and keep the embeddings; each session rebuilds the rest", trust: true},
 	{name: "eval", about: "run the evaluation corpus against the configured model", trust: true},
