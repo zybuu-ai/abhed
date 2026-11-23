@@ -98,3 +98,27 @@ func TestServeRefusesARebindingHost(t *testing.T) {
 		t.Fatalf("loopback refused: %d", code)
 	}
 }
+
+// serve says, in one line, when it listens beyond loopback with no name
+// for the host guard; loopback, or a name configured, says nothing.
+func TestHostNamesNote(t *testing.T) {
+	none := config.Default()
+	none.Auth.Mode = "none"
+	signed := config.Default()
+	signed.Auth.Mode = "local"
+	named := signed
+	named.Server.AllowedHosts = []string{"abhed.lan"}
+	for _, c := range []struct {
+		cfg  config.Config
+		addr string
+		want bool
+	}{
+		{none, "127.0.0.1:8853", false}, {none, "localhost:8853", false}, {none, "[::1]:8853", false},
+		{none, ":8853", true}, {signed, "0.0.0.0:8443", true}, {signed, "10.0.0.7:8443", true},
+		{named, "0.0.0.0:8443", false},
+	} {
+		if got := HostNamesNote(c.cfg, c.addr) != ""; got != c.want {
+			t.Errorf("%s (auth %q): note %v, want %v", c.addr, c.cfg.Auth.Mode, got, c.want)
+		}
+	}
+}

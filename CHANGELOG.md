@@ -17,9 +17,11 @@ All notable changes to Abhed are recorded here. The format follows
   `auth.redirect_url`) is now refused with `421`; with `auth.mode` `none`
   only loopback and `server.allowed_hosts` are answered. Affected: every
   release with `abhed serve`.
-- A second `abhed serve` on the same HOME and address swept the running
-  server's per-session sandboxes before it failed to bind. It now fails on
-  the address before any startup cleanup.
+- A second `abhed serve` on the same HOME swept the running server's
+  per-session sandboxes. On the same address it now fails before any
+  startup cleanup; on another, the running server's startup lock
+  (`~/.abhed/serve.lock`) makes it leave the running one's sessions and
+  sandboxes alone.
 - A profile's client followed a redirect from https to plain http on the
   same host, sending the server token in clear. Such a redirect is now
   refused.
@@ -125,7 +127,9 @@ All notable changes to Abhed are recorded here. The format follows
   `server.allowed_hosts` (or `server.canonical_host`, or name it in
   `server.allowed_origins` or `auth.redirect_url`). Loopback and, with
   sign-in on, IP addresses work as before. With `auth.mode` `none`, only
-  loopback and `server.allowed_hosts` are answered.
+  loopback and `server.allowed_hosts` are answered. `abhed serve` and
+  `abhed serve -check` say so in a `hosts` line when they listen beyond
+  loopback with no name configured.
 - git fetch, pull, push, clone and ls-remote in Abhed Studio and the CLI
   now reach remotes with the person's own credentials (SSH agent, keychain,
   credential helpers), on the process tier and the fence; 1.2.9 ran them in

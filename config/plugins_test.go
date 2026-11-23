@@ -49,6 +49,13 @@ func TestPluginPolicyOrgSource(t *testing.T) {
 	if len(src) != 1 || src[0].Name != OrgSourceName || src[0].URL != "https://abhed.acme.example/v1/plugins/index" {
 		t.Fatalf("sources %+v", src)
 	}
+	// What an org URL carries in secret never reaches the source's URL,
+	// which fetch errors and listings print.
+	c.OrgPolicy.URL = "https://u:SECRET@abhed.acme.example/?token=SECRET#SECRET"
+	src = c.PluginPolicy().Sources
+	if len(src) != 1 || src[0].URL != "https://abhed.acme.example/v1/plugins/index" {
+		t.Fatalf("sources from a secret-bearing org URL %+v", src)
+	}
 }
 
 // The person's own file, like a workspace's, never sets the plugin policy.

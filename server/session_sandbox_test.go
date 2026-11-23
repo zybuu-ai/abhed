@@ -23,6 +23,7 @@ import (
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/driver/drivertest"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/filelock"
 	"github.com/zybuu-ai/abhed/internal/sessionsandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -497,5 +498,43 @@ func TestSecondServerOnTheSameAddressSweepsNothing(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	if _, err := r.mem.Get(context.Background(), sbID); err != nil {
 		t.Fatalf("the running server's session sandbox was deleted by the second: %v", err)
+	}
+}
+
+// A second server sharing this machine's state on another address cannot
+// take the startup lock the running one holds, so it neither takes back
+// sessions nor sweeps the running server's session sandboxes.
+func TestSecondServerOnAnotherAddressSweepsNothing(t *testing.T) {
+	r := newPerSessionRig(t)
+	_, live := r.open(t, "alice")
+	sbID := filepath.Base(r.srv.workspaceOf(live))
+	lockPath := filepath.Join(t.TempDir(), "serve.lock")
+	lock := func() (func(), error) { return filelock.Lock(lockPath, 0, "%s is held (waited %s)") }
+	release, err := lock() // the running server's
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	svc := r.srv.opts.ControlPlane
+	mgr2, err := sessionsandbox.New(sessionsandbox.Config{Service: svc, Tenant: "default", Ready: 10 * time.Second,
+		Workspace: func(id string) (string, error) { d := filepath.Join(r.root, id); return d, os.MkdirAll(d, 0o700) },
+		Isolation: func(sb controlplane.Sandbox) tools.Isolation { return tools.Isolation{Tier: sb.Tier} }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := New(Options{Workspace: r.ws, Config: config.Default(), Adapter: stubAdapter{}, ControlPlane: svc,
+		Registry: tools.NewRegistry(tools.Read{}), SessionSandboxes: mgr2, StartupLock: lock})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- second.Serve(ctx, ln) }()
+	time.Sleep(500 * time.Millisecond)
+	cancel()
+	<-done
+	if _, err := r.mem.Get(context.Background(), sbID); err != nil {
+		t.Fatalf("the running server's session sandbox was swept by a second server: %v", err)
 	}
 }

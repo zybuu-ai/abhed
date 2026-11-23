@@ -537,6 +537,9 @@ func (a *App) serveCheck(w io.Writer, workspace, addr string) int {
 	} else {
 		add("auth", nil, authLabel(cfg, mw))
 	}
+	if note := server.HostNamesNote(cfg, addr); note != "" {
+		add("hosts", nil, note)
+	}
 	// The same certificate checks serve makes before it listens.
 	if tl, err := buildTLS(cfg, workspace, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
 		add("tls", err, "")

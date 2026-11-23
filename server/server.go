@@ -337,6 +337,12 @@ type Options struct {
 	// file tools work in that sandbox and its folder, never in Workspace.
 	// Nil keeps the one sandbox every session shares, exactly as before.
 	SessionSandboxes *sessionsandbox.Manager
+	// StartupLock, when set, is held while the server runs, around taking
+	// back its sessions and sweeping session sandboxes at start: a second
+	// server sharing this machine's state (on another address) cannot take
+	// it, and leaves what the first holds alone. An error means another
+	// holds it.
+	StartupLock func() (release func(), err error)
 	// TLS, when set, is served on Addr instead of plain HTTP. Its
 	// certificates are read per handshake, so a reload needs no restart.
 	TLS *tls.Config
@@ -5463,8 +5469,20 @@ func (s *Server) serve(ctx context.Context, listen func() (net.Listener, error))
 	// Sessions this node held before a restart are taken back, and sessions
 	// a crashed process left open reconciled, before anything is served; then
 	// again every stale window, by staleness alone.
-	s.RecoverOwnAtStart(ctx)
-	if s.opts.SessionSandboxes != nil {
+	held := true
+	if s.opts.StartupLock != nil {
+		release, err := s.opts.StartupLock()
+		if err != nil {
+			held = false
+			s.log.Warn("another abhed serve shares this machine's state; this one leaves its sessions and sandboxes alone at start", "error", err)
+		} else {
+			defer release()
+		}
+	}
+	if held {
+		s.RecoverOwnAtStart(ctx)
+	}
+	if s.opts.SessionSandboxes != nil && held {
 		// Sandboxes whose session is gone, as a restart finds them; none made from now on.
 		since := time.Now()
 		go func() {

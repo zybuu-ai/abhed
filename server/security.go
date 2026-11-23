@@ -382,3 +382,29 @@ func normalHost(h string) string {
 	}
 	return strings.TrimSuffix(strings.ToLower(strings.Trim(h, "[]")), ".")
 }
+
+// HostNamesNote is the one line serve prints when it listens beyond
+// loopback with no name configured for the host guard: requests that name
+// the server by DNS name are refused (421) until one is set. "" otherwise.
+func HostNamesNote(cfg config.Config, addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	h := normalHost(host)
+	if ip := net.ParseIP(h); h == "localhost" || (ip != nil && ip.IsLoopback()) {
+		return ""
+	}
+	noAuth := cfg.Auth.Mode == "" || cfg.Auth.Mode == "none"
+	named := len(cfg.Server.AllowedHosts) > 0
+	if !noAuth {
+		named = named || cfg.Server.CanonicalHost != "" || len(cfg.Server.AllowedOrigins) > 0 || cfg.Auth.RedirectURL != ""
+	}
+	if named {
+		return ""
+	}
+	if noAuth {
+		return "with no sign-in, requests that do not name the server by a loopback address get 421; set server.allowed_hosts to the names you use"
+	}
+	return "requests by DNS name get 421 until you set server.allowed_hosts (IP addresses and loopback are answered)"
+}
