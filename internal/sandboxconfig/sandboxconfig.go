@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strings"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/nlink"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/secrets"
@@ -145,18 +145,15 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 }
 
 // skillDirs are the configured skills.dirs, made absolute as skills are
-// loaded from them: ~/ is the home folder, and a relative one is taken from
-// the folder Abhed runs in.
+// loaded from them: ~/.abhed/ is the person's folder, ~/ the home folder,
+// and a relative one is taken from the folder Abhed runs in.
 func skillDirs(cfg config.Config) []string {
 	if cfg.Skills.Disabled {
 		return nil
 	}
-	home, _ := os.UserHomeDir()
 	var out []string
 	for _, d := range cfg.Skills.Dirs {
-		if rest, ok := strings.CutPrefix(d, "~/"); ok && home != "" {
-			d = filepath.Join(home, rest)
-		}
+		d = home.ExpandState(d)
 		if abs, err := filepath.Abs(d); err == nil {
 			out = append(out, abs)
 		}
@@ -258,8 +255,8 @@ func StatePaths(cfg config.Config, workspace string) []string {
 	// agent can neither read nor write it where it really is.
 	records := cfg.Record.Dir
 	if records == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			records = filepath.Join(home, ".abhed", "records")
+		if p, err := home.PersonPath("records"); err == nil {
+			records = p
 		}
 	}
 	if records != "" {

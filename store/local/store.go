@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/store"
 )
@@ -54,13 +55,14 @@ type Options struct {
 	OnAppend func(Sealed)
 }
 
-// DefaultDir is ~/.abhed/records.
+// DefaultDir is the person's records folder: ~/.abhed/records before
+// sign-in, or the records folder of the account or guest working.
 func DefaultDir() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := home.PersonPath("records")
 	if err != nil {
-		return "", fmt.Errorf("find the home directory for the record: %w", err)
+		return "", fmt.Errorf("find the folder for the record: %w", err)
 	}
-	return filepath.Join(home, ".abhed", "records"), nil
+	return dir, nil
 }
 
 // Store is the local record: one chained file per session under

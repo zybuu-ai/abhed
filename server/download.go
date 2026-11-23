@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"mime"
 	"net/http"
 	"os"
@@ -10,9 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/store"
 )
 
 // downloadEntry is one file a session produced.
@@ -279,10 +282,27 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusNotFound, "session not found")
 		return
 	}
+	switch err := s.removeSession(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context())); {
+	case errors.Is(err, errAppendOnly):
+		WriteError(w, http.StatusNotImplemented, "this deployment's store is append-only; sessions cannot be deleted")
+		return
+	case err != nil:
+		WriteError(w, http.StatusInternalServerError, "delete failed")
+		return
+	}
+	s.log.Info("session deleted", "session", id, "user", UserOf(r.Context()))
+	w.WriteHeader(http.StatusNoContent)
+}
 
+// errAppendOnly is a store that keeps every session.
+var errAppendOnly = errors.New("the store is append-only")
+
+// removeSession stops session id if it runs and removes it from the store,
+// with its sandbox; tenant and user are its owner's.
+func (s *Server) removeSession(ctx context.Context, id, tenant, user string) error {
 	// A running session is stopped first. Deleting the transcript of a run that
 	// is still appending to it would leave rows behind after the delete.
-	if live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context())); ok {
+	if live, ok := s.session(ctx, id, tenant, user); ok {
 		live.mu.Lock()
 		c := live.cancel
 		live.mu.Unlock()
@@ -293,7 +313,7 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		// Children first: none may append once its rows are gone.
 		live.Loop.Background.Close(agent.TermSessionDeleted)
 		// Their ends are recorded before the rows go; a write after is refused.
-		wctx, cancel := context.WithTimeout(r.Context(), turnEndWait)
+		wctx, cancel := context.WithTimeout(ctx, turnEndWait)
 		waitClosed(live.closeTerminals(closedWithSession), wctx.Done())
 		cancel()
 		// Hosts and logins the session made go with it, and its egress proxy.
@@ -318,23 +338,107 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 
 	del, ok := s.under().(agent.SessionDeleter)
 	if !ok {
-		WriteError(w, http.StatusNotImplemented,
-			"this deployment's store is append-only; sessions cannot be deleted")
-		return
+		return errAppendOnly
 	}
 	if err := del.DeleteSession(id); err != nil {
-		WriteError(w, http.StatusInternalServerError, "delete failed")
-		return
+		return err
 	}
 	// A sandbox of the session's own goes with it, its folder too.
 	if s.opts.SessionSandboxes != nil {
 		// The rows are gone, so the sandbox goes too even if the caller stops waiting.
-		if err := s.opts.SessionSandboxes.SessionDeleted(context.WithoutCancel(r.Context()), id, UserOf(r.Context()),
-			storeTenant(s.opts.Config, TenantOf(r.Context()))); err != nil {
+		if err := s.opts.SessionSandboxes.SessionDeleted(context.WithoutCancel(ctx), id, user,
+			storeTenant(s.opts.Config, tenant)); err != nil {
 			s.log.Error("deleting the session's sandbox", "session", id, "error", err)
 		}
 	}
+	return nil
+}
 
-	s.log.Info("session deleted", "session", id, "user", UserOf(r.Context()))
-	w.WriteHeader(http.StatusNoContent)
+// RemoveOwnerSessions stops and removes every session owner holds, running
+// or kept: what a console guest leaves when it signs out or expires. It
+// returns how many it removed. An empty tenant means any: each session is
+// then removed under its own tenant, so a running one is found, cancelled
+// and closed, not just deleted underneath its run.
+func (s *Server) RemoveOwnerSessions(ctx context.Context, tenant, owner string) int {
+	ids := map[string]string{}
+	s.mu.RLock()
+	for id, live := range s.running {
+		if live.User == owner && (tenant == "" || live.Tenant == tenant) {
+			ids[id] = live.Tenant
+		}
+	}
+	s.mu.RUnlock()
+	if lister, ok := s.under().(interface {
+		ListSessionsOwnedBy(context.Context, string, int) ([]store.SessionRecord, error)
+	}); ok {
+		recs, err := lister.ListSessionsOwnedBy(ctx, owner, 10000)
+		if err != nil {
+			s.log.Error("listing an owner's sessions to remove them", "owner", owner, "error", err)
+		}
+		for _, r := range recs {
+			if _, live := ids[r.ID]; live || (tenant != "" && r.Tenant != "" && r.Tenant != tenant) {
+				continue
+			}
+			ids[r.ID] = tenant
+			if tenant == "" {
+				ids[r.ID] = r.Tenant
+			}
+		}
+	}
+	n := 0
+	for id, t := range ids {
+		if err := s.removeSession(ctx, id, t, owner); err != nil {
+			s.log.Error("removing an owner's session", "owner", owner, "session", id, "error", err)
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// RemoveGuestLeftovers removes the console guests' sessions no live guest
+// can still hold: a guest lives only in one process's memory, for at most
+// ttl. On Postgres, shared by several nodes, that is a session held by this
+// node's earlier run, an open one whose node stopped heartbeating, or an
+// ended one older than ttl; another node's live guests are never touched.
+// On a store of this process alone, start is true for the sweep at start,
+// when no guest of this process exists yet: every guest session not running
+// here goes; later sweeps take only those older than ttl. It returns how
+// many it removed.
+func (s *Server) RemoveGuestLeftovers(ctx context.Context, ttl time.Duration, start bool) int {
+	prefix := auth.ProviderGuest + ":"
+	var recs []store.SessionRecord
+	if gl, ok := s.under().(interface {
+		GuestLeftovers(context.Context, string, string, time.Duration, time.Duration) ([]store.SessionRecord, error)
+	}); ok {
+		list, err := gl.GuestLeftovers(ctx, prefix, s.holder, store.HolderStale, ttl)
+		if err != nil {
+			s.log.Error("listing console guests' leftovers", "error", err)
+			return 0
+		}
+		recs = list
+	} else if s.sessions != nil {
+		all, err := s.sessions.ListSessions(ctx, 100000)
+		if err != nil {
+			s.log.Error("listing sessions to remove console guests' leftovers", "error", err)
+			return 0
+		}
+		s.mu.RLock()
+		for _, r := range all {
+			_, running := s.running[r.ID]
+			if strings.HasPrefix(r.User, prefix) && !running && (start || time.Since(r.StartedAt) >= ttl) {
+				recs = append(recs, r)
+			}
+		}
+		s.mu.RUnlock()
+	}
+	n := 0
+	for _, r := range recs {
+		if err := s.removeSession(ctx, r.ID, r.Tenant, r.User); err != nil {
+			s.log.Error("removing a console guest's leftover session", "owner", r.User, "session", r.ID, "error", err)
+			continue
+		}
+		n++
+	}
+	return n
 }

@@ -28,6 +28,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/frontmatter"
+	"github.com/zybuu-ai/abhed/internal/home"
 )
 
 // Limits on one definition.
@@ -403,12 +404,7 @@ func realPath(p string) string {
 }
 
 func expandHome(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, path[2:])
-		}
-	}
-	return path
+	return home.ExpandState(path)
 }
 
 // keyOf folds the spellings of one key: permissionMode, permission_mode and

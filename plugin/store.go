@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/filelock"
+	"github.com/zybuu-ai/abhed/internal/home"
 )
 
 // Store is the person's installed plugins: the files under Root, one folder
@@ -23,13 +24,19 @@ type Store struct {
 	StateFile string
 }
 
-// DefaultStore is ~/.abhed/plugins and ~/.abhed/plugins.json.
+// DefaultStore is the person's plugins folder and plugins.json, in the space
+// of whoever is working (~/.abhed before sign-in), as skills are: one
+// account's installs, approvals and trusted publishers are never another's.
 func DefaultStore() (*Store, error) {
-	home, err := os.UserHomeDir()
+	root, err := home.PersonPath("plugins")
 	if err != nil {
 		return nil, err
 	}
-	return &Store{Root: filepath.Join(home, ".abhed", "plugins"), StateFile: filepath.Join(home, ".abhed", "plugins.json")}, nil
+	state, err := home.PersonPath("plugins.json")
+	if err != nil {
+		return nil, err
+	}
+	return &Store{Root: root, StateFile: state}, nil
 }
 
 // State is the decisions file.

@@ -215,7 +215,13 @@ abhed logout                                       # ends the token on the serve
 abhed profile rm staging
 ```
 
-**Profiles** are kept in `~/.abhed/profiles.json`, or `$ABHED_PROFILES_FILE`:
+On a machine no one is signed in to, `abhed login` is how you sign in: the
+server's account becomes who works here, until `abhed account signout`
+([Signing in](38-signing-in.md)). Signed in to an account on this machine,
+`abhed login` adds the server to that account.
+
+**Profiles** are kept in the signed-in account's `profiles.json` under
+`~/.abhed/accounts/` (in `~/.abhed/profiles.json` before sign-in), or `$ABHED_PROFILES_FILE`:
 the server URL, the account, the token and its expiry, and the paths of any
 CA or client certificate. The file is written mode 600; it is refused if
 other users can read it or if it is a link, and refused inside the workspace

@@ -64,10 +64,13 @@ func shellEnv(t Tier) []string {
 
 // hostEnv is the server's environment without its own settings (database
 // URLs, keys) and without what a host command drops, ZDOTDIR and ENV among it.
+// ABHED_GUEST and ABHED_ACCOUNT stay: they say who is working and only
+// narrow, so an Abhed typed into a guest's terminal is a guest's too.
 func hostEnv() []string {
 	var out []string
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "ABHED_") && !hostDropped(kv) {
+		narrowing := strings.HasPrefix(kv, "ABHED_GUEST=") || strings.HasPrefix(kv, "ABHED_ACCOUNT=")
+		if (narrowing || !strings.HasPrefix(kv, "ABHED_")) && !hostDropped(kv) {
 			out = append(out, kv)
 		}
 	}

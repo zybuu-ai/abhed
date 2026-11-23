@@ -477,6 +477,11 @@ func (h *run) writeFiles() {
 	if h.o.Managed != "" {
 		write(filepath.Join(h.root, "etc", "abhed", "config.json"), h.o.Managed, 0o644)
 	}
+	if !h.o.NoAccount {
+		if err := signInTester(h.home); err != nil {
+			h.t.Fatal(err)
+		}
+	}
 	podman := h.o.Podman
 	if podman == "" {
 		podman = "exit 1"
@@ -1071,3 +1076,6 @@ func safeDefault(raw string) bool {
 	}
 	return !testenv.Real(net.JoinHostPort(host, port))
 }
+
+// Signal sends sig to the binary, as a terminal, a supervisor or kill does.
+func (h *run) Signal(sig os.Signal) error { return h.cmd.Process.Signal(sig) }
