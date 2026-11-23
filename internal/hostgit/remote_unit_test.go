@@ -13,14 +13,15 @@ func TestPlantedProgramRefuses(t *testing.T) {
 	for _, key := range []string{"hook.x.command", "remote.origin.vcs", "core.worktree", "remote.origin.uploadpack",
 		"remote.origin.receivepack", "remote.origin.proxy", "remote.origin.proxyauthmethod", "http.proxy",
 		"http.sslverify", "http.https://git.example.extraheader", "http.curloptresolve", "http.cookiefile",
-		"url.https://evil.example/.insteadof", "url.x.pushinsteadof"} {
+		"url.https://evil.example/.insteadof", "url.x.pushinsteadof", "core.sshcommand", "core.askpass", "core.gitproxy",
+		"credential.helper", "credential.https://git.example.helper"} {
 		for scope, want := range map[string]bool{"local": true, "worktree": true, "global": false, "system": false} {
 			if got := plantedProgram(scope+"\x00"+key+"\nv\x00") != ""; got != want {
 				t.Errorf("%s in %s: refused %v, want %v", key, scope, got, want)
 			}
 		}
 	}
-	for _, key := range []string{"remote.origin.url", "remote.origin.fetch", "branch.main.remote", "credential.helper"} {
+	for _, key := range []string{"remote.origin.url", "remote.origin.fetch", "branch.main.remote", "credential.username", "credential.https://git.example.username"} {
 		if why := plantedProgram("local\x00" + key + "\nv\x00"); why != "" {
 			t.Errorf("%s refused: %s", key, why)
 		}
