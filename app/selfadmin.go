@@ -59,6 +59,9 @@ func selfAdmin(rest []string) string {
 		if slices.Contains([]string{"add", "default", "remove", "rm"}, verb) {
 			return "abhed models " + verb
 		}
+	case "account":
+		// Who is working is the person's to say, never the agent's.
+		return "abhed account"
 	case "login", "logout":
 		// A session must not hold, or end, the person's sign-in to a server.
 		return "abhed " + rest[0]

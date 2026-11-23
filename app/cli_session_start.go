@@ -10,7 +10,6 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -388,10 +387,10 @@ func pickStoredSession(ctx context.Context, st *cliState, say func(string, ...an
 		return "", err
 	}
 	sortByActivity(records)
-	me, tenant := cliUser(), cliTenant(st.appCfg)
+	tenant := cliTenant(st.appCfg)
 	var items []ui.PickItem
 	for _, rec := range records {
-		if rec.ParentID != "" || rec.Tenant != tenant || rec.User != me && rec.User != auth.LocalOwner(me) {
+		if rec.ParentID != "" || rec.Tenant != tenant || !isMe(rec.User) {
 			continue
 		}
 		detail := fmt.Sprintf("%s · %s", age(activityOf(rec)), recordState(rec))

@@ -120,7 +120,9 @@ is staged as pending. The approved version keeps loading until the new one is
 approved, and then the old folder is removed. `abhed plugin remove` deletes the
 folder and the state entry.
 
-State lives in `~/.abhed/plugins.json`, which the person owns. A state file
+State lives in `~/.abhed/plugins.json`, which the person owns; once someone
+signs in, the store and its state are in that person's folder instead
+(`home.PersonPath`), and the first account takes the machine's over. A state file
 naming a folder other than its digest's is refused whole, so it can never
 point a removal outside the store. On every load each approved plugin's
 manifest and files are hashed again against the approved digest. A plugin that

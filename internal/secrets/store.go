@@ -28,6 +28,8 @@ import (
 	"time"
 	"unicode/utf8"
 	"weak"
+
+	"github.com/zybuu-ai/abhed/internal/home"
 )
 
 // EnvFile names the environment variable that overrides the store's location.
@@ -111,11 +113,7 @@ func DefaultPath() (string, error) {
 	if p := os.Getenv(EnvFile); p != "" {
 		return p, nil
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".abhed", "secrets.json"), nil
+	return home.PersonPath("secrets.json")
 }
 
 func Open(path string) *Store { return &Store{path: path, mu: lockFor(path)} }

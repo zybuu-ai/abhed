@@ -57,6 +57,12 @@ func (a *App) serveCmd(workspace, addr string) int {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
+	addr, ok := serveSignInChoice(cfg, addr, terminalBoth(), newPrompter(os.Stdin, os.Stderr))
+	if !ok {
+		// Not a clean stop: a supervisor or wrapper must see that nothing serves.
+		fmt.Fprintln(os.Stderr, "abhed: not serving: set up sign-in first, or choose to serve without it")
+		return 2
+	}
 	if err := vaultLoads(); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
@@ -109,6 +115,11 @@ func (a *App) serveCmd(workspace, addr string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
+	}
+	for _, p := range authMW.Providers {
+		if g, ok := p.(*auth.GuestAuth); ok {
+			defer g.Close()
+		}
 	}
 	// Unusable TLS stops here, before anything listens: never plain HTTP instead.
 	tlsL, err := buildTLS(cfg, workspace, slog.Default())
@@ -363,6 +374,45 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 2
 	}
 	srv := server.New(opts)
+	if cfg.Auth.Guest {
+		// No console guest survives its process or its hours: what earlier
+		// ones left goes at start, then hourly, never another node's live ones.
+		ttl := time.Duration(cfg.Auth.GuestHours) * time.Hour
+		if ttl <= 0 {
+			ttl = auth.DefaultGuestTTL
+		}
+		sweep := func(start bool) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			if n := srv.RemoveGuestLeftovers(ctx, ttl, start); n > 0 {
+				slog.Info("removed console guests' leftover sessions", "sessions", n)
+			}
+		}
+		sweep(true)
+		stopSweep := make(chan struct{})
+		defer close(stopSweep)
+		go func() {
+			t := time.NewTicker(time.Hour)
+			defer t.Stop()
+			for {
+				select {
+				case <-stopSweep:
+					return
+				case <-t.C:
+					sweep(false)
+				}
+			}
+		}()
+		// What a console guest kept goes when the guest signs out or expires.
+		end := func(owner string) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			n := srv.RemoveOwnerSessions(ctx, "", owner)
+			slog.Info("a console guest ended; its sessions are removed", "owner", owner, "sessions", n)
+		}
+		guestEnded.Store(&end)
+		defer guestEnded.Store(nil)
+	}
 	// Every session's egress proxy stops with the server, before the store
 	// closes, so the last summaries it records are kept.
 	if c, ok := sb.(io.Closer); ok {
@@ -598,6 +648,16 @@ func (a *App) buildAuth(ctx context.Context, cfg config.Config, workspace string
 		if v != nil {
 			mw.Verifier = auth.ChainVerifier(mw.Verifier, v)
 		}
+	}
+	if cfg.Auth.Guest {
+		g := auth.NewGuestAuth(time.Duration(cfg.Auth.GuestHours)*time.Hour, cfg.Auth.CookieSecure, cfg.Auth.DefaultTenant,
+			func(owner string) {
+				if end := guestEnded.Load(); end != nil {
+					(*end)(owner)
+				}
+			})
+		mw.Providers = append(mw.Providers, g)
+		public = append(public, g.PublicPaths()...)
 	}
 	mw.PublicPaths = public
 	if err := addClientCertAuth(cfg, mw); err != nil {

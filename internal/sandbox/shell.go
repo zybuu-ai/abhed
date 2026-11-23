@@ -36,8 +36,8 @@ const commandWaitDelay = 2 * time.Second
 // hangUp ends a shell as closing a terminal does, so bash hangs up its jobs;
 // jobs that escape that are ended by Leader.Wait.
 func hangUp(cmd *exec.Cmd) *exec.Cmd {
-	// Every process the shell starts carries it, one that leaves the
-	// shell's session included, so Leader.Wait finds those too.
+	// Every process the shell starts carries it; it marks them, but is no
+	// proof they are the shell's, so nothing is ended by it.
 	if m := commandMarker(); cmd.Env != nil && m != "" {
 		cmd.Env = append(cmd.Env, m)
 	}
@@ -64,10 +64,13 @@ func shellEnv(t Tier) []string {
 
 // hostEnv is the server's environment without its own settings (database
 // URLs, keys) and without what a host command drops, ZDOTDIR and ENV among it.
+// ABHED_GUEST and ABHED_ACCOUNT stay: they say who is working and only
+// narrow, so an Abhed typed into a guest's terminal is a guest's too.
 func hostEnv() []string {
 	var out []string
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "ABHED_") && !hostDropped(kv) {
+		narrowing := strings.HasPrefix(kv, "ABHED_GUEST=") || strings.HasPrefix(kv, "ABHED_ACCOUNT=")
+		if (narrowing || !strings.HasPrefix(kv, "ABHED_")) && !hostDropped(kv) {
 			out = append(out, kv)
 		}
 	}

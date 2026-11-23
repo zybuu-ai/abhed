@@ -218,6 +218,11 @@ Ready.
 abhed
 ```
 
+The first start asks who is working: an account on this machine, an
+account on an Abhed server, or guest. Create an account, and this machine
+remembers it until you sign out; if `~/.abhed` holds data from an earlier
+version, the account takes it over. See [Signing in](38-signing-in.md).
+
 The session opens at once: a check for a container runtime, and for the
 model endpoint, run behind the prompt. The banner says `process or stronger
 (checking)` until the sandbox is chosen, and commands wait for that choice.

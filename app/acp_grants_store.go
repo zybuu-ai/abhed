@@ -15,6 +15,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/filelock"
 	"github.com/zybuu-ai/abhed/internal/foldkey"
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -28,11 +29,11 @@ import (
 
 // grantsFile keeps the workspaces' bash grants; tests set it.
 var grantsFile = func() string {
-	home, err := os.UserHomeDir()
+	p, err := home.PersonPath("state", "workspace-grants.json")
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".abhed", "state", "workspace-grants.json")
+	return p
 }
 
 // grantsMu orders this process's changes; the file's lock orders processes'.

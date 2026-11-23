@@ -1,0 +1,8 @@
+# The Abhed release this action installs by default, and the SHA-256 of each
+# platform's archive as its SHA256SUMS lists it. Bumped by a commit after a
+# release is published; the action refuses an archive whose hash differs.
+version v1.2.9
+linux-amd64 88b87bf59be29c8a703185feb318f76ebe066b7ea33e442f4ae2b6497bf458e0
+linux-arm64 ad2bcc7234f6884f3d3ad3a0e7a7afa51dc13fb95932473438e7ed56aa5d52f0
+darwin-amd64 51dab69cf42bc5c0ccc22482bdcb2e87b40eba31c1964a0dd849d4f3133a0d42
+darwin-arm64 d6b1e0ffa56e5df98c59df093392d8e4fa4bfe57a319115605b13569a0bfe3dc

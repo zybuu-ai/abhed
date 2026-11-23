@@ -55,6 +55,8 @@ func takesGlobal(sub, name string) bool {
 		}
 	case "settings":
 		return sub == "doctor"
+	case "guest", "account":
+		return personCommands[sub]
 	}
 	return false
 }

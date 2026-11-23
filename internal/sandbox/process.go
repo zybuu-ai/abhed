@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -17,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/loopport"
 )
 
@@ -25,6 +27,9 @@ import (
 type Process struct {
 	policy  Policy
 	backend string // "sandbox-exec" | "bwrap"
+	// cmds are the commands made; a followed one still running is ended when
+	// the sandbox closes.
+	cmds commandSet
 	// listen is SetListen's: commands may listen on loopback from now on.
 	listen atomic.Bool
 	// listenStill, onPortContested and onListenWatchLost are SetListenWatch's.
@@ -333,6 +338,11 @@ func (s *Process) Describe() string {
 	if s.imageBwrap() {
 		d += " · bubblewrap is the container image's own, so this tier is only as strong as the image"
 	}
+	if s.backend == "sandbox-exec" {
+		if n := homeLookupNote(); n != "" {
+			d += " · " + n
+		}
+	}
 	return d
 }
 
@@ -432,19 +442,26 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 	b.WriteString("(version 1)\n(allow default)\n\n")
 	// Home holds credentials no list names, so little is readable there; first,
 	// so the state and credential denies below still win.
-	if home, err := os.UserHomeDir(); err == nil && !s.policy.ReadableHome {
+	if hs := homes(); len(hs) > 0 && !s.policy.ReadableHome {
 		b.WriteString(";; Home is unreadable but for the toolchains and the workspace.\n")
-		for _, h := range PathForms(home) {
-			fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", h)
-			fmt.Fprintf(&b, "(allow file-read-metadata (literal %q))\n", h)
+		var roots []string
+		for _, home := range hs {
+			for _, h := range PathForms(home) {
+				fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", h)
+				fmt.Fprintf(&b, "(allow file-read-metadata (literal %q))\n", h)
+				roots = append(roots, h)
+			}
 		}
-		allow := append(append(append(s.workspaces(), formsOf(s.policy.ReadOnlyPaths)...), homeToolchains(home)...), nonEmpty(readable)...)
+		allow := append(append(s.workspaces(), formsOf(s.policy.ReadOnlyPaths)...), nonEmpty(readable)...)
+		for _, home := range hs {
+			allow = append(allow, homeToolchains(home)...)
+		}
 		for _, p := range allow {
 			fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", p)
 		}
 		// The folders on the way to them can be stat'ed, not listed or read:
 		// Node's realpath, Python's and Java's path checks lstat each one.
-		for _, d := range ancestorsWithin(allow, PathForms(home)) {
+		for _, d := range ancestorsWithin(allow, roots) {
 			fmt.Fprintf(&b, "(allow file-read-metadata (literal %q))\n", d)
 		}
 		b.WriteString("\n")
@@ -525,14 +542,22 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 	}
 	// Seatbelt matches the path the kernel resolved, so a home reached
 	// through a link is named both ways.
-	if home, err := os.UserHomeDir(); err == nil {
-		for _, st := range PathForms(filepath.Join(home, stateDir)) {
+	for _, h := range homes() {
+		for _, st := range PathForms(filepath.Join(h, stateDir)) {
 			fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", st)
 			fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", st)
-			// Skills are the one part of it a command may need: a skill can ship a script.
-			fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", filepath.Join(st, "skills"))
-			// So are plugins: a hook or server may run a script its plugin ships.
-			fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", filepath.Join(st, "plugins"))
+		}
+	}
+	// Skills and plugins are the parts of it a command may need: a skill
+	// can ship a script, and a hook or server may run one its plugin
+	// ships. Only the person's own, never another account's, and only read.
+	for _, sub := range []string{"skills", "plugins"} {
+		dir, err := home.PersonPath(sub)
+		if err != nil {
+			continue
+		}
+		for _, d := range PathForms(dir) {
+			fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", d)
 		}
 	}
 
@@ -667,7 +692,7 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 	// Credentials are readable by many tools legitimately, but an agent has no
 	// reason to read keys and tokens. Bubblewrap leaves home out altogether.
 	b.WriteString("\n;; Credential paths are unreadable.\n")
-	if home, err := os.UserHomeDir(); err == nil {
+	for _, home := range homes() {
 		for _, c := range HomeSecrets {
 			for _, p := range PathForms(filepath.Join(home, c)) {
 				fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", p)
@@ -909,7 +934,9 @@ func (s *Process) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 	if err != nil {
 		return &exec.Cmd{Err: err}
 	}
-	return s.wrapEgress(ctx, cwd, env, eg, "/bin/bash", "-c", command)
+	cmd := s.wrapEgress(ctx, cwd, env, eg, "/bin/bash", "-c", command)
+	s.cmds.add(cmd)
+	return cmd
 }
 
 // commandEnv is env with the proxy variables under the allowlist; a proxy that
@@ -957,6 +984,9 @@ func (s *Process) Shell(ctx context.Context, cwd string) *exec.Cmd {
 			env = append(env, "ZDOTDIR="+*z)
 		}
 	}
+	// A shell is not in cmds: it ends with its terminal (hang-up, then the
+	// session sweep), never with the sandbox, which could reach an app the
+	// person started from it.
 	return hangUp(s.wrapEgress(ctx, cwd, env, eg, choice.argv...))
 }
 
@@ -1314,7 +1344,10 @@ func (s *Process) env() []string {
 	keep := []string{"PATH", "HOME", "LANG", "LC_ALL", "TERM", "TMPDIR",
 		"GOPATH", "GOROOT", "GOCACHE", "GOMODCACHE",
 		"NODE_PATH", "npm_config_cache", "CARGO_HOME", "RUSTUP_HOME",
-		"JAVA_HOME", "PYTHONPATH", "VIRTUAL_ENV"}
+		"JAVA_HOME", "PYTHONPATH", "VIRTUAL_ENV",
+		// Who is working: they only narrow, so an Abhed a command starts
+		// with the real HOME works for the same person, or a guest's.
+		"ABHED_GUEST", "ABHED_ACCOUNT"}
 	out := []string{"ABHED_SANDBOX=" + string(s.Tier()), vimInitEnv()}
 	own := map[string]string{}
 	if s.backend == "sandbox-exec" && !s.policy.SharedCaches {
@@ -1369,6 +1402,11 @@ func (s *Process) ownCaches() map[string]string {
 	for k, sub := range map[string]string{"XDG_CACHE_HOME": "cache", "GOCACHE": "go-build", "GOMODCACHE": "go-mod",
 		"npm_config_cache": "npm", "PIP_CACHE_DIR": "pip", "CARGO_HOME": "cargo"} {
 		out[k] = filepath.Join(s.caches, sub)
+	}
+	// xcrun, behind /usr/bin/git and python3, keeps its cache in the account's
+	// temp folder, which later programs share: the sandbox's commands keep theirs here.
+	if s.backend == "sandbox-exec" {
+		out["xcrun_db"] = filepath.Join(s.caches, "xcrun_db")
 	}
 	proxy := os.Getenv("GOPROXY")
 	if proxy == "" {
@@ -1550,7 +1588,19 @@ const vimInit = `if 1 | if has('nvim') | let g:abhed_rc = stdpath('config') . (f
 
 // None runs commands directly on the host. It keeps the tier explicit, and
 // refuses selection when isolation is required.
-type None struct{ policy Policy }
+type None struct {
+	policy Policy
+	// cmds are the commands made; a followed one still running is ended when
+	// the sandbox closes.
+	cmds commandSet
+}
+
+// Close ends every followed command made here that still runs, with what it
+// was seen to start. Shells end with their terminals.
+func (n *None) Close() error {
+	n.cmds.end()
+	return nil
+}
 
 func NewNone(p Policy) *None { return &None{policy: p} }
 
@@ -1586,6 +1636,7 @@ func (n *None) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	cmd.Dir = cwd
 	cmd.Env = append(HostCommandEnv(), "ABHED_SANDBOX=none")
+	n.cmds.add(cmd)
 	return cmd
 }
 
@@ -1602,7 +1653,7 @@ func HostCommandEnv() []string {
 }
 
 func hostDropped(kv string) bool {
-	for _, p := range []string{"BASH_ENV=", "CDPATH=", "SHELLOPTS=", "BASHOPTS=", "BASH_FUNC_", "ZDOTDIR=", "ENV=", "ABHED_TRUST_WORKSPACE="} {
+	for _, p := range []string{"BASH_ENV=", "CDPATH=", "SHELLOPTS=", "BASHOPTS=", "BASH_FUNC_", "ZDOTDIR=", "ENV=", "ABHED_TRUST_WORKSPACE=", markerName + "="} {
 		if strings.HasPrefix(kv, p) {
 			return true
 		}
@@ -1616,7 +1667,7 @@ func (n *None) Shell(ctx context.Context, cwd string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, shellArgv[0], shellArgv[1:]...) // #nosec G204 -- a fixed argv
 	cmd.Dir = cwd
 	cmd.Env = append(append(hostEnv(), "ABHED_SANDBOX=none"), shellEnv(TierNone)...)
-	return hangUp(cmd)
+	return hangUp(cmd) // not in cmds: see Process.Shell
 }
 
 // Backend says there is none.
@@ -1658,6 +1709,63 @@ func ancestorsWithin(paths, roots []string) []string {
 		}
 	}
 	return out
+}
+
+// homes are the folders whose contents commands may not read: $HOME, and
+// the account's own home when HOME names another folder, as a CI run given a
+// fresh HOME does. Moving HOME never opens the real one. The account's home
+// comes from the user database; failing closed, an account-style folder
+// that holds $HOME (/Users/NAME, /home/NAME) is denied too, whatever the
+// database says. A lookup that fails is said by homeLookupNote, which
+// Describe carries to doctor and the record.
+func homes() []string {
+	var out []string
+	add := func(h string) {
+		if h == "" || !filepath.IsAbs(h) {
+			return
+		}
+		if h = filepath.Clean(h); h != "/" && !slices.Contains(out, h) {
+			out = append(out, h)
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err == nil {
+		add(home)
+	}
+	u, uerr := user.Current()
+	if uerr == nil {
+		add(u.HomeDir)
+	}
+	if err == nil {
+		add(accountHomeOf(home))
+	}
+	return out
+}
+
+// homeLookupNote says, when the account's home could not be looked up and
+// $HOME does not show which it is, that only $HOME is kept from commands;
+// "" otherwise.
+func homeLookupNote() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	if _, uerr := user.Current(); uerr != nil && accountHomeOf(home) == filepath.Clean(home) {
+		return "the account's home could not be looked up (" + uerr.Error() + "); commands are kept out of " + home + " only"
+	}
+	return ""
+}
+
+// accountHomeOf is the account-style home that holds p (/Users/NAME or
+// /home/NAME and anything below them), or p itself. /Users/Shared is
+// macOS's folder for every account, not one's home, so it is not one.
+func accountHomeOf(p string) string {
+	parts := strings.Split(filepath.Clean(p), string(filepath.Separator))
+	if len(parts) >= 3 && parts[0] == "" && (parts[1] == "Users" || parts[1] == "home") && parts[2] != "" &&
+		!(parts[1] == "Users" && strings.EqualFold(parts[2], "Shared")) {
+		return filepath.Join("/", parts[1], parts[2])
+	}
+	return filepath.Clean(p)
 }
 
 func homeToolchains(home string) []string {

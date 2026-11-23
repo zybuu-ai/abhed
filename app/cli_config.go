@@ -241,6 +241,9 @@ func userFileConfig() (config.Config, error) {
 // writeUserSetting sets one dotted path in ~/.abhed/config.json, keeping
 // everything else in the file.
 func writeUserSetting(path string, v any) (string, error) {
+	if err := guestRefusal("changing this machine's configuration"); err != nil {
+		return "", err
+	}
 	doc, file, err := readUserDoc()
 	if err != nil {
 		return file, err

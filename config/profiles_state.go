@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"github.com/zybuu-ai/abhed/internal/home"
 )
 
 // ProfilesEnv overrides where `abhed login` keeps its profiles.
@@ -14,11 +16,7 @@ func ProfilesPath() (string, error) {
 	if p := os.Getenv(ProfilesEnv); p != "" {
 		return filepath.Abs(p)
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".abhed", "profiles.json"), nil
+	return home.PersonPath("profiles.json")
 }
 
 // ProfileFiles are what `abhed login` keeps that commands must not reach:

@@ -18,6 +18,7 @@ import (
 // A cancel kills a whole group only when the command leads it; a command in
 // another group is killed alone, and that group is never signalled.
 func TestCancelKillsOnlyAGroupTheCommandLeads(t *testing.T) {
+	requireKillTestsOnMac(t)
 	var mu sync.Mutex
 	var signalled []int
 	real := killGroup
@@ -71,6 +72,7 @@ func TestCancelKillsOnlyAGroupTheCommandLeads(t *testing.T) {
 // A process is stopped for the tree only once its parent is checked to be in
 // it; one whose parent is not is left running, never signalled for good.
 func TestTreeStopsOnlyProcessesWhoseParentIsInIt(t *testing.T) {
+	requireKillTestsOnMac(t)
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("the process table is read on Linux and macOS only")
 	}
@@ -103,6 +105,7 @@ func TestTreeStopsOnlyProcessesWhoseParentIsInIt(t *testing.T) {
 // A cancel signals only the group the command itself leads: its own pid as
 // the group id, never 0, 1, -1 or the caller's group.
 func TestCancelSignalsOnlyTheCommandsOwnGroup(t *testing.T) {
+	requireKillTestsOnMac(t)
 	var mu sync.Mutex
 	var signalled []int
 	real := killGroup
