@@ -220,7 +220,7 @@ the sandbox, and there deny rules are a best-effort screen on each line typed
 every mode. Managed org policy cannot be escalated past locally.
 
 **Everything untrusted is tagged at ingest** — file contents, tool output, MCP
-responses — because a coding agent's whole job is reading untrusted text and
+responses — because a deep agent's whole job is reading untrusted text and
 acting on it. MCP tool *descriptions* are sanitized too: they are third-party
 text injected into the model's context, which makes them an attack surface.
 
