@@ -284,6 +284,55 @@ All notable changes to Abhed are recorded here. The format follows
   whole identity: each file is read on its own and only that include is
   skipped.
 
+- Configure once: the cluster and SSH tools work with the setup a developer
+  already has. On your own machine (the terminal, Abhed Studio and
+  `abhed rpc`, never `abhed serve`), `k8s_get` and `k8s_apply` reach your kubeconfig contexts
+  (`KUBECONFIG`'s files merged as `kubectl` merges them, or `~/.kube/config`)
+  by name, and `ssh`, `ssh_put` and `ssh_get` reach the hosts your
+  `~/.ssh/config` names, with their `HostName`, `User`, `Port`,
+  `IdentityFile`, `ProxyJump`, `UserKnownHostsFile` and `Include`s, signing
+  in with your ssh-agent. Every credential is read in Abhed's own process
+  and never reaches the sandbox, the record or the model. The first use of
+  each context or host asks once, in every mode but bypass; *always for this
+  cluster* (or host) keeps it for you in your own `state/machine-grants.json`,
+  outside every workspace, until its server, CA, credential helper, address
+  or user changes. A context whose credential helper Abhed would run names
+  the program and asks before it runs, even where `k8s.enabled` turned the
+  tools on; a legacy `auth-provider` or basic auth is refused with the
+  reason. `known_hosts` is checked for every host and jump, never written.
+  Cluster writes still ask each time. It is on where no file sets
+  `k8s.enabled` or `ssh.enabled` and no managed configuration is in force;
+  setting either to `false`, a workspace included, turns it off.
+  With no kubeconfig, `k8s_login` is offered from the moment a login is
+  pasted, so a pasted `oc login` works on any machine and costs nothing
+  until then, and the other cluster tools appear once a login exists. A
+  guest's approvals and pasted logins hold for the session only; grants are
+  kept per person. `abhed rpc` offers the same as the terminal. `abhed doctor` lists
+  the contexts, hosts and kept grants, never a credential;
+  `abhed machine list` and `abhed machine forget KIND NAME` show and drop
+  what is kept, as do ACP's `_abhed/machine/list` and `_abhed/machine/forget`.
+- A pasted login works in one approval. A credential pasted into a message
+  (an `oc login --token=… --server=…` command, an OpenShift or `Bearer` token,
+  a key of a known shape) reaches neither the model nor the record: both get
+  `[pasted:P1]`, you are told, and the value is held in the session's memory.
+  The agent is told what was pasted and offers `k8s_login` with
+  `pasted: "P1"`; one approval verifies the server (the system roots, the CA
+  your kubeconfig holds for it, or the certificate it presents, shown by its
+  SHA-256 fingerprint and pinned), checks the token there, stores it as a
+  secret and keeps the cluster for your later sessions, which reach it by
+  name with no `secret(NAME)` rule. The server is the one pasted with the
+  token; the model cannot choose another. A login that pins a certificate
+  is always put to a person with its fingerprint, whatever the mode or
+  rules, and refused where no one can be asked. A pasted value is withheld
+  again wherever it reappears in the session, and its shape is kept out of
+  prompt history and a server's session list. Under a managed configuration
+  only the organisation's `k8s.clusters` take a token. ACP editors get
+  `pastedCredentials` in the note's `_meta`, and a first use's permission
+  request carries `firstUse` in its `_meta`.
+- The agent no longer turns down cluster or remote-machine work as outside
+  its role: with the cluster or SSH tools offered, the system prompt says to
+  use them, explains the approvals to expect, and never to run `kubectl`, `oc`
+  or `ssh` through `bash`.
 - A person chooses the sandbox tier: `sandbox.tier` now takes `process`,
   `container` and `vm` as well as `fence`, set with `/config set sandbox.tier`
   (or `auto`). The chosen tier is used or the session is refused, and it may
@@ -319,6 +368,61 @@ All notable changes to Abhed are recorded here. The format follows
   key-shaped in the message is redacted. A model the provider called retired
   or not found is remembered for two weeks and named before the first call
   (session/new `_meta.modelWarning`, the command line's start, doctor).
+- Model-aware context handling. Every provider now has a context window and
+  a reply cap without configuration: `context_window` on the provider first,
+  then what the endpoint reports (Anthropic's and Gemini's model resources,
+  the `/models` listing of vLLM, SGLang, OpenRouter, Together, Groq and
+  Mistral, llama.cpp's `/props`, TGI's `/info`, Ollama's `/api/ps` and
+  `/api/show`), then a built-in table of published limits matched by model
+  family (every current Claude model, and the OpenAI, Gemini, Grok and
+  families), and for a model none of these knows an assumed
+  32,768 tokens, which the session says on its first turn and `abhed doctor`
+  warns of. A server on this machine is never given its model's trained
+  window from the table, since it decides its own. A configured reply cap
+  above the model's maximum is lowered to it. `abhed models list` shows the
+  configured models with each window, reply cap and source; `abhed doctor`
+  shows the default model's (`context` in its JSON). Discovery is off with
+  `ABHED_NO_MODEL_DISCOVERY` set.
+- A request a provider refuses as longer than the window is recovered once:
+  the window is lowered to the limit the provider named, every tool result
+  is cut to the new window's share, the history is compacted and the turn is
+  asked again, without counting as another turn. A refusal that names no
+  limit (Bedrock's `Input is too long for requested model`) lowers the
+  window to four fifths of the refused request's size. A second refusal in
+  a row ends the run saying what happened (the limit named, or that none was
+  and the refused request's size) and what to do (a new conversation,
+  `/compact` with what to keep, or `/model` for a larger window); it never
+  loops. A limit under 2,048 tokens is not believed, and an OpenAI-shaped
+  refusal of the reply cap rather than the prompt is not compacted for. A
+  limit of 16,384 or more that the provider named is kept for 30 days in
+  `context-windows.json` in the person's own folder (an account's under
+  `~/.abhed/accounts`, or `~/.abhed` where no one has signed in), per
+  provider type, endpoint, model and account under an HMAC keyed by a
+  random secret in `context-windows.key` beside it (no URL, credential or
+  query is written, and the file alone confirms no guess of a credential),
+  so a restarted session starts within it rather than being refused once
+  more. A guest, and a machine command such as `abhed doctor`, keep none:
+  nothing is read or made. A kept limit never lowers a configured
+  `context_window`; `abhed models list` shows it with its date, and `abhed
+  models forget-window NAME` drops it. Anthropic's `prompt is too
+  long`, OpenAI's `context_length_exceeded`, Gemini's input token count and
+  the wording of Bedrock, vLLM, llama.cpp, TGI, Mistral, Groq, watsonx and
+  Ollama are recognised. A server that cuts an over-long prompt instead of
+  refusing it (Ollama) is caught by the prompt size it reports, and the
+  conversation is compacted before the next call. Recorded as
+  `context.overflow`.
+- Switching to a model with a smaller window (`/model`, the console's,
+  workbench's and Abhed Studio's picker, the SDK) fits the conversation to
+  it before the next call, recorded as `context.refit`. HawkEYE lists
+  `context.window`, `context.overflow` and `context.refit` (`context` in the
+  JSON), OCSF maps them to Base Event, and Abhed Studio shows them as
+  progress.
+- Claude Haiku 5.5 is priced, by prompt length as Anthropic bills it: a call
+  whose prompt is over 100,000 tokens (cache reads and writes included) pays
+  the long-prompt prices, each call on its own, so a dollar budget spends
+  what that call cost. Claude Opus 5, Opus 4.8, 4.7, 4.6 and 4.5, Sonnet 5
+  and 4.6, and Fable and Mythos 5, 5.1 and 5.2 are priced too, from
+  Anthropic's pricing page on 23 November 2026.
 - Model keys without environment variables: `abhed provider login|logout|status`.
   `login` asks for a hosted provider's key without echo and keeps it in the
   macOS Keychain, or where there is none in Abhed's secret store (mode 600)
@@ -332,14 +436,21 @@ All notable changes to Abhed are recorded here. The format follows
   A hosted type's stored key goes only to that type's own endpoint, and a
   model a workspace's file defines gets a stored key only when your own
   configuration names that key for the same endpoint and token URL, and an
-  exported hosted key only at its type's own endpoint. A guest keeps no key:
-  `provider login|logout` and every other way to the store are refused.
+  exported hosted key only at its type's own endpoint. A stored key is the
+  Abhed account's: the Keychain service and the secret store are the
+  account's own, so another account never sees it, and the first account
+  takes over the keys stored before sign-in (a key held in both places with
+  different values is kept twice and named). A guest keeps and is given no
+  stored key: `provider login|logout` and every other way to the store are
+  refused; a key in the environment still works.
 - Models without editing JSON: `abhed models add PROVIDER MODEL...`, `abhed
   models default NAME`, `list`, `remove` and `known`. They write only your own
   `~/.abhed/config.json`, atomically, with a `config.json.bak` backup and the
   file's mode and other keys kept; never the workspace or managed file. A
   hosted default is confirmed first; a guest may not add, remove or choose a
-  model. Studio's model picker gains Add Model…, Set as Default and Add API
+  model. The models are this Mac's configuration, shared by every account on
+  it; an `api_key` written there is too, while stored keys are each
+  account's. Studio's model picker gains Add Model…, Set as Default and Add API
   Key…, which tell a guest to sign in instead.
 - `model.ollama.auto_start` (`false`: Ollama is never started without a click,
   and "always start" is not offered) and `model.ollama.idle_stop_minutes`.
@@ -935,6 +1046,31 @@ All notable changes to Abhed are recorded here. The format follows
 - Where the network may be opened from a session, commands get the session's
   egress proxy, closed until it is opened, also when toolchains or their
   registries are off.
+- A conversation is compacted before it passes `context.compact_at_tokens`
+  tokens (default 200,000), however large the window: on a 1M-token model
+  the fraction alone sent calls of about 650,000 tokens. The threshold, the
+  history kept, offloading and the cap on each tool result work within that
+  ceiling. Set it to the model's window to use all of it; a value under
+  16,384 is refused.
+- The compaction check made after a turn's tool results land now keeps room
+  for the model's reply (its output cap, at most an eighth of the window), and
+  counts tokens as the provider last reported them for a prompt rather than
+  by a fixed characters-per-token estimate, which undercounted code, JSON and
+  YAML.
+- A tool result cut to fit the window now says how to read the rest: the
+  whole output is in the session record, and `recall` with the result's
+  `call_id` and an offset reads it.
+- Prices and context windows come from one table of models. A price is found
+  through the wrapping a gateway or cloud puts on a model's id
+  (`anthropic/claude-opus-5-5`, `us.anthropic.claude-opus-5-5`,
+  `anthropic.claude-opus-5-5-v1:0`, `claude-opus-5-5@…`, a Claude snapshot
+  date), which were unpriced and so refused under `-max-budget-usd`. Only
+  the model's own id is priced: another vendor's dated snapshot keeps its own
+  price and stays unpriced. The prices are Anthropic's list prices; a Bedrock
+  id naming a geography (`us.anthropic.…`) is priced 10% over them, as
+  Anthropic states for regional endpoints, as an estimate. Bedrock and
+  Google Cloud invoice at their own prices, so set `pricing` where a budget
+  must match the cloud's bill.
 - An `ollama serve` that Abhed or Studio started itself is now stopped by
   Abhed, by its own process id only: after 10 minutes with no session using a
   local model (chat, completions, next edits, commit messages or embeddings;
@@ -1112,6 +1248,11 @@ All notable changes to Abhed are recorded here. The format follows
   `extraheader`, or a `cookieFile`, read with git's backslash continuations
   joined.
 
+- A session on a Claude model whose provider set no `context_window` never
+  compacted: the window was taken as 0, which meant unknown, so a session
+  that read many Kubernetes pods failed with `prompt is too long: 200397
+  tokens > 200000 maximum` and could not continue. The window now comes from
+  the model (see Added), and a refusal like this one is compacted and retried.
 - `abhed mcp list` said "(signed in)" after the authorization server had
   refused the refresh token. The refusal is now kept with the login, the
   refused token is not sent again, and the list reads "not signed in: the

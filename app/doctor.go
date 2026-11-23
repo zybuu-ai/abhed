@@ -96,6 +96,12 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	fmt.Printf("provider    %s (%s)\n", cfg.Model.Default, provider.Type)
 	fmt.Printf("endpoint    %s\n", provider.BaseURL)
 	fmt.Printf("model       %s\n", provider.Model)
+	if line, warn := windowLine(context.Background(), provider, true); line != "" {
+		fmt.Printf("context     %s\n", line)
+		if warn != "" {
+			fmt.Printf("            ⚠ %s\n", config.Printable(warn))
+		}
+	}
 	if status, detail, ok := modelKeyCheck(provider); ok {
 		mark := ""
 		if status != "ok" {
@@ -286,6 +292,10 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 			}
 			fmt.Printf("ssh host    %s → %s@%s%s\n", h.Name, h.User, h.Addr, warn)
 		}
+	}
+	// The person's own setup, as the terminal and Studio offer it.
+	for _, line := range machineDoctor(cfg) {
+		fmt.Println(line)
 	}
 	for _, c := range cfg.RAG.Corpora {
 		if c.Enabled {

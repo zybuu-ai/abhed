@@ -139,7 +139,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		factory := &agent.SubagentFactory{Adapter: adapter, Policy: pol, Session: sess, Store: store,
 			Budget: budget, Config: loopCfg, Workspace: ws, Redact: red, Definitions: set.Agents}
 		registry := toolset.Subagents(set.Registry, factory, cfg.Limits.MaxParallelSubagents)
-		loopCfg.SystemPrompt = toolset.SystemPrompt(ws, adapter, set.SkillListing, registry.Names())
+		loopCfg.SystemPrompt = toolset.SystemPrompt(ws, adapter, set.SkillListing, registry.OfferedNames())
 
 		loop := agent.NewLoop(adapter, registry, pol, agent.AutoApprove{Yes: true}, sess, rec, loopCfg)
 		loop.Budget = budget

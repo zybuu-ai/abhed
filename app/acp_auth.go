@@ -73,6 +73,10 @@ func acpIdentity() map[string]any {
 	if p.Kind != identity.Legacy {
 		out["owner"] = cliUser()
 	}
+	// How a command Studio runs for this window names the same account (ABHED_ACCOUNT).
+	if a := accountSelector(p); a != "" {
+		out["account"] = a
+	}
 	if p.Entry.LegacyUser != "" {
 		out["adopted"] = true
 	}

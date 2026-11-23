@@ -231,6 +231,8 @@ type acpSession struct {
 	wake chan struct{}
 	// window is the review window a person opened for held asks (§6.3).
 	window *reviewWindow
+	// pairing gives the editor each message's seq (acp_usermsg.go).
+	pairing msgPairing
 	// waiting counts held asks by background task.
 	waiting map[string]int
 	// notes are what the record said about each background task.
@@ -961,6 +963,8 @@ func (c *acpConn) shutNow(s *acpSession, counted time.Time) {
 	if cancel != nil {
 		cancel()
 	}
+	// A steer still waiting for its message's seq is answered now.
+	s.pairing.settleAll("the session closed before it was delivered")
 	// The terminals' last lines are recorded before the end is.
 	c.killTerminals(s.id)
 	c.killDebugs(s.id)
@@ -1231,6 +1235,9 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 		Workspace: o.cwd, ConfigDir: o.cwd, Sandbox: true, WorkspaceTrust: config.GrantFor(o.trust, c.base, o.cwd), AllowDefaultModel: true,
 		// The agent the terminal runs, subagents and configured tools included.
 		ConfiguredTools: true,
+		// The editor runs on the person's own machine: their kubeconfig and
+		// ~/.ssh/config are offered as the terminal offers them.
+		MachineSetup: true,
 		// The configuration's turn limit binds, as it does from the terminal.
 		ConfiguredLimits: true,
 		// The person reads each answer in the editor and can reply.
@@ -1607,8 +1614,10 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	s.mu.Lock()
 	s.networkTold = false // told again in a later turn
 	s.mu.Unlock()
+	s.pairing.beginPrompt(msg.ID)
+	asCommand := false
 	if cmdErr, handled := c.slashCommand(ctx, s, text, withAttached); handled {
-		err = cmdErr
+		err, asCommand = cmdErr, true
 	} else {
 		// The person's own words, not what they attached, are what a note is judged on.
 		_, err = s.agent.Run(agent.WithTyped(ctx, text), withAttached(text))
@@ -1649,6 +1658,15 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	}
 	if problem != nil {
 		metaOf(res)["providerError"] = problem
+	}
+	notRecorded := "the prompt ended before its message was recorded"
+	if asCommand {
+		notRecorded = "it was a command, which is not recorded as a message"
+	} else if err != nil {
+		notRecorded = redacted(err.Error())
+	}
+	for k, v := range s.pairing.endPrompt(notRecorded).meta(s.id) {
+		metaOf(res)[k] = v
 	}
 	end()
 	c.reply(msg.ID, res, nil)
@@ -1780,7 +1798,11 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	once, always, reject := "once:"+bind, "always:"+bind, "reject:"+bind
 	options := []map[string]any{{"optionId": once, "name": "Allow once", "kind": "allow_once"}}
 	if offerAlways {
-		options = append(options, map[string]any{"optionId": always, "name": "Always allow " + ui.VisibleLine(shownScope), "kind": "allow_always"})
+		name := "Always allow " + ui.VisibleLine(shownScope)
+		if d.Keeps != "" {
+			name = "Always for " + ui.VisibleLine(d.Keeps) + " (kept for you, not in the workspace)"
+		}
+		options = append(options, map[string]any{"optionId": always, "name": name, "kind": "allow_always"})
 	}
 	var grantOpts []grantOption
 	// Offered only when the card shows the command as it runs.
@@ -1819,6 +1841,15 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	}
 	if offerAlways {
 		meta["scope"] = shownScope
+	}
+	// The first use of a cluster or host from the person's own setup: the
+	// editor can draw it as such, and its "always" is kept for the person.
+	if d.Keeps != "" {
+		meta["firstUse"] = map[string]any{"what": d.Keeps, "kept": "person"}
+	}
+	// The certificate approving pins, for the card to show beside the text.
+	if d.PinSHA256 != "" {
+		meta["pinnedCertificate"] = map[string]any{"sha256": d.PinSHA256, "subject": d.PinSubject}
 	}
 	if held {
 		meta["held"] = true

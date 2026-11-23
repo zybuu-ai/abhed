@@ -284,6 +284,8 @@ type studioRig struct {
 func newStudioRig(t *testing.T, extra string, frames ...string) *studioRig {
 	t.Helper()
 	m := newScriptModel(t, frames...)
+	// The default configuration: the person's machine setup is on, and with
+	// nothing to reach and nothing pasted it offers the model nothing.
 	userCfg := `{"model":{"default":"m","providers":{"m":` + stubProvider(m.URL, "m-1") + `}}` + extra + `}`
 	acpModelsEnv(t, userCfg)
 	ws := t.TempDir()

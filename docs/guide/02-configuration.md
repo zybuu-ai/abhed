@@ -73,6 +73,7 @@ configuration](#trusting-the-workspace-configuration).
 "context": {
   "offload_at": 0.60,
   "compact_at": 0.80,
+  "compact_at_tokens": 200000,
   "memory_files": ["ABHED.md"]
 }
 ```
@@ -105,8 +106,26 @@ check reserves headroom for the turn about to happen, so a large tool result
 cannot take a session from under the threshold to over the hard limit in one
 step. The headroom is a quarter of the window, or half of `compact_at`'s
 share of it when that is less, so a low value still waits for history. The
-first check after a compaction leaves the headroom out, so a small window
-is not summarized twice in a row. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
+check made after a turn's tool results have landed, and the first check after
+a compaction, keep room for the model's reply only (its output cap, at most
+an eighth of the window), so a small window is not summarized twice in a row
+and the next call still has room to answer. Tokens are counted as the model
+counts them: the estimate is scaled by what the provider reported for the
+last prompt, since code, JSON and YAML run to more tokens per character than
+prose.
+
+**`compact_at_tokens` — a size ceiling.** However large the window, the
+conversation is compacted before it grows past this many tokens: the
+threshold, the headroom, the history kept after a compaction, offloading and
+the cap on each tool result all work within a window of `compact_at_tokens`
+divided by `compact_at`. Unset or 0 means 200,000. Without it a 1M-token model
+compacted at 0.90 sends calls of about 650,000 tokens, each costing dollars
+when the cache misses and tens of seconds to prefill; 200,000 is also the
+limit some accounts are held to. A window smaller than the ceiling is
+unaffected. Set it to the model's window to use all of it. A value under
+16,384 is refused: an agent's system prompt and tool schemas take several
+thousand tokens, so a smaller ceiling would compact on every turn and leave
+each tool result a few hundred characters. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
 and the token estimate is approximate. Not much below 0.5 either: a
 compaction keeps recent turns up to about half the window, so below roughly
 0.3 what it keeps is already over the threshold and it compacts on almost
@@ -118,9 +137,68 @@ name or code word given there survives however the summary restates it.
 after compaction. Project conventions belong there. The full order, imports
 and rules are in [Memory](19-input-and-memory.md#memory).
 
-**Size `context_window` for what the model can actually hold.** A local server
-reports the size it chose at startup; asking for more does not fail loudly, it
-simply stops fitting once a long session fills it.
+**The window is known without configuring it.** Abhed takes each model's
+context window and reply cap from its own table of published limits, asks the
+endpoint where it will say, and assumes 32,768 tokens for a model it cannot
+place, saying so; [Context windows](03-providers.md#context-windows) has the
+details, and `context_window` on the provider overrides all of it. A local
+server runs a model with the window it was started with, not the one the model
+was trained for; asking for more does not fail loudly, it simply stops fitting
+once a long session fills it, so for a local server either let Abhed read the
+window or set `context_window` to match the server.
+
+**A request refused as too long is recovered once.** When a provider refuses a
+request as longer than the window (Anthropic's `prompt is too long`, OpenAI's
+`context_length_exceeded`, Gemini's input token count, llama.cpp, vLLM, TGI,
+Mistral, watsonx and Ollama's own wording), the window is lowered to the limit
+it names, every tool result is cut to the new window's share, the history is
+compacted, and the turn is asked once more; the retry does not count as
+another turn. A refusal that names no limit (Bedrock's `Input is too long for
+requested model`) lowers the window to four fifths of the refused request's
+size, which brings the retry to about two fifths of it, so it fits any limit
+down to about half the refused size. A limit under 2,048 tokens is not
+believed. Limits are kept only for a signed-in account: a limit of 16,384
+tokens or more that the provider named is kept in `context-windows.json` in
+that account's (or server sign-in's) own folder under `~/.abhed/accounts`, so
+its next session, after a restart too, starts within it instead of paying a
+refused call to learn it again. On a machine where sign-in is not set up yet,
+the one person working keeps them in `~/.abhed`, as before sign-in. Nothing is
+kept before the sign-in gate has said who is working, for a guest (nothing is
+read, made or written, so a guest neither leaves the file behind nor sees an
+account's limits), or by a machine command such as `abhed doctor`. It is
+kept per provider type, endpoint, model and account, under a keyed hash of
+them (HMAC-SHA256 under a random secret made once in `context-windows.key`
+beside it, mode 0600, and used only for that folder): the file holds no URL, user,
+password, query or key, and without the secret it cannot confirm a guess of a
+credential, however short. When the secret cannot be read or made, nothing is
+kept and limits are learned per process. It lowers the table's or the
+endpoint's window but never a configured `context_window` (a refusal within a
+session still lowers that one for the session), and is learned again after 30
+days, since accounts are moved to larger windows. A smaller limit, which a
+gateway falling back to another model can relay, lasts only for the process,
+as does a limit Abhed only inferred (below a refusal that named none, or from
+a prompt a server cut). `abhed models list` shows a kept limit as "named by
+the provider on" its date, and `abhed models forget-window NAME`
+drops it for the provider configured as NAME. The file is the person's own
+state: the agent cannot write it and a workspace cannot set it. An OpenAI-shaped refusal whose prompt was within the limit and whose
+reply cap was not (`N in the messages, M in the completion`) is not treated as
+too long: lowering `max_tokens` is the fix, and compacting would not help. A second refusal in a row ends the
+run with what happened (the limit the provider named, or that it named none and
+how large the refused request was) and what to do: start a new conversation, `/compact`
+with what to keep, or `/model` for a larger window. It never loops. Both are
+recorded as `context.overflow` (`action` `compacted_retry` or `gave_up`). A
+server that cuts an over-long prompt instead of refusing it (Ollama) is caught
+by the prompt size it reports: the window is learned, the conversation
+compacted before the next call, and `context.overflow` records `truncated`.
+
+**Large tool results are cut before they enter the conversation.** One result
+may hold at most a quarter of the window, or of the window `compact_at_tokens`
+sets when that is smaller (about 200,000 characters on a 1M-token model at the
+default ceiling, about 29,000 on a 32k one). The head and tail are kept, and the
+cut says how much was left out and how to read it: the whole output is in the
+session record, and `recall` with the result's `call_id` and an offset reads
+the rest. This applies to every tool: a `k8s_get` of many pods, a long `bash`
+output, a `web_fetch`.
 
 **Each request to the model is bounded twice.** `call_timeout_seconds` (600 by
 default) is the most one request may take, from sending it to the last byte of
@@ -285,12 +363,33 @@ spent one ends the run `max_budget` with a `budget.stopped` of reason
 Each model call is priced from its model's name as sent to the provider,
 in US dollars per million tokens. For `azure-openai` that name is the
 deployment, so `pricing` is keyed by deployment name. Abhed carries the
-Standard-tier list prices of some hosted models, checked on 9 November 2026
-against developers.openai.com/api/docs/pricing and
-platform.claude.com/docs/en/about-claude/pricing. Models priced by prompt
-length, such as Claude Haiku 5.5 and the gpt-6 family, and retired models
-are not in the list, so they are unpriced until `pricing` names them.
-`pricing` sets other models, or overrides the list:
+Standard-tier list prices of some hosted models: the Claude models checked
+on 23 November 2026 against platform.claude.com/docs/en/about-claude/pricing
+(every current Fable, Mythos, Opus, Sonnet and Haiku model), the OpenAI ones
+on 9 November 2026 against developers.openai.com/api/docs/pricing. The list
+prices live in the same table as the [context windows](03-providers.md#context-windows),
+and a name is matched to it once the wrapping a gateway or cloud puts on it
+is removed: a `vendor/` prefix (`anthropic/claude-opus-5-5`), a Bedrock
+region and vendor (`us.anthropic.claude-opus-5-5`, `anthropic.claude-opus-5-5-v1:0`),
+a Vertex version (`claude-opus-5-5@…`), and a Claude snapshot date. Only the
+model's own id is priced, never a family: another vendor's dated snapshot
+(`gpt-4o-2024-05-13`) keeps its own price, and is unpriced here. These are
+Anthropic's and OpenAI's own list prices. Amazon Bedrock and Google Cloud
+invoice Claude at their own prices, and a regional or multi-region endpoint
+costs 10% more than a global one: a Bedrock id that names a geography
+(`us.anthropic.…`, `eu.…`, `apac.…`) is priced at the list price plus 10%, and
+any other at the list price, as an estimate. A Vertex region is not in the
+model id, so a regional Vertex endpoint is priced as global. Set `pricing`
+for those names when a dollar budget must match the cloud's bill.
+
+Claude Haiku 5.5 is priced by prompt length, as Anthropic bills it: a call
+whose prompt is over 100,000 tokens, counting cache reads and cache writes,
+pays $0.50/$2.50 per million instead of $0.10/$0.50 (and the matching cache
+prices), and each call is priced on its own, so a dollar budget spends what
+that call cost. Models priced by prompt length without a published tier
+here, such as the gpt-6 family, and retired models are not in the list, so
+they are unpriced until `pricing` names them. `pricing` sets other models,
+or overrides the list:
 
 ```json
 "pricing": {

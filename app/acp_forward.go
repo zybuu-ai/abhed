@@ -19,6 +19,7 @@ func (c *acpConn) forward(s *acpSession, ev abhed.Event) {
 	for _, u := range c.updates(s, ev, false) {
 		c.sessionUpdate(s.id, u)
 	}
+	c.noteUserMessage(s, ev)
 	c.taskEvent(s, ev)
 	c.lspNoteAction(s, ev)
 	c.networkRefused(s, ev)
@@ -52,9 +53,19 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 			update(map[string]any{"sessionUpdate": "user_message_chunk", "content": text(p.Text)})
 		}
 		// The sender is told, once, as the turn starts; a replay shows the placeholders.
-		if note := ui.WithheldNote(p.SecretsWithheld); note != "" && !replay {
-			update(map[string]any{"sessionUpdate": "agent_message_chunk", "content": text(strings.ToUpper(note[:1]) + note[1:] + ".\n\n"),
-				"_meta": map[string]any{acpMetaKey: map[string]any{"secretsWithheld": strings.Split(p.SecretsWithheld, ",")}}})
+		if !replay {
+			if u := withheldUpdate(p.SecretsWithheld, p.Pasted, p.Text, ev.Seq, p.Steered, false); u != nil {
+				update(u)
+			}
+		}
+	case agent.EvMessageDropped:
+		// A message that was not delivered may still have held a value the
+		// editor drew as typed: the sender is told, and given the text as kept.
+		var p agent.DroppedMessage
+		if !replay && json.Unmarshal(ev.Payload, &p) == nil {
+			if u := withheldUpdate(p.SecretsWithheld, p.Pasted, p.Text, ev.Seq, p.Steered, true); u != nil {
+				update(u)
+			}
 		}
 	case agent.EvAgentMessage:
 		if !replay {
@@ -381,6 +392,14 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		}
 		update(map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "sub-" + w.Session, "status": "in_progress",
 			"content": []any{map[string]any{"type": "content", "content": textBlock(text)}}})
+	case agent.EvContextWindow, agent.EvContextOverflow, agent.EvContextRefit:
+		// Said where the editor shows progress, in the words the terminal uses.
+		if replay {
+			break
+		}
+		if text := agent.ContextNotice(ev); text != "" {
+			update(map[string]any{"sessionUpdate": "agent_thought_chunk", "content": textBlock(ui.VisibleLine(text) + "\n")})
+		}
 	case agent.EvModelFallback:
 		// The engine changed an option itself: every option goes out again.
 		if replay {
@@ -505,4 +524,33 @@ func diagnosticsCommand(args json.RawMessage) string {
 	}
 	_ = json.Unmarshal(args, &a)
 	return a.Command
+}
+
+// withheldUpdate is the note a message that held stored secrets' values or
+// pasted credentials earns, nil when it held neither. Its meta carries what
+// the editor needs to redraw the message it drew as typed: the text as
+// recorded, the event's seq, and whether it was a steer. Never a value.
+func withheldUpdate(secrets, pasted, text string, seq int64, steered, dropped bool) map[string]any {
+	note := ui.MessageNote(secrets, pasted)
+	if note == "" {
+		return nil
+	}
+	meta := map[string]any{"text": text, "seq": seq, "steered": steered}
+	if secrets != "" {
+		meta["secretsWithheld"] = strings.Split(secrets, ",")
+	}
+	if pasted != "" {
+		var list []map[string]string
+		for _, one := range strings.Split(pasted, ",") {
+			id, kind, _ := strings.Cut(one, ":")
+			list = append(list, map[string]string{"id": id, "kind": kind})
+		}
+		meta["pastedCredentials"] = list
+	}
+	if dropped {
+		meta["dropped"] = true
+		note = "the message that was not delivered: " + note
+	}
+	return map[string]any{"sessionUpdate": "agent_message_chunk", "content": textBlock(strings.ToUpper(note[:1]) + note[1:] + ".\n\n"),
+		"_meta": map[string]any{acpMetaKey: meta}}
 }

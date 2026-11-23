@@ -90,6 +90,8 @@ interface AbhedAgentMeta {
     pending?: string;              // a sign-in is required and none is held
     owner?: string;                // whose history this is: device:<name>, guest, …
     adopted?: true;                // the account that took over the history from before sign-in
+    account?: string;              // 1.3.0: how ABHED_ACCOUNT names it (username, or username@host);
+                                   // Studio runs this window's engine commands with it
   };
 }
 ```
@@ -811,6 +813,56 @@ interface AskMeta {
   `permission.changed {op: "remove", list: "allow", rule, scope:
   "workspace"}`; refused inside an agent's command, `-32602` for an unknown
   id. With `managed` true none is loaded or offered.
+- **Machine grants (1.3.0, feature `machine`).** What the person let Abhed
+  use of their own setup (a kubeconfig context, an `~/.ssh/config` host, a
+  cluster kept from a pasted login) is theirs, not a session's or a
+  workspace's, so neither method takes a session. `_abhed/machine/list {}` →
+  `{grants: [{kind, name, what, grantedAt}]}`, `kind` one of `k8s-context`,
+  `ssh-host`, `k8s-login`; `what` names the server or address and, for a
+  login, the secret's name, never a token or a certificate.
+  `_abhed/machine/forget {kind, name}` → `{forgotten: true, kind, name}`:
+  the next first use asks again; a session that already approved it this
+  session keeps that approval. `-32602` for an unknown kind or a grant that
+  is not kept; refused inside an agent's command. A permission request for
+  a first use carries `meta.firstUse = {what, kept: "person"}`, and its
+  "always" option is named for what is kept. A permission request whose
+  approval pins a server's certificate (a pasted login to a server no public
+  CA or kubeconfig CA vouches for) carries `meta.pinnedCertificate =
+  {sha256, subject}`: the SHA-256 as colon-separated upper-case hex pairs,
+  the same value the request's reason names, and the certificate's subject
+  as a distinguished name, for the card to show apart from the text. Every
+  message that held a stored secret's value or a pasted credential is
+  followed, once, by a note (`agent_message_chunk`) whose `meta` has `text`,
+  the message as recorded (`[secret:NAME]`, `[pasted:ID]` or, where nothing
+  is held for use, `[pasted credential]` in place of each value), `seq`, the
+  `seq` of its event, and `steered`, whether it was sent while a run was
+  working; with `secretsWithheld: [NAME…]` and `pastedCredentials: [{id,
+  kind}]` as they apply. A paste held with no session to keep it has `id`
+  `""`. A message that was not delivered (a hook refused it, a stop, a
+  shutdown or a hand-over) gets the note too, for its `message.dropped`
+  event, with `dropped: true`, so the editor redraws the bubble it drew as
+  typed in every case. No update carries a value.
+- **Message seq (1.3.0).** The editor pairs the message it drew with the
+  `user.message` the engine records by `seq`. A `session/prompt`'s message
+  is announced as soon as it is recorded, by the notification
+  `_abhed/session/userMessage {sessionId, requestId, _meta.abhed:
+  {sessionId, userMessageSeq}}`, where `requestId` is the prompt's JSON-RPC
+  id, and the prompt's reply repeats it as `_meta.abhed.userMessageSeq`,
+  with `_meta.abhed.sessionId` beside it wherever it is sent. The seq is
+  always that message's own `user.message` event's in the session's record. The reply to
+  `_abhed/session/steer` comes once its message is recorded, at the run's
+  next turn boundary, with `{queueId, _meta.abhed.userMessageSeq}`. A
+  message that is not recorded gets `userMessageSeq: null` and
+  `userMessageReason`: a prompt a hook or the policy refused, one that was
+  a command, a prompt whose turn ended before its message was recorded, a
+  steer the person cancelled (`_abhed/queue/cancel`) or that was dropped,
+  and a steer still waiting when the turn ends, which goes with the next
+  prompt. A request refused with an error records nothing.
+- `_abhed/machine/list` items for a `k8s-login` also carry `login: {server,
+  secret, caFingerprint?}`: the server as displayed (no user, query or
+  fragment), the stored secret's name (never its value), which stays stored
+  after a forget until `abhed secret rm`, and the SHA-256 of the pinned
+  certificate when one was pinned.
 - An answer of "always" is recorded `approval.scope_granted {scope, by:
   "user"}` (**not implemented in 1.2.2**) so `session/load` can restore it.
 - A call whose input the record withheld is refused without asking, with a
@@ -2117,6 +2169,7 @@ them.
 | `session.woken`, `session.wake_set` | system | |
 | `compaction.started`, `compaction.completed` | system | before, after |
 | `context.offloaded` | system | results, before, after |
+| `context.window`, `context.overflow`, `context.refit` | system | model, window, action or reason, before, after; also sent live as an `agent_thought_chunk` with the sentence the terminal shows |
 | `plan.updated`, `todo.updated` | agent | items |
 | `model.call`, `model.switched` | system | tokens, latency, model; `queue_ms?`, time spent waiting for a request slot, left out of latency; `purpose` (`suggestion`) on a call outside the conversation |
 | `model.waiting` | system | model, ahead; `session` for a subagent's |

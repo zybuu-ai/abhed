@@ -17,6 +17,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/identity"
+	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/modelkeys"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/profiles"
@@ -49,6 +50,9 @@ var unresolvedIsLegacy = false
 const (
 	EnvGuest   = "ABHED_GUEST"
 	EnvAccount = "ABHED_ACCOUNT"
+	// EnvExpectLegacy is set by a window that began before sign-in: its
+	// commands that keep state are refused once anyone is signed in.
+	EnvExpectLegacy = "ABHED_EXPECT_LEGACY"
 )
 
 // personCommands are the subcommands that read or write a person's state, and
@@ -156,8 +160,15 @@ func resolvePrincipal(sf signInFlags, interactive bool, in *os.File, errOut io.W
 		p, out.Ask, out.Note = identity.Principal{Kind: identity.Legacy}, false, ""
 	}
 	if out.Ask {
-		if p, err = chooseWho(s, rules, newPrompter(in, errOut)); err != nil {
+		want := sf.request(interactive, rules).Account
+		if p, err = askWho(s, rules, newPrompter(in, errOut), want); err != nil {
 			return 0, err
+		}
+		// Asked for one account (as Studio asks for its window's): anyone else
+		// signing in here is refused, never worked as.
+		if want != "" && !isSelected(p, want) {
+			return 0, &identity.RequiredError{Why: "this was asked for as " + want + ", and another account signed in",
+				Next: "sign in as " + want + ", or run it from that account's window"}
 		}
 	}
 	if err := usePrincipal(p); err != nil {
@@ -172,6 +183,9 @@ func resolvePrincipal(sf signInFlags, interactive bool, in *os.File, errOut io.W
 	}
 	return 0, nil
 }
+
+// askWho asks who is working; a variable so a test can answer as anyone.
+var askWho = chooseWhoAs
 
 // guestByDefault reports whether this process is guest only because no one
 // is signed in, not because anyone chose it.
@@ -244,7 +258,20 @@ func usePrincipal(p identity.Principal) error {
 	principal = p
 	principalMu.Unlock()
 	handDown(p)
+	useWindowMemory(p)
 	return nil
+}
+
+// useWindowMemory keeps the limits providers named in the folder of the
+// person working (home.PersonPath): an account's or a server sign-in's own
+// folder, or ~/.abhed before sign-in. A guest keeps none: nothing is read,
+// made or written, so no guest learns an account's limits or leaves a file.
+func useWindowMemory(p identity.Principal) {
+	if p.Kind == identity.Guest {
+		model.SetWindowMemory(nil)
+		return
+	}
+	model.SetWindowMemory(&config.WindowMemory{})
 }
 
 // handDown tells the Abhed a hook, an MCP server or a command starts who is
@@ -260,11 +287,32 @@ func handDown(p identity.Principal) {
 		_ = os.Setenv(EnvGuest, "1")
 		_ = os.Unsetenv(config.ProfilesEnv)
 		_ = os.Unsetenv(secrets.EnvFile)
-	case identity.Account:
-		_ = os.Setenv(EnvAccount, p.Entry.Username)
-	case identity.Server:
-		_ = os.Setenv(EnvAccount, p.Entry.Username+"@"+hostOfURL(p.Entry.URL))
+	case identity.Account, identity.Server:
+		_ = os.Setenv(EnvAccount, accountSelector(p))
+		// An account's secrets are in its own folder; a file named for the
+		// machine's process would be every account's.
+		_ = os.Unsetenv(secrets.EnvFile)
 	}
+}
+
+// accountSelector is how -account and ABHED_ACCOUNT name p: an account's
+// username, or username@host for a server sign-in; "" for anyone else.
+func accountSelector(p identity.Principal) string {
+	switch p.Kind {
+	case identity.Account:
+		return p.Entry.Username
+	case identity.Server:
+		return p.Entry.Username + "@" + hostOfURL(p.Entry.URL)
+	}
+	return ""
+}
+
+// isSelected reports whether p is the account want names, as -account takes it.
+func isSelected(p identity.Principal, want string) bool {
+	if p.Kind != identity.Account && p.Kind != identity.Server {
+		return false
+	}
+	return strings.EqualFold(accountSelector(p), want) || p.Kind == identity.Server && p.Entry.Email != "" && strings.EqualFold(p.Entry.Email, want)
 }
 
 // hostOfURL is a URL's host[:port], as -account names a server sign-in.
@@ -290,6 +338,8 @@ func endGuest() {
 	}
 	byDefault = false
 	principalMu.Unlock()
+	// The process is no one's: no memory until a person is chosen again.
+	model.SetWindowMemory(nil)
 	if g != nil {
 		if err := g.End(); err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: the guest folder could not all be removed (%v); the next start removes the rest\n", err)
@@ -340,14 +390,20 @@ func guestSubcommand(rest []string) error {
 		}
 	case "login", "logout":
 		what = "a server sign-in"
+	case "machine":
+		if verb == "forget" || verb == "rm" || verb == "remove" {
+			what = "a kept cluster or host"
+		}
 	case "provider":
 		if verb == "login" || verb == "logout" {
 			what = "a stored model key"
 		}
 	case "models":
 		switch verb {
-		case "add", "default", "remove", "rm", "forget-window":
+		case "add", "default", "remove", "rm":
 			what = "a model in this machine's configuration"
+		case "forget-window":
+			what = "a kept context window (a guest keeps none)"
 		}
 	case "profile":
 		if verb == "use" || verb == "rm" || verb == "remove" {
@@ -356,6 +412,16 @@ func guestSubcommand(rest []string) error {
 	}
 	if what == "" {
 		return nil
+	}
+	// A Studio window that began before sign-in, now that someone signed in on
+	// this Mac, would act for that account: it is refused until reopened.
+	if os.Getenv(EnvExpectLegacy) == "1" && currentPrincipal().Kind != identity.Legacy {
+		who := currentPrincipal().Display()
+		if who == "" {
+			who = "someone else"
+		}
+		return fmt.Errorf("%s was asked for by a window that started before sign-in, and this machine now works as %s; "+
+			"reopen the window to go on", what, who)
 	}
 	return guestRefusal(what)
 }

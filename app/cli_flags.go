@@ -29,6 +29,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandboxcli"
 	"golang.org/x/term"
@@ -270,6 +271,10 @@ func Main(args []string, opts ...Option) int {
 	noteLocalModelUse()
 	a := newApp(opts...)
 	recordAnchors = a.anchors
+	enableModelDiscovery()
+	// No window memory until the sign-in gate says who is working
+	// (useWindowMemory); a machine command keeps none.
+	model.SetWindowMemory(nil)
 	var f cliFlags
 	fs := newFlagSet(&f)
 	// Sessions: the record keeps every one, so these pick which goes on.
@@ -522,6 +527,8 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return userCmd(workspace, rest[1:], a.trust)
 	case "secret":
 		return secretCmd(rest[1:])
+	case "machine":
+		return machineCmd(rest[1:], os.Stdout, os.Stderr)
 	case "account":
 		return accountCmd(rest[1:], os.Stdin, os.Stdout, os.Stderr)
 	case "login":
@@ -618,7 +625,7 @@ var permissionModes = map[string]string{
 
 // ownsHelp are the subcommands that print their own usage for -h.
 var ownsHelp = map[string]bool{
-	"sandbox": true, "bg": true, "secret": true, "mcp": true, "record": true, "logs": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
+	"sandbox": true, "bg": true, "secret": true, "machine": true, "mcp": true, "record": true, "logs": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
 	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true, "ollama": true, "ssh-acp": true,
 	"provider": true, "models": true, "account": true,
 }

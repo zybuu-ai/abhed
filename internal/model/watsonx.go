@@ -40,6 +40,7 @@ type WatsonX struct {
 	Defaults Params
 
 	profile Profile
+	limits  *Limits
 	client  *http.Client
 
 	mu      sync.Mutex
@@ -93,7 +94,7 @@ type WatsonXConfig struct {
 }
 
 func (w *WatsonX) Name() string     { return "watsonx:" + w.ModelID }
-func (w *WatsonX) Profile() Profile { return w.profile }
+func (w *WatsonX) Profile() Profile { return w.limits.apply(w.profile) }
 
 // SetMaxTools sets the most tools one request may offer.
 func (w *WatsonX) SetMaxTools(n int) { w.profile.MaxTools = n }
@@ -220,7 +221,7 @@ func (w *WatsonX) buildRequest(req Request) wxRequest {
 		ModelID:     w.ModelID,
 		ProjectID:   w.ProjectID,
 		SpaceID:     w.SpaceID,
-		MaxTokens:   sp.MaxTokens,
+		MaxTokens:   clampOutput(sp.MaxTokens, w.Profile()),
 		Temperature: sp.Temperature,
 		TopP:        sp.TopP,
 		Stop:        sp.Stop,

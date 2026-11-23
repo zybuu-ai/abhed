@@ -252,6 +252,8 @@ func run(a *App, workspace string, f *cliFlags) int {
 		Warn:    warnf,
 		Agents:  sessionDefs,
 		Sandbox: sb,
+		// The terminal is the person's own: their kubeconfig and ~/.ssh/config are offered.
+		Machine: true,
 		// What the person opened to this workspace's commands, as Studio keeps it.
 		KeptNetwork: func() toolset.KeptNetwork { return keptNetwork(workspace) },
 		KeepNetwork: func(all bool, host string) error { return keepNetwork(workspace, all, host) },
@@ -314,7 +316,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 		factory.Tools = agent.RoleToolsFor(factory.Tools, &agent.Definition{Name: "-tools", Tools: only})
 	}
 	// The memory in it follows the configuration and the read rules (input track).
-	loopCfg.SystemPrompt = sysPrompt.apply(cliSystemPrompt(cfg, pol, workspace, adapter, set.SkillListing, registry.Names()))
+	loopCfg.SystemPrompt = sysPrompt.apply(cliSystemPrompt(cfg, pol, workspace, adapter, set.SkillListing, registry.OfferedNames()))
 	loopCfg.SystemPrompt += roleSection(role)
 	start := startPayload(cfg, f, headless, provider.Model)
 	sysPrompt.record(start)

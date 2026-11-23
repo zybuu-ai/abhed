@@ -325,7 +325,7 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 			d.dequeue(m.Text)
 			d.commitItem(&promptBlock{text: sanitize(m.Text, false), prompt: d.promptText()})
 		}
-		if note := WithheldNote(m.SecretsWithheld); note != "" {
+		if note := MessageNote(m.SecretsWithheld, m.Pasted); note != "" {
 			r.endReply(d, "")
 			d.commitItem(&rawBlock{text: r.s.Yellow("! ") + r.s.Dim(note)})
 		}
@@ -578,7 +578,7 @@ func (r *Renderer) lineEvent(ev agent.Event) {
 	case agent.EvUserMessage:
 		var m agent.Message
 		if json.Unmarshal(ev.Payload, &m) == nil && r.errw != nil {
-			if note := WithheldNote(m.SecretsWithheld); note != "" {
+			if note := MessageNote(m.SecretsWithheld, m.Pasted); note != "" {
 				fmt.Fprintf(r.errw, "abhed: %s\n", note)
 			}
 		}
@@ -797,6 +797,47 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string([]rune(s)[:n]) + "..."
+}
+
+// MessageNote is what a person is told of a message that held stored
+// secrets' values or pasted credentials, "" when it held neither.
+func MessageNote(secrets, pasted string) string {
+	a, b := WithheldNote(secrets), PastedNote(pasted)
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	}
+	return a + "; " + b
+}
+
+// PastedNote says which pasted credentials were withheld, from ID:kind
+// pairs, comma-separated; the value is never shown. One with no ID was not
+// held for use.
+func PastedNote(pasted string) string {
+	if pasted == "" {
+		return ""
+	}
+	var held, unheld []string
+	for _, p := range strings.Split(pasted, ",") {
+		id, kind, _ := strings.Cut(p, ":")
+		if id == "" {
+			unheld = append(unheld, VisibleLine(kind))
+			continue
+		}
+		held = append(held, VisibleLine(kind)+" ("+VisibleLine(id)+")")
+	}
+	var parts []string
+	if len(held) > 0 {
+		parts = append(parts, "your message held "+strings.Join(held, ", ")+"; it was not sent to the model or kept in the "+
+			"record, and is held in memory for this session only, for a login you approve")
+	}
+	if len(unheld) > 0 {
+		parts = append(parts, "your message held "+strings.Join(unheld, ", ")+"; it was not sent to the model or kept in the "+
+			"record, and is not held anywhere, so paste it again to use it")
+	}
+	return strings.Join(parts, "; ")
 }
 
 // WithheldNote tells the sender which stored secrets their message held, by

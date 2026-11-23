@@ -7,6 +7,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -296,6 +297,11 @@ type Message struct {
 	// the message held: the model got [secret:NAME] in their place. A string
 	// keeps Message comparable.
 	SecretsWithheld string `json:"secrets_withheld,omitempty"`
+	// Pasted names, comma-separated as ID:kind, the credentials the person
+	// pasted that matched no stored secret: the model and the record got
+	// [pasted:ID] in their place, and the value is held in the session's
+	// memory only, for a login the person approves.
+	Pasted string `json:"pasted,omitempty"`
 	// Note is what Abhed added after the person's text for the model, such
 	// as what a request for parallel work means; recorded so a replay sends
 	// what the model was sent.
@@ -322,6 +328,13 @@ type DroppedMessage struct {
 	Text     string    `json:"text"`
 	QueuedAt time.Time `json:"queued_at"`
 	Reason   string    `json:"reason"`
+	// Steered marks a message sent while a run was working.
+	Steered bool `json:"steered,omitempty"`
+	// SecretsWithheld and Pasted are as on a user message: what the text,
+	// as recorded, has in place of a stored secret's value or a pasted
+	// credential. A dropped message holds none of them for use.
+	SecretsWithheld string `json:"secrets_withheld,omitempty"`
+	Pasted          string `json:"pasted,omitempty"`
 }
 
 // Delta is one streamed fragment of an agent message.
@@ -717,7 +730,14 @@ type Recorder struct {
 	Gate func() error
 	// endSealed drops any later session.ended: see SealEnd.
 	endSealed bool
+	// held, when set, are the credentials the session holds from a paste,
+	// each with its placeholder: withheld by every redaction this recorder
+	// makes, the record's included, as a stored secret's value is.
+	held func() []heldValue
 }
+
+// heldValue is one held credential and the placeholder it is withheld as.
+type heldValue struct{ value, placeholder string }
 
 // SealEnd makes every later session.ended a no-op. A CLI exiting on a second
 // Ctrl-C records the end itself, while the stopping turn may still record its own.
@@ -747,7 +767,72 @@ func (r *Recorder) redactor() Redactor {
 	if r == nil {
 		return nil
 	}
+	base := usableRedactor(r.Redact)
+	if r.held == nil {
+		return base
+	}
+	// Only while something is held: otherwise the store's redactor, as it is.
+	held := r.held()
+	if len(held) == 0 {
+		return base
+	}
+	return heldRedactor{base: base, held: func() []heldValue { return held }}
+}
+
+// storedRedactor is the secrets store's redactor alone, nil when none is set.
+func (r *Recorder) storedRedactor() Redactor {
+	if r == nil {
+		return nil
+	}
 	return usableRedactor(r.Redact)
+}
+
+// heldRedactor is the store's redactor, then the session's held values.
+type heldRedactor struct {
+	base Redactor
+	held func() []heldValue
+}
+
+func (h heldRedactor) Redact(raw []byte) []byte {
+	if h.base != nil {
+		raw = h.base.Redact(raw)
+	}
+	for _, v := range h.held() {
+		// Matched as JSON writes it inside a string.
+		val, err1 := json.Marshal(v.value)
+		ph, err2 := json.Marshal(v.placeholder)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		raw = bytes.ReplaceAll(raw, val[1:len(val)-1], ph[1:len(ph)-1])
+	}
+	return raw
+}
+
+// FindInPath and Names are the store redactor's, where it has them.
+func (h heldRedactor) FindInPath(p string) (string, bool) {
+	if f, ok := h.base.(interface{ FindInPath(string) (string, bool) }); ok {
+		return f.FindInPath(p)
+	}
+	return "", false
+}
+
+func (h heldRedactor) Names() []string {
+	if n, ok := h.base.(interface{ Names() []string }); ok {
+		return n.Names()
+	}
+	return nil
+}
+
+func (h heldRedactor) Span() int {
+	n := 0
+	if h.base != nil {
+		n = h.base.Span()
+	}
+	for _, v := range h.held() {
+		n = max(n, len(v.value))
+	}
+	return n
 }
 
 // usableRedactor is red, or nil when it is nil or holds a nil pointer, which

@@ -17,6 +17,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/testenv"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
@@ -33,8 +34,12 @@ func modelItems(st *cliState) []ui.PickItem {
 	for _, name := range toolset.OfferedModels(st.appCfg) {
 		p := st.appCfg.Model.Providers[name]
 		detail := []string{p.Model}
-		if p.ContextWindow > 0 {
-			detail = append(detail, fmt.Sprintf("%dk context", p.ContextWindow/1024))
+		if w, _, src := model.ResolveLimits(p.Spec()); w > 0 {
+			ctx := fmt.Sprintf("%dk context", w/1000)
+			if src == model.WindowFallback {
+				ctx += " (assumed)"
+			}
+			detail = append(detail, ctx)
 		}
 		detail = append(detail, hostedLabel(p.BaseURL))
 		if name == st.appCfg.Model.Default {
@@ -507,4 +512,69 @@ func recordModelRefused(st *cliState, source string, refused *config.ManagedErro
 	st.recordCLI(agent.EvConfigRefused, agent.ConfigAttempt{Layer: "command", Source: source, Key: refused.Key,
 		Value: config.Printable(refused.Value), Decision: "refused", Reason: refused.Reason,
 		Principal: toolset.LocalPrincipal(inAgentCommand())})
+}
+
+// enableModelDiscovery lets sessions and the doctor ask a model endpoint for
+// its context window. Off under a test (testenv.Marker), so no test reaches a
+// real server for it, and off with ABHED_NO_MODEL_DISCOVERY set.
+func enableModelDiscovery() {
+	if os.Getenv(testenv.Marker) != "" || os.Getenv("ABHED_NO_MODEL_DISCOVERY") != "" {
+		return
+	}
+	model.EnableDiscovery()
+}
+
+// windowLine says a provider's context window, its reply cap and where they
+// came from, and a warning when the window is assumed. discover asks the
+// endpoint first, as a session's first turn does.
+func windowLine(ctx context.Context, p config.ProviderConfig, discover bool) (line, warn string) {
+	prof := model.Profile{Name: p.Model}
+	if a, err := p.Adapter(); err == nil {
+		if discover {
+			model.Discover(ctx, a)
+		}
+		prof = a.Profile()
+	} else {
+		prof.ContextWindow, prof.OutputLimit, prof.WindowSource = model.ResolveLimits(p.Spec())
+	}
+	line = fmt.Sprintf("%s tokens", commaInt(prof.ContextWindow))
+	if prof.OutputLimit > 0 {
+		line += fmt.Sprintf(" · replies up to %s", commaInt(prof.OutputLimit))
+	}
+	line += " (" + windowSourceLabel(prof) + ")"
+	warn = model.WindowNote(prof)
+	if prof.WindowSource == model.WindowLearned && warn == "" {
+		warn = "a limit the provider named is kept for 30 days; `abhed models forget-window NAME` learns it again"
+	}
+	return line, warn
+}
+
+// windowSourceLabel says where a window came from, for a person.
+func windowSourceLabel(p model.Profile) string {
+	if p.WindowSource == model.WindowLearned && !p.LearnedAt.IsZero() {
+		return "named by the provider on " + p.LearnedAt.Local().Format("2006-01-02")
+	}
+	switch p.WindowSource {
+	case model.WindowConfig:
+		return "context_window in the configuration"
+	case model.WindowDiscovered:
+		return "reported by the endpoint"
+	case model.WindowBuiltIn:
+		return "Abhed's table of published limits"
+	case model.WindowLearned:
+		return "named by the provider"
+	}
+	return "assumed: not known"
+}
+
+func commaInt(n int) string {
+	d := fmt.Sprint(n)
+	var b strings.Builder
+	for i := range d {
+		if i > 0 && (len(d)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte(d[i])
+	}
+	return b.String()
 }

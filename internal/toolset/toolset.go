@@ -98,6 +98,11 @@ type Options struct {
 	// Warn receives what failed and was skipped: an MCP server, an extension,
 	// a skill, a corpus. Nil discards them.
 	Warn func(format string, args ...any)
+	// Machine offers the person's own machine setup with the Infra part:
+	// their kubeconfig contexts and ~/.ssh/config hosts, each asked before
+	// its first use, and the cluster logins they kept. Only a surface run by
+	// the person whose machine it is sets it; a server never does.
+	Machine bool
 	// Sandbox is the surface's sandbox. Under sandbox.network allowlist it
 	// confines the stdio MCP servers' network; without it they do not start.
 	Sandbox sandbox.Sandbox
@@ -261,7 +266,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		}
 	}
 	if o.Parts&Infra != 0 {
-		for _, t := range InfraTools(cfg, o.Vault, warn) {
+		for _, t := range InfraToolsFor(cfg, o.Vault, warn, o.Machine) {
 			add(t)
 		}
 	}
@@ -727,6 +732,9 @@ func LoopConfig(cfg config.Config, system string) agent.Config {
 	}
 	if at := cfg.Context.CompactAt; at > 0 {
 		c.CompactAt = at
+	}
+	if n := cfg.Context.CompactAtTokens; n > 0 {
+		c.CompactAtTokens = n
 	}
 	c.OffloadAt = cfg.Context.OffloadFraction()
 	c.MaxContinues = cfg.ContinuesAllowed()

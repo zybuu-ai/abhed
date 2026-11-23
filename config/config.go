@@ -1021,8 +1021,20 @@ type PermissionsConfig struct {
 	GitExtensions []string `json:"git_extensions,omitempty"`
 }
 
+// MinCompactAtTokens is the smallest context.compact_at_tokens taken. An
+// agent's system prompt and tool schemas take several thousand tokens on
+// their own; below 16,384 a ceiling leaves no room for a turn and compacts on
+// every one, and the share left for each tool result is a few hundred
+// characters.
+const MinCompactAtTokens = 16_384
+
 type ContextConfig struct {
 	CompactAt float64 `json:"compact_at"`
+	// CompactAtTokens bounds how large the conversation grows before it is
+	// compacted, whatever the window: a 1M-token window compacted at its
+	// fraction sends calls of 650k tokens, each a cost and a wait. Zero
+	// means 200,000; set it to the model's window to use all of it.
+	CompactAtTokens int `json:"compact_at_tokens,omitempty"`
 	// OffloadAt is the fraction of the context window at which old, large
 	// tool results are replaced in the window by a stub; the full text stays
 	// in the session record and the recall tool reads it back. It should sit
@@ -1608,9 +1620,11 @@ type AgentsConfig struct {
 	Disabled bool `json:"disabled,omitempty"`
 }
 
-// K8sConfig enables cluster access. Off by default: reaching a cluster is an
-// authorization decision, and the credentials already on the machine are not
-// a reason to hand them to an agent without being asked.
+// K8sConfig enables cluster access. Off by default where Abhed serves other
+// people's sessions: reaching a cluster is an authorization decision. On the
+// person's own machine, with neither k8s.enabled set nor a managed
+// configuration, their kubeconfig is offered, each context asked before its
+// first use (see toolset.MachineK8s).
 type K8sConfig struct {
 	Enabled bool `json:"enabled"`
 	// Kubeconfig path; empty uses $KUBECONFIG then ~/.kube/config.
@@ -2509,6 +2523,9 @@ func (c Config) Validate() error {
 	}
 	if t := c.SSH.MaxTimeoutSeconds; t < 0 || t > MaxSSHTimeoutSeconds {
 		return fmt.Errorf("ssh.max_timeout_seconds is %d; use a number of seconds up to %d (a day), or 0 for the default (120)", t, MaxSSHTimeoutSeconds)
+	}
+	if n := c.Context.CompactAtTokens; n < 0 || n > 0 && n < MinCompactAtTokens {
+		return fmt.Errorf("context.compact_at_tokens must be 0 (the default, 200,000) or at least %d, got %d", MinCompactAtTokens, n)
 	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt > 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)

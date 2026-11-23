@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 )
@@ -40,6 +42,20 @@ type Compactor struct {
 	// information deliberately, and only the deployment knows what must
 	// survive it.
 	Summarizer func(messages []model.Message) (summary string, cancel bool)
+
+	// Ceiling caps the conversation's size before compaction, whatever the
+	// window, so a 1M-token window is not filled to 900k on every call; zero
+	// is no cap. The threshold, headroom and the history kept after a
+	// compaction all work within Effective's window.
+	Ceiling int
+
+	// OutputTokens is the reply cap the loop asks for; zero takes the
+	// model's (model.OutputReserve). It is kept free in the window.
+	OutputTokens int
+
+	// scale is how many tokens the model counts for each one estimated,
+	// learned from the provider's reported usage; see SetScale.
+	scale atomic.Uint64
 
 	// focus is what the next manual compaction's summary must keep, as the
 	// person asked with /compact <focus>; it is used once. See SetFocus.
@@ -82,45 +98,97 @@ func (c *Compactor) ShouldCompact(system string, messages []model.Message, tools
 	return c.shouldCompact(system, messages, tools, true)
 }
 
-// ShouldCompactNow answers the same question with no forward allowance, for the
-// check that runs after a turn's tool results have already been appended.
-// Adding headroom there would count the result twice — once as history and
-// again as the space it might need — and compact on almost every turn.
+// ShouldCompactNow answers the same question for the check that runs after a
+// turn's tool results have already been appended, keeping room for the reply
+// only. Adding the turn's headroom there would count the result twice, once
+// as history and again as the space it might need, and compact on almost
+// every turn.
 func (c *Compactor) ShouldCompactNow(system string, messages []model.Message, tools []model.ToolDef) (bool, int, error) {
 	return c.shouldCompact(system, messages, tools, false)
 }
 
 func (c *Compactor) shouldCompact(system string, messages []model.Message,
 	tools []model.ToolDef, reserve bool) (bool, int, error) {
-	window := c.Adapter.Profile().ContextWindow
+	window := c.Effective(c.Adapter.Profile().ContextWindow)
 	if window <= 0 {
 		return false, 0, nil // unknown window: never auto-compact
 	}
-	used, err := c.Adapter.CountTokens(model.Request{
+	used, err := c.count(model.Request{
 		System: system, Messages: messages, Tools: tools,
 	})
 	if err != nil {
 		return false, 0, err
 	}
-	budget := float64(used)
-	if reserve {
-		budget += float64(c.headroom(window))
-	}
+	budget := float64(used) + float64(c.headroom(window, reserve))
 	return budget >= float64(window)*c.Threshold, used, nil
 }
 
-// headroom estimates what one more turn can add before the next check runs:
-// the model's reply plus the tool results it asks for. A quarter of the window
-// matches the per-result cap the loop enforces, so a turn that produces one
-// maximal result still fits.
-func (c *Compactor) headroom(window int) int {
+// DefaultCompactAtTokens is the conversation's size past which it is
+// compacted whatever the window: on a 1M-token model the fraction alone lets
+// every call grow to some 650k tokens, which costs dollars a call uncached and
+// tens of seconds to prefill. 200,000 is the window most hosted models had
+// before 1M ones, and the limit some accounts are still held to.
+const DefaultCompactAtTokens = 200_000
+
+// Effective is the window the compactor works within: the model's, or the
+// smaller one Ceiling sets.
+func (c *Compactor) Effective(window int) int {
+	if c == nil || c.Ceiling <= 0 || window <= 0 || c.Threshold <= 0 {
+		return window
+	}
+	if capped := int(float64(c.Ceiling) / c.Threshold); capped < window {
+		// Never below the smallest window believed: a ceiling of a few
+		// tokens would cut every result to nothing.
+		return max(capped, min(window, model.MinWindow))
+	}
+	return window
+}
+
+// SetScale takes the ratio of the tokens a provider reported for a prompt to
+// the estimate of it. It only raises the count, by at most 2.5 times: an
+// estimate that is high costs an early compaction, one that is low a refused
+// request.
+func (c *Compactor) SetScale(ratio float64) {
+	if math.IsNaN(ratio) || ratio < 1 {
+		ratio = 1
+	}
+	c.scale.Store(math.Float64bits(min(ratio, 2.5)))
+}
+
+// Scale is the ratio SetScale took, 1 before any.
+func (c *Compactor) Scale() float64 {
+	if v := c.scale.Load(); v != 0 {
+		return math.Float64frombits(v)
+	}
+	return 1
+}
+
+// count is the adapter's estimate of a request, scaled to the model's own
+// count.
+func (c *Compactor) count(req model.Request) (int, error) {
+	n, err := c.Adapter.CountTokens(req)
+	return int(math.Ceil(float64(n) * c.Scale())), err
+}
+
+// headroom is the room kept free for what comes before the next check.
+// Before a turn it is a quarter of the window: the model's reply and the
+// tool results it may ask for, a quarter matching the per-result cap the
+// loop enforces, so a turn that produces one maximal result still fits.
+// After the results have landed it is the reply alone, so the call that
+// follows has room to answer; at most an eighth of the window, which leaves
+// a small window usable rather than compacting at every check.
+func (c *Compactor) headroom(window int, reserve bool) int {
 	if c.Headroom > 0 {
 		return c.Headroom
+	}
+	room := min(model.OutputReserve(c.Adapter.Profile(), c.OutputTokens), window/8)
+	if reserve {
+		room = max(room, window/4)
 	}
 	// Never more than half the threshold's share: a quarter of the window
 	// alone passed a low compact_at (0.05), compacting every turn however
 	// little history there was.
-	return min(window/4, int(float64(window)*c.Threshold/2))
+	return min(room, int(float64(window)*c.Threshold/2))
 }
 
 const summaryPrompt = `Summarize the conversation so far so that another engineer could pick up exactly where it left off.
@@ -187,7 +255,7 @@ func (c *Compactor) CompactWith(ctx context.Context, trigger string, system stri
 	// is nothing "older" to summarize, and the no-op leaves the session to die
 	// at the next model call. So the count is a preference, not a promise: drop
 	// exchanges from the front until what remains actually fits.
-	if window := c.Adapter.Profile().ContextWindow; window > 0 {
+	if window := c.Effective(c.Adapter.Profile().ContextWindow); window > 0 {
 		// Keep as much recent history as fits in half the window, so the
 		// session has room to run several more turns before the next
 		// compaction. Compacting back to the threshold instead would leave it
@@ -201,7 +269,7 @@ func (c *Compactor) CompactWith(ctx context.Context, trigger string, system stri
 				continue // this many exchanges is the whole history; try fewer
 			}
 			split = at
-			used, err := c.Adapter.CountTokens(model.Request{
+			used, err := c.count(model.Request{
 				System: system, Messages: messages[split:],
 			})
 			if err != nil || used <= budget {

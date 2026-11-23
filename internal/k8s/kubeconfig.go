@@ -79,6 +79,13 @@ func parseKubeconfig(raw []byte) (*kubeconfig, error) {
 			e.ClientKeyData = u.str("client-key-data")
 			e.ClientCertificate = u.str("client-certificate")
 			e.ClientKey = u.str("client-key")
+			if ap := u.get("auth-provider"); ap != nil {
+				e.AuthProvider = ap.str("name")
+				if e.AuthProvider == "" {
+					e.AuthProvider = "(unnamed)"
+				}
+			}
+			e.Username = u.str("username")
 			if ex := u.get("exec"); ex != nil {
 				cfg := &execConfig{Command: ex.str("command"), APIVersion: ex.str("apiVersion")}
 				for _, a := range ex.seq("args") {

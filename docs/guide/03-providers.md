@@ -6,7 +6,9 @@ same harness better.
 
 `abhed providers` lists what your binary supports — which is what registered
 itself at build time, so a build that drops the cloud adapters for an air-gapped
-install reports honestly.
+install reports honestly. `abhed models list` lists the models in your own
+and the managed configuration, each with its context window, reply cap and
+where they came from.
 
 ## The providers
 
@@ -100,9 +102,21 @@ abhed provider status              # where each key comes from; never the key
 abhed provider logout anthropic
 ```
 
-The key goes into the macOS Keychain (service "Abhed model key", account
-`ANTHROPIC_API_KEY`), or where there is no Keychain into Abhed's secret store
-(`~/.abhed/secrets.json`, mode 600) under a name Abhed keeps for itself: it is
+A stored key is your Abhed account's, not the machine user's. It goes into
+the macOS Keychain under a service of your account's (`Abhed model key:
+<account id>`, account `ANTHROPIC_API_KEY`; before anyone signs in, `Abhed
+model key`), or where there is no Keychain into your account's secret store
+(`~/.abhed/accounts/<id>/secrets.json`, mode 600; `~/.abhed/secrets.json`
+before sign-in). Another account never sees it, a guest keeps and is given
+no stored key (a key in the environment still works), and the first account
+takes over the keys stored before sign-in with the rest of that data. This
+separation holds within Abhed: accounts on one macOS user are that user to
+the system, so a program the user runs outside Abhed can still read another
+account's Keychain item with `security find-generic-password`. Abhed Studio
+runs its model and key commands as the window's account (`ABHED_ACCOUNT`);
+when that account is not the one signed in on the machine, they are refused,
+never run as another. In
+the secret store a key is kept under a name Abhed keeps for itself: it is
 never offered to a command, `abhed secret list` does not show it, and `abhed
 secret set` cannot overwrite it. The key is never written to configuration,
 printed, sent to the model or recorded: once read, it is redacted from tool
@@ -129,7 +143,8 @@ file asks for.
 
 A provider finds its key in this order:
 
-1. `api_key` written in the configuration (or `ABHED_API_KEY`), which is best avoided;
+1. `api_key` written in the configuration (or `ABHED_API_KEY`), which is best avoided:
+   a key written in `~/.abhed/config.json` is shared by every Abhed account on this Mac;
 2. the environment variable `api_key_env` names, when it is set;
 3. the stored key `api_key_secret` names, else the one named by `api_key_env`;
 4. with neither named, a hosted type at its own endpoint uses its type's
@@ -170,8 +185,10 @@ abhed models known anthropic
 `models add` takes a provider type, or a model already configured whose
 type, endpoint and key setting the new ones share (`abhed models add corp-1
 corp-2`). Each model is added under its own id (`-name` gives one model
-another name). A model the built-in table knows gets its context window from
-it; prices come from the same table at run time. `models default` asks
+another name). No context window is written for it: the window comes at run
+time from the built-in table, the endpoint and any limit the provider named
+(see [Context windows](#context-windows)), which a written one would outrank;
+prices come from the same table. `models default` asks
 first when the new default is a hosted model, since the code is then sent
 there; `-check -json` says whether it would ask. Both write only your own
 `~/.abhed/config.json`: atomically (a temporary file renamed over it), with
@@ -179,7 +196,10 @@ the previous file kept as `config.json.bak`, its mode kept, and every other
 key in it left as it was. They never write the workspace's file or the
 managed one, and refuse a model the managed configuration defines or a
 `model.allowed` list refuses. Each change is logged to
-`~/.abhed/config-changes.jsonl`, and applies to new sessions. Inside an
+`~/.abhed/config-changes.jsonl`, and applies to new sessions. The models are this Mac's: `~/.abhed/config.json`
+is shared by every Abhed account on it, so a model one account adds, removes
+or makes the default changes it for all of them. Keys are not shared: each
+account stores its own under the same name. Inside an
 agent's command they are refused. Studio's model picker offers **Add
 Model…** and **Set as Default**, which run the same commands.
 
@@ -239,12 +259,71 @@ export ANTHROPIC_API_KEY=sk-ant-api03-...
 `api` is named rather than guessed from the URL: a wrong guess produces rejected
 requests whose errors point nowhere near the cause.
 
+## Context windows
+
+Every provider gets a context window and a reply cap without configuration,
+from the first of these that knows:
+
+1. `context_window` (and `max_output_tokens`) on the provider. A configured
+   reply cap above the model's published maximum is lowered to it, so it is
+   not a refused request.
+2. The endpoint itself, asked once on the session's first turn, and by
+   `abhed doctor`: Anthropic's `GET /v1/models/{id}` (`max_input_tokens`,
+   `max_tokens`), Gemini's model resource (`inputTokenLimit`,
+   `outputTokenLimit`), the `/models` listing of vLLM, SGLang, OpenRouter,
+   Together, Groq and Mistral (`max_model_len`, `context_length`,
+   `context_window`, `max_context_length`), llama.cpp's `/props` (`n_ctx`),
+   TGI's `/info` (`max_input_tokens`), and Ollama's `/api/ps` (the running
+   context of a loaded model) and `/api/show` (a Modelfile's `num_ctx`).
+   Ollama's OpenAI-compatible endpoint runs a model with the server's own
+   default (`OLLAMA_CONTEXT_LENGTH`, 4,096 unless set) when the Modelfile sets
+   no `num_ctx`, and the API does not report that default: before the model is
+   loaded the window stays assumed, and it is asked again after the first
+   reply, when `/api/ps` can say. Amazon Bedrock and Vertex AI paths have no
+   model resource and are not asked. Each answer is kept for the session; a
+   failure or a slow answer (over 3 seconds) leaves the window as it was.
+3. Abhed's table of published limits, matched by the longest prefix of the
+   model id once a gateway's `vendor/` prefix, a Bedrock region and vendor,
+   or a Vertex `@` version is removed: every current Claude model (1,000,000
+   tokens and 128,000-token replies for Claude Fable, Mythos, Opus 4.6 and
+   later, Sonnet 4.6 and later and Haiku 5.5; 200,000 for Claude Haiku 4.5,
+   Opus 4.5, Sonnet 4.5 and older), and the OpenAI, Gemini and Grok families.
+   Open-weight models have no row: where they are served decides their
+   window, and the servers that report one are asked. A server on this machine (`ollama`,
+   `vllm`, `llamacpp`, `tgi`, `sglang`, or `openai-compatible` at a loopback
+   address) decides its window when it starts, so for it the table is only a
+   ceiling and the window stays assumed until the server reports one.
+4. 32,768 tokens, assumed. It is the smallest window among the models that can
+   carry an agent's system prompt and tools with room to work: erring small
+   costs an earlier compaction, erring large a refused request. The session
+   says so on its first turn (`context.window`), `abhed doctor` warns of it,
+   and `abhed models list` marks it.
+
+A provider that refuses a request as too long and names its limit lowers the
+window to it for the rest of the session, a configured one included: some
+accounts are held to less than a model's published window. See
+[Context](02-configuration.md#context) for how a refusal is recovered.
+
+`abhed models list` shows each model's window, reply cap and where they came
+from, without contacting any endpoint (`-json` gives `context_window`,
+`output_limit`, `window_source` and `learned_at`; a limit the provider named
+shows with its date, and `abhed models forget-window NAME` drops it; a guest
+cannot); `abhed doctor` asks
+the default model's endpoint first, as a session does. Discovery is off with
+`ABHED_NO_MODEL_DISCOVERY` set.
+
 ## Switching mid-session
 
 `/model <name>` swaps the provider and keeps the conversation. The next turn
 re-prefills, because the new provider has never seen this prefix — a real cost,
 and still cheaper than rebuilding the session by hand. `/model` alone names the
-model in use and the configured providers.
+model in use and the configured providers. When the new model's window is
+smaller, the conversation is fitted to it before the next call: every tool
+result is cut to the new window's share and the history is compacted if it is
+over the threshold, recorded as `context.refit` (`reason` `model_switch`,
+`from_model`, `to_model`, `from_window`, `to_window`, `results_capped`,
+`compacted`, `before_tokens`, `after_tokens`). The same holds for the picker in
+the console, the workbench and Abhed Studio.
 
 The new model answers from the next turn on: the system prompt names it, the
 subagents that turn spawns run on it, and a conversation started after `/clear`

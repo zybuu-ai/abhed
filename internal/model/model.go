@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 )
 
 type Role string
@@ -229,6 +230,18 @@ type Profile struct {
 	GuidedDecoding   bool               `json:"guided_decoding"`
 	CachePrefix      bool               `json:"cache_prefix"`
 	Conformance      map[string]float64 `json:"conformance,omitempty"`
+	// WindowSource says where ContextWindow came from: config, learned,
+	// discovered, built-in or fallback (see the Window* constants).
+	WindowSource string `json:"window_source,omitempty"`
+	// OutputLimit is the model's maximum reply, zero when not known; a
+	// configured cap above it is clamped to it.
+	OutputLimit int `json:"output_limit,omitempty"`
+	// SilentTruncation marks a server that cuts an over-long prompt instead
+	// of refusing it, so the harness watches the reported prompt size.
+	SilentTruncation bool `json:"-"`
+	// LearnedAt is when a learned window was named by the provider, in this
+	// process or, kept in the window memory, an earlier one.
+	LearnedAt time.Time `json:"learned_at,omitzero"`
 	// MaxTools caps the tools one request offers; zero is DefaultMaxTools.
 	MaxTools int `json:"max_tools,omitempty"`
 	// Sampling reports which decoding knobs this provider honours, so a
