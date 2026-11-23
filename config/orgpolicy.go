@@ -151,6 +151,7 @@ var orgRules = map[string]orgRule{
 	"sandbox.toolchains":             {orgTighten, ""},
 	"sandbox.toolchains_registries":  {orgTighten, ""},
 	"sandbox.listen":                 {orgTighten, ""},
+	"sandbox.host_git":               {orgTighten, ""},
 	"sandbox.tier":                   {orgPinned, "chooses what confines commands"},
 	"sandbox.network":                {orgPinned, "turns on the egress allowlist"},
 	"sandbox.protect_git":            {orgPinned, "turned off, commands can plant a git hook"},

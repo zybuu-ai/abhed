@@ -934,3 +934,38 @@ func TestBrokerRefusesAConfigOthersCanWrite(t *testing.T) {
 		}
 	}
 }
+
+// A server's broker never runs remote git on the host: every remote line
+// goes to the sandbox, asked about by no one, while worktree commands are
+// still brokered. A broker the configuration turns off refuses with why.
+func TestBrokerNoRemotesAndRemotesOff(t *testing.T) {
+	r := newRemoteRig(t)
+	served := r.broker(Network{}).NoRemotes()
+	for _, line := range []string{"git fetch", "git push origin main", "git clone git@git.example:team/app.git c", "git ls-remote origin"} {
+		if reason, _, _, err := served.Ask(r.key("c"), r.ws, line); reason != "" || err != nil {
+			t.Fatalf("%s was asked about on a server: %q %v", line, reason, err)
+		}
+		if _, err := runCmd(t, served.Command(r.ctx("c"), r.ws, line)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(r.inner) != 4 || served.BrokersRemoteCommands() {
+		t.Fatalf("the sandbox ran %v", r.inner)
+	}
+	if log, _ := os.ReadFile(r.sshLog); len(log) != 0 {
+		t.Fatalf("host ssh ran for a server:\n%s", log)
+	}
+	if !Brokered("git worktree prune") {
+		t.Fatal("worktree commands are no longer the broker's")
+	}
+	off := r.broker(Network{Open: true}).RemotesOff("ask your administrator")
+	if _, _, _, err := off.Ask(r.key("c"), r.ws, "git fetch"); err == nil || !strings.Contains(err.Error(), "ask your administrator") {
+		t.Fatalf("turned off: %v", err)
+	}
+	if _, err := runCmd(t, off.Command(r.ctx("c"), r.ws, "git fetch")); err == nil || !strings.Contains(err.Error(), "ask your administrator") {
+		t.Fatalf("turned off: %v", err)
+	}
+	if log, _ := os.ReadFile(r.sshLog); len(log) != 0 {
+		t.Fatalf("host ssh ran while turned off:\n%s", log)
+	}
+}

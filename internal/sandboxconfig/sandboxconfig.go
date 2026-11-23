@@ -522,6 +522,25 @@ func NetworkOpen(cfg config.Config) bool {
 	return cfg.Sandbox.AllowNetwork && cfg.Sandbox.Network != config.NetworkAllowlist
 }
 
+// HostGitOff says why git's remote commands are not run through the
+// person's own git on the host for this configuration; "" when they may be.
+// sandbox.host_git false turns it off; so does a network the managed
+// configuration holds off, which host git would otherwise reach after a
+// person's approval, as no person may open it.
+func HostGitOff(cfg config.Config) string {
+	if h := cfg.Sandbox.HostGit; h != nil && !*h {
+		if cfg.ManagedSets("sandbox.host_git") {
+			return "the managed configuration turns off git through your own credentials (sandbox.host_git); ask your administrator"
+		}
+		return "sandbox.host_git is false"
+	}
+	managed := cfg.ManagedSets("sandbox.allow_network") || cfg.ManagedSets("sandbox.network") || cfg.ManagedSets("egress")
+	if managed && HostGitNetwork(cfg).Off() {
+		return "the managed configuration holds the network off, which git through your own credentials would reach; ask your administrator"
+	}
+	return ""
+}
+
 // HostGitNetwork is what git run on the host for the sandbox (a brokered
 // fetch, pull, push or clone) may reach, as Isolation reads the network:
 // any host, the hosts the egress rules allow, or, with the network off,

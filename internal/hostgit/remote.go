@@ -70,6 +70,11 @@ type HostBroker struct {
 	// reports whether it holds a repository made during the session against
 	// commands started before; nil, or false, brokers none such.
 	holds, holdsNew func() bool
+	// remotes is false where remote commands are never brokered (a server's
+	// sessions), and off why they are refused (the configuration); a line
+	// left so goes to the sandbox, or is refused with off.
+	noRemotes bool
+	off       string
 
 	mu sync.Mutex
 	// known are the repositories whose remotes host git may reach, by their
@@ -117,6 +122,24 @@ func (b *HostBroker) HoldsGit(holds, holdsNew func() bool) *HostBroker {
 	b.holds, b.holdsNew = holds, holdsNew
 	return b
 }
+
+// NoRemotes leaves every remote command to the sandbox, as a server's
+// sessions need: host git would run as the server's own account for whoever
+// reaches it. Worktree and submodule commands are still brokered.
+func (b *HostBroker) NoRemotes() *HostBroker {
+	b.noRemotes = true
+	return b
+}
+
+// RemotesOff refuses every remote command on the host, saying why
+// (sandboxconfig.HostGitOff); "" leaves them brokered.
+func (b *HostBroker) RemotesOff(why string) *HostBroker {
+	b.off = why
+	return b
+}
+
+// BrokersRemoteCommands reports whether b runs remote commands on the host.
+func (b *HostBroker) BrokersRemoteCommands() bool { return !b.noRemotes && b.off == "" }
 
 // learn makes root a known repository, as it is now; cloned marks one
 // cloned during the session.
@@ -179,8 +202,11 @@ func (b *HostBroker) held() bool { return b.holds != nil && b.holds() }
 // else as command builds it.
 func (b *HostBroker) Command(ctx context.Context, cwd, line string) *exec.Cmd {
 	if op, err, ok := parseRemote(line); ok {
-		if !b.onHost() || !b.held() {
+		if !b.onHost() || !b.held() || b.noRemotes {
 			return b.command(ctx, cwd, line)
+		}
+		if b.off != "" {
+			return &exec.Cmd{Err: fmt.Errorf("git %s: not run through your own git on the host: %s", op.verb, b.off)}
 		}
 		if err != nil {
 			return &exec.Cmd{Err: err}
@@ -216,8 +242,11 @@ func (b *HostBroker) Command(ctx context.Context, cwd, line string) *exec.Cmd {
 // settings it judged are kept for the call, and it runs only on those.
 func (b *HostBroker) Ask(key, cwd, line string) (reason, step, bind string, err error) {
 	op, perr, ok := parseRemote(line)
-	if !ok || !b.onHost() || !b.held() {
+	if !ok || !b.onHost() || !b.held() || b.noRemotes {
 		return "", "", "", nil
+	}
+	if b.off != "" {
+		return "", "", "", fmt.Errorf("git %s: not run through your own git on the host: %s", op.verb, b.off)
 	}
 	if perr != nil {
 		return "", "", "", perr

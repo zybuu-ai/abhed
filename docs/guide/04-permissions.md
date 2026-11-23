@@ -1265,10 +1265,19 @@ answer this question. Where the managed configuration holds the permissions
 it is neither offered nor kept. A forced push, a clone and a remote changed
 during the session are asked each time everywhere.
 
-A line you type yourself on the workbench terminal is yours to run: it is
-not asked about again, the network-off question included, but it is still
-refused where an agent's would be, runs on the same terms and is recorded
-the same way.
+None of this is done on `abhed serve` (the workbench, its terminal, the
+console, for every account and guest): there remote git runs in the
+sandbox, as in 1.2.9, as host git would run as the server's own account,
+with its keys, for whoever reaches it. Worktree and submodule commands are
+still brokered there.
+
+It is off, too, where `sandbox.host_git` is `false` (any layer may set it;
+none can set it back), and where the managed configuration holds the
+network off (`sandbox.allow_network`, `sandbox.network` or `egress` set in
+it, with commands' network off): a person cannot open that network, so
+host git does not reach it either. Such a call is refused with the reason,
+"ask your administrator" where the organisation set it. Under a managed
+allowlist host git is held to it, as above.
 
 No hook runs on the host. A brokered `git push` runs your own pre-push hook,
 the one in the folder a `core.hooksPath` in your system or global

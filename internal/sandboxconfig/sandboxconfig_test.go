@@ -510,3 +510,39 @@ func TestPolicyCarriesGitIdentity(t *testing.T) {
 		t.Fatalf("identity %v", p.GitIdentity)
 	}
 }
+
+// Git through the person's own credentials is off where sandbox.host_git
+// says so, or where the managed configuration holds the network off; an
+// allowlist it holds is applied to host git instead, and a person's own
+// network-off asks them.
+func TestHostGitOff(t *testing.T) {
+	no := false
+	for name, c := range map[string]struct {
+		edit func(*config.Config)
+		want string
+	}{
+		"default":                {func(*config.Config) {}, ""},
+		"person's network off":   {func(c *config.Config) { c.Sandbox.AllowNetwork = false }, ""},
+		"host_git false":         {func(c *config.Config) { c.Sandbox.HostGit = &no }, "sandbox.host_git is false"},
+		"managed host_git false": {func(c *config.Config) { c.Sandbox.HostGit = &no; c.ManagedKeys = []string{"sandbox.host_git"} }, "ask your administrator"},
+		"managed network off": {func(c *config.Config) {
+			c.Sandbox.AllowNetwork = false
+			c.ManagedKeys = []string{"sandbox.allow_network"}
+		}, "holds the network off"},
+		"managed network open": {func(c *config.Config) {
+			c.Sandbox.AllowNetwork = true
+			c.ManagedKeys = []string{"sandbox.allow_network"}
+		}, ""},
+		"managed allowlist applies": {func(c *config.Config) {
+			c.Sandbox.Network = config.NetworkAllowlist
+			c.ManagedKeys = []string{"sandbox.network", "egress"}
+		}, ""},
+	} {
+		cfg := config.Default()
+		c.edit(&cfg)
+		got := HostGitOff(cfg)
+		if c.want == "" && got != "" || c.want != "" && !strings.Contains(got, c.want) {
+			t.Errorf("%s: %q, want %q", name, got, c.want)
+		}
+	}
+}
