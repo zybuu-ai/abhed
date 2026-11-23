@@ -10,10 +10,6 @@ import (
 	"time"
 )
 
-// Service is the Keychain service Abhed's model keys are stored under; the
-// account is the key's name, such as ANTHROPIC_API_KEY.
-const Service = "Abhed model key"
-
 // Security is the Keychain through macOS's security program. The value is
 // written to its standard input in interactive mode, never in its arguments,
 // so no other process sees it in a process listing.
@@ -67,8 +63,12 @@ func firstLine(s, or string) string {
 }
 
 // Get reads the item's password.
-func (s Security) Get(name string) (string, bool, error) {
-	out, code, err := s.run("", "find-generic-password", "-s", Service, "-a", name, "-w")
+func (s Security) Get(service, name string) (string, bool, error) {
+	if service == "" {
+		// With no -s, find-generic-password would take any person's item.
+		return "", false, errors.New("no Keychain service names whose keys these are")
+	}
+	out, code, err := s.run("", "find-generic-password", "-s", service, "-a", name, "-w")
 	switch {
 	case code == notFound:
 		return "", false, nil
@@ -79,11 +79,11 @@ func (s Security) Get(name string) (string, bool, error) {
 }
 
 // Set adds the item, or updates it. The command goes on standard input.
-func (s Security) Set(name, value string) error {
-	if strings.ContainsAny(value, "\"\\' \t\r\n") || strings.ContainsAny(name, "\"\\' \t\r\n") {
+func (s Security) Set(service, name, value string) error {
+	if strings.ContainsAny(value, "\"\\' \t\r\n") || strings.ContainsAny(name+service, "\"\\'\t\r\n") {
 		return errors.New("the value holds a character the Keychain command cannot take")
 	}
-	line := fmt.Sprintf("add-generic-password -U -s \"%s\" -a \"%s\" -l \"%s\" -w \"%s\"", Service, name, Service+" "+name, value)
+	line := fmt.Sprintf("add-generic-password -U -s \"%s\" -a \"%s\" -l \"%s\" -w \"%s\"", service, name, service+" "+name, value)
 	if s.Keychain != "" {
 		line += " \"" + s.Keychain + "\""
 	}
@@ -91,7 +91,7 @@ func (s Security) Set(name, value string) error {
 		return err
 	}
 	// Interactive mode exits 0 whatever the command did, so the item is read back.
-	got, ok, err := s.Get(name)
+	got, ok, err := s.Get(service, name)
 	switch {
 	case err != nil:
 		return err
@@ -102,8 +102,8 @@ func (s Security) Set(name, value string) error {
 }
 
 // Delete removes the item.
-func (s Security) Delete(name string) (bool, error) {
-	_, code, err := s.run("", "delete-generic-password", "-s", Service, "-a", name)
+func (s Security) Delete(service, name string) (bool, error) {
+	_, code, err := s.run("", "delete-generic-password", "-s", service, "-a", name)
 	switch {
 	case code == notFound:
 		return false, nil

@@ -13,13 +13,28 @@ import (
 	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/modelkeys"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 )
 
 type memKeychain map[string]string
 
-func (m memKeychain) Get(n string) (string, bool, error) { v, ok := m[n]; return v, ok, nil }
-func (m memKeychain) Set(n, v string) error              { m[n] = v; return nil }
-func (m memKeychain) Delete(n string) (bool, error)      { _, ok := m[n]; delete(m, n); return ok, nil }
+func keySlot(s, n string) string {
+	if s == modelkeys.Service {
+		return n
+	}
+	return s + "|" + n
+}
+
+func (m memKeychain) Get(s, n string) (string, bool, error) {
+	v, ok := m[keySlot(s, n)]
+	return v, ok, nil
+}
+func (m memKeychain) Set(s, n, v string) error { m[keySlot(s, n)] = v; return nil }
+func (m memKeychain) Delete(s, n string) (bool, error) {
+	_, ok := m[keySlot(s, n)]
+	delete(m, keySlot(s, n))
+	return ok, nil
+}
 
 const testKey = "sk-ant-api03-secretvalue-0123456789"
 
@@ -324,5 +339,182 @@ func TestGuestRefusedModelCommandsFromMain(t *testing.T) {
 		if code == 0 || !strings.Contains(out, "a guest keeps nothing") {
 			t.Errorf("%v: %d %q", args, code, out)
 		}
+	}
+}
+
+// A guest is given no stored key, the machine's from before sign-in
+// included; a key in the environment still works.
+func TestGuestGetsNoStoredKey(t *testing.T) {
+	modelsHome(t, "", 0)
+	chain := memKeychain{"ANTHROPIC_API_KEY": "sk-legacy-0123456789"}
+	defer modelkeys.Use(chain, "")()
+	if p := config.ResolveKey(config.ProviderConfig{Type: "anthropic", Model: "m"}); p.APIKey != "sk-legacy-0123456789" {
+		t.Fatalf("legacy lost its key: %+v", p.KeySource)
+	}
+	endGuest()
+	if err := usePrincipal(identity.GuestPrincipal()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(endGuest)
+	if p := config.ResolveKey(config.ProviderConfig{Type: "anthropic", Model: "m"}); p.APIKey != "" {
+		t.Fatal("a guest was given a stored key")
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "sk-env-0123456789")
+	if p := config.ResolveKey(config.ProviderConfig{Type: "anthropic", Model: "m"}); p.APIKey != "sk-env-0123456789" {
+		t.Fatalf("a guest lost the environment's key: %+v", p.KeySource)
+	}
+}
+
+// A command run for B's window (ABHED_ACCOUNT=b1) with A signed in on the
+// machine never works as A: it is refused, and A's key and configuration are
+// untouched.
+func TestWindowAccountIsNeverAnother(t *testing.T) {
+	signInTest(t)
+	chain := memKeychain{}
+	defer modelkeys.Use(chain, "")()
+	for _, who := range []string{"b1", "a1"} {
+		if code, _, e := runAccount(t, "correct horse\ncorrect horse\n", "create", who); code != 0 {
+			t.Fatal(e)
+		}
+	}
+	s, _ := identity.Open()
+	if rem, ok, _ := s.Remembered(nil); !ok || rem.Username != "a1" {
+		t.Fatalf("a1 is not the one remembered: %+v", rem)
+	}
+	endGuest()
+	t.Setenv(EnvAccount, "b1")
+	out, code := stderrOf(t, []string{"models", "add", "anthropic", "claude-opus-5-5"})
+	if code == 0 || !strings.Contains(out, "b1 is not signed in") {
+		t.Fatalf("b1's command ran: %d %q", code, out)
+	}
+	if p := currentPrincipal(); p.Kind == identity.Account && p.Entry.Username == "a1" {
+		t.Fatal("the command worked as a1")
+	}
+	if len(chain) != 0 {
+		t.Fatalf("a key was stored: %v", chain)
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".abhed", "config.json")); err == nil {
+		b, _ := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".abhed", "config.json"))
+		if strings.Contains(string(b), "claude-opus-5-5") {
+			t.Fatal("a model was added as a1")
+		}
+	}
+}
+
+// A sign-in asked for one account refuses another that signs in instead.
+func TestIsSelected(t *testing.T) {
+	a := identity.Principal{Kind: identity.Account, Entry: identity.Entry{Username: "a1"}}
+	if !isSelected(a, "A1") || isSelected(a, "b1") || isSelected(identity.GuestPrincipal(), "a1") {
+		t.Fatal("isSelected misjudges")
+	}
+}
+
+// An account's secrets are its own folder's: a secrets file named in the
+// environment is dropped for it, as for a guest.
+func TestAccountDropsTheSecretsFileVariable(t *testing.T) {
+	t.Setenv(secrets.EnvFile, "/tmp/shared-secrets.json")
+	t.Setenv(EnvAccount, "")
+	handDown(identity.Principal{Kind: identity.Account, Entry: identity.Entry{Username: "a1"}})
+	if os.Getenv(secrets.EnvFile) != "" || os.Getenv(EnvAccount) != "a1" {
+		t.Fatalf("secrets file %q account %q", os.Getenv(secrets.EnvFile), os.Getenv(EnvAccount))
+	}
+}
+
+// windowAccounts makes b1 and a1 (passwords differ) with no one remembered,
+// and a stdin of lines.
+func windowAccounts(t *testing.T, lines string) (*identity.Store, *os.File) {
+	t.Helper()
+	signInTest(t)
+	if code, _, e := runAccount(t, "b1 password one\nb1 password one\n", "create", "b1"); code != 0 {
+		t.Fatal(e)
+	}
+	if code, _, e := runAccount(t, "a1 password two\na1 password two\n", "create", "a1"); code != 0 {
+		t.Fatal(e)
+	}
+	s, _ := identity.Open()
+	if err := s.Forget(); err != nil {
+		t.Fatal(err)
+	}
+	endGuest()
+	in := filepath.Join(t.TempDir(), "stdin")
+	if err := os.WriteFile(in, []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	return s, f
+}
+
+func neverA1(t *testing.T, s *identity.Store) {
+	t.Helper()
+	if p := currentPrincipal(); p.Kind == identity.Account && p.Entry.Username == "a1" {
+		t.Fatal("a1 is the working principal")
+	}
+	if rem, ok, _ := s.Remembered(nil); ok && rem.Username == "a1" {
+		t.Fatal("a1 is remembered")
+	}
+}
+
+// Asked as b1 at a terminal, the only choice is signing in as b1: a1's
+// password, answered there, signs no one in.
+func TestAskedAsB1OffersOnlyB1(t *testing.T) {
+	s, in := windowAccounts(t, "a1 password two\na1 password two\na1 password two\n")
+	var errOut bytes.Buffer
+	_, err := resolvePrincipal(signInFlags{account: "b1"}, true, in, &errOut)
+	if err == nil {
+		t.Fatalf("a wrong password for b1 signed someone in: %s", errOut.String())
+	}
+	if strings.Contains(errOut.String(), "Create") || strings.Contains(errOut.String(), "Guest") {
+		t.Fatalf("other choices were offered: %s", errOut.String())
+	}
+	neverA1(t, s)
+}
+
+// Whoever signs in when b1 was asked for, a1 included, is refused and never
+// becomes the principal.
+func TestAskedAsB1RefusesA1(t *testing.T) {
+	s, in := windowAccounts(t, "")
+	old := askWho
+	t.Cleanup(func() { askWho = old })
+	askWho = func(s *identity.Store, _ identity.Rules, _ *prompter, _ string) (identity.Principal, error) {
+		list, _ := s.List()
+		for _, e := range list {
+			if e.Username == "a1" {
+				return s.Principal(e), nil
+			}
+		}
+		return identity.Principal{}, errors.New("no a1")
+	}
+	var errOut bytes.Buffer
+	_, err := resolvePrincipal(signInFlags{account: "b1"}, true, in, &errOut)
+	if err == nil || !strings.Contains(err.Error(), "asked for as b1") {
+		t.Fatalf("a1 was taken for b1: %v", err)
+	}
+	neverA1(t, s)
+}
+
+// A window from before sign-in may not keep a model or key for whoever has
+// signed in since; as before sign-in it still may.
+func TestLegacyWindowRefusedOnceSignedIn(t *testing.T) {
+	s, _ := windowAccounts(t, "")
+	t.Setenv(EnvExpectLegacy, "1")
+	if err := guestSubcommand([]string{"models", "add", "anthropic", "x"}); err != nil {
+		t.Fatalf("refused before sign-in: %v", err)
+	}
+	list, _ := s.List()
+	if err := usePrincipal(s.Principal(list[0])); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(endGuest)
+	for _, args := range [][]string{{"models", "add", "anthropic", "x"}, {"provider", "login", "anthropic"}} {
+		if err := guestSubcommand(args); err == nil || !strings.Contains(err.Error(), "before sign-in") {
+			t.Errorf("%v: %v", args, err)
+		}
+	}
+	if err := guestSubcommand([]string{"models", "list"}); err != nil {
+		t.Errorf("a read was refused: %v", err)
 	}
 }

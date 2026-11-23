@@ -102,9 +102,21 @@ abhed provider status              # where each key comes from; never the key
 abhed provider logout anthropic
 ```
 
-The key goes into the macOS Keychain (service "Abhed model key", account
-`ANTHROPIC_API_KEY`), or where there is no Keychain into Abhed's secret store
-(`~/.abhed/secrets.json`, mode 600) under a name Abhed keeps for itself: it is
+A stored key is your Abhed account's, not the machine user's. It goes into
+the macOS Keychain under a service of your account's (`Abhed model key:
+<account id>`, account `ANTHROPIC_API_KEY`; before anyone signs in, `Abhed
+model key`), or where there is no Keychain into your account's secret store
+(`~/.abhed/accounts/<id>/secrets.json`, mode 600; `~/.abhed/secrets.json`
+before sign-in). Another account never sees it, a guest keeps and is given
+no stored key (a key in the environment still works), and the first account
+takes over the keys stored before sign-in with the rest of that data. This
+separation holds within Abhed: accounts on one macOS user are that user to
+the system, so a program the user runs outside Abhed can still read another
+account's Keychain item with `security find-generic-password`. Abhed Studio
+runs its model and key commands as the window's account (`ABHED_ACCOUNT`);
+when that account is not the one signed in on the machine, they are refused,
+never run as another. In
+the secret store a key is kept under a name Abhed keeps for itself: it is
 never offered to a command, `abhed secret list` does not show it, and `abhed
 secret set` cannot overwrite it. The key is never written to configuration,
 printed, sent to the model or recorded: once read, it is redacted from tool
@@ -131,7 +143,8 @@ file asks for.
 
 A provider finds its key in this order:
 
-1. `api_key` written in the configuration (or `ABHED_API_KEY`), which is best avoided;
+1. `api_key` written in the configuration (or `ABHED_API_KEY`), which is best avoided:
+   a key written in `~/.abhed/config.json` is shared by every Abhed account on this Mac;
 2. the environment variable `api_key_env` names, when it is set;
 3. the stored key `api_key_secret` names, else the one named by `api_key_env`;
 4. with neither named, a hosted type at its own endpoint uses its type's
@@ -183,7 +196,10 @@ the previous file kept as `config.json.bak`, its mode kept, and every other
 key in it left as it was. They never write the workspace's file or the
 managed one, and refuse a model the managed configuration defines or a
 `model.allowed` list refuses. Each change is logged to
-`~/.abhed/config-changes.jsonl`, and applies to new sessions. Inside an
+`~/.abhed/config-changes.jsonl`, and applies to new sessions. The models are this Mac's: `~/.abhed/config.json`
+is shared by every Abhed account on it, so a model one account adds, removes
+or makes the default changes it for all of them. Keys are not shared: each
+account stores its own under the same name. Inside an
 agent's command they are refused. Studio's model picker offers **Add
 Model…** and **Set as Default**, which run the same commands.
 

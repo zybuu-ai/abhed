@@ -90,6 +90,8 @@ interface AbhedAgentMeta {
     pending?: string;              // a sign-in is required and none is held
     owner?: string;                // whose history this is: device:<name>, guest, …
     adopted?: true;                // the account that took over the history from before sign-in
+    account?: string;              // 1.3.0: how ABHED_ACCOUNT names it (username, or username@host);
+                                   // Studio runs this window's engine commands with it
   };
 }
 ```

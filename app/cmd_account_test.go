@@ -10,6 +10,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/identity"
+	"github.com/zybuu-ai/abhed/internal/modelkeys"
 	"github.com/zybuu-ai/abhed/store"
 	"github.com/zybuu-ai/abhed/store/local"
 )
@@ -121,6 +122,9 @@ func TestAccountAdoptAndUnmigrate(t *testing.T) {
 	if err := os.WriteFile(legacy, []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// A model key in the Keychain from before sign-in goes with the rest, and back.
+	chain := memKeychain{"ANTHROPIC_API_KEY": "sk-legacy-0123456789"}
+	defer modelkeys.Use(chain, "")()
 	if code, _, e := runAccount(t, "correct horse\ncorrect horse\n", "create", "a1"); code != 0 {
 		t.Fatal(e)
 	}
@@ -131,11 +135,17 @@ func TestAccountAdoptAndUnmigrate(t *testing.T) {
 	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
 		t.Fatal("the history stayed in ~/.abhed")
 	}
+	if _, left := chain["ANTHROPIC_API_KEY"]; left || len(chain) != 1 {
+		t.Fatalf("the legacy key was not taken over: %v", chain)
+	}
 	if code, out, errOut := runAccount(t, "", "unmigrate"); code != 0 || !strings.Contains(out, "back") {
 		t.Fatalf("unmigrate: %d %q %q", code, out, errOut)
 	}
 	if _, err := os.Stat(legacy); err != nil {
 		t.Fatal("the history did not come back")
+	}
+	if chain["ANTHROPIC_API_KEY"] != "sk-legacy-0123456789" || len(chain) != 1 {
+		t.Fatalf("the key did not come back: %v", chain)
 	}
 }
 
@@ -163,5 +173,35 @@ func TestCreateAndAdoptRemembersOnlyAfterTheMove(t *testing.T) {
 	}
 	if _, ok, _ := s.Remembered(nil); ok {
 		t.Fatal("the account is remembered though its data did not move")
+	}
+}
+
+// The keys from before sign-in go only to the account that owns that data.
+func TestAdoptKeysOnlyForTheLegacyOwner(t *testing.T) {
+	accountHome(t)
+	legacy := filepath.Join(os.Getenv("HOME"), ".abhed", "history", "x.jsonl")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	chain := memKeychain{}
+	defer modelkeys.Use(chain, "")()
+	for _, who := range []string{"a1", "b1"} {
+		if code, _, e := runAccount(t, "correct horse\ncorrect horse\n", "create", who); code != 0 {
+			t.Fatal(e)
+		}
+	}
+	if code, _, e := runAccount(t, "", "adopt", "a1"); code != 0 {
+		t.Fatal(e)
+	}
+	// A key stored before sign-in again (an older build) is not b1's to take.
+	chain["ANTHROPIC_API_KEY"] = "sk-legacy-0123456789"
+	if code, _, e := runAccount(t, "", "adopt", "b1"); code != 0 {
+		t.Fatal(e)
+	}
+	if chain["ANTHROPIC_API_KEY"] != "sk-legacy-0123456789" || len(chain) != 1 {
+		t.Fatalf("b1 took the earlier key: %v", chain)
 	}
 }

@@ -10,9 +10,23 @@ import (
 
 type memChain map[string]string
 
-func (m memChain) Get(n string) (string, bool, error) { v, ok := m[n]; return v, ok, nil }
-func (m memChain) Set(n, v string) error              { m[n] = v; return nil }
-func (m memChain) Delete(n string) (bool, error)      { _, ok := m[n]; delete(m, n); return ok, nil }
+func memSlot(s, n string) string {
+	if s == modelkeys.Service {
+		return n
+	}
+	return s + "|" + n
+}
+
+func (m memChain) Get(s, n string) (string, bool, error) {
+	v, ok := m[memSlot(s, n)]
+	return v, ok, nil
+}
+func (m memChain) Set(s, n, v string) error { m[memSlot(s, n)] = v; return nil }
+func (m memChain) Delete(s, n string) (bool, error) {
+	_, ok := m[memSlot(s, n)]
+	delete(m, memSlot(s, n))
+	return ok, nil
+}
 
 func TestResolveKeySources(t *testing.T) {
 	chain := memChain{"ANTHROPIC_API_KEY": "sk-stored-0123456789", "CORP_KEY": "corp-stored-0123456789"}
