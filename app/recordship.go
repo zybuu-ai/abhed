@@ -15,6 +15,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/home"
+	"github.com/zybuu-ai/abhed/internal/safeurl"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/orgpolicy"
 	"github.com/zybuu-ai/abhed/profiles"
@@ -49,7 +50,7 @@ func shipTargetFor(cfg config.Config) (shipTarget, error) {
 		return shipTarget{}, errors.New("record.ship is on, but this machine is not signed in to an org server; the record is kept here and shipped once it is (abhed login URL)")
 	}
 	if u := cfg.Org.URL; u != "" && strings.TrimRight(u, "/") != st.URL {
-		return shipTarget{}, fmt.Errorf("record.ship is on, but the org policy is taken only from %s and this machine is signed in to %s", u, st.URL)
+		return shipTarget{}, fmt.Errorf("record.ship is on, but the org policy is taken only from %s and this machine is signed in to %s", safeurl.Server(u), safeurl.Server(st.URL))
 	}
 	pf, err := profiles.DefaultPath()
 	if err != nil {

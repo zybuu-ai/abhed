@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/safeurl"
 	"github.com/zybuu-ai/abhed/orgpolicy"
 )
 
@@ -82,20 +83,7 @@ func orgSource(url string) string {
 
 // orgStatusURL is the org policy URL for the status line: whole, with its
 // user part, every query value and its fragment redacted.
-func orgStatusURL(raw string) string {
-	u, err := url.Parse(redactURL(raw))
-	if err != nil || u.Scheme == "" {
-		return orgServer(raw)
-	}
-	if u.RawQuery != "" {
-		q := u.Query()
-		for name := range q {
-			q.Set(name, "redacted")
-		}
-		u.RawQuery = q.Encode()
-	}
-	return Printable(u.String())
-}
+func orgStatusURL(raw string) string { return Printable(safeurl.Redacted(raw)) }
 
 // orgServer is the org policy URL as a reason may show it: its scheme, host
 // and path only, never what a user part, query or fragment may carry. ""
@@ -105,7 +93,7 @@ func orgServer(raw string) string {
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return ""
 	}
-	return Printable((&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String())
+	return Printable(safeurl.Server(raw))
 }
 
 // orgKind is what an org policy may do with a setting.
