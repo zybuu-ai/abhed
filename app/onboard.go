@@ -327,6 +327,10 @@ type gatedAdapter struct {
 // budget is seen.
 func (g gatedAdapter) SamplingDefaults() model.Params { return model.SamplingDefaultsOf(g.Adapter) }
 
+// CallTimeout passes the wrapped adapter's through, so the reasoning
+// backstop stays under it.
+func (g gatedAdapter) CallTimeout() time.Duration { return model.CallTimeoutOf(g.Adapter) }
+
 func (g gatedAdapter) Complete(ctx context.Context, req model.Request) (<-chan model.Chunk, error) {
 	if err := g.probe.check(ctx); err != nil {
 		return nil, err
