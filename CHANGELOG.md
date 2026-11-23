@@ -105,6 +105,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.9
 
+- Under `-verify strict`, a statement that only explains code the session
+  read and did not change ("the running total is 0 because nothing has been
+  added yet"), or what changed code did before, no longer fails the
+  answer: it is shown as "explanation: not checked" and counted in the
+  verdict's `note`. 1.2.9 failed strict on it. A statement that the
+  session's own change works is still work, and still fails strict until
+  the record shows it.
 - A `*` or `?` in an `ssh.read_commands` entry now stands within one
   argument. An entry that relied on `*` spanning several words, such as
   `journalctl *` for `journalctl -u app -n 50`, no longer matches such a
@@ -173,6 +180,26 @@ All notable changes to Abhed are recorded here. The format follows
   streamed): "input arrived on stdin after 1.5s; rerun with - to wait for
   it, or -stdin-wait <dur>". A script piping a slow producer (a cold `go
   test ./... 2>&1 | abhed -p …`) should pass `-` or a longer `-stdin-wait`.
+- MCP servers now start together, eight at a time, each within a startup
+  deadline of 60 seconds that covers the handshake and its lists. A server
+  that needs longer to start (a container image pulled on first run) is
+  reported as failed and its tools are absent; set
+  `startup_timeout_seconds` on it.
+- A request never offers a provider more than `max_tools` tools (128 by
+  default, for every provider type). Where the always-offered tools
+  (built-ins, extensions', MCP tools offered in full) pass it, the request is
+  now refused before it is sent with an error naming the count and the
+  limit, where a provider used to answer 400; narrow an MCP server with
+  `allow_tools`, disable a server or extension, or set `max_tools` on a
+  provider that takes more.
+- An extension tool whose name begins `mcp__`, in any case, is refused with a
+  warning; rename it. A tool whose name is already registered is no longer
+  allowed to replace the first one: it is refused with a warning.
+- A skill description longer than 300 characters is cut there in the
+  listing, with a warning naming the file. Past 8 KB the skill listing, the
+  `skill` tool's names, and the agent types on `task` and `tasks` are
+  counted rather than listed, and `agent_type` drops its `enum`; any of them
+  still loads by name.
 
 ### Added
 
@@ -766,6 +793,44 @@ All notable changes to Abhed are recorded here. The format follows
   account's key.
 - `abhed login` and `abhed mcp login` honour `BROWSER`, and take
   `-no-browser` to only print the sign-in address.
+- MCP servers start in parallel, eight at a time, each within its own
+  deadline (`startup_timeout_seconds`, 60 by default): a server that hangs
+  is reported once its deadline passes, with its tools absent. One still
+  starting after 5 seconds gives its place to the next, so hung servers
+  delay the others' starts by 5 seconds for each group of eight. They used
+  to start one after another, so each hung server delayed every session by
+  a minute; now the session waits for the longest deadline, plus 5 seconds
+  for each further group of eight hung servers.
+- A tool name a provider would refuse, an MCP full name longer than 64
+  characters or one holding `.`, is sent to the provider under a short,
+  stable wire name (up to 47 plain characters, the `mcp__<server>__` prefix
+  kept whole where it fits, `_` and 16 hex digits of its SHA-256) and mapped
+  back on the call. A tool whose name or wire name is already another's is
+  not registered, with a warning, at startup and for a server added to a
+  running server alike. Permission rules, approvals, hooks
+  and the record keep the real `mcp__<server>__<tool>` name. A remote tool's
+  own name may now be up to 128 characters, as the MCP specification
+  allows.
+- `tool_search` keeps at most 100 tools loaded per session, unloading the
+  least recently loaded or called; the loop also unloads them, least
+  recently used first, to keep each request within the `max_tools` of the
+  provider serving it. Built-in tools are never unloaded. What a session
+  loads is its own: before, one session's search loaded the tool in every
+  session sharing the tool set, other users' on a server included.
+- New provider setting `max_tools`, and MCP server setting
+  `startup_timeout_seconds`.
+- The skill listing, the `skill` tool's list of names, and the agent types
+  on `task` and `tasks` are each kept within 8 KB; the rest are counted.
+  The `skill` tool and `task` answer a name they do not know with the skills
+  or types whose names or descriptions hold its words. A skill description
+  is capped at 300 characters, as an agent's is.
+- New `make test-scale`: 50 stub MCP servers of 20 tools, 300 skills and
+  100 agent types in one session, checking routing, the provider's tool
+  limit and the listing budgets; CI runs it as the integration-scale job.
+  That is the tested bound, not a ceiling the code enforces: more servers
+  have not been tested, each stdio server is a process of its own, and in
+  that run the tools and listings cost about 16,000 tokens before the first
+  message. See the MCP guide's Limits and Scale sections.
 
 ### Fixed
 
@@ -786,7 +851,15 @@ All notable changes to Abhed are recorded here. The format follows
   go before the summaries are written, and each is written once. A call
   cancelled as its session closes is counted in the summary, as it is
   charged to the budget, instead of being left out when its handler had
-  not yet counted it.
+  not yet counted it. The close cancels every session's editor calls first
+  and then waits for them once, up to 1 s for the whole close rather than
+  1 s for each feature of each session, so slow calls no longer use up the
+  3 s a signal allows. A stop signal during a close begun by the input's
+  end now bounds it to 3 s from the signal, and a session opened during
+  the close is refused and shut by the close, with its `session.ended`
+  recorded, before the exit. A commit message call in flight is waited for
+  the same way, so its `commit_message.generated` and `model.call` come
+  before the session's end.
 - `next_edit.summary` counted a rename finished from the file as `local`
   but not as `served`, so a session whose only next edit was such a rename
   showed `served: 0`. It now counts in both; the metrics keep `served`
@@ -833,6 +906,66 @@ All notable changes to Abhed are recorded here. The format follows
   diagnostics for the language are off with one note on stderr naming the
   install (`abhed toolchain install -lsp python`), and a start that policy
   does not allow is a note too, never a denial of the agent's.
+- Answer checks refused correct claims on a real model. A command named in
+  a claim ("the tests were run using `python3 -m unittest tests.test_text`
+  and passed") was looked for only in tool output, never in the call that
+  ran it; an edit claim's file name was read as code that should have
+  changed; a `file:line` cite had to match the line almost exactly, and
+  was read from the file on disk rather than from the read the session
+  made; evidence given as `{"call_id", "quote"}` objects was dropped. On a
+  recorded review, 0 of 5 accurate, line-cited claims verified; on a
+  recorded correct fix, strict mode exited 8. A command is now shown by the
+  call that ran it, an edit claim by the session's own edit (what it took
+  away and put in), a `file:line` cite by the read's numbered lines within
+  three lines of the cite, "I fixed X" by the change to X and a test run
+  that passed after it and covers what failed before it, and evidence
+  objects are read. A change made by another tool's call (`k8s_apply`
+  scaling `web` to 2) is still not read from that call, whose text cannot
+  show the change held: such a claim stays unverified, a known false
+  negative. A `file:line` cite counts within three lines only inside the
+  same innermost definition (JavaScript and TypeScript arrow functions,
+  methods, object functions and class fields included), only at the
+  line itself where the line is in no definition, and the code and
+  numbers the claim gives must be there; "`f` is defined at L" needs
+  `f`'s definition there. An explanation of code the
+  session read, or of what changed code did before, with no event, count,
+  result, change, run or citation of its own, is shown as "explanation:
+  not checked" and no longer fails strict mode; a statement that the
+  session's own change works ("This correctly handles …", "The new logic
+  ensures …") is work. Of the two real answers' 24 statements, 14 now
+  verify (2 did) and 1 is an explanation. The recorded correct fix still
+  ends `unverified` in strict mode: its answers say their change works
+  ("This correctly handles multiple whitespace…") where the record shows
+  only that the tests pass, and the first also cites two call ids the
+  record never held. "Running `X` resulted in `OK`" is read from the
+  last run of exactly X, with no change after it. A success needs a known
+  exit 0 that is X's own (one command, or an `&&` chain ending in the
+  test run, so never `pytest || true`, `pytest; echo done` or
+  `npm test | tail`), no failure in the output (FAIL, a count such as
+  "1 failed", "1 failures" or "Failed: 1", TAP's "not ok", or make's
+  "Error 1 (ignored)") and, for tests, a whole run that ran some, by the
+  same rules as a test claim (only `cd` before it, no variable such as
+  `PYTEST_ADDOPTS` that may filter it, and no change to the Makefile,
+  `package.json` or pytest config before a `make`, `npm` or pytest
+  run); a failure needs a known non-zero exit. A pytest run that reports
+  tests "deselected" (a `-k` or `-m` in its config) is not a whole run,
+  for "All tests pass" too. A cite of a range (`a.py:22-81`), of a method named
+  with its class, or several cites in one statement are read; what the
+  person attached (piped stdin, an @ file) shows the values in it but
+  never the work; and an ssh call the policy ran as a read, whose
+  command parses as known readers, no longer makes earlier results out
+  of date. On a regression check of a 1.3.0 candidate, the strict fix's
+  final answer now verifies in full, 3 of 5 line-cited review statements
+  verify (0 did), and both listed core dumps verify.
+  The false-claim corpus gains the two sessions' statements (14 controls,
+  2 planted, 8 neutral), the regression check's 42 statements (21
+  controls, 1 planted, 20 neutral), 160 more planted cases (62 of them
+  changes said of another tool's call, or a pass "after the changes"
+  that only another tool's call or a change outside the workspace made),
+  31 controls and 10 neutral known false negatives, and 3 true statements
+  that were neutral now verify; none of the 1143 planted claims verifies,
+  all 322 controls do, and none of the 472 true or neutral claims is
+  contradicted.
 - In `abhed -p -runbook`, a change the runbook does not list was refused
   with the hint "rerun with -allow '…'", which could not help: under a bound
   runbook such a change asks whatever an allow rule says. The hint now says
@@ -903,7 +1036,8 @@ All notable changes to Abhed are recorded here. The format follows
 - A model reply that only reasons, with no text or tool call, is cut past
   `limits.reasoning_stall_tokens` reasoning tokens (8000 by default, or the
   request's thinking budget if larger), with `limits.reasoning_stall_seconds`
-  (600) as a time backstop, instead of being held to the ten-minute call cap
+  (300, held to half the provider's call timeout) as a time backstop,
+  instead of being held to the ten-minute call cap
   and failing the run with no answer. Floors of 1000 tokens and 30 seconds
   apply. The cut call is charged as any cut call is; an answer that arrives
   as the cut comes is kept; otherwise the turn asks once more with thinking
@@ -917,6 +1051,20 @@ All notable changes to Abhed are recorded here. The format follows
   suggestion and commit-message calls, which ask with thinking off, thought
   anyway (on Anthropic, a budget with thinking off made an invalid request),
   and a provider set to `think: false` with a budget still thought.
+- "Thinking off" now reaches Ollama. Its OpenAI-compatible `/v1` endpoint
+  ignores `think: false` and turns thinking off only for
+  `reasoning_effort: "none"`, which is now sent with it for type `ollama`
+  and an `openai-compatible` entry on the loopback port 11434; `extra.think_off`
+  (`reasoning_effort` or `think`) sets it for any other server. The
+  reasoning-stall retry, the critic, the next-prompt suggestion and the
+  commit message ask with thinking off.
+- A cancelled or cut call to a local server known to stream its reasoning
+  (Ollama and llama.cpp, or vLLM, TGI or SGLang on a loopback address) is
+  charged what came back rather than its whole output bound, unless a dollar
+  cap is set. Every other server with a `think` switch, which may front a
+  model that reasons out of sight, keeps the bound, and the official OpenAI
+  API's o-series and gpt-5 models now get it too, since their reasoning is
+  billed unseen.
 - Asking for work "in parallel" started no parallel subagents. The model read
   it as a request to make the project's code concurrent, or did the parts one
   after another: neither subagent tool said what such a request means. `tasks`
@@ -1171,6 +1319,75 @@ All notable changes to Abhed are recorded here. The format follows
   for it, or -no-stdin to silence this"). Input that starts after the wait
   stops the run with exit code 9 (see Upgrading). A lone `-`
   waits for stdin to end however late its input starts.
+- An MCP server's tool list was read as its first page only: `nextCursor`
+  was ignored, so a server that pages its tools lost the rest without a
+  word. Tool, prompt and resource lists now follow the cursor, up to a page
+  cap and a total cap (100 pages and 2,000 tools; 10 pages and 200 prompts;
+  10 pages and 500 resources), and a warning names a server past one. A
+  cursor seen before ends the list, with a warning naming the server.
+- More than 128 tools in a request, or an MCP tool whose full name was
+  longer than 64 characters or held `.`, made an OpenAI-compatible provider
+  answer 400 to every request of the session. Both are handled now (see
+  Changed).
+- Tools loaded by `tool_search` were never unloaded, so a long session
+  passed the provider's tool limit (162 tools after fifteen searches) and
+  every request after failed.
+- An extension tool could take an MCP tool's name and silently replace it,
+  and any second tool registered under a name replaced the first. Both are
+  refused with a warning.
+- A skill in a later configured directory replaced one of the same name in
+  an earlier directory without a word, and prompts past a server's 200th
+  were dropped without one. Both now warn.
+- An MCP tool's description, cut at 1,024 bytes, and its result, cut at
+  30,000, could be cut inside a character, sending invalid UTF-8 to the
+  provider. Cuts now fall on a character boundary, as does the end of a
+  server's stderr shown on a failed start.
+- A stdio MCP server's stdout line was read into memory however long it
+  was. A line past 16 MiB now ends the connection with an error naming the
+  server.
+- A call to a server whose connection had ended failed with "unexpected end
+  of JSON input". It now says the connection ended, and why.
+- The MCP guide said tool lists are fetched lazily on first use (servers
+  start with the session) and that a tool name over 64 characters is left
+  out for providers' sake; the skills guide put a listing line at about
+  fifteen tokens. All three are corrected, and the MCP guide now has a
+  table of every limit and a Scale section saying what was tested.
+- Red-team check A13 (MCP tool poisoning) skipped wherever `python3` was
+  missing, CI included. Its server is now a stub in Go, and the check fails
+  rather than skips when the server does not start.
+- A vague request for parallel work or speed under `abhed -p` (or any run
+  nobody can answer) went straight to code edits: it got no note, since the
+  note that asks a question cannot be answered there. A message that names
+  speed or parallelism and no concrete task now gets a note: if it only
+  asks to speed things up or run things in parallel, make no code edits for
+  it, and answer with a plan of both readings or the question it would ask.
+  A message that names work ("delete these three files at once", "merge
+  these three branches at once", "run the three migrations in parallel")
+  gets no note and is done as asked: a specific object counts as concrete,
+  not only a verb from a list, and so does an issue number, a version, a
+  name with a number ("PR 12") or two names ("nginx and redis"), unless the
+  word before it opens an adjunct or is vague ("on Python 3", "things quick
+  and easy"); "steps", "parts", "the whole lot" and the like are as generic
+  as "things". What is
+  sped up, and a phrase after a preposition or a comma ("for the demo",
+  "the deadline is close"), is not an object, so a vague request keeps the
+  note. The judgement is English only. "Make everything run in parallel" counts as
+  vague, as the request without "make" does. Explicit parallel requests
+  still get the note that starts subagents.
+- The `-p` relevance check marked an answer `off_topic` when the question
+  named one of the session's tools ("call the ssh_connect tool, then show
+  the uptime"). A tool name is no longer taken as what the answer must
+  mention.
+- A run stopped while running because input came late on stdin is recorded
+  as `stdin_late`, not `user_interrupt`, in `session.ended` and the text
+  footer. Input that comes only after the run has ended still exits 9, but
+  the record keeps the reason the run ended with, usually `completed`.
+- First-run setup lists a local Ollama's models in name order, so the
+  default choice no longer changes between runs.
+- A managed price that replaces your own `pricing` entry for the same model
+  is now said once at start-up, as the guide says.
+- `abhed trust` and `/commands trust` show a command's description, or its
+  first body line, instead of its front matter's `---`.
 
 ### Go API
 

@@ -20,7 +20,7 @@ func BindStores(r *Registry, v *secrets.Store) *Registry {
 	out := r.Clone()
 	for _, t := range r.All() {
 		if sb, ok := t.(StoreBound); ok {
-			out.Add(sb.BindStore(v))
+			out.Replace(sb.BindStore(v))
 		}
 	}
 	return out

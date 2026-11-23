@@ -14,12 +14,12 @@ import (
 )
 
 // A remote tool whose name holds anything but letters, digits, _ . and -, or
-// is longer than 64, is not registered, and a warning names it escaped.
+// is longer than 128, is not registered, and a warning names it escaped.
 func TestRemoteToolNamesAreValidated(t *testing.T) {
-	long := strings.Repeat("x", 65)
+	long := strings.Repeat("x", 129)
 	list, _ := json.Marshal(map[string]any{"tools": []map[string]any{
 		{"name": "search"}, {"name": "look\u202eup"}, {"name": "a b"}, {"name": long},
-		{"name": "ok.name-1_" + strings.Repeat("y", 54)}, {"name": ""},
+		{"name": "ok.name-1_" + strings.Repeat("y", 118)}, {"name": ""},
 	}})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
@@ -59,7 +59,7 @@ func TestRemoteToolNamesAreValidated(t *testing.T) {
 	for _, tool := range g.Tools() {
 		names = append(names, tool.Name())
 	}
-	want := []string{"mcp__hid__search", "mcp__hid__ok.name-1_" + strings.Repeat("y", 54)}
+	want := []string{"mcp__hid__search", "mcp__hid__ok.name-1_" + strings.Repeat("y", 118)}
 	if !slices.Equal(names, want) {
 		t.Fatalf("registered %q, want %q", names, want)
 	}
@@ -72,7 +72,7 @@ func TestRemoteToolNamesAreValidated(t *testing.T) {
 	if strings.Contains(out, "\u202e") {
 		t.Errorf("the warning carries the raw RLO:\n%s", out)
 	}
-	if !strings.Contains(out, "up to 64 characters (65 here)") {
+	if !strings.Contains(out, "up to 128 characters (129 here)") {
 		t.Errorf("the warning does not give the limit and the length:\n%s", out)
 	}
 	if st := g.Status(); len(st) != 1 || st[0] != "hid (2 tools, 4 left out for their names)" {
