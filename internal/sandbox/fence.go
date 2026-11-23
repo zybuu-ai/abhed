@@ -28,6 +28,7 @@ import (
 // once Abhed has recorded the launch runs the command in its place.
 // Chosen only by sandbox.tier; it never falls back, it refuses naming why.
 type Fence struct {
+	choice
 	policy Policy
 
 	once sync.Once

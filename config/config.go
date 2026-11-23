@@ -1658,7 +1658,11 @@ type MCPOAuthConfig struct {
 type SandboxConfig struct {
 	MinTier string `json:"min_tier"` // none|process|container|vm
 	// Tier chooses the backend instead of the strongest available one:
-	// "fence", the Linux preview. Empty selects as before.
+	// process, container, vm, or fence (the Linux preview), never weaker
+	// than min_tier; the chosen tier is used or the session is refused.
+	// Empty selects the strongest available, preferring the process tier on
+	// a Mac when the container image has no git and nothing managed sets the
+	// tier. A person's own setting; a workspace file cannot set it.
 	Tier         string `json:"tier,omitempty"`
 	AllowNetwork bool   `json:"allow_network"`
 	// Network "allowlist" sends commands' traffic through the session's
@@ -2462,9 +2466,12 @@ func (c Config) Validate() error {
 		return fmt.Errorf("unknown sandbox.min_tier %q (want none|process|container|vm)", c.Sandbox.MinTier)
 	}
 	switch c.Sandbox.Tier {
-	case "", "fence":
+	case "", "process", "container", "vm", "fence":
 	default:
-		return fmt.Errorf("unknown sandbox.tier %q (want fence, or leave it unset)", c.Sandbox.Tier)
+		return fmt.Errorf("unknown sandbox.tier %q (want process, container, vm or fence, or leave it unset)", c.Sandbox.Tier)
+	}
+	if t, m := tierRank[c.Sandbox.Tier], tierRank[c.Sandbox.MinTier]; c.Sandbox.Tier != "" && c.Sandbox.Tier != "fence" && t < m {
+		return fmt.Errorf("sandbox.tier %s is weaker than sandbox.min_tier %s; choose %s or stronger", c.Sandbox.Tier, c.Sandbox.MinTier, c.Sandbox.MinTier)
 	}
 	if c.Fence.CPUPercent < 0 || c.Fence.CPUPercent > 102400 {
 		return fmt.Errorf("fence.cpu_percent %d is outside 0 to 102400", c.Fence.CPUPercent)

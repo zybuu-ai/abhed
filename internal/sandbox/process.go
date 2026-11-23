@@ -23,6 +23,7 @@ import (
 // Process confines a command with OS process-level primitives: macOS
 // sandbox-exec (Seatbelt) or Linux bubblewrap. Use TierVM for untrusted code.
 type Process struct {
+	choice
 	policy  Policy
 	backend string // "sandbox-exec" | "bwrap"
 	// listen is SetListen's: commands may listen on loopback from now on.
@@ -1528,7 +1529,10 @@ const vimInit = `if 1 | if has('nvim') | let g:abhed_rc = stdpath('config') . (f
 
 // None runs commands directly on the host. It keeps the tier explicit, and
 // refuses selection when isolation is required.
-type None struct{ policy Policy }
+type None struct {
+	choice
+	policy Policy
+}
 
 func NewNone(p Policy) *None { return &None{policy: p} }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -31,7 +32,17 @@ func Build(cfg config.Config, workspace string, stateRoots ...string) (sandbox.S
 // Policy is the sandbox policy a configuration asks for, after checking its
 // state paths. Build selects a backend for it.
 func Policy(cfg config.Config, workspace string, stateRoots ...string) (sandbox.Policy, error) {
-	return policy(cfg, workspace, workspace, stateRoots)
+	p, err := policy(cfg, workspace, workspace, stateRoots)
+	p.PreferOwnTools = PreferOwnTools(cfg, runtime.GOOS)
+	return p, err
+}
+
+// PreferOwnTools reports whether a person's own workspace gets the process
+// tier in place of a container whose image has no git: on a Mac, with no
+// tier chosen, and nothing managed setting the tier or its minimum.
+func PreferOwnTools(cfg config.Config, goos string) bool {
+	return goos == "darwin" && cfg.Sandbox.Tier == "" &&
+		!cfg.ManagedSets("sandbox.min_tier") && !cfg.ManagedSets("sandbox.tier")
 }
 
 // InstancePolicy is Policy for a control-plane sandbox working in its own

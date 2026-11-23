@@ -385,7 +385,7 @@ func TestValidateFenceSettings(t *testing.T) {
 		tier string
 		cpu  int
 		ok   bool
-	}{{"", 0, true}, {"fence", 0, true}, {"fence", 250, true}, {"outer", 0, false}, {"process", 0, false}, {"fence", -1, false}, {"fence", 102401, false}} {
+	}{{"", 0, true}, {"fence", 0, true}, {"fence", 250, true}, {"outer", 0, false}, {"none", 0, false}, {"process", 0, true}, {"fence", -1, false}, {"fence", 102401, false}} {
 		cfg := Default()
 		cfg.Sandbox.Tier, cfg.Fence.CPUPercent = c.tier, c.cpu
 		if err := cfg.Validate(); (err == nil) != c.ok {

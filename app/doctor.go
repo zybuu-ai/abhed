@@ -151,6 +151,9 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 			label += "  ⚠"
 		}
 		fmt.Printf("sandbox     %s — %s\n", label, sb.Describe())
+		for _, line := range tierChoiceLines(cfg, sb) {
+			fmt.Printf("            %s\n", line)
+		}
 		for _, w := range limitWarnings(cfg, sb.Tier()) {
 			fmt.Printf("            ⚠ %s\n", w)
 		}
@@ -1017,4 +1020,28 @@ func doctorModelProbes(adapter model.Adapter, timeout time.Duration, w io.Writer
 		return false
 	}
 	return true
+}
+
+// tierChoiceLines say why the sandbox's tier was chosen, what its image lacks,
+// and how a person may choose another.
+func tierChoiceLines(cfg config.Config, sb sandbox.Sandbox) []string {
+	var out []string
+	if why := sandbox.ChoiceReason(sb); why != "" {
+		out = append(out, "chosen: "+why)
+	}
+	if missing, known := sandbox.MissingTools(sb); known && len(missing) > 0 {
+		out = append(out, fmt.Sprintf("the image %s has no %s; commands that need them fail here", sandbox.SandboxImage(), strings.Join(missing, ", ")))
+	}
+	switch {
+	case cfg.ManagedSets("sandbox.tier"):
+		out = append(out, "the tier is set by the managed configuration")
+	case cfg.Sandbox.Tier == "":
+		floor := orDefault(cfg.Sandbox.MinTier, "process")
+		from := ""
+		if cfg.ManagedSets("sandbox.min_tier") {
+			from = ", set by the managed configuration"
+		}
+		out = append(out, fmt.Sprintf("choose another with /config set sandbox.tier process|container|vm (no weaker than %s%s)", floor, from))
+	}
+	return out
 }
