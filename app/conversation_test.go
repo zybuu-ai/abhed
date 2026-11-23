@@ -9,17 +9,25 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/managed"
 )
 
 // TestConversationHelper is the interactive CLI the conversation tests drive
 // over a pipe, in the workspace they name.
 func TestConversationHelper(t *testing.T) {
+	if os.Getenv("ABHED_CONV_MANAGED_PATHS") != "" {
+		// For TestCLIHelperReadsNoMachineManagedFile: where this helper reads
+		// the managed configuration from.
+		fmt.Println("managed-config:", managed.ConfigFile)
+		os.Exit(0)
+	}
 	ws := os.Getenv("ABHED_CONV_WS")
 	if ws == "" {
 		t.Skip("run by the conversation tests")
@@ -74,9 +82,15 @@ func startCLI(t *testing.T) *cliSession {
 func startCLIWith(t *testing.T, reply func(w io.Writer, n int, body string)) *cliSession {
 	t.Helper()
 	return startCLIConfig(t, reply, func(url string) string {
-		return `{"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + url + `","model":"m","context_window":8192}}}}`
+		return `{"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + url + `","model":"m","context_window":` + strconv.Itoa(cliWindow) + `}}}}`
 	})
 }
+
+// cliWindow is the stub model's context window for a scripted session: a
+// real model's, so no compaction a test did not ask for takes a scripted
+// reply. At 8192 the request (about 5.4k tokens with the prompt and tools)
+// crossed the compaction threshold and TestCLIRunbookPlan lost its third reply.
+const cliWindow = 32768
 
 // startCLIConfig is startCLIWith under the configuration config makes from the model's URL.
 func startCLIConfig(t *testing.T, reply func(w io.Writer, n int, body string), config func(url string) string) *cliSession {
@@ -452,4 +466,39 @@ func TestCLIAlwaysAllowEndsWithClear(t *testing.T) {
 	}
 	fmt.Fprintln(c.stdin, "3") // no
 	c.waitFor(func(string) bool { return finished() == 2 }, "the second task to finish")
+}
+
+// The CLI helper the conversation tests run, as they run it, reads the
+// managed configuration from a folder of the test's own, never this
+// machine's /etc/abhed, whose settings (web search on) would change what the
+// session offers the model.
+func TestCLIHelperReadsNoMachineManagedFile(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestConversationHelper$")
+	cmd.Env = append(os.Environ(), "ABHED_CONV_MANAGED_PATHS=1", "ABHED_CONV_KEEP_HOME=1", "HOME="+t.TempDir())
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	_, after, ok := strings.Cut(string(out), "managed-config: ")
+	if !ok {
+		t.Fatalf("no path: %s", out)
+	}
+	path := strings.TrimSpace(strings.SplitN(after, "\n", 2)[0])
+	if machineManaged(path) {
+		t.Fatalf("the helper reads the machine's managed file %s", path)
+	}
+	if managed.ConfigFile == path && machineManaged(managed.ConfigFile) {
+		t.Fatalf("this test binary reads %s", managed.ConfigFile)
+	}
+}
+
+// machineManaged reports a path in the machine's managed folders.
+func machineManaged(p string) bool {
+	p = filepath.Clean(p)
+	for _, dir := range []string{"/etc/abhed", "/Library/Application Support/Abhed", "/Library/Managed Preferences"} {
+		if p == dir || strings.HasPrefix(p, dir+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
