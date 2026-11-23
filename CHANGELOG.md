@@ -13,7 +13,15 @@ All notable changes to Abhed are recorded here. The format follows
   `rm -fr build` fell through to the destructive ask. Such a rule is now read
   as its flags, in any order or grouping, then anything, as `bash(rm -rf *)`
   already was. It only adds deny and ask matches; allow rules still match
-  only as written.
+  only as written. Flags that do the same also match: `-R`, `--recursive` and
+  `--force` for `rm`; `--recursive` for `chmod`, `chown` and `chgrp`;
+  `--force` and `--force-with-lease` for `git push -f`; `--force` for
+  `git clean -f`; a `+ref` refspec forces as `git push -f` does; a long
+  flag with a glued star (`--force*`) is read as the flag, then anything; and
+  every git option before the subcommand is skipped (`-C dir`, `-c x=y`,
+  `--git-dir`, `--config-env`, `--no-pager`, `--no-optional-locks` and the
+  rest). Deny and ask only; `git -c alias.p=push p -f`, a push through an
+  alias, is not read as a push and reaches the destructive ask.
 - Abhed Studio's request to open the network for one host with scope
   `workspace` opened, and kept, every host, while the record named only that
   host. A named host now opens and keeps that host alone at every scope.
@@ -1266,6 +1274,11 @@ All notable changes to Abhed are recorded here. The format follows
   message. See the MCP guide's Limits and Scale sections.
 
 ### Fixed
+
+- A model endpoint's user, password and query (such as `?key=`) were shown
+  in the explanation of an endpoint that did not answer, in the terminal,
+  Studio's chat and `_meta.providerError`. Only its scheme, host and path are
+  shown now.
 
 - In Abhed Studio, a model endpoint where nothing answered (refused, a host
   that does not resolve, a timeout) showed the raw Go error. It is now said

@@ -345,7 +345,7 @@ func (g gatedAdapter) Complete(ctx context.Context, req model.Request) (<-chan m
 // friendlyModelError says what went wrong with a model call and what to do
 // about it, in place of a Go dial error or an upstream JSON body.
 func friendlyModelError(err error, name string, p config.ProviderConfig) string {
-	where := p.BaseURL
+	where := endpointShown(p.BaseURL)
 	if where == "" {
 		where = "the " + p.Type + " endpoint"
 	}
@@ -1038,4 +1038,26 @@ func proxiedFailure(err error, name string, p config.ProviderConfig, where, next
 	}
 	return fmt.Sprintf("The upstream proxy %s answered %d %s for %s (model %q): it did not reach the model server, or would not. "+
 		"Check that the server is up and that the proxy lets this machine reach it. %s", up, status, http.StatusText(status), host, name, next), true
+}
+
+// endpointShown is a base URL as a message may show it: scheme, host and
+// path only. Its user, password, query (a ?key=) and fragment never reach a
+// terminal, Studio's chat or a reply's _meta.
+func endpointShown(base string) string {
+	u, err := url.Parse(base)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		if i := strings.IndexAny(base, "?#"); i >= 0 {
+			base = base[:i]
+		}
+		if at := strings.LastIndex(base, "@"); at >= 0 {
+			if s := strings.Index(base, "://"); s >= 0 && s < at {
+				base = base[:s+3] + base[at+1:]
+			} else {
+				base = base[at+1:]
+			}
+		}
+		return config.Printable(base)
+	}
+	u.User, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = nil, "", false, "", ""
+	return config.Printable(u.String())
 }
