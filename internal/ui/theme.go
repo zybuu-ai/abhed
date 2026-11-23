@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/home"
 )
 
 // palette is a theme: the SGR codes for each role the renderer uses.
@@ -132,11 +134,11 @@ type termCache struct {
 }
 
 func prefsPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	p, err := home.PersonPath("ui.json")
+	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".abhed", "ui.json")
+	return p
 }
 
 func loadPrefs() uiPrefs {

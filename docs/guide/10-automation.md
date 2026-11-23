@@ -227,6 +227,7 @@ which includes `-p` in a script; `-mode bypass` is the explicit spelling.
 | `7` | the run's own time limit passed |
 | `8` | unverified: with `-verify strict` or a completion contract, the answer or the contract could not be verified after one revision turn ([Verified answers](29-verified-answers.md)) |
 | `9` | stdin input came after the wait (`-stdin-wait`, with a task given): the run stopped; the result line carries no answer or structured result, though text output may already hold part of an answer printed as it streamed; rerun with `-` to wait for it. A stop signal that came first keeps its own code |
+| `10` | sign-in required: the organisation requires a sign-in (or has turned guest off) and none is held on this machine; nothing ran, and with `-output-format json` the result line's `error` is `signin_required` ([Signing in](38-signing-in.md)) |
 | `130` | interrupted (SIGINT) |
 | `143` | terminated (SIGTERM); a hang-up is `129` |
 

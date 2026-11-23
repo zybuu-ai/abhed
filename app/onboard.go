@@ -868,6 +868,9 @@ func looksLikeKey(v string) bool {
 // writeUserConfig writes the person's own configuration, which must not
 // exist yet. It holds a key's variable name, never a key.
 func writeUserConfig(name string, p config.ProviderConfig, autoMemory bool) (string, error) {
+	if err := guestRefusal("writing this machine's configuration"); err != nil {
+		return "", err
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

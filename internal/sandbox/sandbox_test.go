@@ -508,6 +508,24 @@ func TestServerVIMINITIsKept(t *testing.T) {
 	}
 }
 
+// A command on the process tier, which keeps the real HOME, is told who is
+// working, so an Abhed it starts is a guest's when the session is.
+func TestProcessCommandIsToldWhoIsWorking(t *testing.T) {
+	t.Setenv("ABHED_GUEST", "1")
+	t.Setenv("ABHED_ACCOUNT", "a1")
+	env := NewProcess(DefaultPolicy(t.TempDir())).env()
+	if !slices.Contains(env, "ABHED_GUEST=1") || !slices.Contains(env, "ABHED_ACCOUNT=a1") {
+		t.Errorf("process env %q", env)
+	}
+	// The no-sandbox terminal keeps them, and still drops Abhed's own settings.
+	t.Setenv("ABHED_DATABASE_URL", "postgres://canary")
+	host := hostEnv()
+	if !slices.Contains(host, "ABHED_GUEST=1") || !slices.Contains(host, "ABHED_ACCOUNT=a1") ||
+		slices.Contains(host, "ABHED_DATABASE_URL=postgres://canary") {
+		t.Errorf("host terminal env %q", host)
+	}
+}
+
 // The user's processes are counted once for commands started close together,
 // not by reading every process's status for each.
 func TestProcessCountIsShortlyReused(t *testing.T) {

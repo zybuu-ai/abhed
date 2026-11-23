@@ -11,6 +11,7 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -25,6 +26,8 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandboxcli"
@@ -150,6 +153,7 @@ type cliFlags struct {
 	agentName       string
 	toolsOnly       multiFlag
 	bare            bool
+	signIn          signInFlags
 
 	// words are the positional arguments that are not a subcommand; dashed
 	// is set when they came after "--".
@@ -205,6 +209,8 @@ func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs.StringVar(&f.agentsJSON, "agents", "", "subagent definitions for this run, as JSON {name: {description, prompt, tools, ...}} or a file; checked as files are")
 	fs.StringVar(&f.agentName, "agent", "", "run the session as this agent type: its instructions, and its tools, mode, model and effort where they narrow")
 	fs.Var(&f.toolsOnly, "tools", "comma-separated tools this run may use, and no others; repeatable; only narrows")
+	fs.BoolVar(&f.signIn.guest, "guest", false, "work as guest: nothing is kept when the run ends (also "+EnvGuest+"=1)")
+	fs.StringVar(&f.signIn.account, "account", "", "work as this account on this machine, which must be signed in (also "+EnvAccount+")")
 	fs.BoolVar(&f.bare, "bare", false, "run without memory files, extensions or skills of your own or the workspace's; the organisation's stay")
 	fs.BoolVar(&f.trustWS, "trust-workspace", false, "trust the workspace's .abhed/config.json for this run (also "+config.TrustEnv+"=1)")
 	return fs
@@ -363,6 +369,35 @@ func Main(args []string, opts ...Option) int {
 			}
 			return 1
 		}
+		if personCommands[rest[0]] && !(len(rest) > 1 && isHelpArg(rest[1])) {
+			if rest[0] == "login" {
+				// With no one signed in, abhed login is signing in, as the start's
+				// "sign in to a server" is, whether or not a sign-in is required.
+				code, err := resolvePrincipal(f.signIn, false, os.Stdin, os.Stderr)
+				if errors.Is(err, identity.ErrSignInRequired) || err == nil && code == 0 && guestByDefault() {
+					endGuest()
+					return loginAsPrincipal(rest[1:], os.Stdout, os.Stderr)
+				}
+				if err != nil {
+					return refusedSignIn(err, os.Stderr)
+				}
+				if code != 0 {
+					return code
+				}
+			} else {
+				enter := func() int { return enterPrincipal(f.signIn, false, os.Stdin, os.Stderr) }
+				if rest[0] == "rpc" || rest[0] == "acp" {
+					enter = func() int { return enterPrincipalForClient(f.signIn, os.Stderr) }
+				}
+				if code := enter(); code != 0 {
+					return code
+				}
+			}
+			if err := guestSubcommand(rest); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+				return 1
+			}
+		}
 		return a.subcommand(workspace, rest, &f)
 	}
 	if len(f.words) > 0 && !f.print.on && !f.dashed {
@@ -380,12 +415,30 @@ func Main(args []string, opts ...Option) int {
 			return 2
 		}
 	}
+	interactive := !f.print.on && terminalBoth()
+	if code := enterPrincipal(f.signIn, interactive, os.Stdin, os.Stderr); code != 0 {
+		if code == identity.ExitSignInRequired && f.print.on && f.format != "text" {
+			// A caller reading the result line learns why nothing ran.
+			b, _ := json.Marshal(resultLine{Type: "result", Subtype: string(agent.TermError), IsError: true,
+				Error: "signin_required", ExitCode: code})
+			fmt.Println(string(b))
+		}
+		return code
+	}
+	if err := guestRefusal("resuming a session"); err != nil && (sf.Continue || sf.Resume != "" || sf.Pick) {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 2
+	}
 	return run(a, workspace, &f)
 }
 
 // initTrustNote says what abhed init trusted: the file it wrote, and, when a
 // local layer was already there, that it is not trusted and why.
 func initTrustNote(path string) string {
+	if currentPrincipal().Kind == identity.Guest {
+		// A guest's trust goes with its folder when the run ends.
+		return "As a guest, Abhed trusts it for this run only; nothing is kept. Sign in, then run `abhed trust` to trust it for later runs.\n"
+	}
 	local := filepath.Join(filepath.Dir(path), config.LocalConfigName)
 	if _, err := os.Lstat(local); err != nil {
 		return "Abhed trusts it as written; after an edit, run `abhed trust` to review and trust it again.\n"
@@ -463,6 +516,8 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return userCmd(workspace, rest[1:], a.trust)
 	case "secret":
 		return secretCmd(rest[1:])
+	case "account":
+		return accountCmd(rest[1:], os.Stdin, os.Stdout, os.Stderr)
 	case "login":
 		return loginCmd(workspace, rest[1:], os.Stdout, os.Stderr)
 	case "logout":
@@ -559,6 +614,7 @@ var permissionModes = map[string]string{
 var ownsHelp = map[string]bool{
 	"sandbox": true, "bg": true, "secret": true, "mcp": true, "record": true, "logs": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
 	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true, "ollama": true, "ssh-acp": true,
+	"account": true,
 }
 
 func isHelpArg(s string) bool {

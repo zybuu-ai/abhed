@@ -83,8 +83,49 @@ interface AbhedAgentMeta {
   features: string[];              // see below
   record: { store: "local" | "postgres" | "memory"; dir?: string };
   managed: boolean;                // a managed configuration is in force
+  identity: {                      // who is working (docs/architecture/sign-in.md)
+    kind: "account" | "server" | "guest" | "legacy" | "";
+    display: string;
+    chosen: boolean;               // false: no one chose; show the sign-in choice
+    pending?: string;              // a sign-in is required and none is held
+    owner?: string;                // whose history this is: device:<name>, guest, …
+    adopted?: true;                // the account that took over the history from before sign-in
+  };
 }
 ```
+
+### 1.5 Sign-in
+
+`initialize` lists the ways in as ACP `authMethods`, filtered by the
+managed configuration and the org policy: `abhed.account` (sign in),
+`abhed.register` (create an account on this machine), `abhed.server`
+(sign in to an Abhed server) and `abhed.guest`. When `identity.chosen` is
+false, Studio shows the choice before it opens a session, and calls
+`authenticate` with `methodId` and, in `_meta["zybuu.ai/abhed"]`,
+`username`, `password` and `email` (register), or `url` (server). The
+password crosses the pipe once and is never recorded or echoed. For
+`abhed.server` the engine runs the browser sign-in and sends the
+notification `_abhed/auth/openUrl {url}` for Studio to open. The reply's
+`_meta` carries the new `identity`, and `recoveryCode` for a new account,
+shown once. While a server sign-in waits for the browser, other requests
+are refused at once with -32000 and `data.signingIn: true` (retry later);
+`_abhed/auth/cancel`, or another `authenticate`, ends it with nothing kept.
+`authenticate` is refused (-32000) once a session has opened:
+switching ends the engine. While `identity.pending` is set, every method
+but `initialize` and `authenticate` is refused with -32000 and
+`data.authRequired: true`.
+
+Studio keeps each person's chat history apart, keyed by `identity.owner`
+(the unkeyed history from before sign-in belongs to the `adopted` account
+and to `legacy`), and keeps nothing of a guest: a guest window's chat
+history lives in memory and is dropped when the person changes.
+`_abhed/auth/signout` (feature `auth`) signs out the person this engine
+works as, and no one another process signed in since: their remembered
+sign-in is forgotten, the account's revocation count rises, and a server
+sign-in's token is revoked at the server (the reply's `notice` says when the
+server could not be told yet). The engine then refuses everything with
+-32000 `data.signedOut` until it restarts; Studio restarts it, and its
+next start asks.
 
 `features` names every `abhed/*` area the engine serves: `sessions`, `fork`,
 `events`, `record.verify`, `hawkeye`, `export`, `tasks`, `tasks.review`,

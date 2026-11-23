@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/loopport"
 )
 
@@ -525,14 +526,22 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 	}
 	// Seatbelt matches the path the kernel resolved, so a home reached
 	// through a link is named both ways.
-	if home, err := os.UserHomeDir(); err == nil {
-		for _, st := range PathForms(filepath.Join(home, stateDir)) {
+	if osHome, err := os.UserHomeDir(); err == nil {
+		for _, st := range PathForms(filepath.Join(osHome, stateDir)) {
 			fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", st)
 			fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", st)
-			// Skills are the one part of it a command may need: a skill can ship a script.
-			fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", filepath.Join(st, "skills"))
-			// So are plugins: a hook or server may run a script its plugin ships.
-			fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", filepath.Join(st, "plugins"))
+		}
+		// Skills and plugins are the parts of it a command may need: a skill
+		// can ship a script, and a hook or server may run one its plugin
+		// ships. Only the person's own, never another account's.
+		for _, sub := range []string{"skills", "plugins"} {
+			dir, err := home.PersonPath(sub)
+			if err != nil {
+				continue
+			}
+			for _, d := range PathForms(dir) {
+				fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", d)
+			}
 		}
 	}
 
@@ -1314,7 +1323,10 @@ func (s *Process) env() []string {
 	keep := []string{"PATH", "HOME", "LANG", "LC_ALL", "TERM", "TMPDIR",
 		"GOPATH", "GOROOT", "GOCACHE", "GOMODCACHE",
 		"NODE_PATH", "npm_config_cache", "CARGO_HOME", "RUSTUP_HOME",
-		"JAVA_HOME", "PYTHONPATH", "VIRTUAL_ENV"}
+		"JAVA_HOME", "PYTHONPATH", "VIRTUAL_ENV",
+		// Who is working: they only narrow, so an Abhed a command starts
+		// with the real HOME works for the same person, or a guest's.
+		"ABHED_GUEST", "ABHED_ACCOUNT"}
 	out := []string{"ABHED_SANDBOX=" + string(s.Tier()), vimInitEnv()}
 	own := map[string]string{}
 	if s.backend == "sandbox-exec" && !s.policy.SharedCaches {

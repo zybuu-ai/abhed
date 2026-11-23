@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -398,11 +399,10 @@ var writableAreas = sandbox.WritableAreas
 // pushParent is ~/.abhed/push, where the temporary push repository is made:
 // a folder sandboxed commands cannot write. Anything else refuses the push.
 func pushParent() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := home.PersonPath("push")
 	if err != nil {
-		return "", fmt.Errorf("refusing to push: no home directory for ~/.abhed/push: %w", err)
+		return "", fmt.Errorf("refusing to push: no folder for ~/.abhed/push: %w", err)
 	}
-	dir := filepath.Join(home, ".abhed", "push")
 	for _, a := range writableAreas() {
 		if inside(dir, a) {
 			return "", fmt.Errorf("refusing to push: %s is inside %s, which the run can write", dir, a)

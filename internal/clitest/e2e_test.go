@@ -159,7 +159,7 @@ func TestFailedTrustGrantGoesOnUntrusted(t *testing.T) {
 	h := StartRun(t, Opts{Cols: 120, Script: `text "done"`, Setup: func(home, ws string) {
 		writeFile(t, filepath.Join(ws, ".abhed", "config.json"), `{"statusline":{"command":"echo from-the-repo"}}`)
 		// A folder where the trust store's file goes: the grant cannot be written.
-		if err := os.MkdirAll(filepath.Join(home, ".abhed", "trust.json"), 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Join(PersonDir(home), "trust.json"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}})
