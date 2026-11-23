@@ -8,6 +8,7 @@ package modelkeys
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"net/url"
 	"os"
@@ -17,7 +18,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"testing"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/home"
@@ -250,7 +250,9 @@ func keychain() Keychain {
 // NoKeychain says why the system Keychain is not used in this process, or "".
 // Never in a test binary, whatever else holds; otherwise as keychainOff says.
 func NoKeychain() string {
-	if testing.Testing() {
+	// A test binary registers test.v; importing testing would link it into
+	// the release binary.
+	if flag.Lookup("test.v") != nil {
 		return "this is a test"
 	}
 	if why := keychainOff(os.Getenv, tempHome()); why != "" {
