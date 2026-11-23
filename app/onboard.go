@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -510,6 +511,9 @@ func listModels(ctx context.Context, base, key string) ([]string, error) {
 			out = append(out, d.ID)
 		}
 	}
+	// The server's order varies between calls (Ollama's follows use), and
+	// the first is the default choice: sorted, the same list each time.
+	sort.Strings(out)
 	return out, nil
 }
 

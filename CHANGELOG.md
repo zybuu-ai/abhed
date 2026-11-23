@@ -1139,6 +1139,39 @@ All notable changes to Abhed are recorded here. The format follows
   for it, or -no-stdin to silence this"). Input that starts after the wait
   stops the run with exit code 9 (see Upgrading). A lone `-`
   waits for stdin to end however late its input starts.
+- A vague request for parallel work or speed under `abhed -p` (or any run
+  nobody can answer) went straight to code edits: it got no note, since the
+  note that asks a question cannot be answered there. A message that names
+  speed or parallelism and no concrete task now gets a note: if it only
+  asks to speed things up or run things in parallel, make no code edits for
+  it, and answer with a plan of both readings or the question it would ask.
+  A message that names work ("delete these three files at once", "merge
+  these three branches at once", "run the three migrations in parallel")
+  gets no note and is done as asked: a specific object counts as concrete,
+  not only a verb from a list, and so does an issue number, a version, a
+  name with a number ("PR 12") or two names ("nginx and redis"), unless the
+  word before it opens an adjunct or is vague ("on Python 3", "things quick
+  and easy"); "steps", "parts", "the whole lot" and the like are as generic
+  as "things". What is
+  sped up, and a phrase after a preposition or a comma ("for the demo",
+  "the deadline is close"), is not an object, so a vague request keeps the
+  note. The judgement is English only. "Make everything run in parallel" counts as
+  vague, as the request without "make" does. Explicit parallel requests
+  still get the note that starts subagents.
+- The `-p` relevance check marked an answer `off_topic` when the question
+  named one of the session's tools ("call the ssh_connect tool, then show
+  the uptime"). A tool name is no longer taken as what the answer must
+  mention.
+- A run stopped while running because input came late on stdin is recorded
+  as `stdin_late`, not `user_interrupt`, in `session.ended` and the text
+  footer. Input that comes only after the run has ended still exits 9, but
+  the record keeps the reason the run ended with, usually `completed`.
+- First-run setup lists a local Ollama's models in name order, so the
+  default choice no longer changes between runs.
+- A managed price that replaces your own `pricing` entry for the same model
+  is now said once at start-up, as the guide says.
+- `abhed trust` and `/commands trust` show a command's description, or its
+  first body line, instead of its front matter's `---`.
 
 ### Go API
 
