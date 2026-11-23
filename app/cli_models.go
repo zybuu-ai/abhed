@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -16,6 +17,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/testenv"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
@@ -32,8 +34,12 @@ func modelItems(st *cliState) []ui.PickItem {
 	for _, name := range toolset.OfferedModels(st.appCfg) {
 		p := st.appCfg.Model.Providers[name]
 		detail := []string{p.Model}
-		if p.ContextWindow > 0 {
-			detail = append(detail, fmt.Sprintf("%dk context", p.ContextWindow/1024))
+		if w, _, src := model.ResolveLimits(p.Spec()); w > 0 {
+			ctx := fmt.Sprintf("%dk context", w/1000)
+			if src == model.WindowFallback {
+				ctx += " (assumed)"
+			}
+			detail = append(detail, ctx)
 		}
 		detail = append(detail, hostedLabel(p.BaseURL))
 		if name == st.appCfg.Model.Default {
@@ -483,4 +489,86 @@ func recordModelRefused(st *cliState, source string, refused *config.ManagedErro
 	st.recordCLI(agent.EvConfigRefused, agent.ConfigAttempt{Layer: "command", Source: source, Key: refused.Key,
 		Value: config.Printable(refused.Value), Decision: "refused", Reason: refused.Reason,
 		Principal: toolset.LocalPrincipal(inAgentCommand())})
+}
+
+// enableModelDiscovery lets sessions and the doctor ask a model endpoint for
+// its context window. Off under a test (testenv.Marker), so no test reaches a
+// real server for it, and off with ABHED_NO_MODEL_DISCOVERY set.
+func enableModelDiscovery() {
+	if os.Getenv(testenv.Marker) != "" || os.Getenv("ABHED_NO_MODEL_DISCOVERY") != "" {
+		return
+	}
+	model.EnableDiscovery()
+}
+
+// windowLine says a provider's context window, its reply cap and where they
+// came from, and a warning when the window is assumed. discover asks the
+// endpoint first, as a session's first turn does.
+func windowLine(ctx context.Context, p config.ProviderConfig, discover bool) (line, warn string) {
+	prof := model.Profile{Name: p.Model}
+	if a, err := p.Adapter(); err == nil {
+		if discover {
+			model.Discover(ctx, a)
+		}
+		prof = a.Profile()
+	} else {
+		prof.ContextWindow, prof.OutputLimit, prof.WindowSource = model.ResolveLimits(p.Spec())
+	}
+	line = fmt.Sprintf("%s tokens", commaInt(prof.ContextWindow))
+	if prof.OutputLimit > 0 {
+		line += fmt.Sprintf(" · replies up to %s", commaInt(prof.OutputLimit))
+	}
+	line += " (" + windowSourceLabel(prof.WindowSource) + ")"
+	return line, model.WindowNote(prof)
+}
+
+// windowSourceLabel says where a window came from, for a person.
+func windowSourceLabel(src string) string {
+	switch src {
+	case model.WindowConfig:
+		return "context_window in the configuration"
+	case model.WindowDiscovered:
+		return "reported by the endpoint"
+	case model.WindowBuiltIn:
+		return "Abhed's table of published limits"
+	case model.WindowLearned:
+		return "named by the provider"
+	}
+	return "assumed: not known"
+}
+
+func commaInt(n int) string {
+	d := fmt.Sprint(n)
+	var b strings.Builder
+	for i := range d {
+		if i > 0 && (len(d)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte(d[i])
+	}
+	return b.String()
+}
+
+// modelsCmd is abhed models: every configured provider a session may use,
+// with its model, context window, reply cap and where they came from.
+func modelsCmd(cfg config.Config, w io.Writer) int {
+	names := toolset.OfferedModels(cfg)
+	if len(names) == 0 {
+		fmt.Fprintln(w, "No models are configured; add one under model.providers in .abhed/config.json.")
+		return 1
+	}
+	for _, name := range names {
+		p := cfg.Model.Providers[name]
+		mark := " "
+		if name == cfg.Model.Default {
+			mark = "*"
+		}
+		line, warn := windowLine(context.Background(), p, false)
+		fmt.Fprintf(w, "%s %-16s %-14s %s\n    context  %s\n", mark, config.Printable(name), config.Printable(p.Type), config.Printable(p.Model), line)
+		if warn != "" {
+			fmt.Fprintf(w, "    ⚠ %s\n", warn)
+		}
+	}
+	fmt.Fprintln(w, "\n* the default. abhed doctor asks the default model's endpoint for its window.")
+	return 0
 }

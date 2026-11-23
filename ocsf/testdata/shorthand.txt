@@ -102,27 +102,30 @@
 2026-10-19T11:59:43.123Z s-1#102 BASE:Other INFO compaction.started
 2026-10-19T11:59:44.123Z s-1#103 BASE:Other INFO compaction.completed
 2026-10-19T11:59:45.123Z s-1#104 BASE:Other INFO context.offloaded
-2026-10-19T11:59:46.123Z s-1#105 BASE:Other INFO plan.updated
-2026-10-19T11:59:47.123Z s-1#106 BASE:Other INFO todo.updated
-2026-10-19T11:59:48.123Z s-1#107 BASE:Other INFO suggestion.offered
-2026-10-19T11:59:51.123Z s-1#110 PROC:Launch INFO ollama start qwen3:8b: ok
-2026-10-19T11:59:52.123Z s-1#111 PROC:Launch INFO ollama install qwen3:8b: failed
-2026-10-19T11:59:53.123Z s-1#112 PROC:Launch INFO ollama install: manual
-2026-10-19T11:59:54.123Z s-1#113 API:Create INFO ollama pull qwen3:8b: ok
-2026-10-19T11:59:55.123Z s-1#114 API:Create INFO toolchain install go 1.22.5: ok
-2026-10-19T11:59:56.123Z s-1#115 API:Create INFO toolchain install python 3.12: refused
-2026-10-19T11:59:57.123Z s-1#116 API:Open registries INFO toolchain.registry
-2026-10-19T11:59:58.123Z s-1#117 API:Create INFO ollama pull qwen3:8b: refused
-2026-10-19T11:59:59.123Z s-1#118 API:Debug setup INFO debug.setup
-2026-10-19T12:00:00.123Z s-1#119 API:Port contested INFO sandbox.port_contested
-2026-10-19T12:00:01.123Z s-1#120 API:Language server diagnostics INFO lsp.diagnostics
-2026-10-19T12:00:02.123Z s-1#121 API:Hook INFO OBSERVED hook tests-first: continue
-2026-10-19T12:00:03.123Z s-1#122 API:Hook MED DENIED hook freeze: halt
-2026-10-19T12:00:04.123Z s-1#123 CONF:Log INFO config.changed mcp.servers issues (mcp add -confirm-fd)
-2026-10-19T12:00:05.123Z s-1#124 CONF:Log LOW config.changed mcp.servers pastebin (mcp add)
-2026-10-19T12:00:06.123Z s-1#125 CONF:Log INFO config.changed config-changes.jsonl (abhed): at least 51 pending
-2026-10-19T12:00:07.123Z s-1#126 CONF:Log INFO turns.extended 25 to 50 (1 of 3) via tui
-2026-10-19T12:00:08.123Z s-1#127 API:Budget stop INFO budget.stopped
-2026-10-19T12:00:09.123Z s-1#128 BASE:Other INFO model.waiting
-2026-10-19T12:00:10.123Z s-1#129 CONF:Log INFO plugin.loaded
-2026-10-19T12:00:11.123Z s-1#130 CONF:Log INFO config.changed plugins acme-review (plugin install)
+2026-10-19T11:59:46.123Z s-1#105 BASE:Other INFO context.window
+2026-10-19T11:59:47.123Z s-1#106 BASE:Other INFO context.overflow
+2026-10-19T11:59:48.123Z s-1#107 BASE:Other INFO context.refit
+2026-10-19T11:59:49.123Z s-1#108 BASE:Other INFO plan.updated
+2026-10-19T11:59:50.123Z s-1#109 BASE:Other INFO todo.updated
+2026-10-19T11:59:51.123Z s-1#110 BASE:Other INFO suggestion.offered
+2026-10-19T11:59:54.123Z s-1#113 PROC:Launch INFO ollama start qwen3:8b: ok
+2026-10-19T11:59:55.123Z s-1#114 PROC:Launch INFO ollama install qwen3:8b: failed
+2026-10-19T11:59:56.123Z s-1#115 PROC:Launch INFO ollama install: manual
+2026-10-19T11:59:57.123Z s-1#116 API:Create INFO ollama pull qwen3:8b: ok
+2026-10-19T11:59:58.123Z s-1#117 API:Create INFO toolchain install go 1.22.5: ok
+2026-10-19T11:59:59.123Z s-1#118 API:Create INFO toolchain install python 3.12: refused
+2026-10-19T12:00:00.123Z s-1#119 API:Open registries INFO toolchain.registry
+2026-10-19T12:00:01.123Z s-1#120 API:Create INFO ollama pull qwen3:8b: refused
+2026-10-19T12:00:02.123Z s-1#121 API:Debug setup INFO debug.setup
+2026-10-19T12:00:03.123Z s-1#122 API:Port contested INFO sandbox.port_contested
+2026-10-19T12:00:04.123Z s-1#123 API:Language server diagnostics INFO lsp.diagnostics
+2026-10-19T12:00:05.123Z s-1#124 API:Hook INFO OBSERVED hook tests-first: continue
+2026-10-19T12:00:06.123Z s-1#125 API:Hook MED DENIED hook freeze: halt
+2026-10-19T12:00:07.123Z s-1#126 CONF:Log INFO config.changed mcp.servers issues (mcp add -confirm-fd)
+2026-10-19T12:00:08.123Z s-1#127 CONF:Log LOW config.changed mcp.servers pastebin (mcp add)
+2026-10-19T12:00:09.123Z s-1#128 CONF:Log INFO config.changed config-changes.jsonl (abhed): at least 51 pending
+2026-10-19T12:00:10.123Z s-1#129 CONF:Log INFO turns.extended 25 to 50 (1 of 3) via tui
+2026-10-19T12:00:11.123Z s-1#130 API:Budget stop INFO budget.stopped
+2026-10-19T12:00:12.123Z s-1#131 BASE:Other INFO model.waiting
+2026-10-19T12:00:13.123Z s-1#132 CONF:Log INFO plugin.loaded
+2026-10-19T12:00:14.123Z s-1#133 CONF:Log INFO config.changed plugins acme-review (plugin install)

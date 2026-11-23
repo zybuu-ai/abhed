@@ -380,6 +380,14 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		}
 		update(map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "sub-" + w.Session, "status": "in_progress",
 			"content": []any{map[string]any{"type": "content", "content": textBlock(text)}}})
+	case agent.EvContextWindow, agent.EvContextOverflow, agent.EvContextRefit:
+		// Said where the editor shows progress, in the words the terminal uses.
+		if replay {
+			break
+		}
+		if text := agent.ContextNotice(ev); text != "" {
+			update(map[string]any{"sessionUpdate": "agent_thought_chunk", "content": textBlock(ui.VisibleLine(text) + "\n")})
+		}
 	case agent.EvModelFallback:
 		// The engine changed an option itself: every option goes out again.
 		if replay {

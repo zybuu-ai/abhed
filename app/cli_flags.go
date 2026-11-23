@@ -262,6 +262,7 @@ func Main(args []string, opts ...Option) int {
 	defer endAtExit()
 	a := newApp(opts...)
 	recordAnchors = a.anchors
+	enableModelDiscovery()
 	var f cliFlags
 	fs := newFlagSet(&f)
 	// Sessions: the record keeps every one, so these pick which goes on.
@@ -436,6 +437,13 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return a.doctor(workspace, set, timeout)
 	case "providers":
 		return providersCmd()
+	case "models":
+		cfg, err := a.loadConfig(workspace)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "config: %v\n", err)
+			return 1
+		}
+		return modelsCmd(cfg, os.Stdout)
 	case "ollama":
 		return ollamaCmd(workspace, rest[1:], a.trust, os.Stdin, os.Stdout, os.Stderr)
 	case "toolchain":

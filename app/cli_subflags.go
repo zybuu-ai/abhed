@@ -34,7 +34,7 @@ var noWorkspace = map[string]bool{"providers": true, "secret": true, "pki": true
 
 // noArgs are the subcommands that take no arguments; doctor takes only
 // --json and -timeout, and version only --json.
-var noArgs = map[string]bool{"init": true, "providers": true, "acp": true, "rpc": true, "index": true,
+var noArgs = map[string]bool{"init": true, "providers": true, "models": true, "acp": true, "rpc": true, "index": true,
 	"doctor": true, "version": true}
 
 // verbatimFrom is where a subcommand's arguments start being passed on as

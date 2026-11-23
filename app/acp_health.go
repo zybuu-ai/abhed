@@ -82,6 +82,12 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 	} else {
 		status, detail := providerReach(ctx, provider.BaseURL)
 		add("provider", "Model provider", status, detail)
+		line, warn := windowLine(ctx, provider, true)
+		if warn != "" {
+			add("context", "Context window", "warn", line+"\n"+warn)
+		} else {
+			add("context", "Context window", "ok", line)
+		}
 	}
 	if sb, err := buildSandbox(cfg, workspace); err != nil {
 		add("sandbox", "Sandbox", "fail", err.Error())

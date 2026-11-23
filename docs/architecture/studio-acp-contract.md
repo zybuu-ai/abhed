@@ -1957,6 +1957,7 @@ them.
 | `session.woken`, `session.wake_set` | system | |
 | `compaction.started`, `compaction.completed` | system | before, after |
 | `context.offloaded` | system | results, before, after |
+| `context.window`, `context.overflow`, `context.refit` | system | model, window, action or reason, before, after; also sent live as an `agent_thought_chunk` with the sentence the terminal shows |
 | `plan.updated`, `todo.updated` | agent | items |
 | `model.call`, `model.switched` | system | tokens, latency, model; `queue_ms?`, time spent waiting for a request slot, left out of latency; `purpose` (`suggestion`) on a call outside the conversation |
 | `model.waiting` | system | model, ahead; `session` for a subagent's |

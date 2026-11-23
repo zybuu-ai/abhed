@@ -180,7 +180,7 @@ func TestOtherDecisionEventsAreCounted(t *testing.T) {
 // nothing; a new event type fails the test below until it is placed.
 var uncounted = []string{
 	"agent.delta", "agent.message", "agent.reasoning", "agent.reasoning.delta", "change.accepted",
-	"checkpoint.saved", "command.invoked", "compaction.completed", "compaction.started", "context.offloaded",
+	"checkpoint.saved", "command.invoked", "compaction.completed", "compaction.started", "context.offloaded", "context.window", "context.overflow", "context.refit",
 	"conversation.forked", "fence.qualified", "file.restored", "hook.fired", "input.mention", "manual.edit",
 	"mcp.status", "memory.loaded", "memory.written", "message.dropped", "mode.changed", "model.fallback",
 	"model.switched", "permission.changed", "plan.proposed", "plan.step", "plan.updated", "policy.layer",
