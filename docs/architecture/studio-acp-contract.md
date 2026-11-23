@@ -255,7 +255,8 @@ interface OllamaReport extends OllamaStatus {
   assist: "ask" | "local" | "off";  // model.ollama.assist
   can_act: boolean;                 // the next step may be offered
   detail: boolean;                  // sizes were asked of the registry or download host
-  start_always: boolean;            // the person said "always start"
+  start_always: boolean;            // the person said "always start" (false while auto_start is false)
+  auto_start: boolean;              // 1.3.0: model.ollama.auto_start; false: never offer "always", never start unclicked
   start?: { command: string; log?: string; program?: string; app_binds?: boolean };
   install?: { kind: "run" | "open" | "manual"; command: string; source: string;
               size?: string; steps?: string[] };
@@ -270,7 +271,7 @@ interface OllamaReport extends OllamaStatus {
 | Method | Params → result |
 |---|---|
 | `_abhed/ollama/status` | `{sessionId, provider?, detail?: boolean}` → `OllamaReport`. `provider` defaults to the session's current model. Reads only, and without `detail` asks nothing off this machine: the local Ollama, the disk and the memory, with a curated model's size from Abhed's list (`pull.size_known: false`). Studio's automatic status (after `session/new`, on a model switch, when polling) must not set `detail`. With `detail: true`, sent only when the person opens the install or download step, it also asks the registry or download host for the size as it is now (`detail: true` in the report), and only when that step may be offered (never under `assist: "local"` or `"off"`). Not recorded |
-| `_abhed/ollama/start` | `{sessionId, provider?, always?: boolean}` → `{started: {pid?, version, log?}, status: OllamaStatus}`, or `{status}` when it was already running. `always` keeps "always start without asking" (only after the person ticked it). Recorded `ollama.start` |
+| `_abhed/ollama/start` | `{sessionId, provider?, always?: boolean}` → `{started: {pid?, version, log?, owned?, stopAfterMinutes?}, status: OllamaStatus, notice?}`, or `{status}` when it was already running. `owned` (1.3.0): the engine launched the server as its own child and stops it after `stopAfterMinutes` with no local model used and when the engine exits; `notice` says so in one sentence. `always` keeps "always start without asking" (only after the person ticked it; ignored when the report's `auto_start` is false). Recorded `ollama.start` with `owned` and `stop_after_minutes` |
 | `_abhed/ollama/install` | `{sessionId, provider?}` → `{outcome: "ok" \| "manual", output, status}`, or `{status}` when installed. Runs `brew install ollama` where Homebrew is, or opens the macOS download page (`outcome: "manual"`: the person installs). Never runs `sudo`, nor the official Linux install script, which does: both are `manual_steps`, printed with their source. Recorded `ollama.install` |
 | `_abhed/ollama/pull` | `{sessionId, provider?, pullId}` → `{status}` when it ends ready. While it runs, notifications `_abhed/ollama/progress {sessionId, pullId, status, completed?, total?}`. Disk short, model not in the registry or no network fail before any download. Recorded `ollama.pull` |
 | `_abhed/ollama/cancel` | `{pullId}` → `{cancelled: boolean}`; the pull's reply is then -32000 with `kind: "cancelled"`. Ollama keeps what it fetched |
@@ -1908,12 +1909,28 @@ redacted. **Not implemented in 1.2.2:** both.
 
 Setup is not an ACP method: it runs before a session can exist. Studio's main
 process runs `abhed setup --json …` (writes `~/.abhed/config.json`
-atomically, validates, runs doctor) and `abhed secret set NAME` in an Abhed
-terminal for a hosted provider's key. Providers name keys by
-`api_key_secret: NAME`, resolved from the vault, because an app launched from
-the Dock has no shell environment. **Not implemented in 1.2.2:** `setup --json`,
-`api_key_secret` and `config get|set --scope user --json`, which classifies
-each key as tightening or widening.
+atomically, validates, runs doctor). **Not implemented:** `setup --json` and
+`config get|set --scope user --json`.
+
+Model keys and models (1.3.0), each the engine's own command line run by the
+engine host with an argv array, flags before `--`:
+
+- **Add API Key…** opens a terminal (not the sandboxed Abhed terminal) running
+  the verified engine binary as `abhed provider login -- <type>`: the key is
+  typed into the engine's hidden prompt, kept in the Keychain (else Abhed's
+  secret store), and never passes through Studio. Providers name a stored key
+  by `api_key_secret: NAME`, else their `api_key_env` name, else their type's
+  own, because an app launched from the Dock has no shell environment.
+  `abhed provider status -json` → `{providers: {type, key, source: "env" |
+  "keychain" | "file" | "config" | "none", models?}[], store}`; names only.
+- **Add Model…**: `abhed models known -json [-- <type>]` → `{types: {type,
+  hosted, key?, models: {id, context_window?}[]}[]}`, then `abhed models add
+  -json -- <type|name> <id…>` → `{file, added?, existing?}`.
+- **Set as Default**: `abhed models default -check -json -- <name>` →
+  `{file, name, widens, description}`; when `widens`, a modal whose default is
+  No, then `abhed models default -confirm-fd 3 -json -- <name>` with the yes on
+  descriptor 3 → `{file, default}`. Without a yes the engine refuses a
+  widening default itself.
 
 ### 8.3 Memory files and auto memory
 
@@ -2032,7 +2049,7 @@ table.
 | Queue, steer, stop | `_abhed/session/steer`, `_abhed/queue/*`, `session/cancel` | ext + spec | done |
 | Resolve | `_abhed/resolve` | ext | not yet (-32601; `resolve` not in `features`) |
 | Doctor | `_abhed/doctor`, `abhed doctor --json` | ext | done |
-| Setup, config, trust grant, secrets | engine command line from Studio's main process | — | `trust grant -sha256` and `secret set` exist; `setup --json`, `api_key_secret` and `config get|set` not yet |
+| Setup, config, trust grant, secrets | engine command line from Studio's main process | — | `trust grant -sha256`, `secret set`, `provider login`, `models add|default` and `api_key_secret` exist; `setup --json` and `config get|set` not yet |
 | Memory area | `memory` feature | ext | not yet (memory files are in `capabilities`) |
 | Team server (EE) | `_abhed/team/*` | ext | CE answers -32601 |
 | Deletion | none; `abhed record prune` in a terminal | — | — |

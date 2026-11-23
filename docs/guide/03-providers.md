@@ -91,11 +91,80 @@ Precedence is request → provider `params` → model default.
 
 ## Authentication
 
-An API key, from config or the environment:
+Store a hosted provider's key once, and every session finds it, wherever it
+was started (Abhed Studio from the Dock included), with nothing exported:
+
+```sh
+abhed provider login anthropic     # asks for the key without echo
+abhed provider status              # where each key comes from; never the key
+abhed provider logout anthropic
+```
+
+The key goes into the macOS Keychain (service "Abhed model key", account
+`ANTHROPIC_API_KEY`), or where there is no Keychain into Abhed's secret store
+(`~/.abhed/secrets.json`, mode 600) under a name Abhed keeps for itself: it is
+never offered to a command, `abhed secret list` does not show it, and `abhed
+secret set` cannot overwrite it. The key is never written to configuration,
+printed, sent to the model or recorded: once read, it is redacted from tool
+output, messages and the record like any stored secret. `ABHED_KEYCHAIN=off`
+keeps keys in the store instead; the Keychain is also not used inside an
+agent's command or under a temporary home.
+
+A provider finds its key in this order:
+
+1. `api_key` written in the configuration (or `ABHED_API_KEY`), which is best avoided;
+2. the environment variable `api_key_env` names, when it is set;
+3. the stored key `api_key_secret` names, else the one named by `api_key_env`;
+4. with neither named, a hosted type at its own endpoint uses its type's
+   name (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`,
+   `GROQ_API_KEY`, `TOGETHER_API_KEY`, `OPENROUTER_API_KEY`,
+   `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`, `XAI_API_KEY`): from the
+   environment when set, else stored. A provider with another `base_url` is
+   never given that key.
 
 ```json
-{ "type": "anthropic", "model": "claude-opus-5", "api_key_env": "ANTHROPIC_API_KEY" }
+{ "type": "anthropic", "model": "claude-opus-5-5" }
+{ "type": "openai", "base_url": "https://llm.corp.example/v1", "model": "corp-1", "api_key_secret": "CORP_LLM_KEY" }
 ```
+
+`abhed provider login corp-1` stores the key a configured model names. The
+environment still wins, so a stale key exported in one shell is used there:
+`abhed doctor` says which source the default model's key came from (`key
+from $ANTHROPIC_API_KEY in the environment`, or `ANTHROPIC_API_KEY from the
+macOS Keychain`), never the value. When the provider refuses the key, or
+the account's credit, and a different key is stored under the same name,
+the error says so and how to use the stored one (`unset ANTHROPIC_API_KEY`);
+the hint appears only then.
+
+In Abhed Studio, the model picker's **Add API Key…** opens a terminal running
+`abhed provider login <type>`, so the key is typed into the engine's own
+hidden prompt and never passes through Studio.
+
+## Adding models and choosing the default
+
+```sh
+abhed models add anthropic claude-sonnet-5-5 claude-opus-5-5
+abhed models default claude-opus-5-5
+abhed models list
+abhed models remove claude-sonnet-5-5
+abhed models known anthropic
+```
+
+`models add` takes a provider type, or a model already configured whose
+type, endpoint and key setting the new ones share (`abhed models add corp-1
+corp-2`). Each model is added under its own id (`-name` gives one model
+another name). A model the built-in table knows gets its context window from
+it; prices come from the same table at run time. `models default` asks
+first when the new default is a hosted model, since the code is then sent
+there; `-check -json` says whether it would ask. Both write only your own
+`~/.abhed/config.json`: atomically (a temporary file renamed over it), with
+the previous file kept as `config.json.bak`, its mode kept, and every other
+key in it left as it was. They never write the workspace's file or the
+managed one, and refuse a model the managed configuration defines or a
+`model.allowed` list refuses. Each change is logged to
+`~/.abhed/config-changes.jsonl`, and applies to new sessions. Inside an
+agent's command they are refused. Studio's model picker offers **Add
+Model…** and **Set as Default**, which run the same commands.
 
 ### Subscriptions do not work, and this is not a Abhed limitation
 
@@ -234,7 +303,7 @@ on screen and `/ollama` (or the card's *Check again*) checks again.
 
 | Step | What runs | Asks |
 |---|---|---|
-| Start the server | `ollama serve` whenever the `ollama` program is found (on `PATH`, or inside the macOS app), on macOS too, with `OLLAMA_HOST` set to `127.0.0.1` and the provider's port and `OLLAMA_MODELS` to the models folder the check reads (both shown in the command), detached in a process group of its own, with a minimal environment: `PATH`, `HOME`, the user, shell, temp and locale variables, the proxy settings (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`, in either case), `SSL_CERT_FILE` and `SSL_CERT_DIR`, the GPU selection (`CUDA_VISIBLE_DEVICES`, `HIP_VISIBLE_DEVICES`, `ROCR_VISIBLE_DEVICES`, `GPU_DEVICE_ORDINAL`) and `LD_LIBRARY_PATH`, `HOMEBREW_*`, and `OLLAMA_*` other than `OLLAMA_HOST`. Nothing else passes, so no provider keys, Abhed tokens or store addresses do; a token you keep in a `HOMEBREW_*` or `OLLAMA_*` variable does, output to `~/.abhed/logs/ollama-serve.log`. Only when the macOS app is installed without the program does Abhed open the app, by its path (`open /Applications/Ollama.app`), and only for the default address; the app then listens where its own settings say, which Abhed does not control. Abhed waits up to 30 seconds for it to answer, and reports at once, with the end of its log, a server that exits first | the first time; answer *always* to start it without asking from then on. The choice is kept for that program's path: a different `ollama` on `PATH` is asked about again. `abhed ollama forget`, `/ollama forget`, Studio's forget or `POST /v1/ollama/forget` takes it back |
+| Start the server | `ollama serve` whenever the `ollama` program is found (on `PATH`, or inside the macOS app), on macOS too, with `OLLAMA_HOST` set to `127.0.0.1` and the provider's port and `OLLAMA_MODELS` to the models folder the check reads (both shown in the command), detached in a process group of its own, with a minimal environment: `PATH`, `HOME`, the user, shell, temp and locale variables, the proxy settings (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`, in either case), `SSL_CERT_FILE` and `SSL_CERT_DIR`, the GPU selection (`CUDA_VISIBLE_DEVICES`, `HIP_VISIBLE_DEVICES`, `ROCR_VISIBLE_DEVICES`, `GPU_DEVICE_ORDINAL`) and `LD_LIBRARY_PATH`, `HOMEBREW_*`, and `OLLAMA_*` other than `OLLAMA_HOST`. Nothing else passes, so no provider keys, Abhed tokens or store addresses do; a token you keep in a `HOMEBREW_*` or `OLLAMA_*` variable does, output to `~/.abhed/logs/ollama-serve.log`. Only when the macOS app is installed without the program does Abhed open the app, by its path (`open /Applications/Ollama.app`), and only for the default address; the app then listens where its own settings say, which Abhed does not control. Abhed waits up to 30 seconds for it to answer, and reports at once, with the end of its log, a server that exits first | the first time; answer *always* to start it without asking from then on (not offered with `model.ollama.auto_start` false). The choice is kept for that program's path: a different `ollama` on `PATH` is asked about again. `abhed ollama forget`, `/ollama forget`, Studio's forget or `POST /v1/ollama/forget` takes it back |
 | Install Ollama | macOS: `brew install ollama` when Homebrew is installed, otherwise it opens the official download page (`https://ollama.com/download/mac`) and you install the signed app yourself. Linux: `brew install ollama` with Homebrew; on Arch it prints `sudo pacman -S ollama` for you to run; otherwise it prints the official script, `curl -fsSL https://ollama.com/install.sh \| sh`, with its source (`https://ollama.com/download/linux`), for you to run: the script runs `sudo` itself, so Abhed never runs it. Windows: the official installer link (`https://ollama.com/download/windows`) | every time, showing the exact command, where it comes from and its size |
 | Pull the model | `ollama pull <tag>` through the server's `/api/pull`, with progress; Esc, Ctrl-C, *Stop* or `_abhed/ollama/cancel` stops it, and Ollama keeps what it fetched, so pulling again resumes | every time, showing the command, the source (`registry.ollama.ai`), the download size from the registry's manifest, the free disk where Ollama keeps models, and a memory warning when the machine has less than the model wants |
 
@@ -246,9 +315,24 @@ serve` gets `OLLAMA_HOST=127.0.0.1:<port>` whatever your environment says;
 the macOS app, opened only when the program is missing, binds where its own
 settings say. It acts only on
 an Ollama on this machine; for one at another address it shows the steps to
-run there. **Abhed does not stop a server it started** when it exits: it is
-your Ollama, and other programs may use it. Stop it as you would any other
-(quit the app, or end `ollama serve`).
+run there.
+
+**Abhed stops a server it started itself, and only that one.** An `ollama
+serve` that Abhed (the CLI, a Studio window's engine, or `abhed serve`)
+launched is its own child, and Abhed says so when it starts it: "Abhed
+started Ollama (pid N). It stops it after 10 minutes with no local model
+used, and when Abhed exits." It is stopped, by that process id and its
+process group only, when no session has sent a request to a model on this
+machine for `model.ollama.idle_stop_minutes` (10 by default; `-1` stops it
+only at exit), and when the Abhed process that started it exits, as Studio
+quitting ends its engine. Use by any Abhed process counts: each request to
+a local model touches `~/.abhed/state/ollama-used`, so one window's server is
+not stopped while another window uses it. A server Abhed did not start (one
+you started, the macOS app, which hands off and is not Abhed's child, or one
+started by an Abhed that has since crashed) is never stopped. To never have
+Ollama started without a click, set `"model": {"ollama": {"auto_start":
+false}}`: every start then asks, and *always start* is neither offered nor
+honoured.
 
 **Disk and memory.** Before a pull, Abhed asks the registry for the model's
 size and refuses when the disk where Ollama keeps models (`OLLAMA_MODELS`, or
