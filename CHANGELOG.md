@@ -18,6 +18,14 @@ All notable changes to Abhed are recorded here. The format follows
   `workspace` opened, and kept, every host, while the record named only that
   host. A named host now opens and keeps that host alone at every scope.
 
+- `git submodule update`, given as the whole line on the process tier and
+  the fence, ran through git on the host, where a submodule's own
+  configuration or attributes could name a program it then ran outside the
+  sandbox, as the person or, on `abhed serve`, as the server's account (a
+  smudge filter, `submodule.<name>.update = !cmd`). It is no longer run on
+  the host: it runs in the sandbox, where updating a submodule already
+  checked out can fail, so run it yourself outside Abhed. `git worktree`
+  add, remove and prune are still brokered.
 - A profile's client followed a redirect from https to plain http on the
   same host, sending the server token in clear. Such a redirect is now
   refused.

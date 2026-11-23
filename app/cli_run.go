@@ -244,7 +244,8 @@ func run(a *App, workspace string, f *cliFlags) int {
 	set := toolset.Build(context.Background(), cfg, toolset.Options{
 		Workspace:    workspace,
 		ReadWithheld: pol.ReadWithheldFunc(),
-		Bash: tools.Bash{Sandbox: gitBroker.Command, HostAsk: hostAsk(sb, gitBroker),
+		// The sandbox may still be being chosen: whether git is held is asked as it is used.
+		Bash: tools.Bash{Sandbox: gitBroker.Command, HostAsk: lazyHostAsk(gitBroker), HostGitOn: func() bool { return hostgit.BrokersRemotes(sb) && gitBroker.BrokersRemoteCommands() },
 			Home:      sandbox.HomeFunc(sb),
 			Isolation: sandboxconfig.Isolation(cfg, tier),
 			RanUnder:  func() string { return string(sb.Tier()) }},

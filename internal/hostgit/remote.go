@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/url"
 	"os/exec"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -124,7 +123,7 @@ func (b *HostBroker) HoldsGit(holds, holdsNew func() bool) *HostBroker {
 
 // NoRemotes leaves every remote command to the sandbox, as a server's
 // sessions need: host git would run as the server's own account for whoever
-// reaches it. Worktree and submodule commands are still brokered.
+// reaches it. Worktree commands are still brokered.
 func (b *HostBroker) NoRemotes() *HostBroker {
 	b.noRemotes = true
 	return b
@@ -172,13 +171,13 @@ func (b *HostBroker) commonOf(ctx context.Context, root string) string {
 }
 
 // Broker wraps a sandbox's Command so the git commands the sandbox keeps from
-// working run through host git: worktree add, remove and prune and submodule
-// update (the sandbox holds git's folders). Anything else goes to command as
-// it was. Only the process tier and the fence are brokered, as only they run
-// commands on this host. Unless netOpen (network on, no allowlist), a
-// submodule update must say --no-fetch and can only check out what is
-// there. Remote commands need NewBroker, told the sandbox holds git's
-// configuration.
+// working run through host git: worktree add, remove and prune (the sandbox
+// holds git's worktree folders). Anything else goes to command as it was. Only
+// the process tier and the fence are brokered, as only they run commands on
+// this host. git submodule update is not: it runs programs the submodules'
+// own configuration and attributes name (filters, an update command), which
+// no list of settings switched off could be shown to cover. Remote commands
+// need NewBroker, told the sandbox holds git's configuration.
 func Broker(workspace string, tier func() sandbox.Tier, netOpen bool, command func(ctx context.Context, cwd, line string) *exec.Cmd) func(ctx context.Context, cwd, line string) *exec.Cmd {
 	return NewBroker(workspace, tier, Network{Open: netOpen}, command).Command
 }
@@ -202,7 +201,8 @@ func (b *HostBroker) held() bool { return b.holds != nil && b.holds() }
 // else as command builds it.
 func (b *HostBroker) Command(ctx context.Context, cwd, line string) *exec.Cmd {
 	if op, err, ok := parseRemote(line); ok {
-		if !b.onHost() || !b.held() || !b.BrokersRemoteCommands() {
+		// held first: it waits for a sandbox still being chosen, whose tier is then known.
+		if !b.held() || !b.onHost() || !b.BrokersRemoteCommands() {
 			return b.command(ctx, cwd, line)
 		}
 		if err != nil {
@@ -217,24 +217,8 @@ func (b *HostBroker) Command(ctx context.Context, cwd, line string) *exec.Cmd {
 	if err := brokerPaths(b.workspace, cwd, args); err != nil {
 		return &exec.Cmd{Err: err}
 	}
-	var env []string
-	if args[0] == "submodule" && (!b.net.Open || b.noRemotes) {
-		if !slices.Contains(args, "--no-fetch") && !slices.Contains(args, "-N") {
-			if b.noRemotes {
-				// A server's account would fetch, with its own .netrc and http
-				// headers, from URLs the agent's .gitmodules names.
-				return &exec.Cmd{Err: errors.New("git submodule update: on a server, git run on the host never fetches; " +
-					"add --no-fetch to check out what is already fetched")}
-			}
-			return &exec.Cmd{Err: errors.New("git submodule update: the sandbox's network is off or held to an allowlist, " +
-				"and git run for it on the host would reach the network outside both; add --no-fetch to check out " +
-				"what is already fetched, or fetch the submodules yourself")}
-		}
-		// --no-fetch still clones a submodule not yet cloned; no transport is allowed.
-		env = []string{"GIT_ALLOW_PROTOCOL=" + noProtocol}
-	}
 	// On the host, whatever sandbox is registered for the workspace.
-	return New(ctx, cwd).commandWith(ctx, nil, env, true, args...)
+	return New(ctx, cwd).commandWith(ctx, nil, nil, true, args...)
 }
 
 // Ask is why the call key (sandbox.Launch.Key: the session and the call's
@@ -245,7 +229,7 @@ func (b *HostBroker) Command(ctx context.Context, cwd, line string) *exec.Cmd {
 // settings it judged are kept for the call, and it runs only on those.
 func (b *HostBroker) Ask(key, cwd, line string) (reason, step, bind string, err error) {
 	op, perr, ok := parseRemote(line)
-	if !ok || !b.onHost() || !b.held() || !b.BrokersRemoteCommands() {
+	if !ok || !b.held() || !b.onHost() || !b.BrokersRemoteCommands() {
 		return "", "", "", nil
 	}
 	if perr != nil {
