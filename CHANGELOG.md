@@ -216,8 +216,7 @@ All notable changes to Abhed are recorded here. The format follows
   A hosted type's stored key goes only to that type's own endpoint, and a
   model a workspace's file defines gets a stored key only when your own
   configuration names that key for the same endpoint and token URL, and an
-  exported hosted key only at its type's own endpoint. Model requests no
-  longer follow a redirect to another host.
+  exported hosted key only at its type's own endpoint.
 - Models without editing JSON: `abhed models add PROVIDER MODEL...`, `abhed
   models default NAME`, `list`, `remove` and `known`. They write only your own
   `~/.abhed/config.json`, atomically, with a `config.json.bak` backup and the
@@ -718,6 +717,9 @@ All notable changes to Abhed are recorded here. The format follows
   `model.ollama.idle_stop_minutes`), and when the Abhed that started it
   exits, on a signal too, as when Studio quits. Abhed says so when it starts one.
   An Ollama it did not start is never stopped.
+- Model endpoints no longer follow a redirect to another host, port or
+  scheme, since the key would go with it; such a request fails and says
+  where it was sent. Under `completion.local_only` both checks apply.
 - An `anthropic` provider at its own endpoint with no `api_key_env` now reads
   `ANTHROPIC_API_KEY`, as the other hosted types read theirs.
 - Writes to `~/.abhed/config.json` (`/config set`, `abhed mcp add|remove`) now

@@ -67,10 +67,11 @@ func TestProviderNamedUsesStoredKey(t *testing.T) {
 func TestWorkspaceCannotSteerAStoredKey(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	chain := memChain{"ANTHROPIC_API_KEY": "sk-ant-PROBE-0123456789", "CORP_KEY": "corp-PROBE-0123456789", "WX_KEY": "wx-PROBE-0123456789"}
+	chain := memChain{"ANTHROPIC_API_KEY": "sk-ant-PROBE-0123456789", "CORP_KEY": "corp-PROBE-0123456789", "WX_KEY": "wx-PROBE-0123456789", "VX_KEY": "vx-PROBE-0123456789"}
 	defer modelkeys.Use(chain, filepath.Join(home, "s.json"))()
 	own := `{"model":{"providers":{"corp":{"type":"openai","base_url":"https://llm.corp.example/v1","model":"c1","api_key_secret":"CORP_KEY"},` +
-		`"wx":{"type":"watsonx","base_url":"https://us-south.ml.cloud.ibm.com","model":"m","api_key_secret":"WX_KEY","project_id":"p"}}}}`
+		`"wx":{"type":"watsonx","base_url":"https://us-south.ml.cloud.ibm.com","model":"m","api_key_secret":"WX_KEY","project_id":"p"},` +
+		`"vx":{"type":"vertex-anthropic","region":"us-east5","project_id":"corp-proj","model":"m","api_key_secret":"VX_KEY"}}}}`
 	if err := os.MkdirAll(filepath.Join(home, ".abhed"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -93,6 +94,10 @@ func TestWorkspaceCannotSteerAStoredKey(t *testing.T) {
 		{"watsonx token URL to attacker", `{"type":"watsonx","base_url":"https://us-south.ml.cloud.ibm.com","model":"m","api_key_secret":"WX_KEY","project_id":"p","iam_url":"https://attacker.example/token"}`, ""},
 		{"watsonx extra token URL to attacker", `{"type":"watsonx","base_url":"https://us-south.ml.cloud.ibm.com","model":"m","api_key_secret":"WX_KEY","project_id":"p","extra":{"iam_url":"https://attacker.example/token"}}`, ""},
 		{"watsonx as the person has it", `{"type":"watsonx","base_url":"https://us-south.ml.cloud.ibm.com","model":"m2","api_key_secret":"WX_KEY","project_id":"p2"}`, "wx-PROBE-0123456789"},
+		{"another type at the person's host", `{"type":"watsonx","base_url":"https://llm.corp.example/v1","model":"x","api_key_secret":"CORP_KEY","project_id":"p"}`, ""},
+		{"vertex as the person has it", `{"type":"vertex-anthropic","region":"us-east5","project_id":"corp-proj","model":"m2","api_key_secret":"VX_KEY"}`, "vx-PROBE-0123456789"},
+		{"vertex in another project", `{"type":"vertex-anthropic","region":"us-east5","project_id":"attacker-proj","model":"m","api_key_secret":"VX_KEY"}`, ""},
+		{"vertex in another region", `{"type":"vertex-anthropic","region":"europe-west1","project_id":"corp-proj","model":"m","api_key_secret":"VX_KEY"}`, ""},
 		{"hosted key at the official host with a token URL", `{"type":"anthropic","model":"x","extra":{"iam_url":"https://attacker.example/token"}}`, ""},
 	}
 	for _, c := range cases {

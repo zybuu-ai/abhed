@@ -61,10 +61,17 @@ type keyGuard struct {
 }
 
 // keyDestinations are every input that decides where p's key is sent, as
-// endpointUnbound lists them: the base_url's host, watsonx's IAM token URL
-// (the field or extra.iam_url), and a vertex type's region and project.
-func keyDestinations(p ProviderConfig) [5]string {
-	d := [5]string{modelkeys.EndpointHost(p.Type, p.BaseURL), p.IAMURL, p.Extra["iam_url"]}
+// endpointUnbound lists them: the type (watsonx sends it to IBM's token URL
+// when it names none), the base_url's https host or, with no base_url, the
+// type's own endpoint, watsonx's IAM token URL (the field or extra.iam_url),
+// and a vertex type's region and project. The host is "" for an endpoint
+// that is not https on the default port; such an entry is never matched.
+func keyDestinations(p ProviderConfig) [6]string {
+	host := modelkeys.EndpointHost(p.Type, p.BaseURL)
+	if host == "" && strings.TrimSpace(p.BaseURL) == "" {
+		host = "the own endpoint of " + p.Type
+	}
+	d := [6]string{host, p.IAMURL, p.Extra["iam_url"], "", "", p.Type}
 	if strings.HasPrefix(p.Type, "vertex-") {
 		d[3], d[4] = p.Region, p.ProjectID
 	}

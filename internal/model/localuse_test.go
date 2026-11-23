@@ -104,3 +104,24 @@ func TestModelClientRefusesCrossHostRedirect(t *testing.T) {
 		t.Fatal("the key followed a redirect to another host")
 	}
 }
+
+// SendOnce adds its check to the client's own: a redirect its check allows
+// is still refused when it leaves the host.
+func TestSendOnceKeepsTheSameHostCheck(t *testing.T) {
+	var reached atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { reached.Add(1) }))
+	defer other.Close()
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer src.Close()
+	a := NewOpenAICompatible(src.URL+"/v1", "k", "m", Profile{})
+	allowAll := func(*http.Request, []*http.Request) error { return nil }
+	if !SendOnce(a, allowAll) {
+		t.Fatal("not confined")
+	}
+	_, _ = a.Infill(context.Background(), InfillRequest{Prefix: "x"})
+	if reached.Load() != 0 {
+		t.Fatal("a redirect to another port on this machine was followed")
+	}
+}
