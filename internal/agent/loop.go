@@ -2926,6 +2926,10 @@ func (l *Loop) fitResult(callID, content string) string {
 	return head + fmt.Sprintf("\n\n[... %d characters elided to fit the context window. %s ...]\n\n", dropped, how) + tail
 }
 
+// minResultChars is the smallest per-result cap, so a tiny window still
+// caps rather than reading as "no cap".
+const minResultChars = 1024
+
 // resultLimitChars is the per-result cap, derived from the context window so a
 // small-window model is protected and a large-window one is not needlessly
 // truncated. Zero means the window is unknown, and nothing is capped.
@@ -2945,7 +2949,8 @@ func (l *Loop) resultLimitChars() int {
 	if l.Compactor != nil {
 		chars /= l.Compactor.Scale()
 	}
-	return int(chars)
+	// Zero would mean no cap at all: a positive window always caps.
+	return max(int(chars), minResultChars)
 }
 
 // runCalls executes a turn's tool calls and appends their results.

@@ -200,3 +200,38 @@ func TestWindowFloor(t *testing.T) {
 		t.Fatal("the floor itself is a window")
 	}
 }
+
+type mapMemory map[string]int
+
+func (m mapMemory) Recall(k string) int      { return m[k] }
+func (m mapMemory) Remember(k string, w int) { m[k] = w }
+
+// A limit a provider named is kept for the next process, which starts with
+// it; a limit Abhed only inferred is not kept.
+func TestLearnedWindowIsRemembered(t *testing.T) {
+	mem := mapMemory{}
+	SetWindowMemory(mem)
+	t.Cleanup(func() { SetWindowMemory(nil) })
+	spec := Spec{Type: "anthropic", Model: "claude-sonnet-5-5", APIKey: "k"}
+	a, _ := New(spec)
+	if !LearnWindow(a, 200_000, true) {
+		t.Fatal("not learned")
+	}
+	b, _ := New(spec) // the next process
+	if p := b.Profile(); p.ContextWindow != 200_000 || p.WindowSource != WindowLearned {
+		t.Fatalf("restarted with %+v", p)
+	}
+	other, _ := New(Spec{Type: "anthropic", Model: "claude-opus-5-5", APIKey: "k"})
+	if other.Profile().ContextWindow != 1_000_000 {
+		t.Fatal("another model took the limit")
+	}
+	c, _ := New(Spec{Type: "openai", Model: "gpt-4.1", APIKey: "k"})
+	LearnWindow(c, 50_000, false)
+	if d, _ := New(Spec{Type: "openai", Model: "gpt-4.1", APIKey: "k"}); d.Profile().ContextWindow != 1_047_576 {
+		t.Fatal("an inferred limit was kept")
+	}
+	mem[WindowKey("openai", "https://api.openai.com/v1", "gpt-4o")] = 10 // below the floor
+	if e, _ := New(Spec{Type: "openai", Model: "gpt-4o", APIKey: "k"}); e.Profile().ContextWindow != 128_000 {
+		t.Fatal("a remembered window under the floor was taken")
+	}
+}

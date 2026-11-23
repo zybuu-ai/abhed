@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // Where a profile's context window came from, from most to least trusted.
@@ -63,12 +64,51 @@ type Limits struct {
 	// silentTruncation marks a server that cuts an over-long prompt rather
 	// than refusing it (Ollama).
 	silentTruncation bool
+	// key names the endpoint and model in the window memory.
+	key string
+}
+
+// WindowMemory keeps the limits providers named across processes, so a
+// restarted session does not pay one refused call to learn the same limit
+// again. The program installs the person's own (SetWindowMemory); without
+// one, learned limits last as long as the process.
+type WindowMemory interface {
+	// Recall is the window remembered for key, or 0.
+	Recall(key string) int
+	// Remember keeps window for key.
+	Remember(key string, window int)
+}
+
+var windowMemory atomic.Pointer[WindowMemory]
+
+// SetWindowMemory installs the memory learned limits are kept in; nil
+// removes it.
+func SetWindowMemory(m WindowMemory) {
+	if m == nil {
+		windowMemory.Store(nil)
+		return
+	}
+	windowMemory.Store(&m)
+}
+
+func memory() WindowMemory {
+	if m := windowMemory.Load(); m != nil {
+		return *m
+	}
+	return nil
+}
+
+// WindowKey names an endpoint's model in the window memory: the provider
+// type, the endpoint and the model id, the three that decide which account
+// and which deployment a limit belongs to.
+func WindowKey(typ, base, model string) string {
+	return strings.ToLower(typ + " " + strings.TrimSuffix(base, "/") + " " + model)
 }
 
 // resolveLimits is the starting window for a spec: the configuration's,
 // else the table's, else the fallback.
 func resolveLimits(s Spec, base string) *Limits {
-	l := &Limits{typ: s.Type, base: base, local: isLocalEndpoint(s.Type, base)}
+	l := &Limits{typ: s.Type, base: base, local: isLocalEndpoint(s.Type, base), key: WindowKey(s.Type, base, s.Model)}
 	l.silentTruncation = isOllama(s.Type, base)
 	_, out, known := LookupLimits(s.Model)
 	l.output = out
@@ -86,6 +126,14 @@ func resolveLimits(s Spec, base string) *Limits {
 		}
 	default:
 		l.window, l.source = FallbackWindow, WindowFallback
+	}
+	// A limit a provider named for this endpoint and model before, in an
+	// earlier process: it lowers any window, the configured one included,
+	// as it did when it was learned.
+	if m := memory(); m != nil {
+		if w := m.Recall(l.key); w >= MinWindow && w < l.window {
+			l.window, l.source = w, WindowLearned
+		}
 	}
 	if s.MaxOutputTokens > 0 && (l.output == 0 || s.MaxOutputTokens < l.output) {
 		// A configured cap is the cap; one above the model's is clamped.
@@ -203,10 +251,20 @@ func attachLimits(a Adapter, s Spec) {
 	*h.limitsRef() = resolveLimits(s, Endpoint(a))
 }
 
-// LearnWindow lowers an adapter's window to the limit its provider named,
-// for every session sharing the adapter. It reports whether it changed.
-func LearnWindow(a Adapter, limit int) bool {
-	return limitsOf(a).learn(limit)
+// LearnWindow lowers an adapter's window to limit, for every session sharing
+// the adapter, and reports whether it changed. named marks a limit the
+// provider stated, which is kept in the window memory for later processes;
+// one Abhed inferred (from a cut prompt, or below a refusal that named none)
+// lasts only as long as the process.
+func LearnWindow(a Adapter, limit int, named bool) bool {
+	l := limitsOf(a)
+	if !l.learn(limit) {
+		return false
+	}
+	if m := memory(); named && m != nil {
+		m.Remember(l.key, limit)
+	}
+	return true
 }
 
 // ResolveLimits is the window, output cap and source a provider spec starts

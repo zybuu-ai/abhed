@@ -98,7 +98,7 @@ func TestAdapterRefusalIsRecognised(t *testing.T) {
 			t.Errorf("%s: %v read as overflow=%v limit=%d", typ, err, ok, limit)
 			continue
 		}
-		if !LearnWindow(a, limit) || a.Profile().ContextWindow != 200000 || a.Profile().WindowSource != WindowLearned {
+		if !LearnWindow(a, limit, true) || a.Profile().ContextWindow != 200000 || a.Profile().WindowSource != WindowLearned {
 			t.Errorf("%s: window %+v", typ, a.Profile())
 		}
 	}

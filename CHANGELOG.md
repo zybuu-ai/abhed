@@ -201,7 +201,10 @@ All notable changes to Abhed are recorded here. The format follows
   and the refused request's size) and what to do (a new conversation,
   `/compact` with what to keep, or `/model` for a larger window); it never
   loops. A limit under 2,048 tokens is not believed, and an OpenAI-shaped
-  refusal of the reply cap rather than the prompt is not compacted for. Anthropic's `prompt is too
+  refusal of the reply cap rather than the prompt is not compacted for. A
+  limit the provider named is kept in `~/.abhed/context-windows.json` by
+  provider type, endpoint and model for 30 days, so a restarted session
+  starts within it rather than being refused once more. Anthropic's `prompt is too
   long`, OpenAI's `context_length_exceeded`, Gemini's input token count and
   the wording of Bedrock, vLLM, llama.cpp, TGI, Mistral, Groq, watsonx and
   Ollama are recognised. A server that cuts an over-long prompt instead of
@@ -710,7 +713,8 @@ All notable changes to Abhed are recorded here. The format follows
   tokens (default 200,000), however large the window: on a 1M-token model
   the fraction alone sent calls of about 650,000 tokens. The threshold, the
   history kept, offloading and the cap on each tool result work within that
-  ceiling. Set it to the model's window to use all of it.
+  ceiling. Set it to the model's window to use all of it; a value under
+  16,384 is refused.
 - The compaction check made after a turn's tool results land now keeps room
   for the model's reply (its output cap, at most an eighth of the window), and
   counts tokens as the provider last reported them for a prompt rather than

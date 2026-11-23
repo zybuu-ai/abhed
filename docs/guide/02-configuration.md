@@ -122,7 +122,10 @@ divided by `compact_at`. Unset or 0 means 200,000. Without it a 1M-token model
 compacted at 0.90 sends calls of about 650,000 tokens, each costing dollars
 when the cache misses and tens of seconds to prefill; 200,000 is also the
 limit some accounts are held to. A window smaller than the ceiling is
-unaffected. Set it to the model's window to use all of it. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
+unaffected. Set it to the model's window to use all of it. A value under
+16,384 is refused: an agent's system prompt and tool schemas take several
+thousand tokens, so a smaller ceiling would compact on every turn and leave
+each tool result a few hundred characters. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
 and the token estimate is approximate. Not much below 0.5 either: a
 compaction keeps recent turns up to about half the window, so below roughly
 0.3 what it keeps is already over the threshold and it compacts on almost
@@ -154,7 +157,14 @@ another turn. A refusal that names no limit (Bedrock's `Input is too long for
 requested model`) lowers the window to four fifths of the refused request's
 size, which brings the retry to about two fifths of it, so it fits any limit
 down to about half the refused size. A limit under 2,048 tokens is not
-believed. An OpenAI-shaped refusal whose prompt was within the limit and whose
+believed. A limit the provider named is kept in `~/.abhed/context-windows.json`,
+by provider type, endpoint and model, so the next session, after a restart
+too, starts within it instead of paying a refused call to learn it again. It
+lowers any window, a configured one included, and is learned again after 30
+days, since accounts are moved to larger windows. A limit Abhed only inferred
+(below a refusal that named none, or from a prompt a server cut) is not kept.
+The file is the person's own state: the agent cannot write it and a workspace
+cannot set it. An OpenAI-shaped refusal whose prompt was within the limit and whose
 reply cap was not (`N in the messages, M in the completion`) is not treated as
 too long: lowering `max_tokens` is the fix, and compacting would not help. A second refusal in a row ends the
 run with what happened (the limit the provider named, or that it named none and

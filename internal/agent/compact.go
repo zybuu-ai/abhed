@@ -137,7 +137,9 @@ func (c *Compactor) Effective(window int) int {
 		return window
 	}
 	if capped := int(float64(c.Ceiling) / c.Threshold); capped < window {
-		return capped
+		// Never below the smallest window believed: a ceiling of a few
+		// tokens would cut every result to nothing.
+		return max(capped, min(window, model.MinWindow))
 	}
 	return window
 }

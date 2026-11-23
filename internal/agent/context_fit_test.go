@@ -459,7 +459,7 @@ func TestOverflowWithNoNamedLimitLearnsBelowTheRefusal(t *testing.T) {
 	over := fitEvents(store, EvContextOverflow)
 	var o ContextOverflow
 	_ = json.Unmarshal(over[0].Payload, &o)
-	if len(over) != 1 || o.Action != OverflowRetried || o.Limit != 0 || p.ContextWindow != o.Sent*unnamedLimitShare/100 {
+	if len(over) != 1 || o.Action != OverflowRetried || o.Limit != 0 || p.ContextWindow != o.Sent*4/5 {
 		t.Fatalf("%d overflow events; %+v; window %d", len(over), o, p.ContextWindow)
 	}
 }
@@ -562,5 +562,82 @@ func TestCompactAtTokensCeiling(t *testing.T) {
 	}
 	if DefaultConfig().CompactAtTokens != DefaultCompactAtTokens {
 		t.Fatal("no default ceiling")
+	}
+}
+
+// The share taken below an unnamed refusal is what lets the one retry fit a
+// limit well under the refused size: here the server takes about 38% of the
+// first request, which four fifths reaches and the whole refused size (a
+// window learned at 100%) does not.
+func TestUnnamedShareLeavesMargin(t *testing.T) {
+	var sizes []int
+	srv := openAIStub(t, 125_000, &sizes)
+	a, err := model.New(model.Spec{Type: "openai", Model: "gpt-4.1", BaseURL: srv.URL, APIKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, _ := fitLoop(t, a)
+	largeRecent(l)
+	if reason, err := l.Run(context.Background(), "and now?"); err != nil || reason != TermCompleted {
+		t.Fatalf("run: %s %v; request sizes %v", reason, err, sizes)
+	}
+	t.Logf("request sizes %v, window %d", sizes, a.Profile().ContextWindow)
+}
+
+// A ceiling far below any useful window still leaves a window and a cap: a
+// result is cut, never passed whole.
+func TestTinyCeilingStillCaps(t *testing.T) {
+	a := &windowAdapter{name: "big", window: 1_000_000}
+	l, _ := fitLoop(t, a)
+	l.Config.CompactAtTokens = 1
+	l.fitCompactor()
+	if got := l.Compactor.Effective(1_000_000); got < model.MinWindow {
+		t.Fatalf("effective window %d", got)
+	}
+	big := strings.Repeat("x", 2_000_000)
+	if got := l.fitResult("c", big); len(got) >= len(big)/10 {
+		t.Fatalf("a 2M-character result kept %d characters", len(got))
+	}
+	small := &Loop{Adapter: &windowAdapter{window: 3}, Tools: tools.NewRegistry()}
+	if got := small.resultLimitChars(); got <= 0 {
+		t.Fatalf("a positive window gave cap %d, which is no cap", got)
+	}
+}
+
+// Offloading starts at its fraction of the ceiling's window, not the
+// model's: a 1M-token model offloads old results near 133k tokens.
+func TestOffloadUnderCeiling(t *testing.T) {
+	a := &windowAdapter{name: "big", window: 1_000_000}
+	l, store := fitLoop(t, a)
+	l.messages = nil
+	for i := 0; i < 10; i++ {
+		id := fmt.Sprintf("r-%d", i)
+		l.messages = append(l.messages,
+			model.Message{Role: model.RoleUser, Content: "next"},
+			model.Message{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{ID: id, Name: "read", Args: json.RawMessage(`{}`)}}},
+			model.Message{Role: model.RoleTool, ToolCallID: id, Content: strings.Repeat("y", 60_000)})
+	}
+	// 150,000 tokens: under 0.6 of 1M, over 0.6 of the default ceiling's window.
+	l.Offloader = NewOffloader(0.6)
+	l.fitCompactor()
+	l.offloadIfNeeded()
+	if len(fitEvents(store, EvContextOffloaded)) != 1 {
+		t.Fatal("no offload under the ceiling")
+	}
+	l2, store2 := fitLoop(t, a)
+	l2.messages = l.messages[:0:0]
+	for i := 0; i < 10; i++ {
+		id := fmt.Sprintf("r-%d", i)
+		l2.messages = append(l2.messages,
+			model.Message{Role: model.RoleUser, Content: "next"},
+			model.Message{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{ID: id, Name: "read", Args: json.RawMessage(`{}`)}}},
+			model.Message{Role: model.RoleTool, ToolCallID: id, Content: strings.Repeat("y", 60_000)})
+	}
+	l2.Offloader = NewOffloader(0.6)
+	l2.Config.CompactAtTokens = 0 // no ceiling: the model's window
+	l2.fitCompactor()
+	l2.offloadIfNeeded()
+	if len(fitEvents(store2, EvContextOffloaded)) != 0 {
+		t.Fatal("offloaded at 15% of the model's window with no ceiling")
 	}
 }

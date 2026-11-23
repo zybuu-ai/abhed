@@ -26,6 +26,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandboxcli"
 )
@@ -263,6 +264,8 @@ func Main(args []string, opts ...Option) int {
 	a := newApp(opts...)
 	recordAnchors = a.anchors
 	enableModelDiscovery()
+	// Limits providers named are kept in the person's own state.
+	model.SetWindowMemory(&config.WindowMemory{})
 	var f cliFlags
 	fs := newFlagSet(&f)
 	// Sessions: the record keeps every one, so these pick which goes on.

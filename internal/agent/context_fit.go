@@ -147,14 +147,14 @@ func (l *Loop) overflowRecovery(ctx context.Context, cause error, limit int) (Te
 		return giveUp()
 	}
 	if limit > 0 {
-		model.LearnWindow(l.Adapter, limit)
+		model.LearnWindow(l.Adapter, limit, true)
 	} else if info.Sent > 0 {
 		// No limit named: it is below what was refused, by an unknown
 		// amount. Four fifths of the refused prompt puts the retry well under
 		// it: compaction keeps half the window (two fifths of the refused
 		// size) and caps each result at a quarter (one fifth), so the one
 		// retry fits a limit as low as about half the refused size.
-		model.LearnWindow(l.Adapter, info.Sent*unnamedLimitShare/100)
+		model.LearnWindow(l.Adapter, info.Sent*unnamedLimitShare/100, false)
 	}
 	before, after, changed := l.shrinkToWindow(ctx, "overflow", true)
 	if !changed {
@@ -192,7 +192,7 @@ func (l *Loop) noteTruncation(ctx context.Context, sent int, u model.Usage) {
 	}
 	// The loaded model's window, if the server will say; else what it read.
 	if !model.Rediscover(ctx, l.Adapter) {
-		model.LearnWindow(l.Adapter, read)
+		model.LearnWindow(l.Adapter, read, false)
 	}
 	info := ContextOverflow{Model: p.Name, Window: p.ContextWindow, Sent: sent, Read: read, Action: OverflowTruncated,
 		Limit: l.Adapter.Profile().ContextWindow}
