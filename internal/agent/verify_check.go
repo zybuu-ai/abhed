@@ -473,7 +473,13 @@ func (ix *recordIndex) lastChange() *mutation {
 
 func (o *obsRec) evidence() *evidenceText {
 	if o.ev == nil {
-		o.ev = prepareEvidence(o.content, o.testRun())
+		content := o.content
+		// A read's line numbers, and a truncated read's closing note, are
+		// not what the file holds.
+		if o.tool == "read" {
+			content = readTrailerRe.ReplaceAllString(stripGutter(content), "")
+		}
+		o.ev = prepareEvidence(content, o.testRun())
 	}
 	return o.ev
 }
@@ -627,6 +633,9 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 		return ClaimVerdict{Text: c.Text, Kind: KindStatement, Verdict: ClaimUnverified, Reason: selfReason}
 	}
 	f := extractFacts(citeRe.ReplaceAllString(c.Text, " "))
+	if f.workNounLead && !ix.madeWorkCall() {
+		f = extractFacts(blankLead(citeRe.ReplaceAllString(c.Text, " ")))
+	}
 	kind := c.Kind
 	// A sentence that says something was done or changed is about the work
 	// even with nothing else in it; a participle alone ("a compiled
@@ -1498,6 +1507,37 @@ func firstWith(pool []*obsRec, ok func(*evidenceText) bool) *obsRec {
 	return nil
 }
 
+// workProgs are the programs of git and deploy work.
+var workProgs = map[string]bool{"git": true, "kubectl": true, "helm": true, "docker": true, "podman": true, "terraform": true, "pulumi": true, "flyctl": true, "gcloud": true, "aws": true, "az": true}
+
+// madeWorkCall reports a git or deploy call in this session, run or
+// refused: a shell line running one of workProgs, or a k8s tool.
+func (ix *recordIndex) madeWorkCall() bool {
+	work := func(lf lineFacts) bool {
+		for _, c := range lf.cmds {
+			if len(c.words) > 0 && workProgs[filepath.Base(c.words[0])] {
+				return true
+			}
+		}
+		return false
+	}
+	for _, o := range ix.obs {
+		if strings.HasPrefix(o.tool, "k8s_") || (o.tool == "bash" || o.tool == "ssh") && work(o.line) {
+			return true
+		}
+	}
+	for _, d := range ix.denials {
+		if d.command != "" && work(readLine(d.command, "")) {
+			return true
+		}
+	}
+	return false
+}
+
+// targetArgs are the arguments that name what a call was made to, never
+// what it was given to write or say.
+var targetArgs = []string{"host", "cluster", "context", "namespace", "name", "deployment"}
+
 func (ix *recordIndex) literal(pool []*obsRec, lit string, cited bool) finding {
 	if o := firstWith(pool, func(e *evidenceText) bool { return e.hasLiteral(lit) }); o != nil {
 		return finding{out: matched, what: fmt.Sprintf("%q in #%d", lit, o.seq), seq: o.seq, pooled: true}
@@ -1507,6 +1547,22 @@ func (ix *recordIndex) literal(pool []*obsRec, lit string, cited bool) finding {
 	for i := len(pool) - 1; i >= 0; i-- {
 		if o := pool[i]; o.tool == "bash" && o.command != "" && commandShows(o, lit) {
 			return finding{out: matched, what: fmt.Sprintf("%q is the command of #%d", lit, o.seq), seq: o.seq, pooled: true}
+		}
+	}
+	// A name with a digit in it (a host, a cluster) is shown by an ssh or k8s
+	// call that succeeded and was made to it: a target argument of exactly
+	// that value. It shows the session reached it, not what is there.
+	if digitWordRe.MatchString(" " + lit) {
+		for i := len(pool) - 1; i >= 0; i-- {
+			o := pool[i]
+			if o.tool != "ssh" && !strings.HasPrefix(o.tool, "k8s_") || o.isError || o.exit != nil && *o.exit != 0 {
+				continue
+			}
+			for _, k := range targetArgs {
+				if v := o.argMap[k]; v != "" && normText(v) == lit {
+					return finding{out: matched, what: fmt.Sprintf("%q is the %s of #%d", lit, k, o.seq), seq: o.seq, pooled: true}
+				}
+			}
 		}
 	}
 	if cited {

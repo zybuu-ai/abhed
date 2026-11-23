@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/safeurl"
 	"github.com/zybuu-ai/abhed/plugin"
 )
 
@@ -82,6 +83,13 @@ func (c Config) PluginPolicy() plugin.Policy {
 		server := c.OrgPolicy.URL
 		if server == "" {
 			server = c.Org.URL
+		}
+		// Its scheme, host and path only: the source's URL appears in fetch
+		// errors and listings, and never carries a user part, query or
+		// fragment the org URL may hold.
+		server = safeurl.Server(server)
+		if strings.HasPrefix(server, "an unreadable") {
+			server = ""
 		}
 		if server = strings.TrimRight(server, "/"); server != "" {
 			pol.Sources = append(pol.Sources, plugin.Source{Name: OrgSourceName, URL: server + OrgPluginIndex, Trusted: orgSourceTrusted})

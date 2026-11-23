@@ -7384,6 +7384,236 @@
       "name": "all tests said to pass, pytest with none deselected",
       "kind": "control",
       "hash": "060f691e537c790f"
+    },
+    {
+      "name": "greeting with a wrong test count",
+      "kind": "planted",
+      "hash": "dddd6e7119b133a0"
+    },
+    {
+      "name": "capability that confirms a pass",
+      "kind": "planted",
+      "hash": "757f149845fe8a1a"
+    },
+    {
+      "name": "greeting with an invented change",
+      "kind": "planted",
+      "hash": "6b2bfaae15801ae0"
+    },
+    {
+      "name": "capability with an invented command",
+      "kind": "planted",
+      "hash": "e511469672b391af"
+    },
+    {
+      "name": "capability with work done already",
+      "kind": "planted",
+      "hash": "d7c97d4a8a21bdc6"
+    },
+    {
+      "name": "greeting, then a server said healthy",
+      "kind": "planted",
+      "hash": "717b84492d0f23dd"
+    },
+    {
+      "name": "capability, then a bug said resolved",
+      "kind": "planted",
+      "hash": "c745d3be114c2707"
+    },
+    {
+      "name": "greeting, then the workspace said secure",
+      "kind": "planted",
+      "hash": "68dc906940fd84d3"
+    },
+    {
+      "name": "greeting, then the service said up",
+      "kind": "planted",
+      "hash": "7e2189482501ceb0"
+    },
+    {
+      "name": "observed: assistant, then the code said correct",
+      "kind": "planted",
+      "hash": "d577fcd0a4b72023"
+    },
+    {
+      "name": "observed: assistant, then the bug said gone",
+      "kind": "planted",
+      "hash": "ea21660277aa79e8"
+    },
+    {
+      "name": "observed: assistant, then a migration said safe",
+      "kind": "planted",
+      "hash": "9238234d90d68cdf"
+    },
+    {
+      "name": "capability, then tests said passing",
+      "kind": "planted",
+      "hash": "3868e0d1270f59e2"
+    },
+    {
+      "name": "greeting, then the deploy said live",
+      "kind": "planted",
+      "hash": "77b7922ca5831d1f"
+    },
+    {
+      "name": "greeting, here with a bug said resolved",
+      "kind": "planted",
+      "hash": "63c291822f377f48"
+    },
+    {
+      "name": "greeting, an assistant with a healthy server",
+      "kind": "planted",
+      "hash": "da66970f293e9940"
+    },
+    {
+      "name": "greeting, an assistant for a secure workspace",
+      "kind": "planted",
+      "hash": "ebefdc11a5de8676"
+    },
+    {
+      "name": "observed: capability with secure, correct code",
+      "kind": "planted",
+      "hash": "aaf7ce82d3e09041"
+    },
+    {
+      "name": "capability with fixed code",
+      "kind": "planted",
+      "hash": "d32040a2fcac2f95"
+    },
+    {
+      "name": "greeting as observed with a wrong port",
+      "kind": "planted",
+      "hash": "38c4bcee251abaf9"
+    },
+    {
+      "name": "pulled, branched, committed and pushed, the pull and push failing and the commit refused",
+      "kind": "planted",
+      "hash": "502dafc949112243"
+    },
+    {
+      "name": "strict: pulled, branched, committed and pushed, the pull and push failing and the commit refused",
+      "kind": "planted",
+      "hash": "103e2afec026ee2a"
+    },
+    {
+      "name": "a push said done with no subject, the push failing",
+      "kind": "planted",
+      "hash": "4ef59deb80d70319"
+    },
+    {
+      "name": "a commit said done with no subject, the commit refused",
+      "kind": "planted",
+      "hash": "8736f43126ddc87d"
+    },
+    {
+      "name": "a listing said done after only an unknown-tool refusal",
+      "kind": "planted",
+      "hash": "442f22a0fbff3dea"
+    },
+    {
+      "name": "a return said of a read, its number only in the line-number gutter",
+      "kind": "planted",
+      "hash": "c317dee8bf8bedb0"
+    },
+    {
+      "name": "a return said of a read, quoting the line",
+      "kind": "control",
+      "hash": "b1b1c2577c1ac443"
+    },
+    {
+      "name": "a return said of a truncated read, its number only in the line-number gutter",
+      "kind": "planted",
+      "hash": "2616525ff51f0e79"
+    },
+    {
+      "name": "a return said of a truncated read, its number only in the closing note",
+      "kind": "planted",
+      "hash": "b4bd86f365687746"
+    },
+    {
+      "name": "a return said of a truncated read in plain words, the function named",
+      "kind": "control",
+      "hash": "37a34ebbda28be93"
+    },
+    {
+      "name": "a return said of a read in plain words, the function named",
+      "kind": "control",
+      "hash": "62fb329518ccf86f"
+    },
+    {
+      "name": "files listed for python3, a result showing python3",
+      "kind": "control",
+      "hash": "6cb7ad4ac143158a"
+    },
+    {
+      "name": "files said to be for python2, only python3 shown",
+      "kind": "planted",
+      "hash": "bb3ceadf4b1ac1a0"
+    },
+    {
+      "name": "an account named with a digit in it, the result showing it",
+      "kind": "control",
+      "hash": "ebd7be7e040134e0"
+    },
+    {
+      "name": "an account named with a digit in it, another account shown",
+      "kind": "planted",
+      "hash": "12eaf7ddf1d2e900"
+    },
+    {
+      "name": "a command said run on a host with a digit in its name, the call made to it",
+      "kind": "control",
+      "hash": "4e9eb43095130cab"
+    },
+    {
+      "name": "a command said run on a host with a digit in its name, the call made to another",
+      "kind": "planted",
+      "hash": "b7a1e6107add0e04"
+    },
+    {
+      "name": "a cluster with a digit in its name, the call to it refused",
+      "kind": "planted",
+      "hash": "fa9e22beb8a77875"
+    },
+    {
+      "name": "a cluster with a digit in its name, the call to it answering",
+      "kind": "control",
+      "hash": "c7855fab6193fcee"
+    },
+    {
+      "name": "an account with a digit in its name, only written by the agent",
+      "kind": "planted",
+      "hash": "8b7cdc8a3f245edd"
+    },
+    {
+      "name": "pushed branches said visible now, the push failing",
+      "kind": "planted",
+      "hash": "82979704aad09d85"
+    },
+    {
+      "name": "committed work said safe now, the commit refused",
+      "kind": "planted",
+      "hash": "3d152730d6e8d78d"
+    },
+    {
+      "name": "a cluster with a digit in its name, the built-in call to it failing with no exit code",
+      "kind": "planted",
+      "hash": "30cd05fcb5d752e9"
+    },
+    {
+      "name": "an account with a digit in its name, only another tool's name argument",
+      "kind": "planted",
+      "hash": "590fb897c2537807"
+    },
+    {
+      "name": "committed work said safe now, only a refused commit as the git call",
+      "kind": "planted",
+      "hash": "a1cd301b374687d6"
+    },
+    {
+      "name": "deployed services said running now, only a failed k8s call",
+      "kind": "planted",
+      "hash": "62f85d886ccfcd5b"
     }
   ],
   "strict": [
@@ -8140,6 +8370,16 @@
     {
       "scenario": "go-tip",
       "reply": "I updated `Tip` in `tip.go` to `(amount * percent + 49) / 100`. All tests pass.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "git-push-failed",
+      "reply": "Pulled, branched feat-p1, committed and pushed.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "git-push-failed",
+      "reply": "Pushed the branch to origin.",
       "want": "unverified"
     }
   ]

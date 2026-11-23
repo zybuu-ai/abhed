@@ -1486,6 +1486,12 @@ type ServerConfig struct {
 	// single-domain deployment and wrong only if the console is served from
 	// somewhere other than the API.
 	AllowedOrigins []string `json:"allowed_origins,omitempty"`
+	// AllowedHosts are the host names (no port) a request's Host may name,
+	// beyond loopback, IP addresses, canonical_host and the hosts of
+	// allowed_origins and auth.redirect_url. Any other name is refused,
+	// so a site that points its own name at this server (DNS rebinding) is
+	// not served. With auth.mode none only loopback and these are answered.
+	AllowedHosts []string `json:"allowed_hosts,omitempty"`
 	// TrustProxy makes rate limiting read X-Forwarded-For. Only enable it when
 	// a proxy you control is the sole route to the port: otherwise a client
 	// sets its own limiter key and rotates it at will.

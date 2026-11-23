@@ -8,6 +8,20 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- `abhed serve` answered any `Host`, and an `Origin` equal to it passed the
+  cross-origin check, so a web page could reach the API by pointing its own
+  name at the server (DNS rebinding); with `auth.mode` `none` that was the
+  whole API. A request whose `Host` is not loopback, an IP address (with
+  sign-in on) or a configured name (`server.allowed_hosts`,
+  `server.canonical_host`, the hosts of `server.allowed_origins` and
+  `auth.redirect_url`) is now refused with `421`; with `auth.mode` `none`
+  only loopback and `server.allowed_hosts` are answered. Affected: every
+  release with `abhed serve`.
+- A second `abhed serve` on the same HOME swept the running server's
+  per-session sandboxes. On the same address it now fails before any
+  startup cleanup; on another, the running server's startup lock
+  (`~/.abhed/serve.lock`) makes it leave the running one's sessions and
+  sandboxes alone.
 - An organisation's deny or ask rule whose flags end in a star, such as
   `bash(rm -rf*)`, held only for the flags as written: `rm -r -f build` and
   `rm -fr build` fell through to the destructive ask. Such a rule is now read
@@ -127,13 +141,21 @@ All notable changes to Abhed are recorded here. The format follows
   (`https://u:pw@…`, `https://TOKEN@…`, `?token=…`, `#…`, a signed URL)
   was printed whole where a refusal or a warning named the org policy, and
   in the status line of `abhed doctor`. Affected: 1.2.9 with an org policy.
-  A refusal, a warning and a denial reason (which reach the model and the
-  record) now show only the URL's scheme, host and path; the status line
-  shows it whole with the user part, every query value and the fragment
-  redacted.
+  A refusal, a warning, the fallback's reason and the record's
+  `session.started` `org_policy` (`reason`, `server`), which reach the
+  model, stderr and the record, now show only the URL's scheme, host and
+  path; the status lines of `abhed doctor` and `abhed policy status` show it
+  whole with the user part, every query value and the fragment redacted.
 
 ### Upgrading from 1.2.9
 
+- `abhed serve` reached by a DNS name now needs that name configured: set
+  `server.allowed_hosts` (or `server.canonical_host`, or name it in
+  `server.allowed_origins` or `auth.redirect_url`). Loopback and, with
+  sign-in on, IP addresses work as before. With `auth.mode` `none`, only
+  loopback and `server.allowed_hosts` are answered. `abhed serve` and
+  `abhed serve -check` say so in a `hosts` line when they listen beyond
+  loopback with no name configured.
 - git fetch, pull, push, clone and ls-remote in Abhed Studio and the CLI
   now reach remotes with the person's own credentials (SSH agent, keychain,
   credential helpers), on the process tier and the fence; 1.2.9 ran them in
@@ -1275,6 +1297,27 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- The verifier passed a report of work after the calls for it failed:
+  "Pulled, branched feat-p1, committed and pushed." after the pull failed,
+  the commit was refused and the push exited 128 ended `verified`, exit 0,
+  even under `-verify strict`. A sentence that opens with what was done and
+  leaves out "I" was read as a plain statement, which never counts against
+  an answer. It is now a claim about the session's work, as "I pushed" is,
+  so it stays unverified and strict mode does not complete on it. "listed"
+  after only a refused call no longer passes as a look at nothing. Prose
+  that opens with a past form used as an adjective ("Built-in functions
+  …", "Released versions are tagged …", "Changed files:") is not read as
+  such a report, unless it heads a work noun whose state is said to be
+  new, in a session that made a git or deploy call ("Pushed branches are
+  visible on origin now."). A word with a digit in
+  it ("python3", "r2alice") was read as a number, which marked true
+  answers unverified; it is now a name that a result must hold, or that
+  an ssh or Kubernetes call which succeeded was made to (its host,
+  cluster, context, namespace or name), so "signed in as r2alice" verifies against a result showing it
+  and "python2" does not verify against one showing python3. The read
+  tool's line numbers, truncated reads included, no longer count as what
+  the file holds, which verified "returns x + 2" against `return x + 3`. The false-claim corpus and the strict regression pin gain the
+  evaluation's cases, and its floors rise.
 - A model endpoint's user, password and query (such as `?key=`) were shown
   in the explanation of an endpoint that did not answer, in the terminal,
   Studio's chat and `_meta.providerError`. Only its scheme, host and path are

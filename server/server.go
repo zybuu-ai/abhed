@@ -337,6 +337,12 @@ type Options struct {
 	// file tools work in that sandbox and its folder, never in Workspace.
 	// Nil keeps the one sandbox every session shares, exactly as before.
 	SessionSandboxes *sessionsandbox.Manager
+	// StartupLock, when set, is held while the server runs, around taking
+	// back its sessions and sweeping session sandboxes at start: a second
+	// server sharing this machine's state (on another address) cannot take
+	// it, and leaves what the first holds alone. An error means another
+	// holds it.
+	StartupLock func() (release func(), err error)
 	// TLS, when set, is served on Addr instead of plain HTTP. Its
 	// certificates are read per handshake, so a reload needs no restart.
 	TLS *tls.Config
@@ -5420,6 +5426,16 @@ func badBody(w http.ResponseWriter, err error, msg string) {
 // ListenAndServe starts the HTTP server. With Options.TLS set every
 // connection is a TLS one.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	// An address another server holds fails here, before the startup work
+	// below reclaims, reconciles or sweeps anything that server is running.
+	// The probe is closed again, so nothing is accepted until that work ends.
+	if _, port, err := net.SplitHostPort(s.opts.Addr); err != nil || !loopport.AnyPort(port) {
+		probe, err := net.Listen("tcp", s.opts.Addr)
+		if err != nil {
+			return err
+		}
+		_ = probe.Close()
+	}
 	return s.serve(ctx, func() (net.Listener, error) { return loopport.ListenAddr(s.opts.Addr) })
 }
 
@@ -5433,8 +5449,10 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 // accepted, even into the backlog, before it has finished.
 func (s *Server) serve(ctx context.Context, listen func() (net.Listener, error)) error {
 	srv := &http.Server{
-		Addr:              s.opts.Addr,
-		Handler:           s.Handler(),
+		Addr: s.opts.Addr,
+		// A Host this server was not given is refused (DNS rebinding); the
+		// guard is on the network listener, where browsers reach it.
+		Handler:           hostGuard(s.opts.Config, s.log, s.Handler()),
 		ReadHeaderTimeout: 10 * time.Second,
 		// A slow body is the other half of slowloris: headers arrive promptly,
 		// then the body trickles in a byte at a time and holds the connection
@@ -5451,8 +5469,20 @@ func (s *Server) serve(ctx context.Context, listen func() (net.Listener, error))
 	// Sessions this node held before a restart are taken back, and sessions
 	// a crashed process left open reconciled, before anything is served; then
 	// again every stale window, by staleness alone.
-	s.RecoverOwnAtStart(ctx)
-	if s.opts.SessionSandboxes != nil {
+	held := true
+	if s.opts.StartupLock != nil {
+		release, err := s.opts.StartupLock()
+		if err != nil {
+			held = false
+			s.log.Warn("another abhed serve shares this machine's state; this one leaves its sessions and sandboxes alone at start", "error", err)
+		} else {
+			defer release()
+		}
+	}
+	if held {
+		s.RecoverOwnAtStart(ctx)
+	}
+	if s.opts.SessionSandboxes != nil && held {
 		// Sandboxes whose session is gone, as a restart finds them; none made from now on.
 		since := time.Now()
 		go func() {
