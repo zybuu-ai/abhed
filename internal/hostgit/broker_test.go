@@ -109,12 +109,16 @@ func lastEnv(env []string, key string) string {
 	return v
 }
 
-// Remote operations are not on the broker's list, and the facts line says so
-// from the list itself.
+// Remote operations are brokered only on the process tier holding git's
+// configuration, and the facts line says so from the broker's own rule.
 func TestBrokersRemotes(t *testing.T) {
-	for _, tier := range []sandbox.Tier{sandbox.TierProcess, sandbox.TierFence, sandbox.TierContainer, sandbox.TierVM, sandbox.TierNone} {
-		if BrokersRemotes(tier) {
-			t.Fatalf("remote operations reported brokered on %s", tier)
+	ws := t.TempDir()
+	if !BrokersRemotes(sandbox.NewProcess(sandbox.Policy{Workspace: ws, ProtectGit: true})) {
+		t.Fatal("a process tier holding git is not reported brokered")
+	}
+	for _, sb := range []sandbox.Sandbox{nil, sandbox.NewProcess(sandbox.Policy{Workspace: ws}), sandbox.NewNone(sandbox.Policy{Workspace: ws})} {
+		if BrokersRemotes(sb) {
+			t.Fatalf("remote operations reported brokered for %v", sb)
 		}
 	}
 	if !Brokered("git worktree add ../x") {

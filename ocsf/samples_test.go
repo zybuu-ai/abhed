@@ -158,6 +158,8 @@ var samples = []sample{
 	{agent.EvSessionEnded, agent.ActorSystem, `{"reason":"stdin_late","turns":1,"tokens_in":1,"tokens_out":1,"tokens_cached":0,"compactions":0}`},
 	{agent.EvConfigApplied, agent.ActorSystem, `{"models_added":["claude"],"switched_to":"claude"}`},
 	{agent.EvSessionFacts, agent.ActorSystem, `{"text":"True now; don't probe or dispute; trust what the user reports. Sandbox: process. Network: off, only the user can open it. Git remotes not brokered."}`},
+	{"hostgit.brokered", agent.ActorSystem, `{"call_id":"c-1","stage":"started","command":"git fetch","workspace":"/w","cwd":"/w","network":"off","remotes":{"origin":["git@git.example:team/app.git"]},"hosts":["git.example"],"asked":"hostgit"}`},
+	{"hostgit.brokered", agent.ActorSystem, `{"call_id":"c-1","stage":"exited","command":"git fetch","workspace":"/w","cwd":"/w","network":"off","remotes":{"origin":["git@git.example:team/app.git"]},"hosts":["git.example"],"exit_code":0,"changed":[{"ref":"refs/remotes/origin/main","from":"aa","to":"bb"}]}`},
 }
 
 // sampleLines are the samples as one session's lines, seq from 1.

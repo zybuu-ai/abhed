@@ -251,7 +251,7 @@ func dropGrant(workspace, id string) (bashGrant, bool, error) {
 
 // id names a grant stably, for revoking it.
 func (g bashGrant) id() string {
-	sum := sha256.Sum256([]byte(g.Command + "\x00" + g.Family + "\x00" + g.Folder))
+	sum := sha256.Sum256([]byte(g.Command + "\x00" + g.Family + "\x00" + g.Folder + "\x00" + g.Repo + "\x00" + g.Remotes))
 	return "g-" + hex.EncodeToString(sum[:6])
 }
 
@@ -275,17 +275,18 @@ func (c *acpConn) openSessions() []*acpSession {
 	return open
 }
 
-// grantFor is the grant that covers command in the session's folder. One
-// kept for the workspace is looked up again first: revoked in another
-// process, it is dropped here and answers nothing.
-func (s *acpSession) grantFor(command string) (bashGrant, bool) {
+// grantFor is the grant that covers command in the session's folder or,
+// for host git's ask, the one bound to hostBind (its repository and
+// remotes) alone. One kept for the workspace is looked up again first:
+// revoked in another process, it is dropped here and answers nothing.
+func (s *acpSession) grantFor(command, hostBind string) (bashGrant, bool) {
 	cwd := s.workDir()
 	for {
 		s.mu.Lock()
 		var hit bashGrant
 		found := false
 		for _, g := range s.grants {
-			if g.covers(command, cwd) {
+			if hostBind != "" && g.answersHostGit(command, hostBind) || hostBind == "" && g.covers(command, cwd) {
 				hit, found = g, true
 				break
 			}

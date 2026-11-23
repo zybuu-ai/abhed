@@ -132,3 +132,5 @@
 2026-10-19T12:00:15.123Z s-1#134 LIFE:Stop INFO session ended: stdin_late
 2026-10-19T12:00:16.123Z s-1#135 CONF:Log INFO config.applied
 2026-10-19T12:00:17.123Z s-1#136 CONF:Log INFO session.facts
+2026-10-19T12:00:18.123Z s-1#137 PROC:Launch INFO hostgit.brokered for c-1
+2026-10-19T12:00:19.123Z s-1#138 PROC:Terminate INFO hostgit.brokered for c-1

@@ -298,6 +298,10 @@ func (c *Container) runArgsWith(ctx context.Context, cwd string, p Policy, netOp
 	}
 
 	args = append(args, "-e", "ABHED_SANDBOX="+string(c.Tier()))
+	// HOME is the container's own, with no git configuration: the person's name is given instead.
+	for _, kv := range p.GitIdentity {
+		args = append(args, "-e", kv)
+	}
 	return args, nil
 }
 

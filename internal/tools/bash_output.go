@@ -121,6 +121,8 @@ func (o *bashOutput) run(cmd *exec.Cmd, delay time.Duration, started func(), det
 	watch := sandbox.StartWatch(cmd)
 	go func() {
 		left, err := watch.Wait()
+		// What waits on the command's end (a brokered git's record) hears it.
+		sandbox.Exited(cmd, err)
 		if ended := watch.EndedNote(); ended != "" {
 			left = strings.TrimPrefix(ended+"; "+left, "; ")
 			left = strings.TrimSuffix(left, "; ")

@@ -204,3 +204,20 @@ func TestSessionNoteClustersAndNames(t *testing.T) {
 		t.Fatalf("git: %s", note)
 	}
 }
+
+// Where the sandbox holds git's configuration, the model is told git's
+// remote commands go through the user's own git, and that their pre-push
+// hook runs in the sandbox.
+func TestSessionNoteSaysGitIsBrokered(t *testing.T) {
+	cfg := config.Default()
+	pol, err := egress.Compile(egress.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb := sandbox.NewProcess(sandbox.Policy{Workspace: t.TempDir(), MinTier: sandbox.TierProcess, Egress: pol, ProtectGit: true})
+	n := NewNetwork(cfg, sb)
+	note := SessionNote(cfg, n.sb, n)
+	if !strings.Contains(note, "through the user's own git on the host") || !strings.Contains(note, "pre-push hook runs here") {
+		t.Fatalf("note: %s", note)
+	}
+}

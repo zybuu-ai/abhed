@@ -2197,6 +2197,17 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 		// to do instead, such as ssh_connect's "this host is ready".
 		doomed = pp.Precheck(l.Session, call.Args)
 	}
+	// A command run through host git as the person (a brokered git fetch)
+	// may need their approval where policy alone would allow it.
+	if hs, ok := tool.(tools.HostAsker); ok && doomed == nil && decision.Decision != policy.Deny {
+		why, step, bind, err := hs.AskHost(l.Session, l.launchKey(call.ID), call.Args)
+		switch {
+		case err != nil:
+			doomed = err
+		case why != "":
+			decision = hostAsked(decision, why, step, bind)
+		}
+	}
 	if doomed == nil && decision.Decision == policy.Ask {
 		if why := l.readFirst(ctx, tool, call); why != "" {
 			doomed = errors.New(why)
@@ -2413,6 +2424,19 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 	}
 	l.recordPlanStep(call, planned, approvedBy["by"])
 	return true, tools.Result{}, ""
+}
+
+// hostAsked is d for a call run on the host as the person that needs their
+// approval: an allow, or the policy's default ask, becomes the ask of step,
+// which a grant for a rule or a mode cannot answer, with bind, what a grant
+// for the repository must match, as its scope; any other ask keeps its own
+// step, so nothing answers it that could not before, with why added.
+func hostAsked(d policy.Result, why, step, bind string) policy.Result {
+	if d.Decision == policy.Allow || d.Decision == policy.Ask && d.Step == "default" {
+		return policy.Result{Decision: policy.Ask, Step: step, Reason: why, Scope: bind}
+	}
+	d.Reason = strings.TrimPrefix(d.Reason+"; "+why, "; ")
+	return d
 }
 
 // notRecorded answers a call left unrun because the record could not be written.

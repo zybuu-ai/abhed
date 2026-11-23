@@ -69,6 +69,12 @@ type Bash struct {
 	// ShellLine is the line the interactive terminal is judged and recorded
 	// as; nil is bash's.
 	ShellLine func() string
+	// HostAsk, when set, says why a command Sandbox would run through host
+	// git, as the person, needs their approval, under which step, and what a
+	// grant for it is bound to, or why it is refused; "" leaves it to policy.
+	// Given the call's launch key (sandbox.Launch.Key), it keeps what it
+	// judged, and the command runs only on that.
+	HostAsk func(key, cwd, command string) (reason, step, bind string, err error)
 	// NotFound, when set, says what a command run in dir that could not
 	// find program can do about it, such as install the toolchain; "" says nothing.
 	NotFound func(dir, program string) string
@@ -104,13 +110,24 @@ func (Bash) Mutates() bool { return true }
 
 func (b Bash) Description() string {
 	d := "Run a shell command in the session workspace. Use for builds, tests, git, and package managers. Prefer read/glob/grep for file inspection — they are cheaper and safer. Note: a call that is just `cd <folder>` sets the working directory for later calls; shell state (variables, functions) and a cd inside a longer command do not carry over."
+	hostGit := b.HostAsk != nil && (b.Isolation.Tier == "process" || b.Isolation.Tier == "fence")
 	switch b.network() {
 	case networkOff:
-		d += " The sandbox has no network: commands cannot reach the internet or any other host, so curl, wget, package installs and git fetch fail. To read from the web, use web_search or web_fetch if they are in your tools; otherwise tell the user."
+		if hostGit {
+			d += " The sandbox has no network: commands cannot reach the internet or any other host, so curl, wget and package installs fail. To read from the web, use web_search or web_fetch if they are in your tools; otherwise tell the user."
+		} else {
+			d += " The sandbox has no network: commands cannot reach the internet or any other host, so curl, wget, package installs and git fetch fail. To read from the web, use web_search or web_fetch if they are in your tools; otherwise tell the user."
+		}
 	case networkOn:
 		d += " Commands can reach the network."
 	case networkAllowlist:
 		d += " " + b.allowlistText()
+	}
+	if hostGit {
+		d += " git fetch, git pull, git push, git clone and git ls-remote need no setup: run each as the whole command, on its own " +
+			"with its usual options (no && or ; and no -c), and its network part goes through the user's own git with their SSH keys and credential helpers, " +
+			"after their approval where needed, reaching only the repository's configured remotes or a clone URL they approve; " +
+			"a pull's merge and a clone's checkout then run here. Never look for or copy SSH keys or tokens."
 	}
 	if b.Isolation.Tier == "fence" {
 		d += " Commands run under the fence: they write only the workspace and a private temp folder (HOME and TMPDIR point there), and unix sockets, such as docker's or an ssh agent's, are refused."
@@ -1085,6 +1102,22 @@ func withNote(content, note string) string {
 	return strings.TrimRight(content, "\n") + "\n\n" + note
 }
 
+// HostGitLine reports a line the host git broker runs on the host, or
+// refuses there; set by that package, which this one cannot import.
+var HostGitLine func(command string) bool
+
+// AskHost is HostAsk for a call, in the session's folder.
+func (b Bash) AskHost(s *Session, key string, raw json.RawMessage) (reason, step, bind string, err error) {
+	if b.HostAsk == nil || s == nil {
+		return "", "", "", nil
+	}
+	var a bashArgs
+	if json.Unmarshal(raw, &a) != nil {
+		return "", "", "", nil
+	}
+	return b.HostAsk(key, s.Cwd, a.Command)
+}
+
 // CommandFor is the process command runs as, in cwd, as a call's would:
 // under the sandbox, with the git-safe settings, and with no secret.
 func (b Bash) CommandFor(ctx context.Context, cwd, command string) (*exec.Cmd, error) {
@@ -1112,6 +1145,11 @@ func (b Bash) command(ctx context.Context, cwd string, a bashArgs) (*exec.Cmd, e
 	b.forward(cmd, gitNames)
 
 	if len(a.Secrets) > 0 {
+		// Git run on the host as the person needs none of the vault, and gets none.
+		if b.HostAsk != nil && HostGitLine != nil && HostGitLine(a.Command) {
+			sandbox.Release(cmd)
+			return nil, errors.New("secrets are not given to git run on the host as you; run it without them")
+		}
 		env, err := b.Secrets(a.Secrets)
 		if err != nil {
 			sandbox.Release(cmd)

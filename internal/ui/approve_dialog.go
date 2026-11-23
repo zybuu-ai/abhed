@@ -39,6 +39,11 @@ func (a *DialogApprover) Approve(ctx context.Context, tool string, args json.Raw
 			Label: "Allowed for this session by " + a.showScope(scope)}}}})
 		return true, nil
 	}
+	if a.Base.kept(ctx, tool, args, res) {
+		a.Reader.commitItem(&dialogRecord{spec: DialogSpec{Title: header, Choices: []Choice{{ID: "yes",
+			Label: "Allowed by what you kept for this repository"}}}})
+		return true, nil
+	}
 
 	spec := a.spec(ctx, tool, args, res, header)
 	prev := a.Reader.attending()
@@ -61,6 +66,12 @@ func (a *DialogApprover) Approve(ctx context.Context, tool string, args json.Raw
 			}
 		}
 		a.noteDiff(tool, args)
+		return true, nil
+	case ChoiceKeep:
+		if a.Base.Keep == nil {
+			return false, nil // never offered: nothing to keep
+		}
+		a.Base.keep(ctx, tool, args, res)
 		return true, nil
 	case "always":
 		if scope == "" {
@@ -209,6 +220,7 @@ func (a *DialogApprover) spec(ctx context.Context, tool string, args json.RawMes
 		}
 		choices = append(choices, Choice{ID: "always", Label: label, Widening: true})
 	}
+	choices = append(choices, a.Base.keepOffer(tool, args, res)...)
 	choices = append(choices, Choice{ID: "no", Label: "No, and tell Abhed what to do instead (esc)"})
 	scope := a.showScope(res.Offer())
 	return DialogSpec{
@@ -225,6 +237,8 @@ func (a *DialogApprover) spec(ctx context.Context, tool string, args json.RawMes
 				return "Approved"
 			case "always":
 				return "Approved · allowed for this session: " + scope
+			case ChoiceKeep:
+				return "Approved · allowed always for this repository"
 			}
 			return "Declined"
 		},

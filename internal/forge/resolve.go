@@ -432,22 +432,8 @@ func pushParent() (string, error) {
 // worktree or a writable area. The rest of the checkout, such as a home
 // directory holding dotfiles, is not the run's to write.
 func globalConfigWritable(ctx context.Context, worktree string) error {
-	// What the global and system files include, and the system file, too.
-	files := hostgit.ConfigFiles(ctx, worktree)
-	if home, err := os.UserHomeDir(); err == nil {
-		files = append(files, filepath.Join(home, ".gitconfig"), filepath.Join(home, ".config", "git", "config"))
-	}
-	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
-		files = append(files, filepath.Join(x, "git", "config"))
-	}
-	areas := append([]string{worktree}, writableAreas()...)
-	for _, f := range files {
-		for _, a := range areas {
-			if a != "" && (inside(f, a) || inside(filepath.Dir(f), a)) {
-				return fmt.Errorf("refusing to push: your global git configuration (or the system one, or a file either includes) %s is inside %s, "+
-					"which the run can write", f, a)
-			}
-		}
+	if err := hostgit.PersonConfigWritable(ctx, worktree, append([]string{worktree}, writableAreas()...)); err != nil {
+		return fmt.Errorf("refusing to push: %w", err)
 	}
 	return nil
 }

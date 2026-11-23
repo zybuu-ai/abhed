@@ -24,6 +24,10 @@ type Launch struct {
 	Record func(event string, payload map[string]any) error
 }
 
+// Key names the call across sessions: one server's sessions number their
+// calls alike.
+func (l Launch) Key() string { return l.Session + "\x00" + l.CallID }
+
 type launchKey struct{}
 
 // WithLaunch carries l to the backend that builds the command, and to
@@ -53,6 +57,32 @@ func Release(cmd *exec.Cmd) {
 	}
 	if r, ok := pendingLaunches.LoadAndDelete(cmd); ok {
 		r.(func())()
+	}
+	// What waits on its end hears that it never started.
+	Exited(cmd, errNotStarted)
+}
+
+// errNotStarted is the end of a command released unstarted.
+var errNotStarted = errors.New("the command did not start")
+
+// exitHooks are what runs once a command has ended: *exec.Cmd -> func(error).
+var exitHooks sync.Map
+
+// OnExit runs fn with cmd's result once whoever runs cmd reports its end
+// with Exited, or with an error once it is released unstarted.
+func OnExit(cmd *exec.Cmd, fn func(err error)) {
+	if cmd != nil && fn != nil {
+		exitHooks.Store(cmd, fn)
+	}
+}
+
+// Exited reports that cmd ended with err (Wait's), running what OnExit set.
+func Exited(cmd *exec.Cmd, err error) {
+	if cmd == nil {
+		return
+	}
+	if fn, ok := exitHooks.LoadAndDelete(cmd); ok {
+		fn.(func(error))(err)
 	}
 }
 

@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/hostgit"
+	"github.com/zybuu-ai/abhed/internal/policy"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
@@ -26,6 +28,29 @@ type bashGrant struct {
 	Folder string `json:"folder,omitempty"`
 	// Session marks one kept for this session alone, never restored.
 	Session bool `json:"session,omitempty"`
+	// Repo and Remotes bind a grant for git run through host git to one
+	// repository, by its real folder, and to its remotes as approved, by a
+	// digest of their names and URLs: another repository, or the same one
+	// with a remote changed, is asked again.
+	Repo    string `json:"repo,omitempty"`
+	Remotes string `json:"remotes,omitempty"`
+}
+
+// hostGitGrant is the grant of family bound to what host git's ask names
+// (hostgit's bind: the repository's real folder and its remotes' digest).
+func hostGitGrant(family, bind string) (bashGrant, bool) {
+	repo, remotes, ok := strings.Cut(bind, "\x00")
+	if !ok || repo == "" || remotes == "" || family == "" {
+		return bashGrant{}, false
+	}
+	return bashGrant{Family: family, Repo: repo, Remotes: remotes}, true
+}
+
+// answersHostGit reports whether g answers host git's ask for command,
+// bound to bind.
+func (g bashGrant) answersHostGit(command, bind string) bool {
+	want, ok := hostGitGrant(hostgit.RemoteFamily(command), bind)
+	return ok && g == want
 }
 
 // shellWords are characters that make a line more than one simple command,
@@ -241,6 +266,10 @@ func familyOf(command string) string {
 	if fields == nil {
 		return ""
 	}
+	// git fetch, pull and push through host git: a family for the repository.
+	if fam := hostgit.RemoteFamily(command); fam != "" {
+		return fam
+	}
 	subs, ok := familySubs[fields[0]]
 	if !ok {
 		return ""
@@ -294,6 +323,9 @@ func (g bashGrant) covers(command, cwd string) bool {
 		return false
 	}
 	switch {
+	case g.Repo != "" || hostgit.RemoteFamily(command) != "" && g.Command == "":
+		// Host git's family grants answer only its ask, bound (answersHostGit).
+		return false
 	case g.Command != "":
 		return strings.TrimSpace(command) == g.Command
 	case g.Family != "":
@@ -309,13 +341,37 @@ type grantOption struct {
 	grant bashGrant
 }
 
+// hostGitGrantLabel is how the "always for this repository" grant of a
+// brokered git family is offered.
+func hostGitGrantLabel(fam string) string {
+	if fam == hostgit.FamilyPush {
+		return "Always allow git push, without force, to this remote of this repository, while its URL stays the same"
+	}
+	return "Always allow git fetch, pull and ls-remote from this remote of this repository, while its URL stays the same"
+}
+
 // bashGrantOptions are the scopes offered for an ask on command run in cwd:
 // this exact command for the session and always, its family in this folder
 // and always. None for a line a grant could not cover.
-func bashGrantOptions(command, cwd, root, bind string) []grantOption {
+func bashGrantOptions(command, cwd, root, bind string, d policy.Result) []grantOption {
 	fields := commandFields(command)
 	if fields == nil {
 		return nil
+	}
+	if fam := hostgit.RemoteFamily(command); fam != "" {
+		if d.Step == hostgit.StepHostGit {
+			// Run as the person, it is answered once for this repository's remote or
+			// each time; a guest keeps nothing, so is offered no "always".
+			if g, ok := hostGitGrant(fam, d.Scope); ok && !guestRun() {
+				return []grantOption{{"always-family:" + bind, hostGitGrantLabel(fam), g}}
+			}
+			return nil
+		}
+		exact := strings.TrimSpace(command)
+		return []grantOption{
+			{"session-exact:" + bind, "Allow `" + exact + "` for this session", bashGrant{Command: exact, Session: true}},
+			{"always-exact:" + bind, "Always allow exactly `" + exact + "` in this workspace", bashGrant{Command: exact}},
+		}
 	}
 	exact := strings.TrimSpace(command)
 	opts := []grantOption{
@@ -341,6 +397,9 @@ func (g bashGrant) scopeOf() string {
 	if g.Folder != "" {
 		s += " in " + g.Folder
 	}
+	if g.Repo != "" {
+		s += " to " + g.Repo + "'s remote " + g.Remotes
+	}
 	return s
 }
 
@@ -351,9 +410,13 @@ func (g bashGrant) grantRecord() agent.ScopeGranted {
 
 // grantable is the command of a bash call whose ask a grant may answer:
 // the policy's default ask, where the organisation leaves allow rules to
-// people. "" and false otherwise.
+// people, or the ask of a git fetch or push run through host git, which
+// only the repository's family grant answers. "" and false otherwise.
 func (s *acpSession) grantable(tool string, args json.RawMessage, d abhed.Decision) (string, bool) {
-	if tool != "bash" || d.Step != "default" || d.Decision != "ask" {
+	if tool != "bash" || d.Step != "default" && d.Step != hostgit.StepHostGit || d.Decision != "ask" {
+		return "", false
+	}
+	if _, ok := hostGitGrant(hostgit.RemoteFamily(bashCommandOf(args)), d.Scope); d.Step == hostgit.StepHostGit && !ok {
 		return "", false
 	}
 	if s.inner && s.parts.Config.AllowLocked() {

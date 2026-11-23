@@ -14,6 +14,7 @@ import (
 // and temp folders the tests' sandboxes left (many are never closed).
 func TestMain(m *testing.M) {
 	g := testenv.Isolate()
+	testOrigHome = g.OrigHome
 	code := m.Run()
 	removeTestTemps()
 	os.Exit(g.Close(code))
@@ -43,3 +44,6 @@ func removeTestTemps() {
 		}
 	}
 }
+
+// testOrigHome is the home the tests started with, before testenv's own.
+var testOrigHome string

@@ -235,7 +235,7 @@ func TestGrantsRoundTwo(t *testing.T) {
 		}
 	}
 	for _, cmd := range []string{"go run example.com/m@latest", "go test /abs/pkg", "go test ../x", "make -C /tmp", "npm test -- X=/etc/passwd"} {
-		if opts := bashGrantOptions(cmd, "/ws", "/ws", "b"); len(opts) != 0 {
+		if opts := bashGrantOptions(cmd, "/ws", "/ws", "b", policy.Result{Step: "default"}); len(opts) != 0 {
 			t.Errorf("%q was offered %d scopes", cmd, len(opts))
 		}
 		if (bashGrant{Command: cmd}).covers(cmd, "/ws") {

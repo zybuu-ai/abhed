@@ -605,3 +605,28 @@ func mergeKnown(old, found []string) []string {
 	}
 	return out
 }
+
+// HoldsGit reports whether sb keeps its commands from writing what git reads
+// in the workspace's git folders as configuration (protect_git, held), so
+// what Abhed reads there before a command still holds when the command runs.
+func HoldsGit(sb Sandbox) bool {
+	h, ok := sb.(interface{ holdsGit() bool })
+	return ok && h.holdsGit()
+}
+
+// The process tier holds them by profile or by binding them read-only.
+func (s *Process) holdsGit() bool { return s.policy.ProtectGit }
+
+// The fence holds them only in a mount namespace; landlock_only cannot.
+func (f *Fence) holdsGit() bool { return f.policy.ProtectGit && f.mounts }
+
+// HoldsNewGit reports whether sb holds a git folder made during the session
+// against commands already running when it was made. macOS's profile holds
+// every .git by pattern, so it does; a tier that binds each command's git
+// folders read-only as the command starts (bubblewrap, the fence's mount
+// namespace) leaves a command started before the folder was made able to
+// write it.
+func HoldsNewGit(sb Sandbox) bool {
+	p, ok := sb.(*Process)
+	return ok && p.holdsGit() && p.backend == "sandbox-exec"
+}

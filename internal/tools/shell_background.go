@@ -155,6 +155,7 @@ func StartShellProc(cmd *exec.Cmd, stop func(), capBytes int) (*ShellProc, error
 	waited := make(chan error, 1)
 	go func() {
 		_, err := watch.Wait()
+		sandbox.Exited(cmd, err)
 		waited <- err
 	}()
 	go p.watch(waited, copied, r)

@@ -1,67 +1,30 @@
 package hostgit
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
-// Broker wraps a sandbox's Command so the few git commands the sandbox keeps
-// from working (it holds git's worktree and submodule folders) run through
-// host git instead, with this package's settings and checks: git worktree
-// add, remove and prune, and git submodule update. Each must be the whole
-// command line, in plain words, with every path it names inside the
-// workspace. Anything else goes to command as it was. Only the process tier
-// and the fence are brokered, as only they run commands on this host.
-// Unless netOpen (network on, no allowlist), host git reaches no remote: a
-// submodule update must say --no-fetch and can only check out what is there.
-func Broker(workspace string, tier func() sandbox.Tier, netOpen bool, command func(ctx context.Context, cwd, line string) *exec.Cmd) func(ctx context.Context, cwd, line string) *exec.Cmd {
-	return func(ctx context.Context, cwd, line string) *exec.Cmd {
-		args, ok := brokered(line)
-		if !ok || tier == nil {
-			return command(ctx, cwd, line)
-		}
-		switch tier() {
-		case sandbox.TierProcess, sandbox.TierFence:
-		default:
-			return command(ctx, cwd, line)
-		}
-		if err := brokerPaths(workspace, cwd, args); err != nil {
-			return &exec.Cmd{Err: err}
-		}
-		var env []string
-		if args[0] == "submodule" && !netOpen {
-			if !slices.Contains(args, "--no-fetch") && !slices.Contains(args, "-N") {
-				return &exec.Cmd{Err: errors.New("git submodule update: the sandbox's network is off or held to an allowlist, " +
-					"and git run for it on the host would reach the network outside both; add --no-fetch to check out " +
-					"what is already fetched, or fetch the submodules yourself")}
-			}
-			// --no-fetch still clones a submodule not yet cloned; no transport is allowed.
-			env = []string{"GIT_ALLOW_PROTOCOL=" + noProtocol}
-		}
-		// On the host, whatever sandbox is registered for the workspace.
-		return New(ctx, cwd).commandWith(ctx, nil, env, true, args...)
-	}
-}
-
 // Brokered reports whether line is a git command run on the host for the
-// sandbox, which a wrapper must pass on as it is.
+// sandbox, or refused there, which a wrapper must pass on as it is.
 func Brokered(line string) bool {
+	if _, _, ok := parseRemote(line); ok {
+		return true
+	}
 	_, ok := brokered(line)
 	return ok
 }
 
 // BrokersRemotes reports whether git's remote operations (fetch, pull, push,
-// clone) are run on the host for a sandbox of tier, as the broker's own list
-// says: only the process tier and the fence are brokered.
-func BrokersRemotes(tier sandbox.Tier) bool {
-	if tier != sandbox.TierProcess && tier != sandbox.TierFence {
+// clone) are run on the host for sb, as the broker decides: on the process
+// tier and the fence, where sb holds git's configuration against commands.
+func BrokersRemotes(sb sandbox.Sandbox) bool {
+	if sb == nil || sb.Tier() != sandbox.TierProcess && sb.Tier() != sandbox.TierFence || !sandbox.HoldsGit(sb) {
 		return false
 	}
 	for _, l := range []string{"git fetch origin", "git pull origin main", "git push origin main", "git clone https://example.com/r.git"} {
@@ -71,6 +34,8 @@ func BrokersRemotes(tier sandbox.Tier) bool {
 	}
 	return false
 }
+
+func init() { tools.HostGitLine = Brokered }
 
 // noProtocol names no transport git has, so git reaches no remote.
 const noProtocol = "abhed-none"

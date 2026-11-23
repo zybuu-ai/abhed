@@ -46,6 +46,15 @@ func (l *Loop) LaunchContext(ctx context.Context, callID string) context.Context
 	return l.withLaunch(ctx, callID)
 }
 
+// launchKey is the sandbox.Launch.Key a command of callID runs under.
+func (l *Loop) launchKey(callID string) string {
+	launch := sandbox.Launch{CallID: callID}
+	if l.Recorder != nil {
+		launch.Session = l.Recorder.Root()
+	}
+	return launch.Key()
+}
+
 // withLaunch names the call a command runs for, and gives the sandbox the
 // loop's record for the launch events it writes.
 func (l *Loop) withLaunch(ctx context.Context, callID string) context.Context {

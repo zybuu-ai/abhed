@@ -238,10 +238,12 @@ func run(a *App, workspace string, f *cliFlags) int {
 
 	// The tool set every surface builds the same way; the CLI takes all of it.
 	vault := openVault()
+	gitBroker := hostgit.NewBroker(workspace, sb.Tier, sandboxconfig.HostGitNetwork(cfg), sb.Command).
+		HoldsGit(func() bool { return sandbox.HoldsGit(sb) }, func() bool { return sandbox.HoldsNewGit(sb) })
 	set := toolset.Build(context.Background(), cfg, toolset.Options{
 		Workspace:    workspace,
 		ReadWithheld: pol.ReadWithheldFunc(),
-		Bash: tools.Bash{Sandbox: hostgit.Broker(workspace, sb.Tier, sandboxconfig.NetworkOpen(cfg), sb.Command),
+		Bash: tools.Bash{Sandbox: gitBroker.Command, HostAsk: hostAsk(sb, gitBroker),
 			Home:      sandbox.HomeFunc(sb),
 			Isolation: sandboxconfig.Isolation(cfg, tier),
 			RanUnder:  func() string { return string(sb.Tier()) }},
@@ -371,7 +373,9 @@ func run(a *App, workspace string, f *cliFlags) int {
 		// the carriage return \n needs. A writer bound to the original file
 		// here writes bare \n into a raw terminal and staircases the prompt —
 		// the same reason the renderer above resolves os.Stdout at write time.
-		approver = ui.NewApprover(ui.LazyStdout{})
+		ap := ui.NewApprover(ui.LazyStdout{})
+		ap.Keep = cliKeeper{workspace: sess.Root, locked: cfg.AllowLocked()}
+		approver = ap
 	}
 
 	if headless {

@@ -105,6 +105,15 @@ type ContextArgResolver interface {
 	ResolveArgsContext(ctx context.Context, sess *Session, args json.RawMessage) (out json.RawMessage, resolved []string, err error)
 }
 
+// HostAsker is a tool some of whose calls run on the host as the person,
+// such as bash's brokered git fetch: why one needs the person's approval,
+// the step it is asked under and what a grant for it is bound to, or why it
+// is refused before anyone is asked. key, the call's sandbox.Launch.Key,
+// ties what it judged to the call that runs.
+type HostAsker interface {
+	AskHost(sess *Session, key string, args json.RawMessage) (reason, step, bind string, err error)
+}
+
 // Targeter names where a call sends what it carries, such as the server a
 // credential goes to, when the arguments alone do not show it. The person
 // approving the call and the record both get it.
@@ -258,7 +267,11 @@ func (r *Registry) own() *Registry {
 	return r
 }
 
+// Get is the tool named; a nil registry has none.
 func (r *Registry) Get(name string) (Tool, bool) {
+	if r == nil {
+		return nil, false
+	}
 	t, found := r.tools[name]
 	return t, found
 }

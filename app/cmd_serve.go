@@ -543,7 +543,9 @@ func serveSandbox(cfg config.Config, workspace string) (config.Config, sandbox.S
 		return cfg, nil, tools.Bash{}, errors.New("sandbox.protect_git is true, but the sandbox tier is none, which cannot keep commands from writing git's config and hooks; " +
 			"make the process tier available, or set sandbox.protect_git false to serve without it")
 	}
-	bash := tools.Bash{Sandbox: hostgit.Broker(workspace, sb.Tier, sandboxconfig.NetworkOpen(cfg), sb.Command),
+	gb := hostgit.NewBroker(workspace, sb.Tier, sandboxconfig.HostGitNetwork(cfg), sb.Command).
+		HoldsGit(func() bool { return sandbox.HoldsGit(sb) }, func() bool { return sandbox.HoldsNewGit(sb) })
+	bash := tools.Bash{Sandbox: gb.Command, HostAsk: hostAsk(sb, gb),
 		Home: sandbox.HomeFunc(sb), Isolation: sandboxconfig.Isolation(cfg, string(sb.Tier()))}
 	// The workbench terminal's shell runs under the same backend as the agent's commands.
 	if in, ok := sb.(sandbox.Interactive); ok {
