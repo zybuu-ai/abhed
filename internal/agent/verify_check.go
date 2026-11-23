@@ -633,6 +633,9 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 		return ClaimVerdict{Text: c.Text, Kind: KindStatement, Verdict: ClaimUnverified, Reason: selfReason}
 	}
 	f := extractFacts(citeRe.ReplaceAllString(c.Text, " "))
+	if f.workNounLead && !ix.madeWorkCall() {
+		f = extractFacts(blankLead(citeRe.ReplaceAllString(c.Text, " ")))
+	}
 	kind := c.Kind
 	// A sentence that says something was done or changed is about the work
 	// even with nothing else in it; a participle alone ("a compiled
@@ -1504,6 +1507,33 @@ func firstWith(pool []*obsRec, ok func(*evidenceText) bool) *obsRec {
 	return nil
 }
 
+// workProgs are the programs of git and deploy work.
+var workProgs = map[string]bool{"git": true, "kubectl": true, "helm": true, "docker": true, "podman": true, "terraform": true, "pulumi": true, "flyctl": true, "gcloud": true, "aws": true, "az": true}
+
+// madeWorkCall reports a git or deploy call in this session, run or
+// refused: a shell line running one of workProgs, or a k8s tool.
+func (ix *recordIndex) madeWorkCall() bool {
+	work := func(lf lineFacts) bool {
+		for _, c := range lf.cmds {
+			if len(c.words) > 0 && workProgs[filepath.Base(c.words[0])] {
+				return true
+			}
+		}
+		return false
+	}
+	for _, o := range ix.obs {
+		if strings.HasPrefix(o.tool, "k8s_") || (o.tool == "bash" || o.tool == "ssh") && work(o.line) {
+			return true
+		}
+	}
+	for _, d := range ix.denials {
+		if d.command != "" && work(readLine(d.command, "")) {
+			return true
+		}
+	}
+	return false
+}
+
 // targetArgs are the arguments that name what a call was made to, never
 // what it was given to write or say.
 var targetArgs = []string{"host", "cluster", "context", "namespace", "name", "deployment"}
@@ -1519,12 +1549,13 @@ func (ix *recordIndex) literal(pool []*obsRec, lit string, cited bool) finding {
 			return finding{out: matched, what: fmt.Sprintf("%q is the command of #%d", lit, o.seq), seq: o.seq, pooled: true}
 		}
 	}
-	// A name with a digit in it (a host, a cluster) is shown by a call that
-	// succeeded and was made to it: a target argument of exactly that value.
+	// A name with a digit in it (a host, a cluster) is shown by an ssh or k8s
+	// call that succeeded and was made to it: a target argument of exactly
+	// that value. It shows the session reached it, not what is there.
 	if digitWordRe.MatchString(" " + lit) {
 		for i := len(pool) - 1; i >= 0; i-- {
 			o := pool[i]
-			if o.isError || o.exit != nil && *o.exit != 0 {
+			if o.tool != "ssh" && !strings.HasPrefix(o.tool, "k8s_") || o.isError || o.exit != nil && *o.exit != 0 {
 				continue
 			}
 			for _, k := range targetArgs {

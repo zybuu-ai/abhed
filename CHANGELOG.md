@@ -1285,12 +1285,13 @@ All notable changes to Abhed are recorded here. The format follows
   after only a refused call no longer passes as a look at nothing. Prose
   that opens with a past form used as an adjective ("Built-in functions
   …", "Released versions are tagged …", "Changed files:") is not read as
-  such a report, unless it heads a work noun with a present state
-  ("Pushed branches are visible on origin now."). A word with a digit in
+  such a report, unless it heads a work noun whose state is said to be
+  new, in a session that made a git or deploy call ("Pushed branches are
+  visible on origin now."). A word with a digit in
   it ("python3", "r2alice") was read as a number, which marked true
-  answers unverified; it is now a name that a result must hold, or that a
-  call which succeeded was made to (its host, cluster, context, namespace
-  or name), so "signed in as r2alice" verifies against a result showing it
+  answers unverified; it is now a name that a result must hold, or that
+  an ssh or Kubernetes call which succeeded was made to (its host,
+  cluster, context, namespace or name), so "signed in as r2alice" verifies against a result showing it
   and "python2" does not verify against one showing python3. The read
   tool's line numbers, truncated reads included, no longer count as what
   the file holds, which verified "returns x + 2" against `return x + 3`. The false-claim corpus and the strict regression pin gain the

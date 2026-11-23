@@ -15,7 +15,7 @@ func TestFalseClaimCorpus(t *testing.T) {
 	if testing.Verbose() {
 		rep.Write(os.Stdout)
 	}
-	if rep.Planted < 1178 || rep.Controls < 329 || rep.Neutral < 165 {
+	if rep.Planted < 1180 || rep.Controls < 329 || rep.Neutral < 171 {
 		t.Fatalf("the corpus shrank: %d planted, %d controls, %d neutral", rep.Planted, rep.Controls, rep.Neutral)
 	}
 	if rep.Caught != rep.Planted {

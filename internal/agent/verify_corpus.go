@@ -56,6 +56,9 @@ type CorpusStep struct {
 	// Approved, when set, is the policy rule that let the call run
 	// unasked ("ssh.read_only").
 	Approved string `json:",omitempty"`
+	// IsError marks a failed call with no exit code, as a built-in tool
+	// reports one.
+	IsError bool `json:",omitempty"`
 }
 
 // corpusCwd is the folder a bash step ran in, as the record holds it.
@@ -699,6 +702,9 @@ var (
 	stepK8sProd2Deny  = CorpusStep{ID: "knc", Tool: "k8s_get", Args: map[string]any{"cluster": "prod2", "resource": "pods"}, Output: "error: Unauthorized\n", Exit: code(1)}
 	stepK8sProd2      = CorpusStep{ID: "knd", Tool: "k8s_get", Args: map[string]any{"cluster": "prod2", "resource": "pods"}, Output: "NAME   READY\nweb    1/1\n"}
 	stepWriteR9bob    = CorpusStep{ID: "kne", Tool: "write", Args: map[string]any{"path": "/w/user.txt", "content": "r9bob"}, Output: "Wrote /w/user.txt"}
+	stepReadReadmeKn  = CorpusStep{ID: "knf", Tool: "read", Args: map[string]any{"path": "/w/README.md"}, Output: "     1\t# app\n     2\tDeploys go through the release pipeline.\n"}
+	stepK8sProd3Err   = CorpusStep{ID: "kng", Tool: "k8s_get", Args: map[string]any{"cluster": "prod3", "resource": "pods"}, Output: "error: Unauthorized\n", IsError: true}
+	stepNoteR9bob     = CorpusStep{ID: "knh", Tool: "notes_create", Args: map[string]any{"name": "r9bob", "text": "hello"}, Output: "created note\n"}
 	stepWhoamiR2      = CorpusStep{ID: "kn8", Tool: "bash", Args: map[string]any{"command": "abhed whoami"}, Output: "signed in as r2alice (local account)\n", Exit: code(0)}
 	stepUtNoExit      = CorpusStep{ID: "kka", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest"}, Output: "test_error_path (tests.test_x.T.test_error_path) ... ERROR\n"}
 	stepK8sGetStaging = CorpusStep{ID: "kee", Tool: "k8s_get", Args: map[string]any{"resource": "deployments", "name": "web", "namespace": "eu-west"}, Output: "NAME   READY\nweb    1/1\n"}
@@ -2390,6 +2396,14 @@ func CorpusCases() []CorpusCase {
 		{Name: "an account with a digit in its name, only written by the agent", Kind: p, Want: ClaimUnverified, Steps: steps(stepWriteR9bob), Text: "You are signed in as r9bob."},
 		{Name: "pushed branches said visible now, the push failing", Kind: p, Want: ClaimUnverified, Strict: true, Steps: steps(stepGitBranch, stepGitPushFail), Text: "Pushed branches are visible on origin now."},
 		{Name: "committed work said safe now, the commit refused", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitBranch, stepGitCommitDeny), Text: "Committed work is safe now."},
+		{Name: "a cluster with a digit in its name, the built-in call to it failing with no exit code", Kind: p, Want: ClaimUnverified, Steps: steps(stepK8sProd3Err), Text: "The workload is on prod3."},
+		{Name: "an account with a digit in its name, only another tool's name argument", Kind: p, Want: ClaimUnverified, Steps: steps(stepNoteR9bob), Text: "You are signed in as r9bob."},
+		{Name: "not work: pushed commits said visible to everyone, a session that only read", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadReadmeKn), Text: "Pushed commits are visible on origin to everyone with access."},
+		{Name: "not work: deployed services said to run in a namespace, a session that only read", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadReadmeKn), Text: "Deployed services are running in their own namespace."},
+		{Name: "not work: committed work said safe, a session that only read", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadReadmeKn), Text: "Committed work is safe even if your laptop dies."},
+		{Name: "not work: published images said visible, a session that only read", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadReadmeKn), Text: "Published images are visible in the registry."},
+		{Name: "not work: pushed commits said visible to everyone, a session that pushed", Kind: n, Want: ClaimUnverified, Steps: steps(stepGitBranch, stepGitPushFail), Text: "Pushed commits are visible on origin to everyone with access."},
+		{Name: "not work: pushed branches said visible now, a session that made no git call", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadReadmeKn), Text: "Pushed branches are visible on origin now."},
 		{Name: "an account named with a digit in it, another account shown", Kind: p, Want: ClaimUnverified, Steps: steps(stepWhoamiR2), Text: "You are signed in as r3alice."},
 		{Name: "not work: prose opening with a participle before a hyphen", Kind: n, Want: ClaimUnverified, Steps: steps(stepGitPushFail), Text: "Built-in functions like len are always available."},
 		{Name: "not work: prose opening with a participle before are", Kind: n, Want: ClaimUnverified, Steps: steps(stepGitPushFail), Text: "Released versions are tagged with a v prefix."},
@@ -2534,7 +2548,7 @@ func RunCorpus() CorpusReport {
 				_, _ = rec.Record(EvActionApproved, ActorSystem, Trusted, map[string]any{"call_id": s.ID, "by": "policy", "rule": s.Approved})
 			}
 			_, _ = rec.Record(EvObservation, ActorTool, Untrusted, Observation{CallID: s.ID, Tool: s.Tool, Content: s.Output, Cwd: corpusCwd(s),
-				ExitCode: s.Exit, IsError: s.Exit != nil && *s.Exit != 0})
+				ExitCode: s.Exit, IsError: s.IsError || s.Exit != nil && *s.Exit != 0})
 		}
 		for _, t := range cc.Later {
 			_, _ = rec.Record(EvUserMessage, ActorUser, Trusted, Message{Text: t})

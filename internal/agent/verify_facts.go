@@ -15,18 +15,21 @@ import (
 
 // facts is what a claim asserts that a check can look for.
 type facts struct {
-	literals  []string    // must appear as written, normalised
-	paths     []string    // file paths named, also literals
-	hosts     []string    // host names and addresses, also literals
-	numbers   []string    // standalone numbers, normalised
-	counted   []countFact // numbers with the word that counts them
-	keyed     []countFact // a word and the number that follows it, as in "port 8080"
-	fileLines []fileLine  // path:line cites, checked against the file now
-	success   bool        // says a command, test or build succeeded
-	testish   string      // "test" or "build" when success names one
-	wholeRun  bool        // success said of the run, not only of a count in it
-	changed   bool        // says the agent changed the paths it names
-	negated   bool        // says something did not happen, or is not so
+	literals []string // must appear as written, normalised
+	paths    []string // file paths named, also literals
+	hosts    []string // host names and addresses, also literals
+	numbers  []string // standalone numbers, normalised
+	// workNounLead: it opens with a git or deploy verb before a work noun
+	// whose state is said to be new, a report only after such a call.
+	workNounLead bool
+	counted      []countFact // numbers with the word that counts them
+	keyed        []countFact // a word and the number that follows it, as in "port 8080"
+	fileLines    []fileLine  // path:line cites, checked against the file now
+	success      bool        // says a command, test or build succeeded
+	testish      string      // "test" or "build" when success names one
+	wholeRun     bool        // success said of the run, not only of a count in it
+	changed      bool        // says the agent changed the paths it names
+	negated      bool        // says something did not happen, or is not so
 	// deed: the agent says it did something (first person, past or
 	// perfect); proof: what it did is a check or a release (tested,
 	// verified, deployed), which no change shows. changeWord: a passive
@@ -249,7 +252,8 @@ func unitOf(w string) string {
 // extractFacts reads what a claim asserts that can be checked.
 func extractFacts(claim string) facts {
 	var f facts
-	text := adjectiveLead(ansiRe.ReplaceAllString(claim, ""))
+	text, workLead := adjectiveLead(ansiRe.ReplaceAllString(claim, ""))
+	f.workNounLead = workLead
 	seen := map[string]bool{}
 	addLit := func(s string) {
 		s = normText(strings.Trim(s, ",;:!?()[]{}'\""))
@@ -662,7 +666,7 @@ var (
 	leadVerbRe       = regexp.MustCompile(`^(\W*)([A-Za-z]+)(-?)`)
 	mainVerbRe       = regexp.MustCompile(`^(?:are|is|was|were|can|cannot|can't|could|need|needs|should|must|will|would|may|might|have|has|had|show|shows|live|lives|stay|stays|return|returns|makes|breaks|keeps|gets)$`)
 	workNounLeadRe   = regexp.MustCompile(`^(?:pushed|committed|merged|deployed|released|rolled out|applied|published|shipped|upgraded|migrated)\s+(?:changes|branch|branches|commit|commits|work|fix|fixes|service|services|pod|pods|code|config|configs|release|image|images)\b`)
-	workStateRe      = regexp.MustCompile(`\b(?:now|live|visible|safe|running|in place|up to date|on (?:origin|main|prod\w*|staging))\b`)
+	newStateRe       = regexp.MustCompile(`\b(?:now|just|already)\b`)
 	leadNotVerbAfter = wordSet(`to the a an its this that these those my our your their his her`)
 	leadLabelRe      = regexp.MustCompile(`^\W*[A-Za-z]+(?:\s+[A-Za-z]+){0,2}\s*:\s*$`)
 )
@@ -671,18 +675,18 @@ var (
 // not a report of work: before a hyphen ("Built-in functions"), before a
 // main verb within three words ("Released versions are tagged", "Removed
 // APIs return 410"), or as a short heading ("Changed files:").
-func adjectiveLead(text string) string {
+func adjectiveLead(text string) (string, bool) {
 	m := leadVerbRe.FindStringSubmatchIndex(text)
 	if m == nil {
-		return text
+		return text, false
 	}
 	w := strings.ToLower(text[m[4]:m[5]])
 	if !irregularPast[w] && !(len(w) > 3 && strings.HasSuffix(w, "ed") && !notPastEd[w]) {
-		return text
+		return text, false
 	}
 	// A heading with nothing after its colon claims nothing.
 	if leadLabelRe.MatchString(text) {
-		return strings.Repeat(" ", len(text))
+		return strings.Repeat(" ", len(text)), false
 	}
 	adj := m[6] != m[7]
 	if !adj {
@@ -701,9 +705,22 @@ func adjectiveLead(text string) string {
 			prev = x
 		}
 	}
-	// A git or deploy verb before a work noun, with a state said of it now,
-	// still reports the work: "Pushed branches are visible on origin now."
-	if !adj || workNounLeadRe.MatchString(strings.ToLower(text[m[4]:])) && workStateRe.MatchString(strings.ToLower(text)) {
+	if !adj {
+		return text, false
+	}
+	// A git or deploy verb before a work noun, with its state said to be new,
+	// may report the work ("Pushed branches are visible on origin now."); the
+	// caller keeps it only when the session made such a call.
+	if workNounLeadRe.MatchString(strings.ToLower(text[m[4]:])) && newStateRe.MatchString(strings.ToLower(text)) {
+		return text, true
+	}
+	return blankLead(text), false
+}
+
+// blankLead blanks a sentence's first word.
+func blankLead(text string) string {
+	m := leadVerbRe.FindStringSubmatchIndex(text)
+	if m == nil {
 		return text
 	}
 	return text[:m[4]] + strings.Repeat(" ", m[5]-m[4]) + text[m[5]:]

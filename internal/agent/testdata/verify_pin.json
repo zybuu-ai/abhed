@@ -7594,6 +7594,16 @@
       "name": "committed work said safe now, the commit refused",
       "kind": "planted",
       "hash": "3d152730d6e8d78d"
+    },
+    {
+      "name": "a cluster with a digit in its name, the built-in call to it failing with no exit code",
+      "kind": "planted",
+      "hash": "30cd05fcb5d752e9"
+    },
+    {
+      "name": "an account with a digit in its name, only another tool's name argument",
+      "kind": "planted",
+      "hash": "590fb897c2537807"
     }
   ],
   "strict": [
