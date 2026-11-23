@@ -63,10 +63,15 @@ func (l *Loop) withholdPasted(text string) (string, string, string) {
 	note := "[Abhed: the user pasted a credential, which was withheld from you and from the record: " +
 		strings.Join(lines, "; ") + ". Never ask them to paste it again, and never repeat or guess it. "
 	if l.Tools != nil {
-		if _, ok := l.Tools.Get("k8s_login"); ok {
-			note += "For a cluster token with a server, offer to log in: call k8s_login with pasted set to its id " +
-				"and a short cluster name; the user approves once, and Abhed stores the token as a secret, keeps " +
-				"the cluster for their later sessions and logs in. "
+		if t, ok := l.Tools.Get("k8s_login"); ok {
+			if off, isOff := t.(interface{ LoginsOff() string }); isOff && off.LoginsOff() != "" {
+				note += "Cluster logins are off on this machine, so do not call k8s_login: " + off.LoginsOff() +
+					". Tell the user so. "
+			} else {
+				note += "For a cluster token with a server, offer to log in: call k8s_login with pasted set to its id " +
+					"and a short cluster name; the user approves once, and Abhed stores the token as a secret, keeps " +
+					"the cluster for their later sessions and logs in. "
+			}
 		}
 	}
 	note += "To use any other pasted credential, the user stores it with `abhed secret set NAME`.]"

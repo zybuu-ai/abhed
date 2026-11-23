@@ -172,7 +172,17 @@ All notable changes to Abhed are recorded here. The format follows
   `[pasted:P1]`, not its value, so a 1.2.9 habit of pasting a token for the
   model to use (in a `curl` header, say) no longer works: store it with
   `abhed secret set` and name it in a `secret(NAME)` rule. Set
-  `k8s.enabled` or `ssh.enabled` to `false` to turn the tools off.
+  `k8s.enabled` or `ssh.enabled` to `false` to turn the tools off. A
+  managed configuration or org policy leaves this on unless it sets a
+  `k8s` or `ssh` key, or `machine_setup: false`. Where it sets any `k8s`
+  key, that is now all that counts on the laptop: a person's or
+  workspace's `k8s.enabled: true` is not taken, only the organisation's
+  `k8s.clusters` are offered, no kubeconfig is read unless the organisation
+  itself names `k8s.kubeconfig`, no login is kept, and a pasted login is
+  refused with that reason. Before, a laptop under such a configuration
+  could still reach the person's own kubeconfig contexts; an organisation
+  that relied on that names its kubeconfig in `k8s.kubeconfig`. Where it
+  sets any `ssh` key, only its `ssh.hosts` and `ssh_connect` are offered.
 - Under `-verify strict`, a statement that only explains code the session
   read and did not change ("the running total is 0 because nothing has been
   added yet"), or what changed code did before, no longer fails the
@@ -303,8 +313,10 @@ All notable changes to Abhed are recorded here. The format follows
   tools on; a legacy `auth-provider` or basic auth is refused with the
   reason. `known_hosts` is checked for every host and jump, never written.
   Cluster writes still ask each time. It is on where no file sets
-  `k8s.enabled` or `ssh.enabled` and no managed configuration is in force;
-  setting either to `false`, a workspace included, turns it off.
+  `k8s.enabled` or `ssh.enabled` and the managed configuration or org
+  policy sets no `k8s` or `ssh` key and not `machine_setup: false` (a
+  managed file that only turns on web search leaves it on); setting either
+  to `false`, a workspace included, turns it off.
   With no kubeconfig, `k8s_login` is offered from the moment a login is
   pasted, so a pasted `oc login` works on any machine and costs nothing
   until then, and the other cluster tools appear once a login exists. A
@@ -327,8 +339,11 @@ All notable changes to Abhed are recorded here. The format follows
   is always put to a person with its fingerprint, whatever the mode or
   rules, and refused where no one can be asked. A pasted value is withheld
   again wherever it reappears in the session, and its shape is kept out of
-  prompt history and a server's session list. Under a managed configuration
-  only the organisation's `k8s.clusters` take a token. ACP editors get
+  prompt history and a server's session list. Where the managed
+  configuration or org policy sets `k8s`, only the organisation's
+  `k8s.clusters` take a token, and `k8s_login` refuses a pasted one with
+  that reason. `k8s_login` names only the secrets the model may be offered,
+  never a model key or another name Abhed keeps for itself. ACP editors get
   `pastedCredentials` in the note's `_meta`, and a first use's permission
   request carries `firstUse` in its `_meta`.
 - The agent no longer turns down cluster or remote-machine work as outside

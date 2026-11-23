@@ -1268,6 +1268,9 @@ func (t LoginTool) Description() string {
 		"pastes an `oc login` or a token, Abhed withholds it and names it (P1): call this with pasted=P1 and a " +
 		"short cluster name; one approval stores it, keeps the cluster and logs in. Never ask for it again. " +
 		"Otherwise pass token_secret, a stored secret's NAME. Do not run `oc login` through bash."
+	if t.M != nil && t.M.cfg.Off != "" {
+		return d + " Not available on this machine: " + t.M.cfg.Off + "."
+	}
 	if names := t.clusterNames(); len(names) > 0 {
 		d += " Clusters: " + strings.Join(names, ", ") + "."
 	} else {
@@ -1350,6 +1353,9 @@ func (t LoginTool) BoundSecrets(_ *tools.Session, raw json.RawMessage) []string 
 // anyone is asked, and for a pasted token reads the server's certificate
 // (sending nothing) so the approval can name what it will be verified against.
 func (t LoginTool) PrecheckContext(ctx context.Context, sess *tools.Session, raw json.RawMessage) error {
+	if t.M != nil && t.M.cfg.Off != "" {
+		return fmt.Errorf("cluster logins are off on this machine: %s. Tell the user so; do not ask them to paste the token again", t.M.cfg.Off)
+	}
 	var a loginArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return err
@@ -1406,6 +1412,9 @@ func (t LoginTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMes
 	// Without a session the login would have nowhere of its own to live.
 	if sess == nil {
 		return errf("k8s_login needs a session to hold the login; nothing was stored.")
+	}
+	if t.M != nil && t.M.cfg.Off != "" {
+		return errf("Cluster logins are off on this machine: %s.", t.M.cfg.Off)
 	}
 	if a.Pasted != "" {
 		return t.runPasted(ctx, sess, a)
