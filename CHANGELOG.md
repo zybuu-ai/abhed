@@ -733,6 +733,61 @@ All notable changes to Abhed are recorded here. The format follows
   or by an org with pinned keys. Any other price from such an org is set
   aside, as before. Under a managed or org dollar cap, an unpriced model's
   refusal says an administrator sets the price.
+- `abhed rpc` can put approvals to its caller. `start` with
+  `"approvals": true` sends each call that needs approval as an `approval`
+  line (the recorded request id, tool, arguments, reason, policy step and
+  rule, the scope offered, and whether the command is destructive or its
+  arguments hide characters), answered by an `approve` request with
+  `decision` `allow` or `deny`, an optional `approver`, and `remember` to
+  keep the offered scope for the session. An ask still open when stdin ends
+  is refused; one open when its run is stopped ends as interrupted, and an
+  answer arriving with the stop is not applied. Without `approvals`, a call needing approval
+  is refused as before.
+- A GitHub Action, `integrations/github-action`. It installs a pinned
+  Abhed release, checked against the SHA-256 the action pins and, by
+  default, the release's Sigstore signature, before it runs; runs `abhed -p`
+  with `-verify strict` by default; uploads the run's output, its exported
+  record (verifiable with `abhed record verify`) and a transcript as an
+  artifact; and fails the job on a non-zero exit. Inputs take the task, the
+  model provider (its key from a secret, masked, in one variable, its entry
+  never merged with a policy's), a policy as `-settings` (a file in the
+  repository, read with git alone at the pull request's base commit on a
+  pull request and at `HEAD` otherwise, never from the disk; a symbolic link
+  is refused),
+  allow and deny rules, limits, and the variables to pass through. The
+  agent runs under `env -i`: no GitHub token reaches it, and a checkout that
+  kept its token in `.git/config` is refused. Its home is a fresh folder
+  outside the runner's temp folder, and its `TMPDIR` is bubblewrap's
+  private `/tmp` on Linux and the account's temp folder on macOS, never the
+  runner's; one hash over the binary and its
+  helpers is checked again before every later run of them. A flag newer than the pinned
+  release is refused before the run. `pull_request_target` is refused.
+  See [The GitHub Action](docs/guide/38-github-action.md).
+- Pull request review, the action's `mode: review`. It takes the diff
+  between the pull request's base and head with hooks and textconv off,
+  reviews it read-only (`plan`, the `read`, `glob` and `grep` tools only,
+  `-bare`, the workspace's configuration untrusted, a JSON schema for the
+  findings) and posts one review: `COMMENT`, or `REQUEST_CHANGES` at a
+  severity you set, never `APPROVE`, with an inline comment on each finding
+  whose line is in the diff. Every `@` in the model's text is defused, and
+  every `&`, `<` and `>` outside code escaped; code blocks and spans are
+  rebuilt with delimiters nothing inside can close. From a policy a review takes only deny and
+  ask rules and limits; its model comes from the action's inputs alone. Only the posting step holds the token. On a release
+  before 1.3.0, which lacks `-tools` and `-bare`, deny rules narrow the
+  tools instead. On
+  `pull_request` a fork's pull request has no model key and is skipped with
+  a notice; a maintainer reviews it with `workflow_dispatch`. See
+  [Pull request review](docs/guide/39-pr-review.md), with its threat model.
+- TypeScript and Python SDKs, `sdk/typescript` (`abhed-sdk` on npm) and
+  `sdk/python` (`abhed-sdk`, imported as `abhed_sdk`). Each drives
+  `abhed rpc` as a child process: start a session, prompt or stream its
+  events, steer, answer approvals with a handler or from the stream,
+  verdicts and `RunError` with the terminal reason, usage, export,
+  background tasks and wake, and `visible` and `args_hidden` ported from the
+  engine's escaper and tested against its answers
+  (`sdk/testdata/visible.json`). No runtime dependencies and no network call
+  of their own. Not yet published. See
+  [TypeScript and Python SDKs](docs/guide/40-sdk-typescript-python.md).
 - MCP `readOnlyHint` can be honoured for a server the operator opts in:
   the managed file's entry for it sets `"trust_read_only_hint": true`, and
   the entry in force is exactly that one. A tool such a server marks
@@ -748,6 +803,40 @@ All notable changes to Abhed are recorded here. The format follows
   a note only: the outcome and the exit code are unchanged.
 
 ### Changed
+
+- On macOS's process tier, a process a command started no longer outlives
+  it. It used to keep running, and writing the workspace and the shared
+  temp folders, after the command, the session and its record had ended
+  (bubblewrap on Linux always ended it). When a foreground command ends, Abhed now
+  ends the processes in the session it leads and every descendant it
+  followed while the command ran, and waits for them to go before the
+  command is reported finished; closing a sandbox ends what its foreground
+  commands still run. Only processes proven to descend from the command are
+  signalled. Its random marker (`ABHED_COMMAND_ID`) is no such proof, since
+  an app started from a command's terminal inherits it and `launchctl
+  setenv` can plant it, so a marked process that is neither followed nor in
+  the session is named in the command's result and left running. A process
+  handed to launchd before a read saw it is still ended when the process
+  that forked it was followed (macOS keeps the parent's unique id). One that
+  takes a session of its own and whose parent was born and gone within one
+  20 ms read of the process table escapes (on Linux's `none` tier, one that
+  loses its parent within one read); see the Sandbox section of the
+  configuration guide. The result names the processes that were ended, and
+  says to start a program with `run_in_background`, or an app with
+  `open -a`, to keep it running. A background command's leftovers are
+  ended the same way when it ends or is stopped, before it is reaped,
+  rather than by their process group's number afterwards. Terminal shells
+  are not ended when a sandbox closes: they end with their terminal. Commands on that tier also get an
+  `xcrun_db` of the sandbox's own.
+
+- On macOS, the process sandbox keeps the account's own home unreadable to
+  commands when `HOME` names another folder, as well as `$HOME`: its state
+  folder and credential paths too, and, whatever the user database says,
+  the `/Users/NAME` folder that holds `$HOME`. Moving `HOME` (as a CI run
+  given a fresh one does) no longer opens the real home's `~/.ssh` and the
+  rest to the agent's commands. `/Users/Shared` is not taken for a home. A
+  failed lookup of the account is said in the sandbox's description, which
+  `abhed doctor` shows and the record keeps.
 
 - The `served` field of the `next_edit.summary` record event now includes
   renames finished from the file, which are also counted in `local`; before,

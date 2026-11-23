@@ -1,0 +1,49 @@
+# Runs one task with Abhed on a push or by hand, and fails the job when the
+# task fails or its answer is not verified (strict, the default).
+# Copy to .github/workflows/ and pin the action to a full commit.
+name: Abhed task
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: What Abhed should do
+        required: true
+
+# The job reads the repository and nothing else; the agent's changes stay
+# on the runner and in the evidence artifact. Nothing is pushed.
+permissions:
+  contents: read
+
+jobs:
+  task:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The token must not stay in .git/config, where the agent could read it.
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - id: abhed
+        uses: zybuu-ai/abhed/integrations/github-action@COMMIT_SHA # pin to a full commit
+        with:
+          task: ${{ inputs.task }}
+          model-provider: anthropic
+          model: claude-opus-5
+          model-api-key: ${{ secrets.ABHED_MODEL_KEY }}
+          policy-file: .github/abhed-policy.json
+          permission-mode: accept-edits
+          allow: |
+            bash(go test*)
+            bash(go vet*)
+          deny: |
+            bash(git push*)
+            web_fetch
+          # max-budget-usd too, from Abhed 1.3.0
+          max-turns: "40"
+      - name: The diff the agent left
+        if: always()
+        run: git diff --stat

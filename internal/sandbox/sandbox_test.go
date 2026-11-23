@@ -269,6 +269,7 @@ func TestTierOrdering(t *testing.T) {
 }
 
 func TestRunawayCommandEndsAtItsDeadline(t *testing.T) {
+	requireKillTestsOnMac(t)
 	if testing.Short() {
 		t.Skip("resource exhaustion test is slow")
 	}

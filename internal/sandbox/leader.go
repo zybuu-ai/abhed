@@ -3,6 +3,7 @@ package sandbox
 import (
 	"fmt"
 	"os/exec"
+	"syscall"
 	"time"
 )
 
@@ -33,8 +34,6 @@ type Leader struct {
 	Pid   int
 	start uint64
 	ok    bool
-	// marker is what every process the shell started carries, or "".
-	marker string
 }
 
 // Lead names the session leader cmd started. Call it right after Start, on a
@@ -45,7 +44,7 @@ func Lead(cmd *exec.Cmd) Leader {
 	}
 	pid := cmd.Process.Pid
 	start, ok := startTime(pid)
-	return Leader{Pid: pid, start: start, ok: ok, marker: markerIn(cmd.Env)}
+	return Leader{Pid: pid, start: start, ok: ok}
 }
 
 // Wait waits for the shell to exit, ends every process left in its session
@@ -61,10 +60,8 @@ func (l Leader) Wait(cmd *exec.Cmd) (refused string, err error) {
 			refused = l.sweep()
 		}
 	}
-	// A process that left the session (setsid) still carries the marker.
-	if l.marker != "" {
-		endMarked(l.marker)
-	}
+	// One that left the session is not the shell's to end: an app the person
+	// started from the terminal, say, which also carries the shell's marker.
 	return refused, cmd.Wait()
 }
 
@@ -149,3 +146,23 @@ func (l Leader) sweep() string {
 const sweepWaitMin = time.Millisecond
 
 var sweepWaitMax = 50 * time.Millisecond
+
+// inSession signals a pid only as a member, other than its leader, of the
+// session sid that a command started with Setsid created.
+func inSession(sid int) func(int, syscall.Signal) bool {
+	return func(pid int, sig syscall.Signal) bool {
+		return sid > 1 && pid > 1 && pid != sid && signalOne(pid, sid, sig)
+	}
+}
+
+// unprovenNote says what a marker found that was left running.
+func unprovenNote(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d processes carrying the command's marker were left running: they left its process tree before they were seen, and a marker alone is no proof they are its own", n)
+}
+
+// markerName is the variable that marks every process of one command. An
+// inherited one is dropped from a host command's environment (hostDropped).
+const markerName = "ABHED_COMMAND_ID"
