@@ -229,6 +229,8 @@ type Profile struct {
 	GuidedDecoding   bool               `json:"guided_decoding"`
 	CachePrefix      bool               `json:"cache_prefix"`
 	Conformance      map[string]float64 `json:"conformance,omitempty"`
+	// MaxTools caps the tools one request offers; zero is DefaultMaxTools.
+	MaxTools int `json:"max_tools,omitempty"`
 	// Sampling reports which decoding knobs this provider honours, so a
 	// config naming one it does not is rejected rather than ignored.
 	Sampling Sampling `json:"-"`

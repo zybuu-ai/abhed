@@ -287,3 +287,16 @@ func TestProvidedToolMayNotTakeABuiltinName(t *testing.T) {
 		t.Fatalf("errors: %v", errs)
 	}
 }
+
+// A tool named in MCP's namespace, in any case, is refused: it would take an
+// MCP server's tool, or the rules written for it.
+func TestProvidedToolMayNotTakeAnMCPName(t *testing.T) {
+	h := hostWith(t, "mcpshadow.sh")
+	provided, errs := h.Tools(context.Background())
+	if len(provided) != 1 || provided[0].Name() != "weather" {
+		t.Fatalf("provided %d tools, want only weather", len(provided))
+	}
+	if len(errs) != 2 || !strings.Contains(errs[0].Error(), "reserved for MCP servers' tools") || !strings.Contains(errs[1].Error(), `"MCP__github__x"`) {
+		t.Fatalf("errors: %v", errs)
+	}
+}
