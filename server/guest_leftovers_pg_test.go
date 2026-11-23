@@ -90,3 +90,28 @@ func TestGuestSweepSparesAnotherNodesLiveGuests(t *testing.T) {
 		t.Fatal("A no longer runs its guest's session")
 	}
 }
+
+// Two live servers given one node id (a misconfiguration) never read each
+// other's sessions as their own earlier run's: B, sweeping, sees A's fresh
+// heartbeat under the same id and leaves A's running guest alone.
+func TestGuestSweepWithADuplicateNodeIDSparesTheOther(t *testing.T) {
+	pa := openSharedPG(t)
+	cfg := config.Default()
+	cfg.Auth.Mode = "proxy"
+	cfg.Auth.Guest = true
+	a := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: waitingAdapter{}, Store: pa, NodeID: "node-dup",
+		Registry: tools.NewRegistry(tools.Read{})})
+	live, err := a.StartSession(context.Background(), StartSpec{Prompt: "wait", User: "guest:dup", Tenant: "acme"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.StopSession("acme", "guest:dup", live) })
+	waitUntil(t, "A to hold the guest's session", func() bool { return pgHolder(t, live) == a.holder })
+
+	b := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{}, Store: openSharedPG(t), NodeID: "node-dup",
+		Registry: tools.NewRegistry(tools.Read{})})
+	b.RemoveGuestLeftovers(context.Background(), 8*time.Hour, true)
+	if _, err := pa.GetSession(context.Background(), live); err != nil {
+		t.Fatalf("B removed the guest session A runs under the same node id: %v", err)
+	}
+}

@@ -409,9 +409,21 @@ func (s *Server) RemoveGuestLeftovers(ctx context.Context, ttl time.Duration, st
 	prefix := auth.ProviderGuest + ":"
 	var recs []store.SessionRecord
 	if gl, ok := s.under().(interface {
-		GuestLeftovers(context.Context, string, string, time.Duration, time.Duration) ([]store.SessionRecord, error)
+		GuestLeftovers(context.Context, string, string, bool, time.Duration, time.Duration) ([]store.SessionRecord, error)
+		SameNodeLive(context.Context, string, time.Duration) (bool, error)
 	}); ok {
-		list, err := gl.GuestLeftovers(ctx, prefix, s.holder, store.HolderStale, ttl)
+		// Another live run under this node id is a misconfiguration (node
+		// ids must be unique); its sessions would read as this node's
+		// earlier run's, so that case is skipped while it lasts.
+		ownEarlier := true
+		if dup, err := gl.SameNodeLive(ctx, s.holder, 2*nodeHeartbeat.Get()); err != nil || dup {
+			ownEarlier = false
+			if dup {
+				s.log.Error("another running server uses this node id; node ids must be unique. Console guests' sessions it holds are left alone",
+					"node_id", store.HolderNode(s.holder))
+			}
+		}
+		list, err := gl.GuestLeftovers(ctx, prefix, s.holder, ownEarlier, store.HolderStale, ttl)
 		if err != nil {
 			s.log.Error("listing console guests' leftovers", "error", err)
 			return 0

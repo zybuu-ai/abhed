@@ -256,7 +256,9 @@ All notable changes to Abhed are recorded here. The format follows
   removed when it signs out or after `auth.guest_hours` (8), a running one
   stopped first; a restart ends every guest, and with guests on the server
   removes what ended guests left at start and hourly, never another
-  server's live guests on a shared Postgres. One address starts at most five guests an hour. It needs
+  server's live guests on a shared Postgres; a server that finds another
+  running under its own `control_plane.ha.node_id` logs an error and does
+  not take that id's sessions for its earlier run's. One address starts at most five guests an hour. It needs
   `auth.mode` `local` or `oidc`.
 - `abhed serve` in a terminal, with no sign-in on an address other machines
   can reach, asks first: set up local accounts, serve on this machine only,
