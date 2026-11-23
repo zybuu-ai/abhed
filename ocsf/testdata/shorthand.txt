@@ -130,3 +130,5 @@
 2026-10-19T12:00:13.123Z s-1#132 CONF:Log INFO plugin.loaded
 2026-10-19T12:00:14.123Z s-1#133 CONF:Log INFO config.changed plugins acme-review (plugin install)
 2026-10-19T12:00:15.123Z s-1#134 LIFE:Stop INFO session ended: stdin_late
+2026-10-19T12:00:16.123Z s-1#135 CONF:Log INFO config.applied
+2026-10-19T12:00:17.123Z s-1#136 CONF:Log INFO session.facts
