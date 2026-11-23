@@ -64,3 +64,17 @@ func TestPastedKindsMatchTheirPatterns(t *testing.T) {
 		}
 	}
 }
+
+func TestFindPastedLoginInBackticksAcrossLinesAndSetCredentials(t *testing.T) {
+	const tok = "q8Zt3kLm9PxR2vWn7YbC4dFg"
+	for _, tc := range []struct{ msg, server string }{
+		{"run `oc login --token=" + tok + " --server=https://api.x.example:6443`", "https://api.x.example:6443"},
+		{"oc login \\\n  --server=https://api.x.example:6443 \\\n  --token=" + tok, "https://api.x.example:6443"},
+		{"kubectl config set-credentials me --token=" + tok, ""},
+	} {
+		got := FindPasted(tc.msg)
+		if len(got) != 1 || got[0].Value(tc.msg) != tok || got[0].Server != tc.server {
+			t.Errorf("%q: found %+v", tc.msg, got)
+		}
+	}
+}

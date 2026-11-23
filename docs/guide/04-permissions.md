@@ -1311,7 +1311,8 @@ address) and how it signs in, never the credential, and names the program a
 credential helper would run. Its "always" answer is *always for this
 cluster* or host: it is kept for you, in `~/.abhed/state/machine-grants.json`,
 not for the session or the workspace, and it covers that cluster or host as
-it was, so a changed server, CA, credential helper, address, user or jump
+it was, so a changed server, CA (by its content), credential helper (by
+the program `PATH` finds), address, user, key, `known_hosts` entry or jump
 host asks again. It never covers a command or a write: those ask as they
 always do. A "yes" covers the rest of the session. An allow rule answers a
 first use as it answers any ask, and a deny rule refuses it. The record
@@ -1698,8 +1699,13 @@ the session ends. You are told as for a stored value, and the `user.message`
 event carries `pasted`, each `ID:kind`; an ACP editor gets
 `pastedCredentials` in the note's `_meta`, to mask the text it drew as you
 typed it. A placeholder such as `--token=<token>` or `$TOKEN` is not
-withheld. A message a hook refused is recorded with each one replaced by
-`[pasted credential]`.
+withheld. A value you pasted is withheld again wherever it reappears in
+the session: a later message, a tool's output. A message a hook refused,
+the terminal's prompt history, a server's session list and an editor's
+completion or commit request keep `[pasted credential]` in place of any
+pasted credential's shape. A login that would pin a server's certificate is
+always put to you with its fingerprint, in every mode, and refused where no
+one can be asked.
 
 **File paths.** A `write` or `edit` whose path holds a stored secret is
 refused, in every mode, whether the agent or a person at the workbench makes

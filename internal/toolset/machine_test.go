@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -104,5 +105,22 @@ func TestWithNothingToReachOnlyK8sLoginIsOffered(t *testing.T) {
 	}
 	if got := offered(true); !slices.Equal(got, []string{"k8s_apply", "k8s_get", "k8s_login"}) {
 		t.Fatalf("with a kept login %v", got)
+	}
+}
+
+// Under a managed configuration only the organisation's clusters take a
+// token: the person's kept logins are not offered.
+func TestManagedConfigOffersNoKeptLogin(t *testing.T) {
+	machineHome(t)
+	if err := machinegrant.Keep(machinegrant.Grant{Kind: machinegrant.KindK8sLogin, Name: "personal", Identity: "i",
+		Login: &machinegrant.Login{Server: "https://personal.example:6443", Secret: "K8S_PERSONAL_TOKEN"}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Managed: true}
+	cfg.K8s.Enabled = true
+	for _, tl := range InfraToolsFor(cfg, nil, func(string, ...any) {}, true) {
+		if strings.Contains(tl.Description(), "personal") {
+			t.Fatalf("%s offers a kept login under a managed configuration: %s", tl.Name(), tl.Description())
+		}
 	}
 }

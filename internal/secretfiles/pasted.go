@@ -19,11 +19,13 @@ type Pasted struct {
 // Value is the credential in text.
 func (p Pasted) Value(text string) string { return text[p.Start:p.End] }
 
-// loginCommand is an `oc login` or `kubectl … login` line; its flags are read
+// loginCommand is an `oc login`, `kubectl … login` or `kubectl config
+// set-credentials` command; its flags are read
 // one by one, so their order does not matter.
 var (
-	loginCommand = regexp.MustCompile(`(?m)\b(?:oc|kubectl|kubectl-oidc_login|odo)\b[^\n]*?\blogin\b[^\n]*`)
-	tokenFlag    = regexp.MustCompile(`(?:^|\s)--token(?:=|\s+)["']?([^\s"']+)`)
+	// A line may continue with a backslash, as a pasted multi-line command does.
+	loginCommand = regexp.MustCompile(`(?m)\b(?:oc|kubectl|kubectl-oidc_login|odo)\b(?:[^\n\\]|\\\r?\n|\\.)*?\b(?:login|set-credentials)\b(?:[^\n\\]|\\\r?\n|\\.)*`)
+	tokenFlag    = regexp.MustCompile("(?:^|\\s)--token(?:=|\\s+)[\"']?([^\\s\"'`]+)")
 	serverFlag   = regexp.MustCompile(`(?:^|\s)(?:--server|-s)(?:=|\s+)["']?(https://[^\s"']+)`)
 	serverArg    = regexp.MustCompile(`\blogin\s+["']?(https://[^\s"']+)`)
 	nsFlag       = regexp.MustCompile(`(?:^|\s)(?:--namespace|-n)(?:=|\s+)["']?([a-z0-9][a-z0-9-]{0,62})`)
@@ -65,9 +67,9 @@ func FindPasted(text string) []Pasted {
 			p.Kind = "an OpenShift token"
 		}
 		if m := serverFlag.FindStringSubmatch(line); m != nil {
-			p.Server = strings.TrimRight(m[1], ".,;")
+			p.Server = strings.TrimRight(m[1], ".,;`)>]")
 		} else if m := serverArg.FindStringSubmatch(line); m != nil {
-			p.Server = strings.TrimRight(m[1], ".,;")
+			p.Server = strings.TrimRight(m[1], ".,;`)>]")
 		}
 		if m := nsFlag.FindStringSubmatch(line); m != nil {
 			p.Namespace = m[1]

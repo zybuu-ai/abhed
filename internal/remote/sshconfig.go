@@ -44,6 +44,8 @@ type MachineHost struct {
 	IdentityFiles         []string
 	ProxyJump             string
 	KnownHostsFiles       []string
+	// IdentitiesOnly offers only the keys IdentityFile names, the agent's included.
+	IdentitiesOnly bool
 	// Refused is why Abhed will not connect to it, or "".
 	Refused string
 }
@@ -251,6 +253,8 @@ func (c *SSHConfig) resolve(name string) MachineHost {
 				if !strings.EqualFold(o.value, "none") {
 					refused = append(refused, "it reaches the host through ProxyCommand, a program Abhed does not run")
 				}
+			case "identitiesonly":
+				h.IdentitiesOnly = strings.EqualFold(o.value, "yes")
 			case "stricthostkeychecking":
 				// A host's key is checked against known_hosts whatever this says;
 				// Abhed never accepts or records one silently.
@@ -362,27 +366,48 @@ func (r *Registry) machineAliases() []string {
 // maxJumps bounds a ProxyJump chain.
 const maxJumps = 4
 
+// hops resolves mh's ProxyJump chain, nearest first, each with what the
+// config says of it; each must be an address allowed names, when set.
+func hops(c *SSHConfig, mh MachineHost, allowed []string) ([]MachineHost, error) {
+	if mh.ProxyJump == "" {
+		return nil, nil
+	}
+	specs := strings.Split(mh.ProxyJump, ",")
+	if len(specs) > maxJumps {
+		return nil, fmt.Errorf("host %s: ProxyJump names %d hops; Abhed follows at most %d", mh.Alias, len(specs), maxJumps)
+	}
+	var out []MachineHost
+	for _, spec := range specs {
+		hop, err := jumpSpec(c, strings.TrimSpace(spec))
+		if err != nil {
+			return nil, fmt.Errorf("host %s: ProxyJump %s: %w", mh.Alias, spec, err)
+		}
+		if !addrAllowed(allowed, hop.Addr()) {
+			return nil, fmt.Errorf("host %s: its jump host %s is not among the addresses ssh.connect_hosts allows", mh.Alias, hop.Addr())
+		}
+		out = append(out, hop)
+	}
+	return out, nil
+}
+
 // newMachineHost builds the connection for mh, its jump hosts first.
-func newMachineHost(c *SSHConfig, mh MachineHost) (*Host, error) {
+func newMachineHost(c *SSHConfig, mh MachineHost, allowed []string) (*Host, error) {
 	if mh.Refused != "" {
 		return nil, fmt.Errorf("host %s in your ~/.ssh/config is not usable from Abhed: %s", mh.Alias, mh.Refused)
+	}
+	chain, err := hops(c, mh, allowed)
+	if err != nil {
+		return nil, err
 	}
 	h, err := NewHost(machineHostConfig(mh))
 	if err != nil {
 		return nil, err
 	}
-	if mh.ProxyJump == "" {
-		return h, nil
-	}
-	hops := strings.Split(mh.ProxyJump, ",")
-	if len(hops) > maxJumps {
-		return nil, fmt.Errorf("host %s: ProxyJump names %d hops; Abhed follows at most %d", mh.Alias, len(hops), maxJumps)
-	}
 	var prev *Host
-	for _, hop := range hops {
-		jh, err := jumpHost(c, strings.TrimSpace(hop))
+	for _, hop := range chain {
+		jh, err := NewHost(machineHostConfig(hop))
 		if err != nil {
-			return nil, fmt.Errorf("host %s: ProxyJump %s: %w", mh.Alias, hop, err)
+			return nil, err
 		}
 		jh.cfg.jump = prev
 		prev = jh
@@ -391,11 +416,11 @@ func newMachineHost(c *SSHConfig, mh MachineHost) (*Host, error) {
 	return h, nil
 }
 
-// jumpHost reads one ProxyJump hop, [user@]host[:port] or an alias, with
-// what the config says of that host.
-func jumpHost(c *SSHConfig, spec string) (*Host, error) {
+// jumpSpec reads one ProxyJump hop, [user@]host[:port] or an alias, with
+// what the config says of that host. A hop's own ProxyJump is not followed.
+func jumpSpec(c *SSHConfig, spec string) (MachineHost, error) {
 	if spec == "" || strings.HasPrefix(spec, "ssh://") || strings.ContainsAny(spec, " \t") {
-		return nil, fmt.Errorf("not a host Abhed can read")
+		return MachineHost{}, fmt.Errorf("not a host Abhed can read")
 	}
 	userPart, hostPart := "", spec
 	if i := strings.LastIndex(spec, "@"); i >= 0 {
@@ -405,12 +430,12 @@ func jumpHost(c *SSHConfig, spec string) (*Host, error) {
 	if h, p, err := net.SplitHostPort(hostPart); err == nil {
 		hostPart = h
 		if port, err = strconv.Atoi(p); err != nil {
-			return nil, fmt.Errorf("bad port")
+			return MachineHost{}, fmt.Errorf("bad port")
 		}
 	}
 	mh := c.resolve(hostPart)
 	if mh.Refused != "" {
-		return nil, fmt.Errorf("%s", mh.Refused)
+		return MachineHost{}, fmt.Errorf("%s", mh.Refused)
 	}
 	if userPart != "" {
 		mh.User = userPart
@@ -418,8 +443,8 @@ func jumpHost(c *SSHConfig, spec string) (*Host, error) {
 	if port != 0 {
 		mh.Port = port
 	}
-	mh.ProxyJump = "" // a hop's own ProxyJump is not followed
-	return NewHost(machineHostConfig(mh))
+	mh.ProxyJump = ""
+	return mh, nil
 }
 
 func machineHostConfig(mh MachineHost) HostConfig {
@@ -428,5 +453,5 @@ func machineHostConfig(mh MachineHost) HostConfig {
 		known = []string{"~/.ssh/known_hosts", "~/.ssh/known_hosts2"}
 	}
 	return HostConfig{Name: mh.Alias, Addr: mh.Addr(), User: mh.User,
-		machine: true, identityFiles: mh.IdentityFiles, knownHostFiles: known}
+		machine: true, identityFiles: mh.IdentityFiles, identitiesOnly: mh.IdentitiesOnly, knownHostFiles: known}
 }

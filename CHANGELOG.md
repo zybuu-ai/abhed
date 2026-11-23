@@ -218,7 +218,12 @@ All notable changes to Abhed are recorded here. The format follows
   SHA-256 fingerprint and pinned), checks the token there, stores it as a
   secret and keeps the cluster for your later sessions, which reach it by
   name with no `secret(NAME)` rule. The server is the one pasted with the
-  token; the model cannot choose another. ACP editors get
+  token; the model cannot choose another. A login that pins a certificate
+  is always put to a person with its fingerprint, whatever the mode or
+  rules, and refused where no one can be asked. A pasted value is withheld
+  again wherever it reappears in the session, and its shape is kept out of
+  prompt history and a server's session list. Under a managed configuration
+  only the organisation's `k8s.clusters` take a token. ACP editors get
   `pastedCredentials` in the note's `_meta`, and a first use's permission
   request carries `firstUse` in its `_meta`.
 - The agent no longer turns down cluster or remote-machine work as outside

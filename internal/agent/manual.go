@@ -30,6 +30,7 @@ func (l *Loop) Manual(ctx context.Context, sess *tools.Session, call string, id 
 	if red := l.Recorder.redactor(); red != nil {
 		result.Content = redactedText(red.Redact, result.Content)
 	}
+	result.Content = l.withholdHeld(result.Content)
 	return result, l.ManualObserve(id, call, result, time.Since(start))
 }
 
@@ -82,6 +83,7 @@ func (l *Loop) ManualAs(ctx context.Context, sess *tools.Session, action, id str
 	if red := l.Recorder.redactor(); red != nil {
 		result.Content = redactedText(red.Redact, result.Content)
 	}
+	result.Content = l.withholdHeld(result.Content)
 	return result, l.ManualObserve(id, action, result, time.Since(start))
 }
 
@@ -265,6 +267,7 @@ func (l *Loop) ManualRunTool(ctx context.Context, sess *tools.Session, tool tool
 	if red := l.Recorder.redactor(); red != nil {
 		result.Content = redactedText(red.Redact, result.Content)
 	}
+	result.Content = l.withholdHeld(result.Content)
 	return result, l.ManualObserve(id, call, result, time.Since(start))
 }
 

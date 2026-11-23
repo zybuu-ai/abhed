@@ -365,10 +365,15 @@ func TestReadsAppearOnceASessionLogsIn(t *testing.T) {
 	if !(GetTool{M: m}).Hidden() || !(ApplyTool{M: m}).Hidden() {
 		t.Fatal("offered with nothing to reach")
 	}
-	// A login kept by another window counts as well.
+	// A login kept by another window since does not change what this
+	// session offers, so its prompt cache holds; the next session sees it.
 	_ = machinegrant.Keep(machinegrant.Grant{Kind: machinegrant.KindK8sLogin, Name: "x", Identity: "i", Login: &machinegrant.Login{Server: "https://x", Secret: "S"}})
-	if (GetTool{M: m}).Hidden() {
-		t.Fatal("hidden with a kept login")
+	if !(GetTool{M: m}).Hidden() || strings.Contains((LoginTool{M: m}).Description(), "Clusters: x") {
+		t.Fatal("what this session offers changed mid-session")
+	}
+	next := NewManager(Config{HiddenUntilLogin: true, KeptLogins: true})
+	if (GetTool{M: next}).Hidden() || !strings.Contains((LoginTool{M: next}).Description(), "Clusters: x") {
+		t.Fatal("the next session does not see the kept login")
 	}
 	_, _ = machinegrant.Forget(machinegrant.KindK8sLogin, "x")
 	if err := m.login(newSession(t), sessionCred{token: "t", cluster: LoginCluster{Name: "lab", Server: "https://lab.example"}}); err != nil {

@@ -213,9 +213,13 @@ to configure:
   `IdentityFile` adds, as OpenSSH reads them; a `Match` block is not
   evaluated. They sign in with your ssh-agent (`SSH_AUTH_SOCK`) and the keys
   `IdentityFile` names that need no passphrase (add one that does to the
-  agent), in Abhed's process only. Each hop of `ProxyJump` (at most four) is
-  reached the same way, and each host's key, hops included, must already be
-  in `known_hosts`: Abhed never adds one, and an unknown or changed key is
+  agent), in Abhed's process only: the named keys first, then the agent's,
+  each offered once, and with `IdentitiesOnly yes` only the keys
+  `IdentityFile` names. Each hop of `ProxyJump` (at most four) is reached
+  the same way, is bounded by `ssh.connect_hosts` when that is set, and the
+  address reached through it is judged and recorded by the egress rules as a
+  direct one is; each host's key, hops included, must already be in
+  `known_hosts`: Abhed never adds one, and an unknown or changed key is
   refused with the `ssh` command to record it yourself. A host that needs
   `ProxyCommand` is listed as not usable, with the reason. The first use of
   each host asks once, as for a context, and every command still asks as
@@ -229,11 +233,15 @@ or kept logins (or an `~/.ssh/config` naming a host). With neither, your own
 surface still offers `k8s_login`, so a pasted `oc login` works on any
 machine; `k8s_get` and `k8s_apply` are offered once a login exists. `k8s_apply` is offered
 unless a file sets `k8s.allow_writes`. Setting `k8s.enabled` or
-`ssh.enabled` to `false`, in any file a workspace's included, turns it off;
-an organisation's managed configuration decides for its machines, and
-setting them to `true` there keeps the kubeconfig and `~/.ssh/config`
-offered with each first use asked. `abhed serve` never offers its operator's
-own setup to the sessions it runs.
+`ssh.enabled` to `false`, in any file a workspace's included, turns it off.
+Under an organisation's managed configuration none of this is automatic:
+only what the configuration turns on is offered. With `k8s.enabled: true`
+the kubeconfig's contexts are reachable as before, a context whose
+credential helper Abhed would run asks before its first use, and only the
+organisation's `k8s.clusters` take a token: no login is kept, and a pasted
+token cannot be kept. With `ssh.enabled: true` only `ssh.hosts` and
+`ssh_connect` are offered, never the person's `~/.ssh/config`. `abhed serve`
+never offers its operator's own setup to the sessions it runs.
 
 `abhed doctor` lists the contexts with their servers (and the program a
 credential helper runs), the `~/.ssh/config` hosts and what is kept, by name,
@@ -257,7 +265,10 @@ approval:
    for is verified as any site is; otherwise the CA your kubeconfig holds for
    that server; otherwise the approval shows the certificate the server
    presents now by its SHA-256 fingerprint, and approving pins it, as
-   `oc login` asks you to;
+   `oc login` asks you to. A login that pins is always put to you, with the
+   fingerprint: bypass mode, an allow rule, a runbook or a remembered
+   "always" does not answer it, and where no one can be asked (`-p`, a
+   scheduled run) it is refused;
 2. sends the token to that server only after that check, and stores nothing
    if the server refuses it;
 3. stores the token as a secret (`store_as`, by default `K8S_<CLUSTER>_TOKEN`),
@@ -265,7 +276,12 @@ approval:
    for you, outside every workspace, and logs the session in.
 
 The server is the one you pasted the token with; the model cannot name
-another. A later session reaches the cluster by name in `k8s_get` and
+another. Pasting the same token again with another server holds it under a
+new id for that server, so a corrected `oc login` is the one used. A value
+you pasted is withheld wherever it appears again in the session, in a later
+message or a tool's output, and a pasted credential's shape is kept out of
+the terminal's prompt history, a server's session list and what an editor's
+completion or commit message requests send. A later session reaches the cluster by name in `k8s_get` and
 `k8s_apply`, which sign in with the kept token themselves: no paste, no
 `token_secret` and no `secret(NAME)` rule, since you bound that secret to
 that cluster when you approved it. A deny rule on the secret still refuses

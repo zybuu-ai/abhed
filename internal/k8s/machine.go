@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/machinegrant"
@@ -53,15 +52,10 @@ func (m *Manager) loginNames() []string {
 	for _, c := range m.cfg.Clusters {
 		out = append(out, c.Name)
 	}
-	if m.cfg.KeptLogins {
-		var kept []string
-		for name := range machinegrant.Logins() {
-			if !slices.Contains(out, name) {
-				kept = append(kept, name)
-			}
+	for _, name := range m.keptNames() {
+		if !slices.Contains(out, name) {
+			out = append(out, name)
 		}
-		sort.Strings(kept)
-		out = append(out, kept...)
 	}
 	return out
 }
@@ -235,7 +229,7 @@ func (m *Manager) hidden() bool {
 	if m == nil || !m.cfg.HiddenUntilLogin || m.loggedIn.Load() {
 		return false
 	}
-	return len(machinegrant.Logins()) == 0
+	return len(m.keptNames()) == 0
 }
 
 // Hidden keeps k8s_get from the model until there is a cluster to read.

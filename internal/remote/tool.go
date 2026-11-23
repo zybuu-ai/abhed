@@ -434,7 +434,10 @@ func machineHostFor(r *Registry, sess *tools.Session, alias string) (*Host, bool
 	if h, have := mine.get(alias); have && h.cfg.machine {
 		return h, true, nil
 	}
-	h, err := newMachineHost(r.machineConfig(), mh)
+	r.mu.RLock()
+	allowed := r.machineAllowed
+	r.mu.RUnlock()
+	h, err := newMachineHost(r.machineConfig(), mh, allowed)
 	if err != nil {
 		return nil, true, err
 	}

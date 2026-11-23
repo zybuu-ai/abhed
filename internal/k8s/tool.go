@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/kubescope"
+	"github.com/zybuu-ai/abhed/internal/machinegrant"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -48,11 +49,26 @@ type Manager struct {
 	listing func() string
 	// loggedIn is set once any session of this manager logs in.
 	loggedIn atomic.Bool
+	// keptNames are the kept logins as they were when first asked, so the
+	// tools' descriptions and what is offered stay the same for the life of
+	// the session, and its prompt cache with them; a login kept since is
+	// still reached by name.
+	keptNames func() []string
 }
 
 func NewManager(cfg Config) *Manager {
 	m := &Manager{cfg: cfg, secret: cfg.Secret, clusters: map[string]*Cluster{}}
 	m.listing = sync.OnceValue(m.contextList)
+	m.keptNames = sync.OnceValue(func() []string {
+		var out []string
+		if cfg.KeptLogins {
+			for name := range machinegrant.Logins() {
+				out = append(out, name)
+			}
+		}
+		sort.Strings(out)
+		return out
+	})
 	return m
 }
 
@@ -440,6 +456,10 @@ func (m *Manager) where(sess *tools.Session, clusterName, ctxName string) string
 	return fmt.Sprintf("changes kubeconfig context %s at %s with the kubeconfig's own credential",
 		c.Name, displayURL(c.Server))
 }
+
+// DisplayURL is a server URL fit to show: any user, password, query or
+// fragment written into it is left out.
+func DisplayURL(server string) string { return displayURL(server) }
 
 // displayURL is a server URL fit to show and record: any user, password,
 // query or fragment written into it is left out.
@@ -1315,11 +1335,16 @@ func (t LoginTool) declared(name string) (LoginCluster, error) {
 		name, strings.Join(names, ", "))
 }
 
-// BoundSecrets names the secret a kept login reads when the call names none.
+// BoundSecrets names the secret a kept login reads when the call names none,
+// or the one a pasted login stores into, so a deny rule on either refuses
+// the call before anything is stored or sent.
 func (t LoginTool) BoundSecrets(_ *tools.Session, raw json.RawMessage) []string {
 	var a loginArgs
-	if t.M == nil || json.Unmarshal(raw, &a) != nil || a.TokenSecret != "" || a.Pasted != "" {
+	if t.M == nil || json.Unmarshal(raw, &a) != nil || a.TokenSecret != "" {
 		return nil
+	}
+	if a.Pasted != "" {
+		return []string{storeName(a)}
 	}
 	if kl, ok := t.M.keptLogin(strings.TrimSpace(a.Cluster)); ok {
 		return []string{kl.Secret}

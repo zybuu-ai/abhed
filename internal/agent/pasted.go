@@ -19,7 +19,7 @@ import (
 func (l *Loop) withholdPasted(text string) (string, string, string) {
 	found := secretfiles.FindPasted(text)
 	if len(found) == 0 {
-		return text, "", ""
+		return l.withholdHeld(text), "", ""
 	}
 	var b strings.Builder
 	var ids, lines []string
@@ -33,17 +33,23 @@ func (l *Loop) withholdPasted(text string) (string, string, string) {
 		} else {
 			b.WriteString("[pasted:" + id + "]")
 			ids = append(ids, id+":"+p.Kind)
+			// The server named is the one held, which is where a login sends it.
+			server := p.Server
+			if held, ok := tools.PastedValue(l.Session, id); ok {
+				server = held.Server
+			}
 			line := fmt.Sprintf("%s is %s", id, p.Kind)
-			if p.Server != "" {
-				line += " for the server " + p.Server
+			if server != "" {
+				line += " for the server " + server
 			}
 			lines = append(lines, line)
 		}
 		last = p.End
 	}
 	b.WriteString(text[last:])
+	out := l.withholdHeld(b.String())
 	if len(lines) == 0 {
-		return b.String(), "", ""
+		return out, "", ""
 	}
 	note := "[Abhed: the user pasted a credential, which was withheld from you and from the record: " +
 		strings.Join(lines, "; ") + ". Never ask them to paste it again, and never repeat or guess it. "
@@ -55,13 +61,38 @@ func (l *Loop) withholdPasted(text string) (string, string, string) {
 		}
 	}
 	note += "To use any other pasted credential, the user stores it with `abhed secret set NAME`.]"
-	return b.String(), strings.Join(ids, ","), note
+	return out, strings.Join(ids, ","), note
+}
+
+// minHeld is the shortest held value withheld wherever it appears again:
+// a shorter one would match ordinary words.
+const minHeld = 8
+
+// withholdHeld is text with each credential the session holds replaced by
+// its placeholder, wherever it appears again: a later message, a tool's
+// output, a hook's text.
+func (l *Loop) withholdHeld(text string) string {
+	if l == nil || l.Session == nil {
+		return text
+	}
+	for _, p := range tools.PastedHeld(l.Session) {
+		if len(p.Value) >= minHeld && strings.Contains(text, p.Value) {
+			text = strings.ReplaceAll(text, p.Value, "[pasted:"+p.ID+"]")
+		}
+	}
+	return text
 }
 
 // withheldDropped is a message that was not delivered, as the record keeps
 // it: stored secrets and pasted credentials withheld, none held for use.
 func withheldDropped(l *Loop, text string) string {
 	text, _ = l.withholdSecrets(text)
+	return withholdShapes(l.withholdHeld(text))
+}
+
+// withholdShapes is text with every pasted credential's shape replaced by
+// [pasted credential], none held for use.
+func withholdShapes(text string) string {
 	found := secretfiles.FindPasted(text)
 	for i := len(found) - 1; i >= 0; i-- {
 		text = text[:found[i].Start] + "[pasted credential]" + text[found[i].End:]

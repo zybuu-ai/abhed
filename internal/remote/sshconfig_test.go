@@ -13,12 +13,14 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/machinegrant"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -414,5 +416,108 @@ func TestConnectNamesAMachineHostReady(t *testing.T) {
 	// One that brings its own key goes ahead.
 	if err := (ConnectTool{R: r}).Precheck(nil, json.RawMessage(`{"addr":"lab","identity_file":"/k"}`)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Every jump host is bounded by ssh.connect_hosts, not only the target.
+func TestConnectHostsBoundsEachJumpHost(t *testing.T) {
+	home := machineHome(t)
+	writeFile(t, filepath.Join(home, ".ssh", "config"), "Host inner\n  HostName 10.0.0.5\n  ProxyJump bastion\nHost bastion\n  HostName 203.0.113.9\n")
+	c, _ := LoadSSHConfig(filepath.Join(home, ".ssh", "config"))
+	r, _ := NewRegistry(nil)
+	r.UseSSHConfig(c, []string{"10.0.0.*"})
+	sess, _ := tools.NewSession(t.TempDir())
+	defer sess.CloseScoped()
+	res := run(t, r, sess, "inner")
+	if !res.IsError || !strings.Contains(res.Content, "203.0.113.9:22") || !strings.Contains(res.Content, "connect_hosts") {
+		t.Fatalf("a jump host outside connect_hosts: %+v", res)
+	}
+}
+
+// A kept host grant covers its jump hosts as they were: a bastion moved
+// to another machine, or with another key on file, asks again.
+func TestAChangedJumpHostAsksAgain(t *testing.T) {
+	home := machineHome(t)
+	cfg := filepath.Join(home, ".ssh", "config")
+	writeFile(t, cfg, "Host inner\n  HostName 10.0.0.5\n  ProxyJump bastion\nHost bastion\n  HostName 203.0.113.9\n")
+	sess, _ := tools.NewSession(t.TempDir())
+	args := json.RawMessage(`{"host":"inner","command":"uptime"}`)
+	g, need := (Tool{R: machineRegistry(t, home)}).FirstUse(sess, args)
+	if !need {
+		t.Fatal("not asked")
+	}
+	if err := keepMachine(g); err != nil {
+		t.Fatal(err)
+	}
+	if _, need := (Tool{R: machineRegistry(t, home)}).FirstUse(sess, args); need {
+		t.Fatal("asked again with nothing changed")
+	}
+	writeFile(t, cfg, "Host inner\n  HostName 10.0.0.5\n  ProxyJump bastion\nHost bastion\n  HostName 198.51.100.7\n")
+	if _, need := (Tool{R: machineRegistry(t, home)}).FirstUse(sess, args); !need {
+		t.Fatal("a moved bastion was not asked about")
+	}
+	// Back as it was, but with another key on file for the bastion.
+	writeFile(t, cfg, "Host inner\n  HostName 10.0.0.5\n  ProxyJump bastion\nHost bastion\n  HostName 203.0.113.9\n")
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	signer, _ := ssh.NewSignerFromKey(priv)
+	writeFile(t, filepath.Join(home, ".ssh", "known_hosts"), "203.0.113.9 "+string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
+	if _, need := (Tool{R: machineRegistry(t, home)}).FirstUse(sess, args); !need {
+		t.Fatal("a bastion with another key on file was not asked about")
+	}
+}
+
+// IdentitiesOnly keeps the agent's other keys from being offered.
+func TestIdentitiesOnlyIsRead(t *testing.T) {
+	home := machineHome(t)
+	writeFile(t, filepath.Join(home, ".ssh", "config"), "Host a\n  IdentitiesOnly yes\n  IdentityFile ~/.ssh/k\n")
+	c, _ := LoadSSHConfig(filepath.Join(home, ".ssh", "config"))
+	if h, _ := c.Resolve("a"); !h.IdentitiesOnly || !machineHostConfig(h).identitiesOnly {
+		t.Fatalf("%+v", h)
+	}
+}
+
+// The address reached through a jump host is judged and recorded by the
+// egress guard as a direct one is: one no rule allows is refused there.
+func TestTheTunnelledAddressIsJudgedByTheGuard(t *testing.T) {
+	home := machineHome(t)
+	pub := clientKey(t, filepath.Join(home, ".ssh", "id_lab"))
+	jump := startKeyServer(t, pub)
+	target := startKeyServer(t, pub)
+	jh, jp, _ := net.SplitHostPort(jump.addr)
+	th, tp, _ := net.SplitHostPort(target.addr)
+	writeFile(t, filepath.Join(home, ".ssh", "config"), fmt.Sprintf(
+		"Host inner\n  HostName %s\n  Port %s\n  ProxyJump bastion\nHost bastion\n  HostName %s\n  Port %s\nHost *\n  IdentityFile ~/.ssh/id_lab\n", th, tp, jh, jp))
+	writeFile(t, filepath.Join(home, ".ssh", "known_hosts"), knownLine(jump.addr, jump.hostKey)+knownLine(target.addr, target.hostKey))
+	jport, _ := strconv.Atoi(jp)
+	pol, err := egress.Compile(egress.Config{Rules: []egress.Rule{{Host: jh, Ports: []int{jport}, Decision: "allow", AllowIPs: []string{jh}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := egress.NewGuard(egress.GuardOptions{Policy: pol})
+	defer g.Close()
+	var mu sync.Mutex
+	var seen []string
+	rec := func(_ string, m map[string]any) error {
+		mu.Lock()
+		seen = append(seen, fmt.Sprint(m["host"], ":", m["port"], " ", m["decision"]))
+		mu.Unlock()
+		return nil
+	}
+	ctx := egress.WithGuard(egress.WithCaller(context.Background(), egress.Caller{Session: "s", CallID: "c", Record: rec}), g)
+	r := machineRegistry(t, home)
+	sess, _ := tools.NewSession(t.TempDir())
+	defer sess.CloseScoped()
+	res := Tool{R: r}.Run(ctx, sess, json.RawMessage(`{"host":"inner","command":"uptime"}`))
+	if !res.IsError {
+		t.Fatalf("a tunnel no rule allows ran: %+v", res)
+	}
+	g.EndSession("s")
+	target.mu.Lock()
+	ran := len(target.commands)
+	target.mu.Unlock()
+	mu.Lock()
+	defer mu.Unlock()
+	if ran != 0 || !slices.ContainsFunc(seen, func(s string) bool { return strings.HasPrefix(s, th+":"+tp) && strings.Contains(s, "deny") }) {
+		t.Fatalf("recorded %v, target ran %d", seen, ran)
 	}
 }

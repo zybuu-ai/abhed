@@ -810,6 +810,12 @@ func contextInfo(kc *kubeconfig, name string) (ContextInfo, bool) {
 		if cl.Name == ctx.Cluster {
 			info.Server, info.Insecure = strings.TrimSuffix(cl.Server, "/"), cl.InsecureSkipTLSVerify
 			ca = cl.CertificateAuthorityData + "\x00" + cl.CertificateAuthority
+			if cl.CertificateAuthority != "" {
+				// The file's content, so a CA swapped in at the same path asks again.
+				if b, err := os.ReadFile(cl.CertificateAuthority); err == nil { // #nosec G304 -- the CA the person's kubeconfig names
+					ca += "\x00" + machinegrant.Identity(string(b))
+				}
+			}
 			break
 		}
 	}
@@ -841,6 +847,10 @@ func contextInfo(kc *kubeconfig, name string) (ContextInfo, bool) {
 		if u.Name == ctx.User && u.Exec != nil {
 			for _, e := range u.Exec.Env {
 				execEnv += e.Name + "=" + e.Value + "\x00"
+			}
+			// The program PATH finds now, so another one found first asks again.
+			if p, err := exec.LookPath(u.Exec.Command); err == nil {
+				execEnv += "path=" + p
 			}
 		}
 	}

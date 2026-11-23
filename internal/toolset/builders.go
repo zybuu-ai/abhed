@@ -406,8 +406,10 @@ func InfraToolsFor(cfg config.Config, vault *secrets.Store, warn func(string, ..
 			// runs a context's credential helper.
 			FirstUseAll:      autoK8s,
 			HiddenUntilLogin: loginOnly,
-			KeptLogins:       machine,
-			Secret:           secret,
+			// Under a managed configuration only the organisation's
+			// k8s.clusters take a token: no login is kept or offered.
+			KeptLogins: machine && !cfg.Managed,
+			Secret:     secret,
 		})
 		for _, c := range cfg.K8s.Clusters {
 			if c.InsecureSkipTLSVerify {

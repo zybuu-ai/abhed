@@ -77,7 +77,7 @@ func machineDoctor(cfg config.Config) []string {
 		}
 		names := make([]string, 0, len(list))
 		for _, c := range list {
-			n := c.Name + " → " + c.Server
+			n := c.Name + " → " + k8s.DisplayURL(c.Server)
 			if c.Refused != "" {
 				n += " (not usable: " + strings.SplitN(c.Refused, ",", 2)[0] + ")"
 			} else if c.Exec != "" {
@@ -85,7 +85,11 @@ func machineDoctor(cfg config.Config) []string {
 			}
 			names = append(names, ui.VisibleLine(n))
 		}
-		out = append(out, fmt.Sprintf("kubeconfig  %d contexts, each asked before its first use", len(list)))
+		how := "each asked before its first use"
+		if cfg.K8s.Enabled {
+			how = "a credential helper asked before it first runs"
+		}
+		out = append(out, fmt.Sprintf("kubeconfig  %d contexts, %s", len(list), how))
 		for _, n := range names {
 			out = append(out, "            "+n)
 		}

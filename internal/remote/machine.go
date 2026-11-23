@@ -2,9 +2,16 @@ package remote
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
+	"os"
+	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/zybuu-ai/abhed/internal/machinegrant"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -29,11 +36,54 @@ func machineTarget(mh MachineHost) string {
 	return t
 }
 
-// machineIdentity sums what a grant for mh covers: where it goes and as
-// whom, so a changed HostName, User, Port, ProxyJump or key asks again.
-func machineIdentity(mh MachineHost) string {
-	return machinegrant.Identity(mh.Alias, mh.HostName, strconv.Itoa(mh.Port), mh.User, mh.ProxyJump,
-		strings.Join(mh.IdentityFiles, "\x00"), strings.Join(mh.KnownHostsFiles, "\x00"))
+// machineIdentity sums what a grant for mh covers: where it goes, as whom,
+// with which keys, and the host keys known_hosts holds for it, for the host
+// and each jump host on the way. A changed HostName, User, Port, key,
+// known_hosts entry or jump host asks again.
+func machineIdentity(c *SSHConfig, mh MachineHost) string {
+	parts := []string{mh.Alias}
+	chain, err := hops(c, mh, nil)
+	if err != nil {
+		parts = append(parts, "hops:"+err.Error())
+	}
+	for _, h := range append([]MachineHost{mh}, chain...) {
+		parts = append(parts, h.HostName, strconv.Itoa(h.Port), h.User,
+			strings.Join(h.IdentityFiles, "\x00"), strings.Join(h.KnownHostsFiles, "\x00"),
+			strings.Join(knownKeys(h), "\x00"))
+	}
+	return machinegrant.Identity(parts...)
+}
+
+// knownKeys are the fingerprints of the keys known_hosts holds for h.
+func knownKeys(h MachineHost) []string {
+	files := h.KnownHostsFiles
+	if len(files) == 0 {
+		files = []string{"~/.ssh/known_hosts", "~/.ssh/known_hosts2"}
+	}
+	var existing []string
+	for _, f := range files {
+		if _, err := os.Stat(expandHome(f)); err == nil {
+			existing = append(existing, expandHome(f))
+		}
+	}
+	probe := probeKey()
+	if len(existing) == 0 || probe == nil {
+		return nil
+	}
+	cb, err := knownhosts.New(existing...)
+	if err != nil {
+		return []string{"unreadable"}
+	}
+	var keyErr *knownhosts.KeyError
+	if err := cb(h.Addr(), &net.TCPAddr{IP: net.IPv4zero, Port: h.Port}, probe); !errors.As(err, &keyErr) {
+		return nil
+	}
+	var out []string
+	for _, k := range keyErr.Want {
+		out = append(out, ssh.FingerprintSHA256(k.Key))
+	}
+	sort.Strings(out)
+	return out
 }
 
 // machineFirstUse is what a call naming host needs: nothing for a declared
@@ -49,7 +99,7 @@ func machineFirstUse(r *Registry, sess *tools.Session, host string) (tools.First
 	if !ok || mh.Refused != "" {
 		return tools.FirstUse{}, false
 	}
-	id := machineIdentity(mh)
+	id := machineIdentity(r.machineConfig(), mh)
 	if machinegrant.Kept(machinegrant.KindSSHHost, mh.Alias, id) {
 		return tools.FirstUse{}, false
 	}

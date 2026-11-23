@@ -74,6 +74,7 @@ type HostConfig struct {
 	// host through jump when ProxyJump names one.
 	machine        bool
 	identityFiles  []string
+	identitiesOnly bool
 	knownHostFiles []string
 	jump           *Host
 }
@@ -84,6 +85,9 @@ type Host struct {
 
 	mu     sync.Mutex
 	client *ssh.Client
+	// agentConn is the ssh-agent connection a handshake signs with, closed
+	// once the handshake is done.
+	agentConn net.Conn
 }
 
 func NewHost(cfg HostConfig) (*Host, error) {
@@ -115,7 +119,7 @@ func (h *Host) authMethods() ([]ssh.AuthMethod, error) {
 	var methods []ssh.AuthMethod
 
 	// The agent first: the key stays in the agent and Abhed never holds it.
-	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" && h.cfg.IdentityFile == "" {
+	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" && h.cfg.IdentityFile == "" && !h.cfg.machine {
 		if conn, err := net.Dial("unix", sock); err == nil {
 			methods = append(methods, ssh.PublicKeysCallback(agent.NewClient(conn).Signers))
 		}
@@ -315,6 +319,7 @@ func (h *Host) connect(ctx context.Context) (*ssh.Client, error) {
 	}
 
 	methods, err := h.authMethods()
+	defer h.closeAgent()
 	if err != nil {
 		return nil, err
 	}
@@ -334,7 +339,10 @@ func (h *Host) connect(ctx context.Context) (*ssh.Client, error) {
 		// Through the jump host, whose own key is checked when it connects.
 		var jc *ssh.Client
 		if jc, err = h.cfg.jump.connect(dctx); err == nil {
-			conn, err = jc.DialContext(dctx, "tcp", h.cfg.Addr)
+			// The guard judges and records the tunnelled address as it does a direct one.
+			if err = egress.AllowTunnel(dctx, egress.KindSSH, h.cfg.Addr); err == nil {
+				conn, err = jc.DialContext(dctx, "tcp", h.cfg.Addr)
+			}
 		}
 		if err != nil {
 			cancel()
@@ -479,30 +487,61 @@ func (h *Host) Close() error {
 	return nil
 }
 
-// machineKeys are a ~/.ssh/config host's keys: the ssh-agent's, then each
-// IdentityFile that needs no passphrase, read in Abhed's process only. One
-// with a passphrase is left to the agent, as ssh-add puts it there.
+// machineKeys are a ~/.ssh/config host's keys, offered once each as
+// OpenSSH orders them: each IdentityFile that needs no passphrase, read in
+// Abhed's process only, then the ssh-agent's keys (with IdentitiesOnly,
+// only those an IdentityFile names). The agent connection is closed when
+// the handshake ends.
 func (h *Host) machineKeys() []ssh.AuthMethod {
-	var out []ssh.AuthMethod
+	var files []ssh.Signer
+	var named []ssh.PublicKey
+	for _, f := range h.cfg.identityFiles {
+		path := expandHome(f)
+		if key, err := os.ReadFile(path); err == nil { // #nosec G304 -- a key the person's own ssh_config names
+			if s, err := ssh.ParsePrivateKey(key); err == nil {
+				files = append(files, s)
+				named = append(named, s.PublicKey())
+				continue
+			}
+		}
+		// A key with a passphrase is named by its .pub, for the agent to sign with.
+		if pub, err := os.ReadFile(path + ".pub"); err == nil { // #nosec G304 -- as above
+			if k, _, _, _, err := ssh.ParseAuthorizedKey(pub); err == nil {
+				named = append(named, k)
+			}
+		}
+	}
+	var agentSigners func() ([]ssh.Signer, error)
 	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
 		if conn, err := net.Dial("unix", sock); err == nil {
-			out = append(out, ssh.PublicKeysCallback(agent.NewClient(conn).Signers))
+			h.agentConn = conn
+			agentSigners = agent.NewClient(conn).Signers
 		}
 	}
-	var signers []ssh.Signer
-	for _, f := range h.cfg.identityFiles {
-		key, err := os.ReadFile(expandHome(f)) // #nosec G304 -- a key the person's own ssh_config names
-		if err != nil {
-			continue
-		}
-		if s, err := ssh.ParsePrivateKey(key); err == nil {
-			signers = append(signers, s)
-		}
+	if len(files) == 0 && agentSigners == nil {
+		return nil
 	}
-	if len(signers) > 0 {
-		out = append(out, ssh.PublicKeys(signers...))
-	}
-	return out
+	return []ssh.AuthMethod{ssh.PublicKeysCallback(func() ([]ssh.Signer, error) {
+		out := append([]ssh.Signer(nil), files...)
+		seen := map[string]bool{}
+		for _, s := range files {
+			seen[string(s.PublicKey().Marshal())] = true
+		}
+		if agentSigners != nil {
+			fromAgent, err := agentSigners()
+			if err == nil {
+				for _, s := range fromAgent {
+					k := string(s.PublicKey().Marshal())
+					if seen[k] || h.cfg.identitiesOnly && !slices.ContainsFunc(named, func(p ssh.PublicKey) bool { return string(p.Marshal()) == k }) {
+						continue
+					}
+					seen[k] = true
+					out = append(out, s)
+				}
+			}
+		}
+		return out, nil
+	})}
 }
 
 // drop closes c, and forgets it when it is still h's connection, so the
@@ -603,5 +642,13 @@ func (h *Host) Stream(ctx context.Context, command string, stdin io.Reader, stdo
 	case <-ctx.Done():
 		_ = session.Signal(ssh.SIGTERM)
 		return -1, ctx.Err()
+	}
+}
+
+// closeAgent closes the ssh-agent connection a handshake used. h.mu is held.
+func (h *Host) closeAgent() {
+	if h.agentConn != nil {
+		_ = h.agentConn.Close()
+		h.agentConn = nil
 	}
 }

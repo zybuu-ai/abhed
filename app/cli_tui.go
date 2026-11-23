@@ -19,11 +19,11 @@ func setupTerminal(editor *ui.LineReader, r *ui.Renderer, workspace string) {
 		return
 	}
 	r.Attach(editor)
-	// A vault secret in a prompt is withheld from the history file as it is
-	// from the record.
+	// A vault secret or a pasted credential in a prompt is withheld from the
+	// history file as it is from the record.
 	h := ui.LoadHistory(ui.HistoryPath(workspace))
 	red := openVault().Session()
-	h.SetRedact(func(s string) string { return string(red.Redact([]byte(s))) })
+	h.SetRedact(func(s string) string { return agent.WithheldText(red, s) })
 	editor.SetHistory(h)
 }
 

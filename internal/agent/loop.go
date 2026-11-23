@@ -746,19 +746,21 @@ func (l *Loop) withholdSecrets(text string) (string, string) {
 
 // WithheldText is text with each stored secret's value red holds replaced
 // by [secret:NAME], as a person's message is before it is kept anywhere.
+// A pasted credential's shape is withheld too, as [pasted credential], so
+// a history file, a session row or an editor's request never holds one.
 func WithheldText(red Redactor, text string) string {
-	red = usableRedactor(red)
-	if red == nil {
-		return text
+	if red = usableRedactor(red); red != nil {
+		text = redactedText(red.Redact, text)
 	}
-	return redactedText(red.Redact, text)
+	return withholdShapes(text)
 }
 
 // Withheld is text as this loop keeps a person's message: its stored
-// secrets withheld.
+// secrets, the credentials the session holds and any pasted credential's
+// shape withheld.
 func (l *Loop) Withheld(text string) string {
 	out, _ := l.withholdSecrets(text)
-	return out
+	return withholdShapes(l.withholdHeld(out))
 }
 
 func (l *Loop) setPrompt(text, sent string) {
@@ -2124,8 +2126,10 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 			decision.Reason = strings.TrimPrefix(decision.Reason+"; "+target, "; ")
 		}
 	}
+	pin := ""
 	if pc, ok := tool.(tools.CertificatePinner); ok && doomed == nil {
 		if sum, subject, pins := pc.PinnedCertificate(l.Session, call.Args); pins {
+			pin = sum
 			decision.PinSHA256, decision.PinSubject = sum, subject
 		}
 	}
@@ -2134,6 +2138,15 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 	var planned *planHit
 	if doomed == nil {
 		decision, planned = l.planBind(ctx, tool, call, decision)
+	}
+	// Pinning a certificate no CA vouches for is trusting what answered now:
+	// only a person who saw the fingerprint can say yes. No mode, rule,
+	// runbook or remembered scope answers it.
+	if pin != "" && decision.Decision != policy.Deny {
+		planned = nil
+		decision = policy.Result{Decision: policy.Ask, Step: "pin", Reason: decision.Reason,
+			Rule: decision.Rule, Layer: decision.Layer, Source: decision.Source,
+			PinSHA256: decision.PinSHA256, PinSubject: decision.PinSubject}
 	}
 
 	asked, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
@@ -2284,6 +2297,13 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 		}
 		if approvedBy["by"] == ByReviewer {
 			l.noteReviewed(call.ID)
+		}
+		if pin != "" && approvedBy["by"] != ByReviewer && approvedBy["by"] != ByUser {
+			why := "approving it pins a server certificate, which only a person who saw its fingerprint may approve; " +
+				"no one was asked (" + approvedBy["by"] + ")"
+			l.record(EvActionDenied, ActorSystem, map[string]string{"call_id": call.ID, "reason": why, "step": "pin", "by": BySystem})
+			return false, tools.Result{Content: "Not run: " + why + ". Ask the user to store the token with `abhed secret set NAME` " +
+				"and give the cluster's CA file in k8s.clusters, or to approve the login where they can be asked.", IsError: true}, ""
 		}
 		if firstUse != nil {
 			l.firstUseApproved(tool, *firstUse, firstUse.Scope != "" && answer.Granted == firstUse.Scope, approvedBy)
@@ -2508,6 +2528,7 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	if red != nil {
 		result.Content = redactedText(red.Redact, result.Content)
 	}
+	result.Content = l.withholdHeld(result.Content)
 	if isTask {
 		l.observe(ctx, HookSubagentEnd, call.Name, result.Content)
 	}
@@ -2520,6 +2541,7 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 			// What a hook wrote in its place is held to the same rule.
 			result.Content = redactedText(red.Redact, result.Content)
 		}
+		result.Content = l.withholdHeld(result.Content)
 	}
 	// A folder's own memory comes with the first result that used the
 	// folder, before the observation is recorded, so a resume replays it.

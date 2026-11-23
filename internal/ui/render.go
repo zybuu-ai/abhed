@@ -799,8 +799,6 @@ func truncate(s string, n int) string {
 	return string([]rune(s)[:n]) + "..."
 }
 
-// WithheldNote tells the sender which stored secrets their message held, by
-// name, and that the model got placeholders; "" when it held none.
 // MessageNote is what a person is told of a message that held stored
 // secrets' values or pasted credentials, "" when it held neither.
 func MessageNote(secrets, pasted string) string {
@@ -829,6 +827,8 @@ func PastedNote(pasted string) string {
 		"record, and is held in memory for this session only, for a login you approve"
 }
 
+// WithheldNote tells the sender which stored secrets their message held, by
+// name, and that the model got placeholders; "" when it held none.
 func WithheldNote(names string) string {
 	if names == "" {
 		return ""
