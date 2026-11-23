@@ -152,7 +152,12 @@ func (b *HostBroker) plan(ctx context.Context, cwd string, op remoteOp) (plan, e
 // host git takes its SSH command and credential helpers from, is not theirs
 // alone: a file of it, or one it includes, lies where commands can write.
 func (b *HostBroker) personConfigHeld(ctx context.Context, cwd, verb string) error {
-	if err := PersonConfigWritable(ctx, cwd, append([]string{b.workspace}, writableAreas()...)); err != nil {
+	areas := append([]string{b.workspace}, writableAreas()...)
+	err := PersonConfigWritable(ctx, cwd, areas)
+	if err == nil {
+		err = personProgramsHeld(ctx, cwd, areas)
+	}
+	if err != nil {
 		return fmt.Errorf("git %s: %v, so Abhed does not run git %s on the host as you; move it out of the agent's reach, or run it yourself", verb, err, verb)
 	}
 	return nil

@@ -45,7 +45,7 @@ func TestBrokerRunsWorktreesOnTheHost(t *testing.T) {
 		return exec.CommandContext(ctx, "true")
 	}
 	process := func() sandbox.Tier { return sandbox.TierProcess }
-	run := Broker(ws, process, true, inner)
+	run := NewBroker(ws, process, Network{Open: true}, inner).HoldsGit(func() bool { return true }, nil).Command
 	ctx := context.Background()
 	if out, err := run(ctx, ws, "git worktree add -q -b w1 wt HEAD").CombinedOutput(); err != nil {
 		t.Fatalf("worktree add: %v %s", err, out)
@@ -65,7 +65,7 @@ func TestBrokerRunsWorktreesOnTheHost(t *testing.T) {
 	}
 	// The container tier is left to its sandbox.
 	container := func() sandbox.Tier { return sandbox.TierContainer }
-	_ = Broker(ws, container, true, inner)(ctx, ws, "git worktree prune").Run()
+	_ = NewBroker(ws, container, Network{Open: true}, inner).HoldsGit(func() bool { return true }, nil).Command(ctx, ws, "git worktree prune").Run()
 	if len(seen) != 2 {
 		t.Fatalf("a container tier's line was brokered: %v", seen)
 	}

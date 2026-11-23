@@ -63,7 +63,8 @@ func TestHeadlessPullIsBrokered(t *testing.T) {
 		git(ws, "config", "branch.main.merge", "refs/heads/main")
 		git(seed, "commit", "-q", "--allow-empty", "-m", "two")
 		git(seed, "push", "-q", bare, "main")
-		stub := filepath.Join(root, "ssh-stub")
+		// The person's ssh is theirs alone: in their own folder, not where commands write.
+		stub := filepath.Join(person, "ssh-stub")
 		script := "#!/bin/sh\nfor a; do last=$a; done\necho \"host=$1 cmd=$last\" >> " + stubLog + "\ncd " + remotes + " && eval \"$last\"\n"
 		if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
 			t.Fatal(err)

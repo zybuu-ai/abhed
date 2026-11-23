@@ -170,18 +170,6 @@ func (b *HostBroker) commonOf(ctx context.Context, root string) string {
 	return c
 }
 
-// Broker wraps a sandbox's Command so the git commands the sandbox keeps from
-// working run through host git: worktree add, remove and prune (the sandbox
-// holds git's worktree folders). Anything else goes to command as it was. Only
-// the process tier and the fence are brokered, as only they run commands on
-// this host. git submodule update is not: it runs programs the submodules'
-// own configuration and attributes name (filters, an update command), which
-// no list of settings switched off could be shown to cover. Remote commands
-// need NewBroker, told the sandbox holds git's configuration.
-func Broker(workspace string, tier func() sandbox.Tier, netOpen bool, command func(ctx context.Context, cwd, line string) *exec.Cmd) func(ctx context.Context, cwd, line string) *exec.Cmd {
-	return NewBroker(workspace, tier, Network{Open: netOpen}, command).Command
-}
-
 // onHost reports whether the tier runs commands on this host.
 func (b *HostBroker) onHost() bool {
 	if b.tier == nil {
@@ -210,8 +198,10 @@ func (b *HostBroker) Command(ctx context.Context, cwd, line string) *exec.Cmd {
 		}
 		return b.remoteCommand(ctx, cwd, line, op)
 	}
+	// Worktree commands too only where the sandbox holds git's configuration,
+	// so the drivers read now are the ones host git sees.
 	args, ok := brokered(line)
-	if !ok || !b.onHost() {
+	if !ok || !b.held() || !b.onHost() {
 		return b.command(ctx, cwd, line)
 	}
 	if err := brokerPaths(b.workspace, cwd, args); err != nil {

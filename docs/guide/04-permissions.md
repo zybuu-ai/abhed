@@ -1203,6 +1203,15 @@ cannot steer host git:
   (`~name/`) or git's install (`%(prefix)/`), which Abhed does not follow;
   while `GIT_CONFIG_GLOBAL` or `GIT_CONFIG_SYSTEM` is a relative path; or
   past 200 files. The same check stops an issue's push.
+- The programs your configuration names for host git must be yours alone
+  too: the SSH command (or `ssh` when you name none), `core.askPass` and
+  `SSH_ASKPASS`, `core.gitProxy` and each credential helper (a `!` helper by
+  its first word, which must be a program, not a shell function). Nothing is
+  brokered while one is a relative path (git would find it from the
+  repository), lies in the workspace or a folder commands can write, is
+  found on `PATH` after a folder commands can write, or is another user's or
+  writable by others. `GIT_SSH`, `GIT_SSH_COMMAND` and `GIT_ASKPASS` in your
+  environment are not given to host git at all.
 - A brokered line is given no vault secret (`secrets`): git run on the host
   as you needs none.
 - On Linux, the process tier (bubblewrap) and the fence hold git's files by

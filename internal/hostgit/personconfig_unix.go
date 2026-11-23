@@ -44,3 +44,30 @@ func untrustedFile(f string) string {
 	}
 	return ""
 }
+
+// untrustedProgram says why program p is not the person's or root's alone:
+// owned by another user, or it or its folder writable by others. A hard
+// link is not refused here: system programs often have several names.
+func untrustedProgram(p string) string {
+	real := sandbox.RealPath(p)
+	info, err := os.Stat(real)
+	if err != nil {
+		return ""
+	}
+	me := uint32(os.Getuid()) // #nosec G115 -- a uid
+	if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Uid != me && st.Uid != 0 {
+		return "is owned by another user"
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return "is writable by other users"
+	}
+	if d, err := os.Stat(filepath.Dir(real)); err == nil {
+		if st, ok := d.Sys().(*syscall.Stat_t); ok && st.Uid != me && st.Uid != 0 {
+			return "is in a folder owned by another user"
+		}
+		if d.Mode().Perm()&0o022 != 0 && d.Mode()&os.ModeSticky == 0 {
+			return "is in a folder other users can write"
+		}
+	}
+	return ""
+}

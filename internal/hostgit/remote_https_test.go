@@ -42,8 +42,13 @@ func TestBrokerHTTPSUsesThePersonsHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A generic helper that answers, and one for this server that says nothing.
-	_, _ = f.WriteString("[http]\n\tsslCAInfo = " + ca + "\n[credential]\n\thelper = \"!f() { echo username=person; echo password=PERSON-TOKEN; }; f\"\n" +
+	// A generic helper that answers (a program of the person's own), and one
+	// for this server that says nothing.
+	helper := filepath.Join(r.home, "person-helper")
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\necho username=person\necho password=PERSON-TOKEN\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString("[http]\n\tsslCAInfo = " + ca + "\n[credential]\n\thelper = \"!" + helper + "\"\n" +
 		"[credential \"" + ts.URL + "\"]\n\thelper = \"!true\"\n")
 	_ = f.Close()
 	run(t, r.ws, "remote", "set-url", "origin", ts.URL+"/team/app.git")
