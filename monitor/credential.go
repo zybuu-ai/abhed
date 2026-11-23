@@ -38,12 +38,20 @@ func CredentialSeen(tool, args, output string) bool {
 	if keyMaterial(output) {
 		return true
 	}
+	// Only a git config can be read for its remotes alone: it counts when
+	// what it returned holds a credential, not for its name.
+	seen := func(subject string) bool {
+		if gitConfigOnly(subject) {
+			return gitConfigCredential(output)
+		}
+		return credentialish(subject)
+	}
 	var a map[string]any
 	_ = json.Unmarshal([]byte(args), &a)
 	str := func(k string) string { s, _ := a[k].(string); return s }
 	switch tool {
 	case "read", "grep":
-		return credentialish(" " + str("path"))
+		return seen(" " + str("path"))
 	case "bash", "ssh":
 		s, ok := parseScript(str("command"))
 		if !ok {
@@ -52,18 +60,18 @@ func CredentialSeen(tool, args, output string) bool {
 		for _, cmd := range s.cmds {
 			prog, rest := cmd.program()
 			for _, r := range cmd.reads {
-				if printers[prog] && credentialish(" "+r) {
+				if printers[prog] && seen(" "+r) {
 					return true
 				}
 			}
 			if prints(prog, rest) {
 				for _, w := range operands(rest) {
-					if credentialish(" " + w) {
+					if seen(" " + w) {
 						return true
 					}
 				}
 				for i, w := range rest {
-					if (w == "-in" || w == "--in") && i+1 < len(rest) && credentialish(" "+rest[i+1]) {
+					if (w == "-in" || w == "--in") && i+1 < len(rest) && seen(" "+rest[i+1]) {
 						return true
 					}
 				}
@@ -88,3 +96,29 @@ func prints(prog string, args []string) bool {
 	}
 	return false
 }
+
+var gitConfigPath = regexp.MustCompile(`\.git/config\b`)
+
+// gitConfigOnly reports a subject that names a credential file only as a
+// repository's .git/config.
+func gitConfigOnly(subject string) bool {
+	return gitConfigPath.MatchString(subject) && !credentialPatterns.MatchString(gitConfigPath.ReplaceAllString(subject, " "))
+}
+
+// gitConfigCredential reports a git config's text that holds a credential:
+// a URL with a password, or whose user is token-shaped (long, or a known
+// token prefix at any length), any extra header, or a cookie file. A remote's
+// plain URL, an ssh user such as git@, and a helper's name are none. Git
+// joins a value continued with a backslash at the line's end, and so does
+// this, before looking.
+func gitConfigCredential(out string) bool {
+	joined := gitContinuation.ReplaceAllString(out, "")
+	return gitConfigCredentialRe.MatchString(joined) || keyMaterial(joined)
+}
+
+var gitContinuation = regexp.MustCompile(`\\\r?\n`)
+
+var gitConfigCredentialRe = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^/\s@:]*:[^/\s@]+@|` +
+	`\bhttps?://[A-Za-z0-9_.~%-]{20,}@|` +
+	`\b[a-z][a-z0-9+.-]*://(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|glpat-|gldt-|glcbt-|x-access-token|x-token-auth|oauth2)[^/\s@]*@|` +
+	`(?m)^\s*extraheader\s*=|(?m)^\s*cookiefile\s*=`)

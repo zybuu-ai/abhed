@@ -50,7 +50,19 @@ const (
 	// the last session recorded them, such as an MCP server added from Studio
 	// or a terminal; see ConfigChanged.
 	EvConfigChanged EventType = "config.changed"
+	// EvConfigApplied is what of the person's changed configuration an open
+	// chat took on their word: models added, a switch to the new default.
+	EvConfigApplied EventType = "config.applied"
+	// EvSessionFacts is what the model is told of the session's tier,
+	// network, git, clusters and missing tools, each time it changes; see SessionFacts.
+	EvSessionFacts EventType = "session.facts"
 )
+
+// SessionFacts is the payload of session.facts: the system prompt's last
+// section as the model is given it from then on.
+type SessionFacts struct {
+	Text string `json:"text"`
+}
 
 // ConfigChanged is the payload of config.changed, as the change log has it.
 // The log is a file in the person's home, so its lines are recorded as

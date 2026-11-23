@@ -252,6 +252,9 @@ func run(a *App, workspace string, f *cliFlags) int {
 		Sandbox: sb,
 		// The terminal is the person's own: their kubeconfig and ~/.ssh/config are offered.
 		Machine: true,
+		// What the person opened to this workspace's commands, as Studio keeps it.
+		KeptNetwork: func() toolset.KeptNetwork { return keptNetwork(workspace) },
+		KeepNetwork: func(all bool, host string) error { return keepNetwork(workspace, all, host) },
 	})
 	defer set.Close()
 	// A skill's own directory is reachable: its instructions reference files beside them.
@@ -263,6 +266,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	// The prompt is set once the tools are known, so it names only those there.
 	loopCfg := toolset.LoopConfig(cfg, "")
 	loopCfg.Egress = set.Guard()
+	loopCfg.SessionNote = func() string { return toolset.SessionNote(cfg, sb, set.Network) }
 
 	// Subagents share the parent's budget, so a fan-out cannot multiply spend
 	// invisibly. No Approver: a subagent answers to the approver of the loop

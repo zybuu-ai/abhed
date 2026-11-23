@@ -190,9 +190,11 @@ func jsonKind(t reflect.Type) string {
 }
 
 type acpSession struct {
-	id    string
-	cwd   string
-	agent acpAgent
+	// networkTold is set once Studio was told a command failed for the network this turn.
+	networkTold bool
+	id          string
+	cwd         string
+	agent       acpAgent
 	// shutOnce makes the session's close (its summaries and end) happen once.
 	shutOnce sync.Once
 	// parts are the SDK agent's insides; inner is false for a test's
@@ -348,10 +350,12 @@ func (s *acpSession) pokeLocked() {
 func subagentCallID(requestID string) string { return "subagent-" + requestID }
 
 type acpConn struct {
-	out     io.Writer
-	outMu   sync.Mutex
-	version string
-	base    string // the workspace given on the command line, when cwd is absent
+	// cfgWatch starts the look at the person's configuration file once.
+	cfgWatch sync.Once
+	out      io.Writer
+	outMu    sync.Mutex
+	version  string
+	base     string // the workspace given on the command line, when cwd is absent
 	// trust is -trust-workspace, the default for every session's cwd.
 	trust config.TrustChoice
 	// noNetwork is a network configuration that would not go in force; no org fetch goes without it.
@@ -1251,6 +1255,9 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 		Suggest: true,
 		// A person reads the answer there, so it is labelled unless configured otherwise.
 		VerifyByDefault: true,
+		// What the person opened to this workspace's commands, kept with its grants.
+		KeptNetwork: func() toolset.KeptNetwork { return keptNetwork(o.cwd) },
+		KeepNetwork: func(all bool, host string) error { return keepNetwork(o.cwd, all, host) },
 	}
 	// The editor's own files in the workspace are out of the agent's reach (§2.6).
 	s.protected = protectedPaths(o.cwd)
@@ -1274,6 +1281,9 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 	s.parts, s.inner = embedded.Of(a)
 	s.loadKeptGrants()
 	s.loadListen(c)
+	if c.ctx != nil {
+		c.cfgWatch.Do(func() { go c.watchUserConfig() })
+	}
 	if s.inner {
 		s.undo = agent.NewUndoLog(s.parts.Session.RestoreFile, s.parts.Session.RemoveFile)
 		loop := s.parts.Loop
@@ -1313,6 +1323,13 @@ func (c *acpConn) sessionResult(s *acpSession) map[string]any {
 	// and unread keys, and the workspace settings an untrusted file could not make.
 	if w := configWarnings(s.agent); len(w) > 0 {
 		metaOf(res)["configWarnings"] = w
+	}
+	// A default model its provider said is retired or not found is named
+	// before the first prompt fails on it, with the models to use instead.
+	if s.inner {
+		if w := defaultModelWarning(s.parts.Config); w != "" {
+			metaOf(res)["modelWarning"] = map[string]any{"message": w, "others": usableModels(s.parts.Config, s.parts.Config.Model.Default)}
+		}
 	}
 	return res
 }
@@ -1593,6 +1610,9 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	undo = append(undo, func() { _ = attachImages(s.agent, nil) })
 	defer promptExit()
 	s.undo.BeginTurn()
+	s.mu.Lock()
+	s.networkTold = false // told again in a later turn
+	s.mu.Unlock()
 	s.pairing.beginPrompt(msg.ID)
 	asCommand := false
 	if cmdErr, handled := c.slashCommand(ctx, s, text, withAttached); handled {
@@ -1611,7 +1631,17 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	cancelFlush()
 	stop, reason := stopReason(ctx, err)
 	var ended *abhed.EndedError
-	if stop == "refusal" && err != nil && !errors.As(err, &ended) {
+	var problem *providerProblem
+	if s.inner && err != nil {
+		problem = explainProvider(s.parts.Config, s.provider(), err)
+		noteProviderProblem(problem)
+	} else if s.inner && stop == "end_turn" {
+		modelAnswered(s.provider(), s.parts.Config.Model.Providers[s.provider()].Model)
+	}
+	if stop == "refusal" && problem != nil {
+		// What the provider said and what to do, in the chat, not only "error".
+		c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "agent_message_chunk", "content": textBlock("\n\n" + problem.Text() + sessionKeyHint(s, err))})
+	} else if stop == "refusal" && err != nil && !errors.As(err, &ended) {
 		c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "agent_message_chunk", "content": textBlock("\n" + err.Error() + sessionKeyHint(s, err))})
 	} else if stop == "refusal" && errors.As(err, &ended) && ended.Reason != agent.TermPromptRefused {
 		// The reason is said in the chat, so the editor has something to point to.
@@ -1624,6 +1654,9 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	res := map[string]any{"stopReason": stop}
 	if reason != "" {
 		metaOf(res)["reason"] = reason
+	}
+	if problem != nil {
+		metaOf(res)["providerError"] = problem
 	}
 	notRecorded := "the prompt ended before its message was recorded"
 	if asCommand {
@@ -2060,4 +2093,12 @@ func anyHidden(fields ...string) bool {
 		}
 	}
 	return false
+}
+
+// provider is the configured provider the session's model calls go to now.
+func (s *acpSession) provider() string {
+	if s.parts.Loop != nil && s.parts.Loop.Provider != "" {
+		return s.parts.Loop.Provider
+	}
+	return s.parts.Config.Model.Default
 }

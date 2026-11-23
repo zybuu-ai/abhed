@@ -86,7 +86,18 @@ only as one of a few adjectives ("Cited", "Related", "Suggested",
 "Deployed" and "No breaking changes" stay claims), questions, courtesies
 ("let me know if…"), advice
 ("run `make test` to confirm") and stated intentions ("I'll update the docs")
-are left out, and at most 40 statements are checked. From each statement Abhed
+are left out, and at most 40 statements are checked. A statement that is
+wholly the assistant introducing itself or saying what it can do in general
+("I'm Abhed, your technical assistant", "I can help with code and
+infrastructure", "I can read files, run commands and edit code") is no claim
+about the session's work, whatever kind the agent gave it: it is unverified
+and never counts against the answer. Only a fixed set of words makes one: a
+role (Abhed, your assistant, a harness for agents), or a general verb (help,
+read, run, edit…) with plain objects (code, files, commands, questions,
+your workspace…). Any other word, such as an adjective, a past participle or a
+second clause ("I'm Abhed, and the server is healthy", "I'm your assistant
+with a healthy server", "I can help with the secure code"), leaves the
+sentence to be checked as any claim is. From each statement Abhed
 takes what can be compared: quoted text and backticked text, file paths, host
 names and addresses, versions, dates, numbers, and a number with the word it
 counts (`12 tests`, `replicas: 3`). Then:

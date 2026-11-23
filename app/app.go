@@ -206,7 +206,7 @@ var subcommands = []subcommand{
 	{name: "doctor", about: "check the configuration, the model endpoint and the sandbox", trust: true},
 	{name: "providers", about: "list the model provider types this build supports"},
 	{name: "provider", about: "a hosted provider's API key, kept in the Keychain: login, logout, status"},
-	{name: "models", about: "the models in your own configuration: list, add, default, remove, known"},
+	{name: "models", about: "the models in your own configuration: list (with context windows), add, default, remove, known, forget-window"},
 	{name: "toolchain", about: "language toolchains for the agent's commands: install, list, remove", trust: true},
 	{name: "ollama", about: "check a local Ollama model and offer what it lacks: check, status, models, forget", trust: true},
 	{name: "user", about: "manage local accounts: add, list, passwd, remove, import", trust: true},

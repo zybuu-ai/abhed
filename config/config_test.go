@@ -99,6 +99,22 @@ func TestCompactAtBounds(t *testing.T) {
 			t.Errorf("compact_at %v must be rejected", v)
 		}
 	}
+	for _, n := range []int{-1, 1, 3, 100, MinCompactAtTokens - 1} {
+		c := Default()
+		c.Context.CompactAtTokens = n
+		if err := c.Validate(); err == nil {
+			t.Errorf("compact_at_tokens %d must be rejected", n)
+		}
+	}
+	c := Default()
+	c.Context.CompactAtTokens = MinCompactAtTokens
+	if err := c.Validate(); err != nil {
+		t.Errorf("compact_at_tokens at the floor: %v", err)
+	}
+	c.Context.CompactAtTokens = 1_000_000
+	if err := c.Validate(); err != nil {
+		t.Errorf("compact_at_tokens 1,000,000: %v", err)
+	}
 }
 
 func TestWriteDefaultRoundTrips(t *testing.T) {
@@ -385,7 +401,7 @@ func TestValidateFenceSettings(t *testing.T) {
 		tier string
 		cpu  int
 		ok   bool
-	}{{"", 0, true}, {"fence", 0, true}, {"fence", 250, true}, {"outer", 0, false}, {"process", 0, false}, {"fence", -1, false}, {"fence", 102401, false}} {
+	}{{"", 0, true}, {"fence", 0, true}, {"fence", 250, true}, {"outer", 0, false}, {"none", 0, false}, {"process", 0, true}, {"fence", -1, false}, {"fence", 102401, false}} {
 		cfg := Default()
 		cfg.Sandbox.Tier, cfg.Fence.CPUPercent = c.tier, c.cpu
 		if err := cfg.Validate(); (err == nil) != c.ok {

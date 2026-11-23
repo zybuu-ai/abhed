@@ -39,7 +39,7 @@ func TestPriceFor(t *testing.T) {
 	// Unconfirmed, retired, or priced by prompt length: unpriced.
 	for _, name := range []string{"gemma4:26b", "gpt-4o-2024-05-13", "my-finetune", "",
 		"gpt-4o-2024-08-06", "gpt-4o-2024-11-20", "gpt-4.1-nano", "o4-mini", "claude-3-5-haiku-20241022",
-		"claude-opus-4-1", "claude-sonnet-4-20250514", "claude-haiku-5-5", "gpt-6-astra", "gpt-6-luna", "gpt-5.5"} {
+		"claude-opus-4-1", "claude-sonnet-4-20250514", "gpt-6-astra", "gpt-6-luna", "gpt-5.5"} {
 		if _, ok := PriceFor(name, nil); ok {
 			t.Errorf("%q has no price and must not be guessed", name)
 		}

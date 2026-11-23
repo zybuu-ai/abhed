@@ -173,6 +173,9 @@ type Result struct {
 	// SandboxNote is the kind of refusal bash put a sandbox note in Content
 	// for (see sandboxHint), "" when it put none; recorded with the result.
 	SandboxNote string
+	// NetworkOff is set when bash added its note that the command failed
+	// because the network is off: a surface may offer the person to open it.
+	NetworkOff bool
 	// Events are recorded after the result, as the system's, such as a
 	// toolchain install the call made.
 	Events []Event

@@ -29,6 +29,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandboxcli"
 	"golang.org/x/term"
@@ -270,6 +271,10 @@ func Main(args []string, opts ...Option) int {
 	noteLocalModelUse()
 	a := newApp(opts...)
 	recordAnchors = a.anchors
+	enableModelDiscovery()
+	// No window memory until the sign-in gate says who is working
+	// (useWindowMemory); a machine command keeps none.
+	model.SetWindowMemory(nil)
 	var f cliFlags
 	fs := newFlagSet(&f)
 	// Sessions: the record keeps every one, so these pick which goes on.

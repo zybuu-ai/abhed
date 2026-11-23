@@ -1253,7 +1253,43 @@ _abhed/sandbox/port_contested { sessionId, port, message, joined, latestJoin }
 _abhed/sandbox/listen_watch_lost { sessionId, message }
 // engine → client request: confirm a destructive command
 _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean }
+// 1.3.0 (feature network): an agent's command failed because the network is off
+_abhed/sandbox/network_refused { sessionId, canOpen, why?, message, choices: ["workspace","host","once"] }
+// 1.3.0 (feature config_watch): the person's ~/.abhed/config.json changed while chats are open
+_abhed/config/changed { sessionIds, change: { models?, default?, newChats? }, message, canApply }
 ```
+
+- **The network on the person's word (1.3.0, feature `network`).** Once a
+  turn, an agent's command that failed because the network is off sends
+  `_abhed/sandbox/network_refused`. `_abhed/sandbox/network {sessionId,
+  scope: "workspace"|"host"|"once", host?}` → `{opened}` opens it: any host
+  for the workspace, one host (kept), or this chat alone (not kept), over
+  http and https through the session's egress proxy, deny rules still
+  winning. A kept choice applies at once to this process's other open
+  sessions of the workspace and to every later session, is listed by
+  `_abhed/grants/list` as id `network` and revoked by `_abhed/grants/revoke`
+  for new chats. Recorded `permission.changed {op: "add", list: "allow",
+  rule: "network(<host>|any host)", scope}`. Refused inside an agent's
+  command, and wherever the managed file sets `sandbox.allow_network`,
+  `sandbox.network` or `egress` (then `canOpen` is false and `why` says so).
+- **Settings changed while chats are open (1.3.0, feature `config_watch`).**
+  The engine looks at the person's own file every two seconds while a
+  session is open. `_abhed/config/changed` sorts the change: `models`
+  added and a new `default` an open chat can take, and `newChats`, every
+  other setting changed, which applies to new chats only. `_abhed/config/apply
+  {sessionId, switchDefault?}` → `{added, switchedTo?}` offers the added
+  providers in that chat, each as the configuration resolves it (managed
+  allowlists and pins hold), and switches to the new default when asked;
+  recorded `config.applied`, the switch as `model.switched`. Nothing that
+  widens what the agent may do is applied to an open chat.
+- **Provider errors (1.3.0).** A prompt that ends because the model provider
+  refused it carries `_meta.providerError {kind, status, message, provider,
+  model, next, others}` on its reply (`kind`: key, credit, retired,
+  rate_limit, unavailable or other; `message` is the provider's own, with
+  anything key-shaped redacted; `others` are configured models whose key is
+  at hand), and the same text as an `agent_message_chunk`. session/new
+  carries `_meta.modelWarning {message, others}` when the provider said the
+  default model is retired or not found within the last two weeks.
 
 - **Network (1.2.9).** The terminal has the network the agent's commands
   have: off but for the package registries open to the session through
@@ -2131,6 +2167,7 @@ them.
 | `session.woken`, `session.wake_set` | system | |
 | `compaction.started`, `compaction.completed` | system | before, after |
 | `context.offloaded` | system | results, before, after |
+| `context.window`, `context.overflow`, `context.refit` | system | model, window, action or reason, before, after; also sent live as an `agent_thought_chunk` with the sentence the terminal shows |
 | `plan.updated`, `todo.updated` | agent | items |
 | `model.call`, `model.switched` | system | tokens, latency, model; `queue_ms?`, time spent waiting for a request slot, left out of latency; `purpose` (`suggestion`) on a call outside the conversation |
 | `model.waiting` | system | model, ahead; `session` for a subagent's |

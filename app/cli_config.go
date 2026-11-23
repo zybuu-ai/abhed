@@ -14,6 +14,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
@@ -61,6 +62,28 @@ var configKeys = []configKey{
 		get:    func(c config.Config) string { return strconv.FormatBool(c.Sandbox.AllowNetwork) },
 		check:  func(_ config.Config, v string) (any, error) { return strconv.ParseBool(v) },
 		widens: func(_ config.Config, o, n string) bool { return n == "true" && o != "true" }},
+	// The tier that confines commands: auto (the strongest available) or one
+	// chosen, never below the minimum in force, the managed one included.
+	{path: "sandbox.tier",
+		get: func(c config.Config) string { return orDefault(c.Sandbox.Tier, "auto") },
+		check: func(c config.Config, v string) (any, error) {
+			v = strings.TrimSpace(v)
+			if v == "auto" {
+				return "", nil
+			}
+			if !slices.Contains([]string{"process", "container", "vm", "fence"}, v) {
+				return nil, fmt.Errorf("use auto, process, container, vm or fence")
+			}
+			if tierStrength(v) < tierStrength(c.Sandbox.MinTier) {
+				return nil, fmt.Errorf("%s is weaker than the minimum tier in force, %s (sandbox.min_tier, from %s)", v, c.Sandbox.MinTier, source(c, "sandbox.min_tier"))
+			}
+			return v, nil
+		},
+		// Choosing a tier, rather than the strongest available, may let
+		// commands do more; moving to a weaker chosen tier does.
+		widens: func(_ config.Config, o, n string) bool {
+			return n != "" && n != "auto" && (o == "" || o == "auto" || tierStrength(n) < tierStrength(o))
+		}},
 	{path: "limits.max_turns",
 		get: func(c config.Config) string { return strconv.Itoa(c.Limits.MaxTurns) },
 		check: func(_ config.Config, v string) (any, error) {
@@ -91,6 +114,14 @@ var configKeys = []configKey{
 		widens: func(_ config.Config, o, n string) bool { return n != "" && n != o }},
 }
 
+// tierStrength orders tiers as the sandbox does; fence counts as process.
+func tierStrength(t string) int {
+	if t == "fence" {
+		t = "process"
+	}
+	return sandbox.Tier(t).Strength()
+}
+
 // source says which layer made a setting.
 func source(c config.Config, path string) string {
 	switch {
@@ -108,8 +139,11 @@ func slashConfig(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	if len(args) == 0 {
 		return false, e.ui.Panel(ctx, configPanel(e.st.appCfg))
 	}
+	if args[0] == "apply" {
+		return false, configApplyCLI(e)
+	}
 	if args[0] != "set" || len(args) < 3 {
-		return false, errors.New("usage: /config, or /config set <key> <value>")
+		return false, errors.New("usage: /config, /config set <key> <value>, or /config apply")
 	}
 	return false, configSet(ctx, e, args[1], strings.Join(args[2:], " "))
 }

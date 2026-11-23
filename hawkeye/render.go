@@ -99,6 +99,9 @@ func Text(r Report) string {
 		fmt.Fprintf(&b, "  context   peak %s of %s (%d%%)   compactions %d   offloads %d   recalls %d\n",
 			commas(t.PeakContext), commas(t.Window), t.PeakContext*100/t.Window, len(r.Compactions), len(r.Offloads), t.Recalls)
 	}
+	for _, c := range r.Context {
+		fmt.Fprintf(&b, "  context   #%d %s\n", c.Seq, contextLine(c))
+	}
 	fmt.Fprintf(&b, "  policy    %d allowed · %d denied · %d asked a reviewer   %s\n",
 		r.Policy.Allowed, r.Policy.Denied, r.Policy.Reviewer, steps(r.Policy.ByStep))
 	for _, l := range r.PolicyLayers {
@@ -385,4 +388,20 @@ func planLabel(hash string, step int) string {
 		hash = hash[:12]
 	}
 	return fmt.Sprintf("   [plan %s step %d]", hash, step)
+}
+
+// contextLine says what one fitting of the conversation to the window did.
+func contextLine(c ContextFit) string {
+	switch c.Kind {
+	case "window":
+		return fmt.Sprintf("window of %s assumed at %s tokens (%s)", c.Model, commas(c.Window), c.Action)
+	case "overflow":
+		what := map[string]string{agent.OverflowRetried: "compacted and asked again",
+			agent.OverflowGaveUp: "still too long; the run ended", agent.OverflowTruncated: "the server cut the prompt; compacted"}[c.Action]
+		if what == "" {
+			what = c.Action
+		}
+		return fmt.Sprintf("too long for %s (%s tokens): %s, %s → %s", c.Model, commas(c.Window), what, commas(c.Before), commas(c.After))
+	}
+	return fmt.Sprintf("re-fitted to %s's %s tokens (%s): %s → %s", c.Model, commas(c.Window), c.Action, commas(c.Before), commas(c.After))
 }

@@ -25,6 +25,7 @@ import (
 // Process confines a command with OS process-level primitives: macOS
 // sandbox-exec (Seatbelt) or Linux bubblewrap. Use TierVM for untrusted code.
 type Process struct {
+	choice
 	policy  Policy
 	backend string // "sandbox-exec" | "bwrap"
 	// cmds are the commands made; a followed one still running is ended when
@@ -1589,6 +1590,7 @@ const vimInit = `if 1 | if has('nvim') | let g:abhed_rc = stdpath('config') . (f
 // None runs commands directly on the host. It keeps the tier explicit, and
 // refuses selection when isolation is required.
 type None struct {
+	choice
 	policy Policy
 	// cmds are the commands made; a followed one still running is ended when
 	// the sandbox closes.
