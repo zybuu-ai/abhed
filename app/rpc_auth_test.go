@@ -538,3 +538,26 @@ func TestBringMyDataIsOfferedForAnyEarlierItem(t *testing.T) {
 		t.Fatal("a trust file and secrets made an unattended run legacy")
 	}
 }
+
+// An edition's command that reads the person's state (workspaces) runs as
+// whoever is working: the remembered sign-in, here an account's folder.
+func TestEditionPersonCommandRunsAsTheSignedInPerson(t *testing.T) {
+	signInTest(t)
+	s, _ := identity.Open()
+	e, _, _ := s.Create("a1", "correct horse", "", "")
+	if err := s.Remember(e.ID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(endGuest)
+	var who identity.Kind
+	var dir string
+	code := Main([]string{"-C", t.TempDir(), "workspaces", "list"}, WithCommand("workspaces", func(string, []string) int {
+		who = currentPrincipal().Kind
+		dir, _ = home.PersonPath("profiles.json")
+		return 0
+	}))
+	root, _ := s.Root(e)
+	if code != 0 || who != identity.Account || !strings.HasPrefix(dir, root) {
+		t.Fatalf("exit %d, ran as %v with profiles at %s (want under %s)", code, who, dir, root)
+	}
+}

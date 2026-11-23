@@ -6,11 +6,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zybuu-ai/abhed/config"
 )
 
 // Controls that only matter once the server is reachable from a network it does
@@ -317,4 +320,91 @@ func canonicalHost(host string, next http.Handler) http.Handler {
 		u.Host = host
 		http.Redirect(w, r, u.String(), http.StatusMovedPermanently)
 	})
+}
+
+// hostGuard refuses a request whose Host names this server by a name it was
+// not given: a page on another site that points its own DNS name at this
+// address (DNS rebinding) is then same-origin with itself, Origin and all,
+// and would otherwise reach the API. Loopback and IP addresses cannot be
+// rebound, so they pass, as do canonical_host, server.allowed_hosts and the
+// hosts of allowed_origins and auth.redirect_url. With auth.mode none, where
+// the API is anyone's who reaches it, only loopback and server.allowed_hosts
+// pass.
+func hostGuard(cfg config.Config, log *slog.Logger, next http.Handler) http.Handler {
+	named := map[string]bool{}
+	add := func(h string) {
+		if h = normalHost(h); h != "" {
+			named[h] = true
+		}
+	}
+	for _, h := range cfg.Server.AllowedHosts {
+		add(h)
+	}
+	noAuth := cfg.Auth.Mode == "" || cfg.Auth.Mode == "none"
+	if !noAuth {
+		add(cfg.Server.CanonicalHost)
+		for _, o := range append(append([]string{}, cfg.Server.AllowedOrigins...), cfg.Auth.RedirectURL) {
+			if u, err := url.Parse(o); err == nil {
+				add(u.Host)
+			}
+		}
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := normalHost(r.Host)
+		ip := net.ParseIP(h)
+		switch {
+		case h == "", named[h], h == "localhost", strings.HasSuffix(h, ".localhost"), ip != nil && ip.IsLoopback():
+			next.ServeHTTP(w, r)
+			return
+		case ip != nil && !noAuth:
+			next.ServeHTTP(w, r)
+			return
+		}
+		why := "this server does not answer to the host " + strconv.Quote(h) + "; add it to server.allowed_hosts"
+		if noAuth {
+			why = "with no sign-in (auth.mode none) this server answers only on loopback, not to " + strconv.Quote(h) +
+				"; turn on sign-in, or add the name to server.allowed_hosts"
+		}
+		WriteError(w, http.StatusMisdirectedRequest, why)
+		if log != nil {
+			log.Warn("request refused", "method", r.Method, "path", r.URL.Path,
+				"status", http.StatusMisdirectedRequest, "reason", "host", "host", h, "remote", r.RemoteAddr)
+		}
+	})
+}
+
+// normalHost is a Host or host:port as a lower-case name or address, with
+// no port, brackets or trailing dot.
+func normalHost(h string) string {
+	h = strings.TrimSpace(h)
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		h = host
+	}
+	return strings.TrimSuffix(strings.ToLower(strings.Trim(h, "[]")), ".")
+}
+
+// HostNamesNote is the one line serve prints when it listens beyond
+// loopback with no name configured for the host guard: requests that name
+// the server by DNS name are refused (421) until one is set. "" otherwise.
+func HostNamesNote(cfg config.Config, addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	h := normalHost(host)
+	if ip := net.ParseIP(h); h == "localhost" || (ip != nil && ip.IsLoopback()) {
+		return ""
+	}
+	noAuth := cfg.Auth.Mode == "" || cfg.Auth.Mode == "none"
+	named := len(cfg.Server.AllowedHosts) > 0
+	if !noAuth {
+		named = named || cfg.Server.CanonicalHost != "" || len(cfg.Server.AllowedOrigins) > 0 || cfg.Auth.RedirectURL != ""
+	}
+	if named {
+		return ""
+	}
+	if noAuth {
+		return "with no sign-in, requests that do not name the server by a loopback address get 421; set server.allowed_hosts to the names you use"
+	}
+	return "requests by DNS name get 421 until you set server.allowed_hosts (IP addresses and loopback are answered)"
 }

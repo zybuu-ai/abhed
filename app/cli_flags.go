@@ -410,6 +410,17 @@ func Main(args []string, opts ...Option) int {
 	if len(f.words) > 0 && !f.print.on && !f.dashed {
 		// An edition's own subcommand.
 		if cmd, ok := a.commands[f.words[0]]; ok {
+			// An edition's command that reads the person's state runs as
+			// whoever is working, as a built-in one does.
+			if personCommands[f.words[0]] && !(len(f.words) > 1 && isHelpArg(f.words[1])) {
+				if code := enterPrincipal(f.signIn, false, os.Stdin, os.Stderr); code != 0 {
+					return code
+				}
+				if err := guestSubcommand(f.words); err != nil {
+					fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+					return 1
+				}
+			}
 			return cmd(workspace, f.words[1:])
 		}
 		// A single bare word is far more often a mistyped command than a

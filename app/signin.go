@@ -63,6 +63,9 @@ var personCommands = map[string]bool{
 	"trust": true, "resolve": true, "index": true, "login": true, "logout": true, "profile": true,
 	"bg": true, "policy": true, "acp": true, "rpc": true, "init": true, "plugin": true,
 	"provider": true, "models": true,
+	// sandbox, and an edition's workspaces, read the server sign-in abhed
+	// login kept; eval runs sessions. doctor stays the machine's.
+	"sandbox": true, "eval": true, "workspaces": true,
 }
 
 // signInFlags are what the command line says about who is working.

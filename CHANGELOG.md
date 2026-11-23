@@ -8,6 +8,20 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- `abhed serve` answered any `Host`, and an `Origin` equal to it passed the
+  cross-origin check, so a web page could reach the API by pointing its own
+  name at the server (DNS rebinding); with `auth.mode` `none` that was the
+  whole API. A request whose `Host` is not loopback, an IP address (with
+  sign-in on) or a configured name (`server.allowed_hosts`,
+  `server.canonical_host`, the hosts of `server.allowed_origins` and
+  `auth.redirect_url`) is now refused with `421`; with `auth.mode` `none`
+  only loopback and `server.allowed_hosts` are answered. Affected: every
+  release with `abhed serve`.
+- A second `abhed serve` on the same HOME swept the running server's
+  per-session sandboxes. On the same address it now fails before any
+  startup cleanup; on another, the running server's startup lock
+  (`~/.abhed/serve.lock`) makes it leave the running one's sessions and
+  sandboxes alone.
 - An organisation's deny or ask rule whose flags end in a star, such as
   `bash(rm -rf*)`, held only for the flags as written: `rm -r -f build` and
   `rm -fr build` fell through to the destructive ask. Such a rule is now read
@@ -127,13 +141,21 @@ All notable changes to Abhed are recorded here. The format follows
   (`https://u:pw@…`, `https://TOKEN@…`, `?token=…`, `#…`, a signed URL)
   was printed whole where a refusal or a warning named the org policy, and
   in the status line of `abhed doctor`. Affected: 1.2.9 with an org policy.
-  A refusal, a warning and a denial reason (which reach the model and the
-  record) now show only the URL's scheme, host and path; the status line
-  shows it whole with the user part, every query value and the fragment
-  redacted.
+  A refusal, a warning, the fallback's reason and the record's
+  `session.started` `org_policy` (`reason`, `server`), which reach the
+  model, stderr and the record, now show only the URL's scheme, host and
+  path; the status lines of `abhed doctor` and `abhed policy status` show it
+  whole with the user part, every query value and the fragment redacted.
 
 ### Upgrading from 1.2.9
 
+- `abhed serve` reached by a DNS name now needs that name configured: set
+  `server.allowed_hosts` (or `server.canonical_host`, or name it in
+  `server.allowed_origins` or `auth.redirect_url`). Loopback and, with
+  sign-in on, IP addresses work as before. With `auth.mode` `none`, only
+  loopback and `server.allowed_hosts` are answered. `abhed serve` and
+  `abhed serve -check` say so in a `hosts` line when they listen beyond
+  loopback with no name configured.
 - git fetch, pull, push, clone and ls-remote in Abhed Studio and the CLI
   now reach remotes with the person's own credentials (SSH agent, keychain,
   credential helpers), on the process tier and the fence; 1.2.9 ran them in

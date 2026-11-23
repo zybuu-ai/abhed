@@ -7,6 +7,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/safeurl"
 )
 
 // LocalPrincipal is who runs this process: the account, and, when agentWhy
@@ -93,7 +94,7 @@ func OrgPolicyState(cfg config.Config) map[string]any {
 	if s.Status == "" || s.Status == "none" {
 		return nil
 	}
-	out := map[string]any{"status": s.Status, "server": config.Printable(s.URL)}
+	out := map[string]any{"status": s.Status, "server": config.Printable(safeurl.Server(s.URL))}
 	if s.Reason != "" {
 		out["reason"] = config.Printable(s.Reason)
 	}

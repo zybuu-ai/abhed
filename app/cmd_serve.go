@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -19,6 +20,8 @@ import (
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/docsite"
+	"github.com/zybuu-ai/abhed/internal/filelock"
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/loopport"
@@ -336,6 +339,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 		CLILogin:      cliLogin,
 		// Nil unless control_plane.per_session: sessions then share sb as before.
 		SessionSandboxes:    perSession,
+		StartupLock:         serveStartupLock,
 		SoleOwner:           iso.sole,
 		SandboxAPIAdminOnly: iso.adminAPI,
 		APIAudit:            audit,
@@ -487,6 +491,9 @@ func (a *App) serveCmd(workspace, addr string) int {
 	fmt.Printf("  workspace %s\n  model     %s\n  sandbox   %s\n  storage   %s\n",
 		workspace, provider.Model, sb.Tier(), serveStorageLabel(cfg))
 	fmt.Printf("  auth      %s\n", authLabel(cfg, authMW))
+	if note := server.HostNamesNote(cfg, shown); note != "" {
+		fmt.Printf("  hosts     %s\n", note)
+	}
 	fmt.Printf("  git       %s\n", gitHeldLabel(cfg, sb.Tier()))
 	if line := managedLine(cfg); line != "" {
 		fmt.Printf("  managed   %s\n", line)
@@ -713,4 +720,18 @@ func authLabel(cfg config.Config, mw *auth.Middleware) string {
 	default:
 		return "none (single-tenant, no authentication)"
 	}
+}
+
+// serveStartupLock is held by the abhed serve that owns this machine's state
+// (its sessions and session sandboxes), so a second one, on another address,
+// does not take back or sweep them.
+func serveStartupLock() (func(), error) {
+	path, err := home.MachinePath("serve.lock")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	return filelock.Lock(path, 0, "%s is held by another abhed serve (waited %s)")
 }

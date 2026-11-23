@@ -417,3 +417,13 @@ func TestOrgAllowListsAloneAndServersRefused(t *testing.T) {
 		t.Error("mcp.servers not set aside")
 	}
 }
+
+// An org policy asking laptops to sign in to "server" names its own server:
+// the document alone passes the check, as the Enterprise server writes it by
+// default, and once taken the laptop counts a sign-in to where it took it
+// from.
+func TestCheckOrgPolicySignInServerNamesItsOwnServer(t *testing.T) {
+	if err := CheckOrgPolicy([]byte(`{"auth":{"client":{"sign_in":"server"}}}`)); err != nil {
+		t.Fatalf("sign_in server in an org policy: %v", err)
+	}
+}
