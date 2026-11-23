@@ -7604,6 +7604,16 @@
       "name": "an account with a digit in its name, only another tool's name argument",
       "kind": "planted",
       "hash": "590fb897c2537807"
+    },
+    {
+      "name": "committed work said safe now, only a refused commit as the git call",
+      "kind": "planted",
+      "hash": "a1cd301b374687d6"
+    },
+    {
+      "name": "deployed services said running now, only a failed k8s call",
+      "kind": "planted",
+      "hash": "62f85d886ccfcd5b"
     }
   ],
   "strict": [
