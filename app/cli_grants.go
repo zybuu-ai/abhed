@@ -4,8 +4,13 @@ import (
 	"encoding/json"
 
 	"github.com/zybuu-ai/abhed/internal/hostgit"
+	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/policy"
 )
+
+// guestRun reports a guest's run, which keeps nothing past its end, so is
+// offered no "always".
+func guestRun() bool { return currentPrincipal().Kind == identity.Guest }
 
 // cliKeeper keeps the command line's "always for this repository" answers
 // to host git's asks, as Abhed Studio keeps them: in the person's own state
@@ -20,7 +25,7 @@ type cliKeeper struct {
 // grantOf is the repository grant that could answer the ask: a brokered
 // fetch or push asked about under host git's step alone.
 func (k cliKeeper) grantOf(tool string, args json.RawMessage, res policy.Result) (bashGrant, bool) {
-	if k.locked || k.workspace == "" || tool != "bash" || res.Decision != policy.Ask || res.Step != hostgit.StepHostGit {
+	if k.locked || guestRun() || k.workspace == "" || tool != "bash" || res.Decision != policy.Ask || res.Step != hostgit.StepHostGit {
 		return bashGrant{}, false
 	}
 	return hostGitGrant(hostgit.RemoteFamily(bashCommandOf(args)), res.Scope)

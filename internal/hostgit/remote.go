@@ -66,8 +66,10 @@ type HostBroker struct {
 	net       Network
 	command   func(ctx context.Context, cwd, line string) *exec.Cmd
 	// holds reports whether the sandbox holds git's configuration against
-	// its commands; nil, or false, brokers no remote command.
-	holds func() bool
+	// its commands; nil, or false, brokers no remote command. holdsNew
+	// reports whether it holds a repository made during the session against
+	// commands started before; nil, or false, brokers none such.
+	holds, holdsNew func() bool
 
 	mu sync.Mutex
 	// known are the repositories whose remotes host git may reach, by their
@@ -80,6 +82,8 @@ type HostBroker struct {
 
 // repoState is what a known repository was when it became known.
 type repoState struct {
+	// cloned is a repository cloned during the session.
+	cloned   bool
 	settings string
 	// common is the real common git folder, inside the workspace.
 	common string
@@ -100,20 +104,23 @@ func NewBroker(workspace string, tier func() sandbox.Tier, network Network, comm
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if root := b.repoIn(workspace); root != "" {
-		b.learn(ctx, root)
+		b.learn(ctx, root, false)
 	}
 	return b
 }
 
 // HoldsGit sets what says whether the sandbox holds git's configuration in
-// the workspace against its commands (sandbox.HoldsGit).
-func (b *HostBroker) HoldsGit(holds func() bool) *HostBroker {
-	b.holds = holds
+// the workspace against its commands (sandbox.HoldsGit), and whether it
+// holds a repository cloned during the session against commands already
+// running (sandbox.HoldsNewGit).
+func (b *HostBroker) HoldsGit(holds, holdsNew func() bool) *HostBroker {
+	b.holds, b.holdsNew = holds, holdsNew
 	return b
 }
 
-// learn makes root a known repository, as it is now.
-func (b *HostBroker) learn(ctx context.Context, root string) {
+// learn makes root a known repository, as it is now; cloned marks one
+// cloned during the session.
+func (b *HostBroker) learn(ctx context.Context, root string, cloned bool) {
 	s, err := remoteSettings(ctx, root)
 	if err != nil {
 		return
@@ -123,7 +130,7 @@ func (b *HostBroker) learn(ctx context.Context, root string) {
 		return
 	}
 	b.mu.Lock()
-	b.known[root] = repoState{settings: s, common: common}
+	b.known[root] = repoState{settings: s, common: common, cloned: cloned}
 	b.mu.Unlock()
 }
 
@@ -269,8 +276,11 @@ func (b *HostBroker) remoteCommand(ctx context.Context, cwd, line string, op rem
 	case "clone":
 		return b.clone(ctx, cwd, op, plan)
 	}
-	cmd := b.hostCommand(ctx, cwd, op, plan)
+	cmd, plan := b.hostCommand(ctx, cwd, op, plan)
 	if cmd.Err != nil {
+		if plan.relay != nil {
+			plan.relay.close()
+		}
 		return cmd
 	}
 	b.recordStart(ctx, cwd, op, plan, cmd)

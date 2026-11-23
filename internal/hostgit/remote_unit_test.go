@@ -72,3 +72,44 @@ func TestMoveIntoFollowsNoLink(t *testing.T) {
 		t.Fatalf("not moved in: %v", err)
 	}
 }
+
+// A folder on the way checked as a real folder, then swapped for a link to
+// a folder outside before the move, as a running command could: the move
+// does not follow it.
+func TestMoveIntoRefusesAFolderSwappedForALink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no clone is moved on this system")
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, outside := filepath.Join(root, "ws"), filepath.Join(root, "outside")
+	for _, d := range []string{filepath.Join(ws, "sub"), outside} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := &HostBroker{workspace: ws, known: map[string]repoState{}}
+	parts, err := b.cloneTarget(t.Context(), ws, "sub/dest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// After the check, before the move.
+	if err := os.Rename(filepath.Join(ws, "sub"), filepath.Join(root, "sub-moved")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(ws, "sub")); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := os.MkdirTemp(root, "stage-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := moveInto(ws, parts, staged); err == nil {
+		t.Fatal("the move followed a folder swapped for a link")
+	}
+	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
+		t.Fatalf("written outside the workspace: %v", entries)
+	}
+}

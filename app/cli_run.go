@@ -239,7 +239,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	// The tool set every surface builds the same way; the CLI takes all of it.
 	vault := openVault()
 	gitBroker := hostgit.NewBroker(workspace, sb.Tier, sandboxconfig.HostGitNetwork(cfg), sb.Command).
-		HoldsGit(func() bool { return sandbox.HoldsGit(sb) })
+		HoldsGit(func() bool { return sandbox.HoldsGit(sb) }, func() bool { return sandbox.HoldsNewGit(sb) })
 	set := toolset.Build(context.Background(), cfg, toolset.Options{
 		Workspace:    workspace,
 		ReadWithheld: pol.ReadWithheldFunc(),

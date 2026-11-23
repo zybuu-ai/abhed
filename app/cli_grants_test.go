@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/hostgit"
+	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
@@ -71,5 +72,22 @@ func TestCLIKeepsHostGitGrantForTheRepository(t *testing.T) {
 	}
 	if _, shown := ask(cliKeeper{workspace: ws, locked: true}, "git fetch", "3\n", host); strings.Contains(shown, "Always allow") {
 		t.Errorf("offered where the permissions are managed:\n%s", shown)
+	}
+}
+
+// A guest, who keeps nothing past the run, is offered no "always".
+func TestCLIOffersAGuestNoAlways(t *testing.T) {
+	principalMu.Lock()
+	old := principal
+	principal = identity.Principal{Kind: identity.Guest}
+	principalMu.Unlock()
+	t.Cleanup(func() { principalMu.Lock(); principal = old; principalMu.Unlock() })
+	ws := t.TempDir()
+	res := policy.Result{Decision: policy.Ask, Step: hostgit.StepHostGit, Scope: ws + "\x00aaaa"}
+	if label := (cliKeeper{workspace: ws}).Offer("bash", json.RawMessage(`{"command":"git fetch"}`), res); label != "" {
+		t.Fatalf("a guest was offered %q", label)
+	}
+	if opts := bashGrantOptions("git fetch", ws, ws, "b", res); len(opts) != 0 {
+		t.Fatalf("a guest was offered %v in Studio", opts)
 	}
 }

@@ -360,8 +360,9 @@ func bashGrantOptions(command, cwd, root, bind string, d policy.Result) []grantO
 	}
 	if fam := hostgit.RemoteFamily(command); fam != "" {
 		if d.Step == hostgit.StepHostGit {
-			// Run as the person, it is answered once for this repository's remote or each time.
-			if g, ok := hostGitGrant(fam, d.Scope); ok {
+			// Run as the person, it is answered once for this repository's remote or
+			// each time; a guest keeps nothing, so is offered no "always".
+			if g, ok := hostGitGrant(fam, d.Scope); ok && !guestRun() {
 				return []grantOption{{"always-family:" + bind, hostGitGrantLabel(fam), g}}
 			}
 			return nil

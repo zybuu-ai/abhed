@@ -33,8 +33,13 @@ type plan struct {
 	proxy        string
 	ask, step    string
 	bind         string
-	// hooks is the person's own hook folder a push runs, and its scope.
+	// hooks is the person's own hook folder whose pre-push a push runs in
+	// the sandbox, and its scope; relay is what runs it there.
 	hooks, hooksScope string
+	relay             *prePushRelay
+	// early is a host step run as the command is built, before it starts:
+	// a pull's fetch, a clone.
+	early bool
 }
 
 // plan reads what op in cwd would reach, and why it is refused or asked.
@@ -52,6 +57,13 @@ func (b *HostBroker) plan(ctx context.Context, cwd string, op remoteOp) (plan, e
 	if root == "" || !known {
 		// Not a repository Abhed read at the start, or one it cloned.
 		return plan{sandboxed: true}, nil
+	}
+	// Where the sandbox binds git's files as each command starts, one started
+	// before the clone could still write the clone's configuration.
+	if start.cloned && (b.holdsNew == nil || !b.holdsNew()) {
+		return plan{}, fmt.Errorf("git %s: this repository was cloned during this session, and on this sandbox tier a command "+
+			"started before the clone can still write its configuration, so Abhed runs git %s on the host for it from the next session; "+
+			"until then run it yourself", op.verb, op.verb)
 	}
 	// The git folder git would use must be the one known: a .git swapped for
 	// a link to another repository is not reached.
@@ -112,9 +124,7 @@ func (b *HostBroker) plan(ctx context.Context, cwd string, op remoteOp) (plan, e
 	}
 	sort.Strings(p.hosts)
 	if push {
-		if p.hooks, p.hooksScope, err = b.pushHooks(ctx, cwd); err != nil {
-			return plan{}, err
-		}
+		p.hooks, p.hooksScope = personHooks(ctx, cwd, root)
 	}
 	p.bind = root + "\x00" + hex.EncodeToString(digest.Sum(nil))[:24]
 	where := strings.Join(p.hosts, ", ")

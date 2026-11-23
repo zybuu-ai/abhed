@@ -265,13 +265,15 @@ All notable changes to Abhed are recorded here. The format follows
   or token), the hosts, the proxy, the network setting and the refs it
   changed, whether the agent ran it in the foreground or the background, a
   hook ran it or a person typed it on the workbench terminal; OCSF maps it
-  to Process Activity. A brokered push runs the person's own push hooks (a
-  `core.hooksPath` in `/etc/gitconfig` or `~/.gitconfig`, such as a
-  machine's secret-scanning pre-push hook) when that folder and its hooks
-  lie outside the workspace and anything the sandbox can write, and is
-  refused otherwise; the repository's own hooks never run on the host, and
-  fetch, pull and clone run none. The record says which hooks ran
-  (`hooks_run`) or were not run (`hooks_not_run`).
+  to Process Activity. No hook runs on the host: a brokered push runs the
+  person's own pre-push hook (from a `core.hooksPath` in `/etc/gitconfig`
+  or `~/.gitconfig`, such as a machine's secret-scanning hook) in the
+  sandbox, given git's arguments and refs through a hook of Abhed's own,
+  and stops if it fails; the repository's own hooks never run, and fetch,
+  pull and clone run none. The record says which hook ran and its exit
+  (`hooks_run`, `pre_push_exit_code`) or which were not run
+  (`hooks_not_run`). On Linux's bind-mount tiers a repository cloned during
+  the session is brokered from the next session.
   bash's description tells the model these need no setup.
 
 - Commits made on the fence and container tiers carry the person's git

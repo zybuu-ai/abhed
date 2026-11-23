@@ -25,6 +25,9 @@ type remoteRig struct {
 	// runInner runs the sandbox's lines, with no credential and no network,
 	// as a pull's merge or a clone's checkout needs.
 	runInner bool
+	// holdsNew is what the rig's sandbox says of holding repositories
+	// cloned during the session against commands already running.
+	holdsNew bool
 	mu       sync.Mutex
 	events   []map[string]any
 }
@@ -54,7 +57,7 @@ func newRemoteRig(t *testing.T) *remoteRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &remoteRig{home: filepath.Join(root, "home"), sshLog: filepath.Join(root, "ssh.log")}
+	r := &remoteRig{home: filepath.Join(root, "home"), sshLog: filepath.Join(root, "ssh.log"), holdsNew: true}
 	remotes := filepath.Join(root, "remotes")
 	r.bare = filepath.Join(remotes, "team", "app.git")
 	for _, d := range []string{r.home, filepath.Join(r.home, ".ssh"), filepath.Dir(r.bare)} {
@@ -72,9 +75,10 @@ func newRemoteRig(t *testing.T) *remoteRig {
 	if err := os.MkdirAll(cloneDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	oldParent := cloneParent
+	oldParent, oldRelay := cloneParent, relayParent
 	cloneParent = func() (string, error) { return cloneDir, nil }
-	t.Cleanup(func() { cloneParent = oldParent })
+	relayParent = func() (string, error) { return cloneDir, nil }
+	t.Cleanup(func() { cloneParent, relayParent = oldParent, oldRelay })
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(r.home, ".config"))
 	t.Setenv("SSH_AUTH_SOCK", filepath.Join(root, sockMarker))
 	key := filepath.Join(r.home, ".ssh", "id_ed25519")
@@ -122,12 +126,18 @@ func (r *remoteRig) command(ctx context.Context, cwd, line string) *exec.Cmd {
 	}
 	cmd := exec.CommandContext(ctx, "bash", "-c", line)
 	cmd.Dir = cwd
-	cmd.Env = append(os.Environ(), "GIT_SSH_COMMAND=false", "GIT_ALLOW_PROTOCOL=file")
+	// As in the sandbox: no agent socket, no key, no network.
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "SSH_AUTH_SOCK=") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	cmd.Env = append(cmd.Env, "GIT_SSH_COMMAND=false", "GIT_ALLOW_PROTOCOL=file")
 	return cmd
 }
 
 func (r *remoteRig) broker(net Network) *HostBroker {
-	return NewBroker(r.ws, func() sandbox.Tier { return sandbox.TierProcess }, net, r.command).HoldsGit(func() bool { return true })
+	return NewBroker(r.ws, func() sandbox.Tier { return sandbox.TierProcess }, net, r.command).HoldsGit(func() bool { return true }, func() bool { return r.holdsNew })
 }
 
 // key is the launch key of the rig's call id, as ctx gives it.
@@ -274,6 +284,12 @@ func TestBrokerFetchPullPushThroughHostGit(t *testing.T) {
 	defer r.mu.Unlock()
 	if len(r.events) != 6 {
 		t.Fatalf("recorded %d events, want a start and an end for each of 3: %v", len(r.events), r.events)
+	}
+	// The pull's fetch reached the network as its command was built; the others as they ran.
+	for i, ev := range r.events {
+		if (ev["before_start"] == true) != (i == 2 || i == 3) {
+			t.Fatalf("event %d: before_start %v", i, ev["before_start"])
+		}
 	}
 	fetchEnd := r.events[1]
 	if fetchEnd["stage"] != "exited" || fetchEnd["command"] != "git fetch" || fetchEnd["call_id"] != "c-fetch" || fetchEnd["exit_code"] != 0 {
@@ -628,18 +644,21 @@ func (r *remoteRig) pushReady(t *testing.T, b *HostBroker) {
 }
 
 // A brokered push runs the person's own pre-push hook (their global or
-// system core.hooksPath, outside the workspace and anything the sandbox can
-// write, such as a machine's secret-scanning hook) and records that it ran;
-// the repository's own hooks, in .git/hooks or a core.hooksPath of its own,
-// never run. A fetch runs no hook, and records the folder it did not run.
-func TestBrokerRunsThePersonsPushHooks(t *testing.T) {
+// system core.hooksPath) in the sandbox, never on the host, with git's
+// arguments and input, and records that it ran there; the repository's own
+// hooks, in .git/hooks or a core.hooksPath of its own, never run. A fetch
+// runs no hook, and records the folder it did not run.
+func TestBrokerRunsThePersonsPrePushInTheSandbox(t *testing.T) {
 	r := newRemoteRig(t)
-	old := writableAreas
-	writableAreas = func() []string { return nil }
-	t.Cleanup(func() { writableAreas = old })
 	hooks := filepath.Join(r.home, "hooks")
-	ran, repoRan, gitRan := filepath.Join(r.home, "person-hook-ran"), filepath.Join(r.home, "repo-hook-ran"), filepath.Join(r.home, "githooks-ran")
-	writeHook(t, hooks, "pre-push", ran)
+	got := filepath.Join(r.home, "pre-push-saw")
+	repoRan, gitRan := filepath.Join(r.home, "repo-hook-ran"), filepath.Join(r.home, "githooks-ran")
+	if err := os.MkdirAll(hooks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hooks, "pre-push"), []byte("#!/bin/sh\n{ echo \"args=$1 $2\"; cat; echo \"sock=$SSH_AUTH_SOCK\"; } > "+got+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	writeHook(t, filepath.Join(r.ws, "repo-hooks"), "pre-push", repoRan)
 	writeHook(t, filepath.Join(r.ws, ".git", "hooks"), "pre-push", gitRan)
 	run(t, r.home, "config", "--global", "core.hooksPath", hooks)
@@ -647,80 +666,78 @@ func TestBrokerRunsThePersonsPushHooks(t *testing.T) {
 	r.pushReady(t, b)
 	run(t, r.ws, "config", "core.hooksPath", filepath.Join(r.ws, "repo-hooks"))
 	b = r.broker(Network{Open: true})
+	r.mu.Lock()
+	r.inner = nil
+	r.mu.Unlock()
 	if out, err := runCmd(t, b.Command(r.ctx("c-push"), r.ws, "git push origin main")); err != nil {
 		t.Fatalf("push: %v\n%s", err, out)
 	}
-	if _, err := os.Stat(ran); err != nil {
+	saw, err := os.ReadFile(got)
+	if err != nil {
 		t.Fatal("the person's pre-push hook did not run")
+	}
+	head := run(t, r.ws, "rev-parse", "HEAD")
+	if !strings.Contains(string(saw), "args=origin git@git.example:team/app.git") ||
+		!strings.Contains(string(saw), "refs/heads/main "+head+" refs/heads/main ") || strings.Contains(string(saw), sockMarker) {
+		t.Fatalf("the hook saw:\n%s", saw)
+	}
+	r.mu.Lock()
+	inner := strings.Join(r.inner, "\n")
+	r.mu.Unlock()
+	if !strings.Contains(inner, filepath.Join(hooks, "pre-push")) {
+		t.Fatalf("the hook did not run in the sandbox: %q", inner)
 	}
 	for _, m := range []string{repoRan, gitRan} {
 		if _, err := os.Stat(m); err == nil {
-			t.Fatalf("a hook of the repository's ran on the host (%s)", m)
+			t.Fatalf("a hook of the repository's ran (%s)", m)
 		}
 	}
 	r.mu.Lock()
-	got, _ := json.Marshal(r.events)
+	rec, _ := json.Marshal(r.events)
 	r.events = nil
 	r.mu.Unlock()
-	if !strings.Contains(string(got), `"hooks_run":[{"path":"`+hooks+`","scope":"global"}]`) {
-		t.Fatalf("the record does not say the hook ran: %s", got)
+	if !strings.Contains(string(rec), `"hooks_run":[{"hook":"pre-push","path":"`+hooks+`","scope":"global","where":"sandbox"}]`) ||
+		!strings.Contains(string(rec), `"pre_push_exit_code":0`) {
+		t.Fatalf("the record: %s", rec)
 	}
 	if out, err := runCmd(t, b.Command(r.ctx("c-fetch"), r.ws, "git fetch")); err != nil {
 		t.Fatalf("fetch: %v\n%s", err, out)
 	}
 	r.mu.Lock()
-	got, _ = json.Marshal(r.events)
+	rec, _ = json.Marshal(r.events)
 	r.mu.Unlock()
-	if !strings.Contains(string(got), `"hooks_not_run":[{"path":"`+hooks+`","scope":"global"}]`) || strings.Contains(string(got), "hooks_run") {
-		t.Fatalf("the fetch's record: %s", got)
+	if !strings.Contains(string(rec), `"hooks_not_run":[{"path":"`+hooks+`","scope":"global"}]`) || strings.Contains(string(rec), "hooks_run") {
+		t.Fatalf("the fetch's record: %s", rec)
 	}
 }
 
-// A person's hook folder the agent's commands could write (one in the
-// workspace, in a temp or cache folder, or holding a hook linked there) is
-// not run, and the push is refused rather than made without it.
-func TestBrokerRefusesAWritablePushHook(t *testing.T) {
+// A pre-push hook that fails in the sandbox stops the push, and its output
+// is shown.
+func TestBrokerPrePushFailureStopsThePush(t *testing.T) {
 	r := newRemoteRig(t)
-	ran := filepath.Join(r.home, "hook-ran")
-	outside := filepath.Join(r.home, "hooks-linked")
-	writeHook(t, filepath.Join(r.ws, "hooks"), "pre-push", ran)
-	if err := os.MkdirAll(outside, 0o700); err != nil {
+	hooks := filepath.Join(r.home, "hooks")
+	if err := os.MkdirAll(hooks, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(r.ws, "hooks", "pre-push"), filepath.Join(outside, "pre-push")); err != nil {
+	if err := os.WriteFile(filepath.Join(hooks, "pre-push"), []byte("#!/bin/sh\necho 'secret found in app.env' >&2\nexit 3\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeHook(t, filepath.Join(r.home, "hooks-tmp"), "pre-push", ran)
-	if err := os.MkdirAll(filepath.Join(r.home, "hooks-empty"), 0o700); err != nil {
-		t.Fatal(err)
+	run(t, r.home, "config", "--global", "core.hooksPath", hooks)
+	b := r.broker(Network{Open: true})
+	r.pushReady(t, b)
+	before := run(t, r.bare, "rev-parse", "main")
+	out, err := runCmd(t, b.Command(r.ctx("c-push"), r.ws, "git push origin main"))
+	if err == nil || !strings.Contains(out, "secret found in app.env") {
+		t.Fatalf("push: %v\n%s", err, out)
 	}
-	old := writableAreas
-	t.Cleanup(func() { writableAreas = old })
-	for _, c := range []struct {
-		path     string
-		writable []string
-	}{
-		{filepath.Join(r.ws, "hooks"), nil}, // in the workspace
-		{outside, nil},                      // a hook linked into the workspace
-		{filepath.Join(r.home, "hooks-tmp"), []string{filepath.Join(r.home, "hooks-tmp")}}, // a folder the sandbox writes
-		{"relative-hooks", nil}, // the repository's own folder
-		{filepath.Join(r.home, "hooks-empty"), []string{filepath.Join(r.home, "hooks-empty")}}, // empty, for the agent to fill
-	} {
-		writableAreas = func() []string { return c.writable }
-		run(t, r.home, "config", "--global", "core.hooksPath", c.path)
-		b := r.broker(Network{Open: true})
-		if _, _, _, err := b.Ask(r.key("c"), r.ws, "git push origin main"); err == nil || !strings.Contains(err.Error(), "does not push without them") {
-			t.Fatalf("%s: %v", c.path, err)
-		}
-		if _, err := runCmd(t, b.Command(r.ctx("c"), r.ws, "git push origin main")); err == nil {
-			t.Fatalf("%s: the push ran", c.path)
-		}
+	if run(t, r.bare, "rev-parse", "main") != before {
+		t.Fatal("the push went on past its failed hook")
 	}
-	if _, err := os.Stat(ran); err == nil {
-		t.Fatal("a writable hook ran")
-	}
-	if log, _ := os.ReadFile(r.sshLog); len(log) != 0 {
-		t.Fatalf("host ssh ran:\n%s", log)
+	r.mu.Lock()
+	rec, _ := json.Marshal(r.events)
+	r.mu.Unlock()
+	if !strings.Contains(string(rec), `"pre_push_exit_code":3`) {
+		t.Fatalf("the record: %s", rec)
 	}
 }
 
@@ -760,5 +777,64 @@ func TestBrokerJudgementIsPerSession(t *testing.T) {
 	other := sandbox.WithLaunch(context.Background(), sandbox.Launch{Session: "s2", CallID: "c"})
 	if _, err := runCmd(t, b.Command(other, r.ws, "git fetch")); err == nil || !strings.Contains(err.Error(), "needs your approval") {
 		t.Fatalf("another session's call ran on this one's approval: %v", err)
+	}
+}
+
+// Where the sandbox binds git's files as each command starts, a repository
+// cloned during the session is not brokered until the next: a command
+// started before the clone could still write its configuration.
+func TestBrokerWaitsOnASessionsCloneWhereBound(t *testing.T) {
+	r := newRemoteRig(t)
+	r.runInner, r.holdsNew = true, false
+	b := r.broker(Network{Open: true})
+	if _, _, _, err := b.Ask(r.key("c-1"), r.ws, "git clone git@git.example:team/app.git copy"); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := runCmd(t, b.Command(r.ctx("c-1"), r.ws, "git clone git@git.example:team/app.git copy")); err != nil {
+		t.Fatalf("clone: %v\n%s", err, out)
+	}
+	copyDir := filepath.Join(r.ws, "copy")
+	if _, _, _, err := b.Ask(r.key("c-2"), copyDir, "git fetch"); err == nil || !strings.Contains(err.Error(), "from the next session") {
+		t.Fatalf("a fetch in this session's clone: %v", err)
+	}
+	// The next session's broker knows it from its start.
+	next := NewBroker(copyDir, func() sandbox.Tier { return sandbox.TierProcess }, Network{Open: true}, r.command).
+		HoldsGit(func() bool { return true }, func() bool { return false })
+	if _, _, _, err := next.Ask(r.key("c-3"), copyDir, "git fetch"); err != nil {
+		t.Fatalf("the next session: %v", err)
+	}
+}
+
+// A pre-push hook the person has but the sandbox cannot run stops the push:
+// it is never skipped unseen.
+func TestBrokerPrePushTheSandboxCannotRunStopsThePush(t *testing.T) {
+	r := newRemoteRig(t)
+	hooks := filepath.Join(r.home, "hooks")
+	writeHook(t, hooks, "pre-push", filepath.Join(r.home, "ran"))
+	run(t, r.home, "config", "--global", "core.hooksPath", hooks)
+	b := r.broker(Network{Open: true})
+	r.pushReady(t, b)
+	before := run(t, r.bare, "rev-parse", "main")
+	// The rig's sandbox cannot run it.
+	r.mu.Lock()
+	r.runInner = false
+	r.mu.Unlock()
+	// It runs the line as given, but cannot see the person's hook folder.
+	failing := func(ctx context.Context, cwd, line string) *exec.Cmd {
+		r.mu.Lock()
+		r.inner = append(r.inner, line)
+		r.mu.Unlock()
+		cmd := exec.CommandContext(ctx, "bash", "-c", strings.ReplaceAll(line, hooks, filepath.Join(r.home, "not-visible")))
+		cmd.Dir = cwd
+		return cmd
+	}
+	b2 := NewBroker(r.ws, func() sandbox.Tier { return sandbox.TierProcess }, Network{Open: true}, failing).
+		HoldsGit(func() bool { return true }, func() bool { return true })
+	out, err := runCmd(t, b2.Command(r.ctx("c-push"), r.ws, "git push origin main"))
+	if err == nil || !strings.Contains(out, "not-visible") {
+		t.Fatalf("push: %v\n%s", err, out)
+	}
+	if run(t, r.bare, "rev-parse", "main") != before {
+		t.Fatal("the push went on without its hook")
 	}
 }

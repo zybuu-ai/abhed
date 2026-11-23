@@ -15,16 +15,22 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
 // remoteConfig is the configuration host git runs a remote command with,
 // after safety: the person's own SSH command, askpass, proxy, TLS check and
-// credential helpers, read from their global and system files, and never
-// the repository's; for each remote reached, no proxy of its own and git's
-// own upload and receive programs; ssh and https only; no pager, editor,
-// signature check, submodule or automatic gc.
+// credential helpers, read from their global and system files; for each
+// remote reached, no proxy of its own and git's own upload and receive
+// programs; ssh and https only; no pager, editor, signature check,
+// submodule or automatic gc. These pins do not cover everything: git's URL
+// matching lets an http.<url>.* setting (its proxy, its TLS check) outrank
+// the command line's http.proxy and http.sslVerify whatever its scope, so
+// a repository that sets any http.* key is refused (plantedProgram), and
+// that refusal, not these pins, is what keeps its own out.
 func remoteConfig(ctx context.Context, cwd string, remotes []string) [][2]string {
 	global := func(key string) []string {
 		var vals []string
@@ -49,6 +55,7 @@ func remoteConfig(ctx context.Context, cwd string, remotes []string) [][2]string
 		{"http.proxy", last("http.proxy", "")},
 		{"http.sslVerify", last("http.sslverify", "true")},
 		{"core.alternateRefsCommand", ""},
+		// A backstop: --no-pager and GIT_PAGER already keep the repository's pager off.
 		{"core.pager", "cat"},
 		{"protocol.ssh.allow", "always"},
 		{"merge.verifySignatures", "false"},
@@ -157,59 +164,34 @@ func hooksNotRun(ctx context.Context, cwd string) []map[string]string {
 	return out
 }
 
-// writableAreas are the host folders the sandbox's commands can write
-// besides the workspace; tests set it.
-var writableAreas = sandbox.WritableAreas
-
-// pushHooks is the hook folder a brokered push runs, from the person's own
-// configuration (core.hooksPath in their system or global file, such as a
-// machine's secret-scanning pre-push hook), with its scope; "" for none. It
-// is refused, and the push with it, when the folder or a hook in it lies in
-// the workspace or anywhere the sandbox's commands can write, as the agent
-// could then put a program there. The repository's own hooks, in .git/hooks
-// or a core.hooksPath of its own, never run.
-func (b *HostBroker) pushHooks(ctx context.Context, cwd string) (path, scope string, err error) {
+// personHooks is the hook folder the person's own configuration names
+// (core.hooksPath in their system or global file, such as a machine's
+// secret-scanning pre-push hook), relative to the repository's top when it
+// is relative, as git takes it, and its scope; "" for none. Its pre-push
+// hook runs in the sandbox for a brokered push (prePushRelay), never on the
+// host, as a hook may run whatever the work tree holds.
+func personHooks(ctx context.Context, cwd, root string) (path, scope string) {
 	vals := personValues(ctx, cwd, "core.hooksPath")
-	if len(vals) == 0 || vals[len(vals)-1][1] == "" || vals[len(vals)-1][1] == "/dev/null" {
-		return "", "", nil
+	if len(vals) == 0 {
+		return "", ""
 	}
 	scope, path = vals[len(vals)-1][0], vals[len(vals)-1][1]
+	if path == "" || path == "/dev/null" {
+		return "", ""
+	}
 	if rest, ok := strings.CutPrefix(path, "~/"); ok {
-		if home, herr := os.UserHomeDir(); herr == nil {
+		if home, err := os.UserHomeDir(); err == nil {
 			path = filepath.Join(home, rest)
 		}
 	}
-	refuse := func(why string) (string, string, error) {
-		return "", "", fmt.Errorf("git push: your core.hooksPath (%s, in your %s git configuration) %s, so Abhed does not run "+
-			"its hooks, and does not push without them; move it out of the agent's reach, or push yourself", vals[len(vals)-1][1], scope, why)
-	}
 	if !filepath.IsAbs(path) {
-		return refuse("is relative, so it would name a folder of the repository")
+		path = filepath.Join(root, path)
 	}
-	check := func(p string) string {
-		real := sandbox.RealPath(p)
-		if b.inWorkspace(real) {
-			return "lies in the workspace"
-		}
-		for _, a := range writableAreas() {
-			for _, form := range []string{a, sandbox.RealPath(a)} {
-				if _, in := sandbox.Within(real, form); in {
-					return "lies in " + a + ", which the agent's commands can write"
-				}
-			}
-		}
-		return ""
+	// Only a folder with a pre-push hook to run; git runs none else for a push.
+	if info, err := os.Stat(filepath.Join(path, "pre-push")); err != nil || info.IsDir() || info.Mode().Perm()&0o111 == 0 {
+		return "", ""
 	}
-	if why := check(path); why != "" {
-		return refuse(why)
-	}
-	entries, _ := os.ReadDir(path)
-	for _, e := range entries {
-		if why := check(filepath.Join(path, e.Name())); why != "" {
-			return refuse("holds " + e.Name() + ", which " + why)
-		}
-	}
-	return path, scope, nil
+	return path, scope
 }
 
 // remoteEnv is the environment a remote command adds: ssh and https, no
@@ -325,11 +307,12 @@ func mapRef(specs []string, src string) (string, string) {
 	return "", ""
 }
 
-// hostCommand is the process of a fetch, ls-remote or push on the host.
-func (b *HostBroker) hostCommand(ctx context.Context, cwd string, op remoteOp, p plan) *exec.Cmd {
+// hostCommand is the process of a fetch, ls-remote or push on the host,
+// and p with what it set up for it.
+func (b *HostBroker) hostCommand(ctx context.Context, cwd string, op remoteOp, p plan) (*exec.Cmd, plan) {
 	env, err := repoEnv(ctx, cwd, remoteConfig(ctx, cwd, p.names))
 	if err != nil {
-		return &exec.Cmd{Err: err}
+		return &exec.Cmd{Err: err}, p
 	}
 	var runs [][]string
 	switch op.verb {
@@ -342,11 +325,16 @@ func (b *HostBroker) hostCommand(ctx context.Context, cwd string, op remoteOp, p
 		// A push goes by the remote's name: its URLs are held by the sandbox.
 		runs = [][]string{append(append([]string{"--no-pager", "push"}, op.opts...), op.positional...)}
 		if p.hooks != "" {
-			// The person's own hooks, last, over the safety settings' none.
-			env = append(env, configEnv([][2]string{{"core.hooksPath", p.hooks}})...)
+			// Host git calls Abhed's own pre-push, which runs the person's in the sandbox.
+			relay, err := b.prePushRelay(ctx, p)
+			if err != nil {
+				return &exec.Cmd{Err: fmt.Errorf("git push: your pre-push hook could not be set up to run in the sandbox (%v), so Abhed does not push without it", err)}, p
+			}
+			env = append(env, configEnv([][2]string{{"core.hooksPath", relay.dir}})...)
+			p.relay = relay
 		}
 	}
-	return hostScript(ctx, cwd, env, runs)
+	return hostScript(ctx, cwd, env, runs), p
 }
 
 // pull fetches on the host, at once, then merges or rebases in the
@@ -441,7 +429,7 @@ func (b *HostBroker) clone(ctx context.Context, cwd string, op remoteOp, p plan)
 		return b.command(ctx, cwd, line+"printf '%s\\n' "+shellQuote("git clone: "+err.Error())+" >&2; exit 1")
 	}
 	dest := filepath.Join(append([]string{sandbox.RealPath(b.workspace)}, parts...)...)
-	b.learn(ctx, dest)
+	b.learn(ctx, dest, true)
 	if !checkout {
 		return b.command(ctx, cwd, line+"true")
 	}
@@ -450,13 +438,18 @@ func (b *HostBroker) clone(ctx context.Context, cwd string, op remoteOp, p plan)
 }
 
 // cloneParent is the folder a clone is made in before it is moved into the
-// workspace: ~/.abhed/clone, which no command can write; tests set it.
-var cloneParent = func() (string, error) {
-	home, err := os.UserHomeDir()
+// workspace: the person's own clone folder, which no command can reach;
+// tests set it.
+var cloneParent = func() (string, error) { return privateDir("clone") }
+
+// privateDir is the person's folder name under their Abhed folder, made
+// private, outside every folder the sandbox's commands can write, with
+// what a killed process left there over a day ago swept away.
+func privateDir(name string) (string, error) {
+	dir, err := home.PersonPath(name)
 	if err != nil {
-		return "", fmt.Errorf("no home folder for ~/.abhed/clone: %w", err)
+		return "", err
 	}
-	dir := filepath.Join(home, ".abhed", "clone")
 	for _, a := range sandbox.WritableAreas() {
 		if _, in := sandbox.Within(dir, a); in {
 			return "", fmt.Errorf("%s is inside %s, which commands can write", dir, a)
@@ -465,8 +458,14 @@ var cloneParent = func() (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	if info, err := os.Lstat(dir); err != nil || !info.IsDir() {
-		return "", fmt.Errorf("%s is not a folder", dir)
+	if info, err := os.Lstat(dir); err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("%s is not a folder private to you", dir)
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > 24*time.Hour {
+			_ = os.RemoveAll(filepath.Join(dir, e.Name()))
+		}
 	}
 	return dir, nil
 }
@@ -477,6 +476,7 @@ func (b *HostBroker) runNow(ctx context.Context, cwd string, op remoteOp, p plan
 	if cmd.Err != nil {
 		return "", cmd.Err
 	}
+	p.early = true
 	b.recordStart(ctx, cwd, op, p, cmd)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
@@ -571,7 +571,7 @@ func (b *HostBroker) recordStart(ctx context.Context, cwd string, op remoteOp, p
 		pay := map[string]any{"command": "git " + op.verb, "workspace": b.workspace, "cwd": cwd, "network": network}
 		switch {
 		case p.hooks != "":
-			pay["hooks_run"] = []map[string]string{{"scope": p.hooksScope, "path": p.hooks}}
+			pay["hooks_run"] = []map[string]string{{"scope": p.hooksScope, "path": p.hooks, "hook": "pre-push", "where": "sandbox"}}
 		case len(hooks) > 0:
 			pay["hooks_not_run"] = hooks
 		}
@@ -592,6 +592,10 @@ func (b *HostBroker) recordStart(ctx context.Context, cwd string, op remoteOp, p
 		}
 		if op.force {
 			pay["force"] = true
+		}
+		if p.early {
+			// Reached the network as the call's command was built, before it started.
+			pay["before_start"] = true
 		}
 		return pay
 	}
@@ -617,6 +621,11 @@ func (b *HostBroker) recordStart(ctx context.Context, cwd string, op remoteOp, p
 			}
 		}
 		pay["exit_code"] = code
+		if p.relay != nil {
+			if ran, code := p.relay.close(); ran {
+				pay["pre_push_exit_code"] = code
+			}
+		}
 		if before != nil {
 			if changed := changedRefs(before, refs(after, p.root)); len(changed) > 0 {
 				pay["changed"] = changed

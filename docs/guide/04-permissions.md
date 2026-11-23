@@ -1153,9 +1153,9 @@ own settings, in the sandbox.
 
 The agent never reads a key: host git authenticates and only its output comes
 back, with any user name, password or token in a URL removed. It runs with
-the safety settings Abhed's own git uses: hooks (but a push's own, below),
-fsmonitor, filters, merge drivers, external diff, signing, the pager and
-automatic gc off, no submodule, no editor. The SSH
+the safety settings Abhed's own git uses: hooks (a push's pre-push runs in
+the sandbox, below), fsmonitor, filters, merge drivers, external diff,
+signing, the pager and automatic gc off, no submodule, no editor. The SSH
 command, askpass, proxy, TLS check and credential helpers are your own, from
 your global and system git configuration (`~/.gitconfig`), never the
 repository's; with no `core.sshCommand` of yours it is `ssh -o BatchMode=yes
@@ -1184,6 +1184,13 @@ cannot steer host git:
 - The repository's git folder must be the one it was when the session
   started, inside the workspace: a `.git` swapped for a link to another
   repository is refused.
+- On Linux, the process tier (bubblewrap) and the fence hold git's files by
+  binding them read-only as each command starts, so a command started
+  before a clone could still write the clone's configuration. There, a
+  repository cloned during the session is not brokered until the next
+  session: "this repository was cloned during this session … from the next
+  session; until then run it yourself". macOS's process tier holds every
+  `.git` by pattern, so a clone is brokered at once.
 
 Host git reaches only the remotes the repository had when the session
 started, or a clone URL you approve:
@@ -1241,26 +1248,35 @@ not asked about again, the network-off question included, but it is still
 refused where an agent's would be, runs on the same terms and is recorded
 the same way.
 
-A brokered `git push` runs your own push hooks: the folder a
-`core.hooksPath` in your system or global configuration (`/etc/gitconfig`,
-`~/.gitconfig`) names, such as a machine's secret-scanning pre-push hook,
-when that folder, and every hook in it, lies outside the workspace and
-outside every folder the sandbox's commands can write (its temp and cache
-folders), links followed. Where it does not, or the path is relative, the
-push is refused rather than made without your hooks: "your core.hooksPath
-(…) lies in …, so Abhed does not run its hooks, and does not push without
-them". The repository's own hooks, in `.git/hooks` or a `core.hooksPath` the
-repository sets, never run on the host. A fetch, a pull's fetch, a clone and
-`ls-remote` run no hook at all. Each call's record names the hook folder a
-push ran (`hooks_run`, with its scope) or, for the others, the one it did
-not run (`hooks_not_run`).
+No hook runs on the host. A brokered `git push` runs your own pre-push hook,
+the one in the folder a `core.hooksPath` in your system or global
+configuration (`/etc/gitconfig`, `~/.gitconfig`) names, such as a machine's
+secret-scanning hook, **in the sandbox**: host git calls a hook of Abhed's
+own, which hands the hook's arguments (the remote's name and its URL, with
+any token removed) and its input (each local ref and object, remote ref and
+object) back to Abhed, which runs your hook in the sandbox at the
+repository's top with them. If it fails, the push stops and its output is
+shown. A hook there can run whatever the work tree holds (many dispatchers
+run `.husky/pre-push` or the like, which the agent can write), and that is
+why it runs in the sandbox: with no key, no SSH agent and no credential
+helper. The sandbox must be able to read and run your hook and what it calls
+(system folders such as `/opt` are readable on the process tier and the
+fence; most of your home folder is not); a hook it cannot run stops the push
+with the error, never skipped unseen. The repository's own hooks, in `.git/hooks` or a
+`core.hooksPath` the repository sets, never run. A fetch, a pull's fetch, a
+clone and `ls-remote` run no hook at all. Each call's record names the hook a
+push ran in the sandbox (`hooks_run`, with its scope, and
+`pre_push_exit_code` when it ends) or, for the others, the folder it did not
+run (`hooks_not_run`).
 
 Each brokered call is recorded as `hostgit.brokered`, once when it starts
 (`stage: started`, the command, the remotes and their URLs without any
 password or token, the hosts, your proxy if one is used, the network
 setting, the question it was asked under, and `hooks_run` or `hooks_not_run`) and once when
 its host part ends (`stage: exited`, the exit code, and `changed`: each ref
-it moved, with the object before and after). The end is recorded whichever
+it moved, with the object before and after). A pull's fetch and a clone's
+host part run as the call's command is built, before it starts, and their
+records say so (`before_start`). The end is recorded whichever
 way the line ran: a call of the agent's, in the foreground or the
 background, a hook's command, or a line typed on the workbench terminal; one
 that never started ends with exit code -1. The container and vm tiers do not

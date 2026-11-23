@@ -95,7 +95,7 @@ func TestBrokerNeedsGitHeld(t *testing.T) {
 	r := newRemoteRig(t)
 	for _, b := range []*HostBroker{
 		NewBroker(r.ws, func() sandbox.Tier { return sandbox.TierProcess }, Network{Open: true}, r.command),
-		NewBroker(r.ws, func() sandbox.Tier { return sandbox.TierProcess }, Network{Open: true}, r.command).HoldsGit(func() bool { return false }),
+		NewBroker(r.ws, func() sandbox.Tier { return sandbox.TierProcess }, Network{Open: true}, r.command).HoldsGit(func() bool { return false }, nil),
 	} {
 		if reason, _, _, err := b.Ask(r.key("c"), r.ws, "git fetch"); reason != "" || err != nil {
 			t.Fatalf("asked %q %v", reason, err)
