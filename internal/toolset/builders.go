@@ -20,6 +20,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/index"
 	"github.com/zybuu-ai/abhed/internal/k8s"
+	"github.com/zybuu-ai/abhed/internal/machinegrant"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/mcpauth"
@@ -324,7 +325,61 @@ func LoadAgents(cfg config.Config, ws config.WorkspaceTrust, session []*agent.De
 // name and held by the session that obtained it, never by these tools; a nil
 // vault offers no stored secrets.
 func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...any)) []tools.Tool {
+	return InfraToolsFor(cfg, vault, warn, false)
+}
+
+// MachineK8s reports whether the Kubernetes tools are offered only because
+// this is the person's own machine and it has a kubeconfig, or kept
+// cluster logins: no configuration file says k8s.enabled either way, and no
+// managed configuration is in force, which decides for an organisation.
+func MachineK8s(cfg config.Config, machine bool) bool {
+	if !machine || cfg.K8s.Enabled || cfg.Sets("k8s.enabled") || cfg.Managed {
+		return false
+	}
+	if len(machinegrant.Logins()) > 0 {
+		return true
+	}
+	for _, p := range k8s.KubeconfigPaths(k8s.Config{Kubeconfig: cfg.K8s.Kubeconfig}) {
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+			return true
+		}
+	}
+	return false
+}
+
+// MachineSSH reports whether the SSH tools are offered only because this is
+// the person's own machine and its ~/.ssh/config names a host, as for
+// MachineK8s. It returns the config read.
+func MachineSSH(cfg config.Config, machine bool) (*remote.SSHConfig, bool) {
+	if !machine || cfg.Managed || cfg.Sets("ssh.enabled") && !cfg.SSH.Enabled {
+		return nil, false
+	}
+	c, err := remote.LoadSSHConfig(remote.DefaultSSHConfigPath())
+	if err != nil || len(c.Aliases()) == 0 {
+		return nil, false
+	}
+	return c, true
+}
+
+// InfraToolsFor is InfraTools, with the person's own machine setup offered
+// as well when machine is set: their kubeconfig contexts and ~/.ssh/config
+// hosts, each first use asked once, and the cluster logins they kept. Only
+// a surface run by the person whose machine it is sets it, never a server
+// that runs other people's sessions.
+func InfraToolsFor(cfg config.Config, vault *secrets.Store, warn func(string, ...any), machine bool) []tools.Tool {
 	var out []tools.Tool
+	autoK8s := MachineK8s(cfg, machine)
+	if autoK8s {
+		cfg.K8s.Enabled = true
+		// Writes are asked each time, with a dry run first; offered unless a file says otherwise.
+		if !cfg.Sets("k8s.allow_writes") {
+			cfg.K8s.AllowWrites = true
+		}
+	}
+	sshConfig, autoSSH := MachineSSH(cfg, machine)
+	if autoSSH && !cfg.SSH.Enabled {
+		cfg.SSH.Enabled = true
+	}
 	var secret func(string) (string, error)
 	var secretNames []string
 	if vault != nil {
@@ -342,6 +397,12 @@ func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...an
 			Token:    os.Getenv("ABHED_K8S_TOKEN"),
 			Clusters: LoginClusters(cfg),
 			CAFile:   cfg.K8s.CAFile,
+			// A kubeconfig used because it is there asks before each context's
+			// first use; one the configuration turned on asks only before Abhed
+			// runs a context's credential helper.
+			FirstUseAll: autoK8s,
+			KeptLogins:  machine,
+			Secret:      secret,
 		})
 		for _, c := range cfg.K8s.Clusters {
 			if c.InsecureSkipTLSVerify {
@@ -355,7 +416,7 @@ func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...an
 				"its credentials can be read by anyone in the path", name)
 		}
 		out = append(out, k8s.GetTool{M: mgr},
-			k8s.LoginTool{M: mgr, Secret: secret, SecretNames: secretNames})
+			k8s.LoginTool{M: mgr, Secret: secret, SecretNames: secretNames, Store: vault})
 		if cfg.K8s.AllowWrites {
 			out = append(out, k8s.ApplyTool{M: mgr, Secret: secret})
 		}
@@ -386,6 +447,9 @@ func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...an
 		reg, errs := remote.NewRegistry(hosts)
 		for _, err := range errs {
 			warn("ssh: %v", err)
+		}
+		if sshConfig != nil {
+			reg.UseSSHConfig(sshConfig, cfg.SSH.ConnectHosts)
 		}
 		out = append(out, remote.Tool{R: reg, Reads: cfg.SSH.ReadCommands, ReadOnly: cfg.SSHReadOnlyHosts() != nil,
 			ReadContents: cfg.SSHReadOnlyHosts() != nil && cfg.SSHReadContents(),

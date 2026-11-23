@@ -965,7 +965,7 @@ func withheldNoteOf(ev agent.Event) string {
 	if json.Unmarshal(ev.Payload, &m) != nil {
 		return ""
 	}
-	return ui.WithheldNote(m.SecretsWithheld)
+	return ui.MessageNote(m.SecretsWithheld, m.Pasted)
 }
 
 // parallelCommand reports whether typed is /parallel, and the work it names.

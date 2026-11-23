@@ -1024,6 +1024,9 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 		Workspace: o.cwd, ConfigDir: o.cwd, Sandbox: true, WorkspaceTrust: config.GrantFor(o.trust, c.base, o.cwd), AllowDefaultModel: true,
 		// The agent the terminal runs, subagents and configured tools included.
 		ConfiguredTools: true,
+		// The editor runs on the person's own machine: their kubeconfig and
+		// ~/.ssh/config are offered as the terminal offers them.
+		MachineSetup: true,
 		// The configuration's turn limit binds, as it does from the terminal.
 		ConfiguredLimits: true,
 		// The person reads each answer in the editor and can reply.
@@ -1540,7 +1543,11 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	once, always, reject := "once:"+bind, "always:"+bind, "reject:"+bind
 	options := []map[string]any{{"optionId": once, "name": "Allow once", "kind": "allow_once"}}
 	if offerAlways {
-		options = append(options, map[string]any{"optionId": always, "name": "Always allow " + ui.VisibleLine(shownScope), "kind": "allow_always"})
+		name := "Always allow " + ui.VisibleLine(shownScope)
+		if d.Keeps != "" {
+			name = "Always for " + ui.VisibleLine(d.Keeps) + " (kept for you, not in the workspace)"
+		}
+		options = append(options, map[string]any{"optionId": always, "name": name, "kind": "allow_always"})
 	}
 	var grantOpts []grantOption
 	// Offered only when the card shows the command as it runs.
@@ -1579,6 +1586,11 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	}
 	if offerAlways {
 		meta["scope"] = shownScope
+	}
+	// The first use of a cluster or host from the person's own setup: the
+	// editor can draw it as such, and its "always" is kept for the person.
+	if d.Keeps != "" {
+		meta["firstUse"] = map[string]any{"what": d.Keeps, "kept": "person"}
 	}
 	if held {
 		meta["held"] = true

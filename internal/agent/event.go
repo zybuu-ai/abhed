@@ -288,6 +288,11 @@ type Message struct {
 	// the message held: the model got [secret:NAME] in their place. A string
 	// keeps Message comparable.
 	SecretsWithheld string `json:"secrets_withheld,omitempty"`
+	// Pasted names, comma-separated as ID:kind, the credentials the person
+	// pasted that matched no stored secret: the model and the record got
+	// [pasted:ID] in their place, and the value is held in the session's
+	// memory only, for a login the person approves.
+	Pasted string `json:"pasted,omitempty"`
 	// Note is what Abhed added after the person's text for the model, such
 	// as what a request for parallel work means; recorded so a replay sends
 	// what the model was sent.

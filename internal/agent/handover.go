@@ -206,7 +206,7 @@ func (l *Loop) handingOver(ctx context.Context) bool {
 func (l *Loop) handedOver() TerminalReason {
 	for _, q := range l.takeSteering() {
 		l.record(EvMessageDropped, ActorSystem, DroppedMessage{
-			QueueID: q.ID, ClientID: q.ClientID, Text: q.Text, QueuedAt: q.At,
+			QueueID: q.ID, ClientID: q.ClientID, Text: withheldDropped(l, q.Text), QueuedAt: q.At,
 			Reason: "the session moved to another process before it was delivered; send it again",
 		})
 	}

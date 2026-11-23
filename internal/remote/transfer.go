@@ -79,6 +79,11 @@ func findHost(r *Registry, sess *tools.Session, name string) (*Host, string, err
 		if h, ok := r.get(name); ok {
 			return h, "declared by the operator", nil
 		}
+		if h, ok, err := machineHostFor(r, sess, name); err != nil {
+			return nil, "", err
+		} else if ok {
+			return h, hostOrigin(h, false), nil
+		}
 	}
 	names := knownNames(r, mine)
 	if len(names) == 0 {

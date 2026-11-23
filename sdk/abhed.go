@@ -171,6 +171,14 @@ type Options struct {
 	// trusted adds none of it.
 	ConfiguredTools bool
 
+	// MachineSetup, with ConfiguredTools, offers the person's own machine
+	// setup as the terminal does: their kubeconfig contexts and
+	// ~/.ssh/config hosts, each asked before its first use, and the cluster
+	// logins they kept. Set it only where the person running this process is
+	// the one whose machine it is, never for a service that runs other
+	// people's sessions.
+	MachineSetup bool
+
 	// Attended says a person reads each answer and can reply to it, as in an
 	// editor. Off, a note that asks the model to ask the person a question
 	// is left out, since nobody would answer it.
@@ -461,7 +469,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	}
 	set := toolset.Build(ctx, cfg, toolset.Options{
 		Workspace: opts.Workspace, ReadWithheld: pol.ReadWithheldFunc(), Bash: bash, Parts: parts, Extensions: opts.Extensions,
-		Vault: secrets.Default(), Warn: opts.Warn, Sandbox: sbox,
+		Vault: secrets.Default(), Warn: opts.Warn, Sandbox: sbox, Machine: opts.ConfiguredTools && opts.MachineSetup,
 	})
 	// What New made is released on every error from here: the tools, and
 	// the sandbox's cgroup and private temp.

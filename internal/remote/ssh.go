@@ -67,6 +67,14 @@ type HostConfig struct {
 	// connected marks a host ssh_connect added, whose errors name its
 	// arguments rather than config keys.
 	connected bool
+	// machine marks a host read from the person's ~/.ssh/config: it signs in
+	// with their ssh-agent and the IdentityFiles it names that need no
+	// passphrase, checks every known_hosts file it names, and reaches the
+	// host through jump when ProxyJump names one.
+	machine        bool
+	identityFiles  []string
+	knownHostFiles []string
+	jump           *Host
 }
 
 // Host is a connection to one machine, dialed lazily and reused across calls.
@@ -112,6 +120,10 @@ func (h *Host) authMethods() ([]ssh.AuthMethod, error) {
 		}
 	}
 
+	if h.cfg.machine {
+		methods = append(methods, h.machineKeys()...)
+	}
+
 	if h.cfg.IdentityFile != "" {
 		path := expandHome(h.cfg.IdentityFile)
 		key, err := os.ReadFile(path)
@@ -146,6 +158,10 @@ func (h *Host) authMethods() ([]ssh.AuthMethod, error) {
 	}
 
 	if len(methods) == 0 {
+		if h.cfg.machine {
+			return nil, fmt.Errorf("host %s has no usable credentials: start your ssh-agent and add the key "+
+				"(ssh-add), or name a key with no passphrase in IdentityFile", h.cfg.Name)
+		}
 		if h.cfg.connected {
 			return nil, fmt.Errorf("host %s has no usable credentials: start an ssh-agent, "+
 				"or give ssh_connect identity_file or password_secret", h.cfg.Name)
@@ -166,6 +182,24 @@ func (h *Host) authMethods() ([]ssh.AuthMethod, error) {
 func (h *Host) hostKeyCallback() (ssh.HostKeyCallback, []string, error) {
 	if h.cfg.InsecureSkipHostKeyCheck {
 		return ssh.InsecureIgnoreHostKey(), nil, nil
+	}
+	if len(h.cfg.knownHostFiles) > 0 {
+		var files []string
+		for _, f := range h.cfg.knownHostFiles {
+			if _, err := os.Stat(expandHome(f)); err == nil {
+				files = append(files, expandHome(f))
+			}
+		}
+		if len(files) == 0 {
+			return nil, nil, fmt.Errorf("host %s: none of its known_hosts files (%s) exists, so its key cannot be "+
+				"checked. Ask the user to run `%s` once to record the key", h.cfg.Name,
+				strings.Join(h.cfg.knownHostFiles, ", "), sshCommand(h.cfg.User, h.cfg.Addr))
+		}
+		cb, err := knownhosts.New(files...)
+		if err != nil {
+			return nil, nil, fmt.Errorf("host %s: read %s: %w", h.cfg.Name, strings.Join(files, ", "), err)
+		}
+		return cb, knownAlgorithms(cb, h.cfg.Addr), nil
 	}
 	path := h.cfg.KnownHostsFile
 	if path == "" {
@@ -294,7 +328,20 @@ func (h *Host) connect(ctx context.Context) (*ssh.Client, error) {
 	if h.cfg.Timeout > 0 {
 		dctx, cancel = context.WithTimeout(ctx, h.cfg.Timeout)
 	}
-	conn, err := egress.Dial(dctx, egress.KindSSH, "tcp", h.cfg.Addr)
+	var conn net.Conn
+	if h.cfg.jump != nil {
+		// Through the jump host, whose own key is checked when it connects.
+		var jc *ssh.Client
+		if jc, err = h.cfg.jump.connect(dctx); err == nil {
+			conn, err = jc.DialContext(dctx, "tcp", h.cfg.Addr)
+		}
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("cannot reach %s (%s) through %s: %w", h.cfg.Name, h.cfg.Addr, h.cfg.jump.Name(), err)
+		}
+	} else {
+		conn, err = egress.Dial(dctx, egress.KindSSH, "tcp", h.cfg.Addr)
+	}
 	cancel()
 	if err != nil {
 		return nil, fmt.Errorf("cannot reach %s (%s): %w", h.cfg.Name, h.cfg.Addr, err)
@@ -420,12 +467,41 @@ func (h *Host) RunInput(ctx context.Context, command string, timeout time.Durati
 func (h *Host) Close() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.cfg.jump != nil {
+		_ = h.cfg.jump.Close()
+	}
 	if h.client != nil {
 		err := h.client.Close()
 		h.client = nil
 		return err
 	}
 	return nil
+}
+
+// machineKeys are a ~/.ssh/config host's keys: the ssh-agent's, then each
+// IdentityFile that needs no passphrase, read in Abhed's process only. One
+// with a passphrase is left to the agent, as ssh-add puts it there.
+func (h *Host) machineKeys() []ssh.AuthMethod {
+	var out []ssh.AuthMethod
+	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
+		if conn, err := net.Dial("unix", sock); err == nil {
+			out = append(out, ssh.PublicKeysCallback(agent.NewClient(conn).Signers))
+		}
+	}
+	var signers []ssh.Signer
+	for _, f := range h.cfg.identityFiles {
+		key, err := os.ReadFile(expandHome(f)) // #nosec G304 -- a key the person's own ssh_config names
+		if err != nil {
+			continue
+		}
+		if s, err := ssh.ParsePrivateKey(key); err == nil {
+			signers = append(signers, s)
+		}
+	}
+	if len(signers) > 0 {
+		out = append(out, ssh.PublicKeys(signers...))
+	}
+	return out
 }
 
 // drop closes c, and forgets it when it is still h's connection, so the

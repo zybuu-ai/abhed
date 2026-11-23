@@ -1461,9 +1461,11 @@ type AgentsConfig struct {
 	Disabled bool `json:"disabled,omitempty"`
 }
 
-// K8sConfig enables cluster access. Off by default: reaching a cluster is an
-// authorization decision, and the credentials already on the machine are not
-// a reason to hand them to an agent without being asked.
+// K8sConfig enables cluster access. Off by default where Abhed serves other
+// people's sessions: reaching a cluster is an authorization decision. On the
+// person's own machine, with neither k8s.enabled set nor a managed
+// configuration, their kubeconfig is offered, each context asked before its
+// first use (see toolset.MachineK8s).
 type K8sConfig struct {
 	Enabled bool `json:"enabled"`
 	// Kubeconfig path; empty uses $KUBECONFIG then ~/.kube/config.

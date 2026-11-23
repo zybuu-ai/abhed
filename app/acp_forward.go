@@ -51,9 +51,23 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 			update(map[string]any{"sessionUpdate": "user_message_chunk", "content": text(p.Text)})
 		}
 		// The sender is told, once, as the turn starts; a replay shows the placeholders.
-		if note := ui.WithheldNote(p.SecretsWithheld); note != "" && !replay {
+		if note := ui.MessageNote(p.SecretsWithheld, p.Pasted); note != "" && !replay {
+			meta := map[string]any{}
+			if p.SecretsWithheld != "" {
+				meta["secretsWithheld"] = strings.Split(p.SecretsWithheld, ",")
+			}
+			// The editor masks these in the message it drew as typed, and can
+			// show the agent's login offer for them; never their values.
+			if p.Pasted != "" {
+				var pasted []map[string]string
+				for _, one := range strings.Split(p.Pasted, ",") {
+					id, kind, _ := strings.Cut(one, ":")
+					pasted = append(pasted, map[string]string{"id": id, "kind": kind})
+				}
+				meta["pastedCredentials"] = pasted
+			}
 			update(map[string]any{"sessionUpdate": "agent_message_chunk", "content": text(strings.ToUpper(note[:1]) + note[1:] + ".\n\n"),
-				"_meta": map[string]any{acpMetaKey: map[string]any{"secretsWithheld": strings.Split(p.SecretsWithheld, ",")}}})
+				"_meta": map[string]any{acpMetaKey: meta}})
 		}
 	case agent.EvAgentMessage:
 		if !replay {

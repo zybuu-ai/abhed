@@ -78,6 +78,10 @@ type Result struct {
 	// covers a later call only with the same Guard: a hook or fsmonitor
 	// planted after the grant is asked about again.
 	Guard string
+	// Keeps, for the first use of something the person's own machine set up
+	// (a kubeconfig context, an ~/.ssh/config host), names what "always"
+	// keeps for them beyond this session; "" for any other ask.
+	Keeps string
 }
 
 // Covers reports whether a scope remembered with guard covers r.

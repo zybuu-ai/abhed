@@ -695,7 +695,7 @@ func (l *Loop) deliverQueuedCount() (int, error) {
 	for _, q := range l.takeSteering() {
 		if why := l.promptRefused(context.Background(), q.Text); why != "" {
 			l.record(EvMessageDropped, ActorSystem, DroppedMessage{
-				QueueID: q.ID, ClientID: q.ClientID, Text: q.Text, QueuedAt: q.At, Reason: why,
+				QueueID: q.ID, ClientID: q.ClientID, Text: withheldDropped(l, q.Text), QueuedAt: q.At, Reason: why,
 			})
 			continue
 		}
@@ -703,7 +703,9 @@ func (l *Loop) deliverQueuedCount() (int, error) {
 		// session, and a message the model saw but the log did not would
 		// make a replay diverge from what happened.
 		text, withheld := l.withholdSecrets(q.Text)
-		said := Message{Text: text, QueueID: q.ID, ClientID: q.ClientID, Steered: q.Steered, SecretsWithheld: withheld, Note: l.parallelNote(q.typed)}
+		text, pasted, pastedNote := l.withholdPasted(text)
+		said := Message{Text: text, QueueID: q.ID, ClientID: q.ClientID, Steered: q.Steered, SecretsWithheld: withheld,
+			Pasted: pasted, Note: joinNotes(l.parallelNote(q.typed), pastedNote)}
 		if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, said); err != nil {
 			return n, err
 		}
@@ -901,13 +903,13 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	if why == "" && l.Hooks != nil && ctx.Err() != nil {
 		// Stopped while the hooks decided: not screened, so never sent, and
 		// recorded as dropped rather than kept for the next prompt.
-		l.record(EvMessageDropped, ActorSystem, DroppedMessage{ClientID: m.ClientID, Text: m.Text, QueuedAt: time.Now(),
+		l.record(EvMessageDropped, ActorSystem, DroppedMessage{ClientID: m.ClientID, Text: withheldDropped(l, m.Text), QueuedAt: time.Now(),
 			Reason: "stopped before it was screened"})
 		return l.finishStopped(ctx, terminalForCancel(ctx)), nil
 	}
 	if why != "" {
 		// Said in the session, where its surface shows it, as a steer refused is.
-		l.record(EvMessageDropped, ActorSystem, DroppedMessage{ClientID: m.ClientID, Text: m.Text, QueuedAt: time.Now(), Reason: why})
+		l.record(EvMessageDropped, ActorSystem, DroppedMessage{ClientID: m.ClientID, Text: withheldDropped(l, m.Text), QueuedAt: time.Now(), Reason: why})
 		l.setRefused(why)
 		// Those delivered are answered now, as RunQueued would, not left
 		// recorded and unanswered until a later message.
@@ -924,11 +926,13 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 		return TermError, err
 	}
 	text, withheld := l.withholdSecrets(m.Text)
+	text, pasted, pastedNote := l.withholdPasted(text)
 	typed := m.Typed
 	if typed == "" {
 		typed = typedFrom(ctx)
 	}
-	said := Message{Text: text, ClientID: m.ClientID, SecretsWithheld: withheld, Note: l.parallelNote(typed)}
+	said := Message{Text: text, ClientID: m.ClientID, SecretsWithheld: withheld, Pasted: pasted,
+		Note: joinNotes(l.parallelNote(typed), pastedNote)}
 	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, said); err != nil {
 		return TermError, err
 	}
@@ -2069,6 +2073,7 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 			Reason: "this call may already have run on a process that stopped before recording its result"}
 	}
 	decision = l.filesJudged(tool, call, decision)
+	decision, firstUse := l.firstUseAsk(tool, call, decision)
 	// A person previewing writes sees each edit and write before it lands:
 	// any decision but a deny becomes the preview ask, which offers no scope,
 	// so no "always" grant can answer it. An earlier ask's reason is kept.
@@ -2268,6 +2273,9 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 		}
 		if approvedBy["by"] == ByReviewer {
 			l.noteReviewed(call.ID)
+		}
+		if firstUse != nil {
+			l.firstUseApproved(tool, *firstUse, answer.Granted == firstUse.Scope, approvedBy)
 		}
 	}
 	if ok, res := l.planClaim(call, planned, approvedBy); !ok {
@@ -2618,7 +2626,7 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 	if reason == TermShutdown {
 		for _, q := range l.takeSteering() {
 			l.record(EvMessageDropped, ActorSystem, DroppedMessage{
-				QueueID: q.ID, ClientID: q.ClientID, Text: q.Text, QueuedAt: q.At,
+				QueueID: q.ID, ClientID: q.ClientID, Text: withheldDropped(l, q.Text), QueuedAt: q.At,
 				Reason: "server shut down before it was delivered",
 			})
 		}
@@ -3091,6 +3099,17 @@ func (l *Loop) secretsRefused(tool tools.Tool, call model.ToolCall) string {
 	}
 	_ = json.Unmarshal(call.Args, &a)
 	a.Secrets = append(a.Secrets, tools.SecretNames(tool, call.Args)...)
+	// A secret a kept grant binds to the call's cluster was allowed when the
+	// person approved that grant; a deny rule still refuses it.
+	if b, ok := tool.(tools.BoundSecrets); ok {
+		for _, name := range b.BoundSecrets(l.Session, call.Args) {
+			for _, r := range l.Policy.DenyRules() {
+				if r.Matches("secret", name) {
+					return fmt.Sprintf("secret %s is denied by rule %s", name, r)
+				}
+			}
+		}
+	}
 	// Rules only, never the mode: bypass and auto approve calls, not secrets.
 	for _, name := range a.Secrets {
 		for _, r := range l.Policy.DenyRules() {

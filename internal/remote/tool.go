@@ -23,6 +23,10 @@ import (
 type Registry struct {
 	mu    sync.RWMutex
 	hosts map[string]*Host
+	// machine is the person's ~/.ssh/config, whose hosts are offered too,
+	// within machineAllowed when that is set.
+	machine        *SSHConfig
+	machineAllowed []string
 }
 
 func NewRegistry(configs []HostConfig) (*Registry, []error) {
@@ -189,6 +193,9 @@ func (t Tool) Description() string {
 		hosts = " Hosts the operator declared, ready now with no ssh_connect needed: " +
 			strings.Join(t.R.names(), ", ") + "."
 	}
+	if t.R != nil {
+		hosts += machineHostsLine(t.R)
+	}
 	return "Run a shell command on a remote machine over SSH." + hosts +
 		" Hosts added with ssh_connect in this session can be named too." +
 		" Every call requires approval, because a remote command runs outside " +
@@ -265,6 +272,12 @@ func (t Tool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage)
 	if !ok && t.R != nil {
 		h, ok = t.R.get(a.Host)
 	}
+	if !ok && t.R != nil {
+		var err error
+		if h, ok, err = machineHostFor(t.R, sess, a.Host); err != nil {
+			return errf("%v", err)
+		}
+	}
 	if !ok {
 		// Naming the alternatives ends the retry loop a bare "not found"
 		// otherwise causes.
@@ -331,15 +344,23 @@ func (t Tool) Target(sess *tools.Session, raw json.RawMessage) string {
 		return ""
 	}
 	h, ok := sessionHostsOf(sess, t.R, false).get(a.Host)
-	origin := "added in this session"
+	declared := false
 	if !ok && t.R != nil {
 		h, ok = t.R.get(a.Host)
-		origin = "declared by the operator"
+		declared = ok
+	}
+	if !ok && t.R != nil {
+		if mh, found := t.R.MachineHost(a.Host); found {
+			return machineTarget(mh)
+		}
 	}
 	if !ok {
 		return ""
 	}
-	target := fmt.Sprintf("runs as %s@%s, %s", h.User(), h.Addr(), origin)
+	target := fmt.Sprintf("runs as %s@%s, %s", h.User(), h.Addr(), hostOrigin(h, declared))
+	if h.cfg.jump != nil {
+		target += ", through " + h.cfg.jump.Name()
+	}
 	if a.StdinSecret != "" {
 		target += "; writes stored secret " + a.StdinSecret + " to the command's stdin"
 	}
@@ -393,9 +414,45 @@ func knownNames(r *Registry, mine *sessionHosts) []string {
 	if r != nil {
 		out = r.names()
 	}
-	out = append(out, mine.names()...)
+	for _, n := range append(mine.names(), r.machineAliases()...) {
+		if !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
 	sort.Strings(out)
 	return out
+}
+
+// machineHostFor is the session's connection to the ~/.ssh/config host
+// alias, made once and kept with the session's hosts, so it closes with it.
+func machineHostFor(r *Registry, sess *tools.Session, alias string) (*Host, bool, error) {
+	mh, ok := r.MachineHost(alias)
+	if !ok {
+		return nil, false, nil
+	}
+	mine := sessionHostsOf(sess, r, true)
+	if h, have := mine.get(alias); have && h.cfg.machine {
+		return h, true, nil
+	}
+	h, err := newMachineHost(r.machineConfig(), mh)
+	if err != nil {
+		return nil, true, err
+	}
+	if !mine.add(h) {
+		return nil, true, fmt.Errorf("the session has ended")
+	}
+	return h, true, nil
+}
+
+// hostOrigin says where a host came from, for the approval.
+func hostOrigin(h *Host, declared bool) string {
+	switch {
+	case declared:
+		return "declared by the operator"
+	case h.cfg.machine:
+		return "from your ~/.ssh/config, signing in with your ssh-agent or its IdentityFile"
+	}
+	return "added in this session"
 }
 
 func combine(o *Output) string {
@@ -708,7 +765,24 @@ func (t ConnectTool) Precheck(_ *tools.Session, raw json.RawMessage) error {
 	if why := t.declaredName(a); why != "" {
 		return errors.New(why)
 	}
+	if why := t.machineName(a); why != "" {
+		return errors.New(why)
+	}
 	return nil
+}
+
+// machineName is why a call naming a ~/.ssh/config host needs no connect: it
+// is ready by name. One that brings its own key or password goes ahead.
+func (t ConnectTool) machineName(a connectArgs) string {
+	if t.R == nil || a.IdentityFile != "" || a.PasswordSecret != "" {
+		return ""
+	}
+	if _, ok := t.R.MachineHost(a.Addr); ok && (a.Name == "" || a.Name == a.Addr) {
+		return fmt.Sprintf("%s is a host in the user's ~/.ssh/config and is ready by name: run commands on it "+
+			"with the ssh tool (host %q), which signs in with their ssh-agent and the key the config names. "+
+			"Nothing was connected.", a.Addr, a.Addr)
+	}
+	return ""
 }
 
 // PrecheckInPlanMode: naming a declared host is answered in plan mode too;

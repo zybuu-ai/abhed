@@ -209,6 +209,7 @@ var subcommands = []subcommand{
 	{name: "ollama", about: "check a local Ollama model and offer what it lacks: check, status, models, forget", trust: true},
 	{name: "user", about: "manage local accounts: add, list, passwd, remove, import", trust: true},
 	{name: "secret", about: "manage stored secrets: set, list, rm"},
+	{name: "machine", about: "the kubeconfig contexts, ssh hosts and cluster logins kept for Abhed: list, forget"},
 	{name: "login", about: "sign this command line in to an Abhed server and save it as a profile"},
 	{name: "logout", about: "sign the current profile (or -profile NAME) out"},
 	{name: "profile", about: "the servers this command line knows: list, use, rm"},

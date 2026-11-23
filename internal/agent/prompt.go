@@ -287,6 +287,14 @@ func toolHints(names []string) string {
 		b.WriteString("\n- To have the user choose between options before you go on, call ask_user rather than " +
 			"asking in prose and ending your turn.")
 	}
+	if slices.Contains(names, "k8s_get") || slices.Contains(names, "ssh") {
+		b.WriteString("\n- Clusters and remote machines are part of the work you do, not outside your role: when " +
+			"the user asks about a cluster or a host, or pastes a login, use the cluster and SSH tools. They use " +
+			"the user's own kubeconfig contexts and ~/.ssh/config hosts through Abhed, which holds every " +
+			"credential, so you never see one. Say what approval to expect: the first use of a cluster or host " +
+			"asks the user once, and every cluster change asks each time. Never run kubectl, oc or ssh through " +
+			"bash for this; the sandbox keeps credentials out of it.")
+	}
 	if slices.Contains(names, "task") {
 		b.WriteString("\n- For a broad search across many files, or independent parts of a larger task, " +
 			"hand the work to a subagent with task (tasks for several at once); it returns a summary and " +

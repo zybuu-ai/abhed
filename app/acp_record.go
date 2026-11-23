@@ -16,6 +16,7 @@ import (
 	"github.com/zybuu-ai/abhed/hawkeye"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/store"
@@ -348,7 +349,9 @@ func (c *acpConn) restore(s *acpSession, rec *local.Store, events []agent.Event)
 				continue
 			}
 			var g agent.ScopeGranted
-			if json.Unmarshal(ev.Payload, &g) == nil && g.Scope != "" {
+			// A first use's scope is kept by the person's grants, which a
+			// revoke since may have dropped; it is never restored from here.
+			if json.Unmarshal(ev.Payload, &g) == nil && g.Scope != "" && !tools.IsFirstUseScope(g.Scope) {
 				if _, err := policy.ParseRule(g.Scope); err == nil {
 					// No guard: a git scope restored is asked about again, as its repository may have changed.
 					s.always[g.Scope] = ""

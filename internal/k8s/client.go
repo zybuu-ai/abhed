@@ -28,11 +28,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/machinegrant"
 )
 
 // Cluster is a connection to one Kubernetes API server.
@@ -78,6 +81,16 @@ type Config struct {
 	Clusters []LoginCluster
 	// CAFile adds a CA bundle for a login cluster that names none of its own.
 	CAFile string
+
+	// FirstUseAll asks the first use of every kubeconfig context, as where
+	// the tools are offered because the person's machine has a kubeconfig;
+	// otherwise only a context whose credential helper Abhed would run asks.
+	FirstUseAll bool
+	// KeptLogins offers the clusters the person logged in to by pasting a
+	// token, kept in their own state, beside k8s.clusters.
+	KeptLogins bool
+	// Secret reads a kept login's token from the secrets store; nil reads none.
+	Secret func(name string) (string, error)
 }
 
 // ---------------------------------------------------------------- kubeconfig
@@ -117,6 +130,11 @@ type kubeUser struct {
 	ClientCertificate     string
 	ClientKey             string
 	Exec                  *execConfig
+	// AuthProvider names a legacy auth-provider (gcp, azure, oidc), which
+	// Abhed refuses: its refresh writes tokens back into the kubeconfig.
+	AuthProvider string
+	// Username is basic auth, which Abhed does not send.
+	Username string
 }
 
 type execConfig struct {
@@ -137,35 +155,92 @@ func Open(cfg Config) (*Cluster, error) {
 	return openFrom(cfg, kc, path)
 }
 
-// loadKubeconfig reads and parses the kubeconfig the config names.
-func loadKubeconfig(cfg Config) (*kubeconfig, string, error) {
+// KubeconfigPaths are the files the config names: k8s.kubeconfig, else
+// each file KUBECONFIG lists, else ~/.kube/config.
+func KubeconfigPaths(cfg Config) []string {
 	path := cfg.Kubeconfig
 	if path == "" {
 		path = os.Getenv("KUBECONFIG")
 	}
 	if path == "" {
 		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, "", fmt.Errorf("no kubeconfig configured and no home directory")
+		if err != nil || home == "" {
+			return nil
 		}
-		path = filepath.Join(home, ".kube", "config")
+		return []string{filepath.Join(home, ".kube", "config")}
 	}
-	// KUBECONFIG may list several files; the first that exists wins here,
-	// rather than implementing the full merge semantics for a case that has
-	// not come up.
-	if i := strings.IndexByte(path, os.PathListSeparator); i >= 0 {
-		path = path[:i]
+	var out []string
+	for _, p := range filepath.SplitList(path) {
+		if p != "" {
+			out = append(out, p)
+		}
 	}
+	return out
+}
 
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, path, fmt.Errorf("read kubeconfig %s: %w", path, err)
+// loadKubeconfig reads and parses the kubeconfig the config names. Several
+// files (KUBECONFIG=a:b) merge as kubectl merges them: the first file to
+// name a context, cluster or user, or to set current-context, wins, and a
+// listed file that does not exist is skipped.
+func loadKubeconfig(cfg Config) (*kubeconfig, string, error) {
+	paths := KubeconfigPaths(cfg)
+	if len(paths) == 0 {
+		return nil, "", fmt.Errorf("no kubeconfig configured and no home directory")
 	}
-	kc, err := parseKubeconfig(raw)
-	if err != nil {
-		return nil, path, fmt.Errorf("parse %s: %w", path, err)
+	merged := &kubeconfig{}
+	var read []string
+	var firstErr error
+	for _, path := range paths {
+		raw, err := os.ReadFile(path) // #nosec G304 -- the person's own kubeconfig, read in Abhed's process
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) || len(paths) == 1 {
+				firstErr = cmpErr(firstErr, fmt.Errorf("read kubeconfig %s: %w", path, err))
+			}
+			continue
+		}
+		kc, err := parseKubeconfig(raw)
+		if err != nil {
+			return nil, path, fmt.Errorf("parse %s: %w", path, err)
+		}
+		merged.merge(kc)
+		read = append(read, path)
 	}
-	return kc, path, nil
+	if len(read) == 0 {
+		if firstErr == nil {
+			firstErr = fmt.Errorf("none of the kubeconfig files exists: %s", strings.Join(paths, ", "))
+		}
+		return nil, strings.Join(paths, string(os.PathListSeparator)), firstErr
+	}
+	return merged, strings.Join(read, string(os.PathListSeparator)), nil
+}
+
+func cmpErr(have, next error) error {
+	if have != nil {
+		return have
+	}
+	return next
+}
+
+// merge adds what o names that kc does not yet.
+func (kc *kubeconfig) merge(o *kubeconfig) {
+	if kc.CurrentContext == "" {
+		kc.CurrentContext = o.CurrentContext
+	}
+	for _, c := range o.Contexts {
+		if !slices.ContainsFunc(kc.Contexts, func(h kubeContext) bool { return h.Name == c.Name }) {
+			kc.Contexts = append(kc.Contexts, c)
+		}
+	}
+	for _, c := range o.Clusters {
+		if !slices.ContainsFunc(kc.Clusters, func(h kubeCluster) bool { return h.Name == c.Name }) {
+			kc.Clusters = append(kc.Clusters, c)
+		}
+	}
+	for _, u := range o.Users {
+		if !slices.ContainsFunc(kc.Users, func(h kubeUser) bool { return h.Name == u.Name }) {
+			kc.Users = append(kc.Users, u)
+		}
+	}
 }
 
 func openFrom(cfg Config, kc *kubeconfig, path string) (*Cluster, error) {
@@ -246,6 +321,9 @@ func openFrom(cfg Config, kc *kubeconfig, path string) (*Cluster, error) {
 		if u.Name != userName {
 			continue
 		}
+		if why := refusedAuth(u); why != "" {
+			return nil, fmt.Errorf("context %q: %s", ctxName, why)
+		}
 		switch {
 		case u.Token != "":
 			c.bearer = u.Token
@@ -281,6 +359,22 @@ func openFrom(cfg Config, kc *kubeconfig, path string) (*Cluster, error) {
 	return c, nil
 }
 
+// refusedAuth is why Abhed will not use a kubeconfig user, or "".
+func refusedAuth(u kubeUser) string {
+	switch {
+	case u.AuthProvider != "":
+		return fmt.Sprintf("it signs in with the auth-provider %q, which Abhed does not use: that flow "+
+			"refreshes tokens by writing them back into your kubeconfig, and Abhed never writes to it. "+
+			"Switch the context to its exec credential plugin (such as kubelogin, gke-gcloud-auth-plugin "+
+			"or kubelogin for Azure), or log in with a token through k8s_login", u.AuthProvider)
+	case u.Username != "" && u.Token == "" && u.TokenFile == "" && u.Exec == nil &&
+		u.ClientCertificateData == "" && u.ClientCertificate == "":
+		return "it signs in with a user name and password (basic auth), which Abhed does not send; " +
+			"use a token, a client certificate or an exec credential plugin instead"
+	}
+	return ""
+}
+
 // LoginCluster is a cluster the operator lets k8s_login reach. The model
 // names one; it never supplies the server a stored token is sent to.
 type LoginCluster struct {
@@ -291,6 +385,11 @@ type LoginCluster struct {
 	// InsecureSkipTLSVerify turns verification off. Operator config only, and
 	// warned about, since the token then goes to whoever answers.
 	InsecureSkipTLSVerify bool
+	// CAPEM, when set, is the only certificate the server is verified
+	// against: the one the person approved when they logged in by pasting a
+	// token. CAFingerprint is its SHA-256, as they were shown it.
+	CAPEM         []byte
+	CAFingerprint string
 }
 
 // Verification says how the server's certificate is checked, for the person
@@ -299,6 +398,10 @@ func (lc LoginCluster) Verification(defaultCA string) string {
 	switch {
 	case lc.InsecureSkipTLSVerify:
 		return "TLS NOT VERIFIED (insecure_skip_tls_verify)"
+	case len(lc.CAPEM) > 0 && lc.CAFingerprint != "":
+		return "TLS verified against the certificate you approved (SHA-256 " + lc.CAFingerprint + ")"
+	case len(lc.CAPEM) > 0:
+		return "TLS verified against the cluster's CA from your kubeconfig"
 	case lc.CAFile != "":
 		return "TLS verified against " + lc.CAFile
 	case defaultCA != "":
@@ -321,7 +424,13 @@ func OpenLogin(lc LoginCluster, defaultCA, token, namespace string) (*Cluster, e
 		namespace = "default"
 	}
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: lc.InsecureSkipTLSVerify} // #nosec G402 -- the operator's opt-out for one cluster, warned at startup
-	if !lc.InsecureSkipTLSVerify {
+	if !lc.InsecureSkipTLSVerify && len(lc.CAPEM) > 0 {
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(lc.CAPEM) {
+			return nil, fmt.Errorf("cluster %s: the kept certificate is not usable", lc.Name)
+		}
+		tlsCfg.RootCAs = pool
+	} else if !lc.InsecureSkipTLSVerify {
 		pool, err := x509.SystemCertPool()
 		if err != nil || pool == nil {
 			pool = x509.NewCertPool()
@@ -637,4 +746,100 @@ func InsecureContext(cfg Config) (string, bool) {
 		}
 	}
 	return ctxName, false
+}
+
+// ContextInfo describes one kubeconfig context for the person approving its
+// first use and for the grant that keeps it: where it goes and how it signs
+// in, never with what.
+type ContextInfo struct {
+	Name, Server, Namespace string
+	// Auth says how it signs in: "a token", "a client certificate", …
+	Auth string
+	// Exec is the credential helper's command line, when it runs one.
+	Exec     string
+	Insecure bool
+	// Refused is why Abhed will not use it, or "".
+	Refused string
+	// Identity sums what a grant for it covers; see machinegrant.Identity.
+	Identity string
+}
+
+// Contexts lists the kubeconfig's contexts, its current context first.
+// It only reads the files: nothing is run and nothing is reached.
+func Contexts(cfg Config) (list []ContextInfo, current string, err error) {
+	kc, _, err := loadKubeconfig(cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, c := range kc.Contexts {
+		if info, ok := contextInfo(kc, c.Name); ok {
+			list = append(list, info)
+		}
+	}
+	slices.SortStableFunc(list, func(a, b ContextInfo) int {
+		switch {
+		case a.Name == kc.CurrentContext:
+			return -1
+		case b.Name == kc.CurrentContext:
+			return 1
+		}
+		return strings.Compare(a.Name, b.Name)
+	})
+	return list, kc.CurrentContext, nil
+}
+
+// contextInfo describes the context name names in kc.
+func contextInfo(kc *kubeconfig, name string) (ContextInfo, bool) {
+	var ctx *kubeContext
+	for i := range kc.Contexts {
+		if kc.Contexts[i].Name == name {
+			ctx = &kc.Contexts[i]
+			break
+		}
+	}
+	if ctx == nil {
+		return ContextInfo{}, false
+	}
+	info := ContextInfo{Name: name, Namespace: ctx.Namespace}
+	ca := ""
+	for _, cl := range kc.Clusters {
+		if cl.Name == ctx.Cluster {
+			info.Server, info.Insecure = strings.TrimSuffix(cl.Server, "/"), cl.InsecureSkipTLSVerify
+			ca = cl.CertificateAuthorityData + "\x00" + cl.CertificateAuthority
+			break
+		}
+	}
+	info.Auth = "no credential"
+	for _, u := range kc.Users {
+		if u.Name != ctx.User {
+			continue
+		}
+		info.Refused = refusedAuth(u)
+		switch {
+		case u.AuthProvider != "":
+			info.Auth = "the auth-provider " + u.AuthProvider
+		case u.Token != "":
+			info.Auth = "the kubeconfig's token"
+		case u.TokenFile != "":
+			info.Auth = "the token in " + u.TokenFile
+		case u.Exec != nil:
+			info.Exec = strings.TrimSpace(u.Exec.Command + " " + strings.Join(u.Exec.Args, " "))
+			info.Auth = "a token from the credential helper `" + info.Exec + "`, which Abhed runs on your machine"
+		case u.ClientCertificateData != "" || u.ClientCertificate != "":
+			info.Auth = "the kubeconfig's client certificate"
+		case u.Username != "":
+			info.Auth = "a user name and password"
+		}
+		break
+	}
+	execEnv := ""
+	for _, u := range kc.Users {
+		if u.Name == ctx.User && u.Exec != nil {
+			for _, e := range u.Exec.Env {
+				execEnv += e.Name + "=" + e.Value + "\x00"
+			}
+		}
+	}
+	info.Identity = machinegrant.Identity(name, info.Server, ca, strconv.FormatBool(info.Insecure), ctx.User, info.Auth, info.Exec, execEnv)
+	return info, true
 }

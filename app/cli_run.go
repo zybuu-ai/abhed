@@ -246,6 +246,8 @@ func run(a *App, workspace string, f *cliFlags) int {
 		Warn:    warnf,
 		Agents:  sessionDefs,
 		Sandbox: sb,
+		// The terminal is the person's own: their kubeconfig and ~/.ssh/config are offered.
+		Machine: true,
 	})
 	defer set.Close()
 	// A skill's own directory is reachable: its instructions reference files beside them.
