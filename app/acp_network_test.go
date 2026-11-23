@@ -89,3 +89,27 @@ func TestNetworkRefusedInsideAnAgentCommand(t *testing.T) {
 		t.Fatalf("/network inside an agent's command: %v", err)
 	}
 }
+
+// Studio's request for one host with scope workspace opens and keeps that
+// host alone, and the record names it.
+func TestStudioNetworkWorkspaceScopeWithAHost(t *testing.T) {
+	r := newStudioRig(t, "")
+	id := r.open()
+	var got struct {
+		Opened string `json:"opened"`
+	}
+	r.cl.ok("_abhed/sandbox/network", map[string]any{"sessionId": id, "scope": "workspace", "host": "example.com"}, &got)
+	if !strings.Contains(got.Opened, "example.com") || strings.Contains(got.Opened, "the network to commands") {
+		t.Fatalf("opened %q", got.Opened)
+	}
+	if k := keptNetwork(r.ws); k.All || len(k.Hosts) != 1 || k.Hosts[0] != "example.com" {
+		t.Fatalf("kept %+v", k)
+	}
+	if changed, _ := r.recorded(id, agent.EvPermissionChanged); len(changed) != 1 || changed[0]["rule"] != "network(example.com)" {
+		t.Fatalf("recorded %v", changed)
+	}
+	pol := r.cl.conn.session(id).parts.Set.Network
+	if st := pol.State(); strings.Contains(st, "opened by the user") && !strings.Contains(st, "example.com") {
+		t.Fatalf("state %q", st)
+	}
+}

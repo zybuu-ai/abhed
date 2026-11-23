@@ -1286,7 +1286,7 @@ _abhed/config/changed { sessionIds, change: { models?, default?, newChats? }, me
   widens what the agent may do is applied to an open chat.
 - **Provider errors (1.3.0).** A prompt that ends because the model provider
   refused it carries `_meta.providerError {kind, status, message, provider,
-  model, next, others}` on its reply (`kind`: key, credit, retired,
+  model, next, others}` on its reply (`kind`: key, credit, retired, too_large, unreachable,
   rate_limit, unavailable or other; `message` is the provider's own, with
   anything key-shaped redacted; `others` are configured models whose key is
   at hand), and the same text as an `agent_message_chunk`. session/new

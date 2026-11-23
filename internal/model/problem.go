@@ -15,6 +15,8 @@ const (
 	ProblemRetired     = "retired"     // the model is retired or not found
 	ProblemRateLimit   = "rate_limit"  // too many requests for now
 	ProblemUnavailable = "unavailable" // the provider failed on its side
+	ProblemTooLarge    = "too_large"   // the request is larger than the model's window
+	ProblemUnreachable = "unreachable" // nothing answered at the endpoint
 	ProblemOther       = "other"
 )
 
@@ -27,8 +29,9 @@ type Problem struct {
 }
 
 var (
-	creditRe  = regexp.MustCompile(`(?i)credit balance|insufficient[_ ]quota|exceeded your current quota|billing|payment required|out of credits?|quota (?:has been )?exceeded`)
-	retiredRe = regexp.MustCompile(`(?i)no longer available|is not found|not found for api version|model[^\n]{0,80}?(?:not found|does not exist|deprecated|retired|decommissioned|discontinued|not supported)|(?:deprecated|retired|decommissioned) model|unknown model|invalid model`)
+	creditRe   = regexp.MustCompile(`(?i)credit balance|insufficient[_ ]quota|exceeded your current quota|billing|payment required|out of credits?|quota (?:has been )?exceeded`)
+	tooLargeRe = regexp.MustCompile(`(?i)context[ _-]?length|context window|maximum context|max(?:imum)?[ _]tokens? (?:exceeded|limit)|too many tokens|prompt is too long|input is too long|request (?:is )?too large|exceeds? the (?:model'?s? )?(?:context|token)`)
+	retiredRe  = regexp.MustCompile(`(?i)no longer available|is not found|not found for api version|model[^\n]{0,80}?(?:not found|does not exist|deprecated|retired|decommissioned|discontinued|not supported)|(?:deprecated|retired|decommissioned) model|unknown model|invalid model`)
 )
 
 // ProblemOf reads a model call's error as a provider problem, or nil when
@@ -42,6 +45,8 @@ func ProblemOf(err error) *Problem {
 	p := &Problem{Status: se.Status, Message: msg}
 	body := se.Body + " " + msg
 	switch {
+	case (se.Status == http.StatusBadRequest || se.Status == http.StatusRequestEntityTooLarge) && tooLargeRe.MatchString(body):
+		p.Kind = ProblemTooLarge
 	case se.Status == http.StatusPaymentRequired || creditRe.MatchString(body):
 		p.Kind = ProblemCredit
 	// Only the provider saying so: a 404 alone is as often a wrong base_url.
