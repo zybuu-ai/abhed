@@ -943,18 +943,21 @@ func warnReadOnlyHint(w warnSink, c Config) {
 }
 
 // MachineSetupOff says why the person's own machine setup is off for kind,
-// "k8s" or "ssh": the managed configuration or an org policy sets a k8s or
-// ssh key, which decides for the organisation, or machine_setup false. ""
-// when it is on: a managed file that sets other things (web search, say)
-// leaves it alone.
+// "k8s" or "ssh", or "" when it is on. For k8s the organisation decides when
+// it turns Kubernetes off (k8s.enabled false) or sets it up itself (declares
+// k8s.clusters or k8s.kubeconfig, or turns k8s.enabled on); a setting that
+// only tightens, such as k8s.allow_writes false, leaves the person's own
+// setup in use under it. Any ssh key decides for ssh, and machine_setup
+// false for both. Settings elsewhere (web search, say) leave it alone.
 func (c Config) MachineSetupOff(kind string) string {
+	orgSets := func(key string) bool { return c.ManagedSets(key) || c.FromOrg(key) }
 	switch {
-	case c.ManagedSets(kind) || c.FromOrg(kind):
-		what := "only the hosts it declares (ssh.hosts) and ssh_connect are offered here, not this machine's ~/.ssh/config"
-		if kind == "k8s" {
-			what = "only the clusters it declares (k8s.clusters) are offered here, and no kubeconfig is read unless it names one; no login is kept"
-		}
-		return fmt.Sprintf("your organisation's configuration (%s) sets %s, so %s; ask your administrator", c.managedFileName(), kind, what)
+	case kind == "k8s" && orgSets("k8s.enabled") && !c.K8s.Enabled:
+		return fmt.Sprintf("your organisation's configuration (%s) turns Kubernetes off (k8s.enabled false), so no cluster can be reached here; ask your administrator", c.managedFileName())
+	case kind == "k8s" && (orgSets("k8s.clusters") || orgSets("k8s.kubeconfig") || orgSets("k8s.enabled") && c.K8s.Enabled):
+		return fmt.Sprintf("your organisation's configuration (%s) sets up Kubernetes itself, so only the clusters it declares (k8s.clusters) are offered here, and no kubeconfig is read unless it names one; no login is kept; ask your administrator", c.managedFileName())
+	case kind == "ssh" && orgSets("ssh"):
+		return fmt.Sprintf("your organisation's configuration (%s) sets ssh, so only the hosts it declares (ssh.hosts) and ssh_connect are offered here, not this machine's ~/.ssh/config; ask your administrator", c.managedFileName())
 	case (c.ManagedSets("machine_setup") || c.FromOrg("machine_setup")) && c.MachineSetup != nil && !*c.MachineSetup:
 		return fmt.Sprintf("your organisation's configuration (%s) turns off the use of this machine's own cluster and SSH setup (machine_setup false); ask your administrator", c.managedFileName())
 	}

@@ -210,17 +210,25 @@ All notable changes to Abhed are recorded here. The format follows
   `[pasted:P1]`, not its value, so a 1.2.9 habit of pasting a token for the
   model to use (in a `curl` header, say) no longer works: store it with
   `abhed secret set` and name it in a `secret(NAME)` rule. Set
-  `k8s.enabled` or `ssh.enabled` to `false` to turn the tools off. A
-  managed configuration or org policy leaves this on unless it sets a
-  `k8s` or `ssh` key, or `machine_setup: false`. Where it sets any `k8s`
-  key, that is now all that counts on the laptop: a person's or
-  workspace's `k8s.enabled: true` is not taken, only the organisation's
-  `k8s.clusters` are offered, no kubeconfig is read unless the organisation
-  itself names `k8s.kubeconfig`, no login is kept, and a pasted login is
-  refused with that reason. Before, a laptop under such a configuration
-  could still reach the person's own kubeconfig contexts; an organisation
-  that relied on that names its kubeconfig in `k8s.kubeconfig`. Where it
-  sets any `ssh` key, only its `ssh.hosts` and `ssh_connect` are offered.
+  `k8s.enabled` or `ssh.enabled` to `false` to turn the tools off. Under
+  a managed configuration or org policy:
+  - `k8s.allow_writes: false` alone only tightens, as in 1.2.9: the
+    person's own kubeconfig stays in use, read-only, and `k8s_apply` is
+    not offered.
+  - `k8s.enabled: false` turns Kubernetes off: no cluster tool is offered,
+    and a pasted login is refused with that reason.
+  - Where the organisation sets Kubernetes up itself, by declaring
+    `k8s.clusters` or `k8s.kubeconfig` in its managed file or turning
+    `k8s.enabled` on, only that counts on the laptop: a person's or
+    workspace's `k8s.enabled: true` is not taken, only its `k8s.clusters`
+    are offered, no kubeconfig is read unless its managed file names
+    `k8s.kubeconfig`, no login is kept, and a pasted login is refused with
+    that reason. In 1.2.9 such a laptop could still reach the person's own
+    kubeconfig contexts.
+  - Any `ssh` key leaves only its `ssh.hosts` and `ssh_connect`, and
+    `machine_setup: false` turns off both the kubeconfig and
+    `~/.ssh/config`. Anything else it sets, such as web search, leaves the
+    person's own setup on.
 - Under `-verify strict`, a statement that only explains code the session
   read and did not change ("the running total is 0 because nothing has been
   added yet"), or what changed code did before, no longer fails the
@@ -352,9 +360,9 @@ All notable changes to Abhed are recorded here. The format follows
   reason. `known_hosts` is checked for every host and jump, never written.
   Cluster writes still ask each time. It is on where no file sets
   `k8s.enabled` or `ssh.enabled` and the managed configuration or org
-  policy sets no `k8s` or `ssh` key and not `machine_setup: false` (a
-  managed file that only turns on web search leaves it on); setting either
-  to `false`, a workspace included, turns it off.
+  policy decides neither (see Upgrading for exactly when it does; a managed
+  file that only turns on web search, or only turns k8s writes off, leaves
+  it on); setting either to `false`, a workspace included, turns it off.
   With no kubeconfig, `k8s_login` is offered from the moment a login is
   pasted, so a pasted `oc login` works on any machine and costs nothing
   until then, and the other cluster tools appear once a login exists. A
