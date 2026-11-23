@@ -139,9 +139,13 @@ func TestToolsListFollowsNextCursor(t *testing.T) {
 
 // A server that repeats its cursor is not read forever.
 func TestToolsListStopsAtARepeatedCursor(t *testing.T) {
+	warned := captureWarnings(t)
 	g := connect(t, stub(t, "loop", mcptest.Config{Tools: mcptest.Tools("t", 9), PageSize: 3, RepeatCursor: true}))
 	if n := len(g.Tools()); n != 6 {
 		t.Fatalf("%d tools, want the first page and the one its repeated cursor named (6)", n)
+	}
+	if !strings.Contains(warned.String(), `mcp server "loop" repeated a cursor in tools/list`) {
+		t.Fatalf("no warning names the server: %q", warned.String())
 	}
 }
 
@@ -225,6 +229,37 @@ func TestHungServerHoldsUpNoOther(t *testing.T) {
 		if st.Name == "hung" && (st.Connected || st.Err == nil) {
 			t.Fatalf("the hung server is listed as %+v", st)
 		}
+	}
+}
+
+// More hung servers than start slots: each gives up its slot after SlotHold,
+// so the rest start then rather than a whole deadline later.
+func TestManyHungServersDoNotQueueTheRest(t *testing.T) {
+	const deadline = 1500 * time.Millisecond
+	var cfgs []mcp.ServerConfig
+	for i := range 2*mcp.DefaultConnectWorkers + 1 {
+		c := stub(t, fmt.Sprintf("hung%d", i), mcptest.Config{Hang: true, Tools: mcptest.Tools("t", 1)})
+		c.StartupTimeout = deadline
+		cfgs = append(cfgs, c)
+	}
+	cfgs = append(cfgs, stub(t, "well", mcptest.Config{Tools: mcptest.Tools("a", 2)}))
+	g := mcp.NewGateway()
+	g.SlotHold = 100 * time.Millisecond
+	defer g.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	start := time.Now()
+	errs := g.Connect(ctx, cfgs)
+	// Queued behind whole deadlines, three groups of hung servers take three
+	// deadlines and their shutdowns (about 7.5s); with the hold, about one.
+	if took := time.Since(start); took >= 4*time.Second {
+		t.Fatalf("Connect took %s with %d servers hung: they queued behind each other's deadlines", took, len(cfgs)-1)
+	}
+	if len(errs) != len(cfgs)-1 {
+		t.Fatalf("%d errors, want one per hung server: %v", len(errs), errs)
+	}
+	if n := len(g.Tools()); n != 2 {
+		t.Fatalf("%d tools, want the healthy server's 2", n)
 	}
 }
 

@@ -66,10 +66,12 @@ type ServerConfig struct {
 }
 
 // Startup bounds: ConnectWorkers servers start at once, each within its
-// StartupTimeout, so a hung one holds up no other.
+// StartupTimeout. One still starting after SlotHold gives its slot to the
+// next, so hung servers delay the others' starts by SlotHold, not a deadline.
 const (
 	DefaultConnectWorkers = 8
 	DefaultStartupTimeout = 60 * time.Second
+	DefaultSlotHold       = 5 * time.Second
 )
 
 var errGatewayClosed = errors.New("the MCP gateway was closed while the server connected")
@@ -142,6 +144,9 @@ type Gateway struct {
 	// ConnectWorkers is how many servers Connect starts at once; zero is
 	// DefaultConnectWorkers.
 	ConnectWorkers int
+	// SlotHold is how long a starting server keeps its slot; zero is
+	// DefaultSlotHold.
+	SlotHold time.Duration
 }
 
 // NewGateway makes a gateway; Close must be called when it is done with, or
@@ -233,6 +238,10 @@ func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
 	if workers <= 0 {
 		workers = DefaultConnectWorkers
 	}
+	hold := g.SlotHold
+	if hold <= 0 {
+		hold = DefaultSlotHold
+	}
 	slots := make(chan struct{}, workers)
 	var wg sync.WaitGroup
 	for _, i := range start {
@@ -241,7 +250,10 @@ func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
 		slots <- struct{}{}
 		go func() {
 			defer wg.Done()
-			defer func() { <-slots }()
+			var once sync.Once
+			free := func() { once.Do(func() { <-slots }) }
+			defer free()
+			defer time.AfterFunc(hold, free).Stop()
 			err := g.startOne(life, ctx, cfg)
 			g.mu.Lock()
 			delete(g.pending, cfg.Name)

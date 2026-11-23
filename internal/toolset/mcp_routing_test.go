@@ -464,3 +464,44 @@ func mustGet(t *testing.T, reg *tools.Registry, name string) tools.Tool {
 	}
 	return tl
 }
+
+// A server deferred because the small-server budget was full is offered in
+// full again when a server re-added at run time grows past small and frees it.
+func TestReAddFreesAKeptSmallServer(t *testing.T) {
+	reg := builtins()
+	add := func(server string, n int) []tools.Tool {
+		var ts []tools.Tool
+		for i := range n {
+			ts = append(ts, fakeMCP{fmt.Sprintf("mcp__%s__x%d", server, i), "a tool of " + server})
+		}
+		return ts
+	}
+	for _, s := range []struct {
+		name string
+		n    int
+	}{{"big", 50}, {"p1", 3}, {"p2", 3}, {"p3", 3}, {"p4", 3}, {"s", 3}} {
+		for _, tl := range add(s.name, s.n) {
+			reg.Add(tl)
+		}
+	}
+	DeferMCP(reg, DeferThreshold)
+	if offered(reg)["mcp__s__x0"] || !offered(reg)["mcp__p1__x0"] {
+		t.Fatal("setup: p1..p4 should fill the small-server budget and s be deferred")
+	}
+	// Re-adding p1 with five tools, as the server's settings do: remove, then add.
+	for i := range 3 {
+		reg.Remove(fmt.Sprintf("mcp__p1__x%d", i))
+	}
+	AddMCPTools(reg, add("p1", 5), func(string, ...any) {})
+	if _, wrapped := mustGet(t, reg, "mcp__s__x0").(*deferredTool); wrapped || !offered(reg)["mcp__s__x0"] {
+		t.Fatal("s is kept in full now but its tools stay deferred and hidden")
+	}
+	if offered(reg)["mcp__p1__x4"] {
+		t.Fatal("p1 has five tools and is still offered in full")
+	}
+	search, _ := reg.Get("tool_search")
+	res := search.Run(context.Background(), nil, json.RawMessage(`{"query":"mcp__p1__x4","limit":1}`))
+	if !strings.Contains(res.Content, "mcp__p1__x4") {
+		t.Fatalf("p1's new tool is not searchable: %s", res.Content)
+	}
+}

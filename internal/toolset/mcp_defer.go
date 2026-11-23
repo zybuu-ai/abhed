@@ -46,7 +46,19 @@ func DeferMCP(reg *tools.Registry, threshold int) bool {
 	if len(mcp) <= threshold && !searching {
 		return false
 	}
+	all := mcp
 	mcp = keepSmallServers(mcp)
+	// A server kept in full this pass may have been deferred by an earlier one
+	// (a server added at run time changes which are kept): offer it in full again.
+	stays := map[string]bool{}
+	for _, t := range mcp {
+		stays[t.Name()] = true
+	}
+	for _, t := range all {
+		if d, ok := t.(*deferredTool); ok && !stays[t.Name()] {
+			reg.Replace(d.Tool)
+		}
+	}
 	search := &ToolSearch{}
 	for _, t := range mcp {
 		// Deferred already (a server added at run time defers again): kept as it is.

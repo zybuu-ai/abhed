@@ -225,7 +225,11 @@ func (c *Client) listPages(ctx context.Context, method string, maxPages int,
 		if err != nil {
 			return false, err
 		}
-		if next == "" || seen[next] {
+		if next == "" {
+			return false, nil
+		}
+		if seen[next] {
+			warnf("abhed: warning: mcp server %q repeated a cursor in %s, so the list ends there and may be incomplete\n", c.name, method)
 			return false, nil
 		}
 		if full {

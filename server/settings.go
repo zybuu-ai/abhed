@@ -295,7 +295,7 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 	// can share one. A tool of this server it no longer offers, or one left
 	// out for its name, is taken out; another server's, perhaps mid-restart,
 	// is left alone. This server's new tools are added.
-	added, refused := []string{}, []string{}
+	added, refused, warnings := []string{}, []string{}, []string{}
 	s.state.swapTools(func(reg *tools.Registry) {
 		offered := map[string]tools.Tool{}
 		for _, t := range gw.Tools() {
@@ -317,6 +317,8 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if len(errs) > 0 {
+			// Removed tools leave tool_search's list and index too.
+			toolset.DeferMCP(reg, toolset.DeferThreshold)
 			return
 		}
 		var fresh []tools.Tool
@@ -328,7 +330,9 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 		sort.Slice(fresh, func(i, j int) bool { return fresh[i].Name() < fresh[j].Name() })
 		// As at startup: a taken name or wire name keeps its tool, and the
 		// server's tools are deferred with the rest.
-		added, refused = toolset.AddMCPTools(reg, fresh, func(string, ...any) {})
+		added, refused = toolset.AddMCPTools(reg, fresh, func(format string, a ...any) {
+			warnings = append(warnings, fmt.Sprintf(format, a...))
+		})
 		if added == nil {
 			added = []string{}
 		}
@@ -350,7 +354,9 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{"name": req.Name, "tools": added}
 	if len(refused) > 0 {
 		detail["refused"], resp["refused"] = refused, refused
-		resp["warnings"] = []string{fmt.Sprintf("%d tool(s) not registered: a tool of the same name is already registered and keeps it", len(refused))}
+	}
+	if len(warnings) > 0 {
+		detail["warnings"], resp["warnings"] = warnings, warnings
 	}
 	s.adminAudit(r, "mcp.added", req.Name, detail)
 	WriteJSON(w, http.StatusOK, resp)

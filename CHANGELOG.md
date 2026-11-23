@@ -681,12 +681,14 @@ All notable changes to Abhed are recorded here. The format follows
   account's key.
 - `abhed login` and `abhed mcp login` honour `BROWSER`, and take
   `-no-browser` to only print the sign-in address.
-- MCP servers start in parallel, at most eight at a time, each within its
-  own deadline (`startup_timeout_seconds`, 60 by default): a server that
-  hangs is reported once its deadline passes, with its tools absent, and
-  holds up no other. They used to start one after another, so each hung
-  server delayed every session by a minute; now the session waits for the
-  longest deadline once.
+- MCP servers start in parallel, eight at a time, each within its own
+  deadline (`startup_timeout_seconds`, 60 by default): a server that hangs
+  is reported once its deadline passes, with its tools absent. One still
+  starting after 5 seconds gives its place to the next, so hung servers
+  delay the others' starts by 5 seconds for each group of eight. They used
+  to start one after another, so each hung server delayed every session by
+  a minute; now the session waits for the longest deadline, plus 5 seconds
+  for each further group of eight hung servers.
 - A tool name a provider would refuse, an MCP full name longer than 64
   characters or one holding `.`, is sent to the provider under a short,
   stable wire name (up to 47 plain characters, the `mcp__<server>__` prefix
@@ -1105,7 +1107,7 @@ All notable changes to Abhed are recorded here. The format follows
   word. Tool, prompt and resource lists now follow the cursor, up to a page
   cap and a total cap (100 pages and 2,000 tools; 10 pages and 200 prompts;
   10 pages and 500 resources), and a warning names a server past one. A
-  cursor seen before ends the list.
+  cursor seen before ends the list, with a warning naming the server.
 - More than 128 tools in a request, or an MCP tool whose full name was
   longer than 64 characters or held `.`, made an OpenAI-compatible provider
   answer 400 to every request of the session. Both are handled now (see

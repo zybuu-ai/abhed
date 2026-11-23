@@ -489,9 +489,13 @@ server with `startup_timeout_seconds`. The deadline covers the handshake and
 reading its tool, prompt and resource lists. A server that has not started
 by then, one that hangs say, is reported as failed with the deadline it
 missed, its tools are absent, and the other servers start as they would
-without it; `/mcp restart <server>` tries it again. The session itself
-starts once every server has started or missed its deadline, so a hung
-server delays it by its deadline once, however many servers hang, where
+without it; `/mcp restart <server>` tries it again. A server still starting
+after 5 seconds gives its place among the eight to the next one, while it
+keeps its own deadline, so hung servers delay the others' starts by 5
+seconds for each group of eight, not by a deadline. The session itself
+starts once every server has started or missed its deadline: with hung
+servers that is the longest deadline, plus 5 seconds for each further
+group of eight (16 hung servers at the default: about 65 seconds), where
 each one used to add a minute. Lower `startup_timeout_seconds` on a server
 you would rather lose than wait for. After the start, each
 request to a server (a tool call, a list page) waits at most 60 seconds.
@@ -573,7 +577,7 @@ matches it however it travelled.
 | A tool's description | 1,024 bytes, cut on a character | cut, with `…` |
 | A tool's result, a prompt's text, a resource read | 30,000 bytes, cut on a character | cut, marked `[truncated]` |
 | One message on a stdio server's stdout | 16 MiB | the connection ends, with an error naming the server |
-| Starting a server | 60 s (`startup_timeout_seconds`), 8 servers at once | reported as failed, its tools absent |
+| Starting a server | 60 s (`startup_timeout_seconds`), 8 servers at once; one still starting after 5 s gives its place to the next | reported as failed, its tools absent |
 | One request to a server | 60 s | the call fails with a timeout |
 | MCP tools offered in full | 40 across the servers, then `tool_search`; servers of 3 tools or fewer, 12 tools in all, stay in full | deferred |
 | Tools loaded by `tool_search` | 100 per session | least recently used unloaded |
@@ -598,8 +602,8 @@ for, 100 stay loaded and no request offers more than 128 tools, every name
 one a provider accepts; and the skill listing and the agent types each stay
 within their 8 KB budgets. Routing tests besides it cover three servers
 offering a tool of one name, a deferred tool once loaded, pagination, an
-extension tool named like an MCP tool (refused), a server that hangs at
-start, and a long and a dotted name through each provider's wire format.
+extension tool named like an MCP tool (refused), one server and seventeen
+servers that hang at start, and a long and a dotted name through each provider's wire format.
 
 That run is the tested bound: 50 servers and 1,000 MCP tools. No setting
 caps how many servers you configure, but more than that has not been
