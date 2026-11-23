@@ -960,9 +960,12 @@ All notable changes to Abhed are recorded here. The format follows
   speed or parallelism and no concrete task now gets a note: if it only
   asks to speed things up or run things in parallel, make no code edits for
   it, and answer with a plan of both readings or the question it would ask.
-  A message that names work ("delete these three files at once") gets no
-  note and is done as asked; explicit parallel requests still get the note
-  that starts subagents.
+  A message that names work ("delete these three files at once", "merge
+  these three branches at once", "run the three migrations in parallel")
+  gets no note and is done as asked: a specific object counts as concrete,
+  not only a verb from a list. "Make everything run in parallel" counts as
+  vague, as the request without "make" does. Explicit parallel requests
+  still get the note that starts subagents.
 - The `-p` relevance check marked an answer `off_topic` when the question
   named one of the session's tools ("call the ssh_connect tool, then show
   the uptime"). A tool name is no longer taken as what the answer must

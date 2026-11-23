@@ -170,12 +170,14 @@ func TestHeadlessNoteOnlyOnTheTypedTask(t *testing.T) {
 	if u := evs["user.message"]; len(u) != 1 || u[0]["harness_note"] != agent.UnattendedClarifyNote {
 		t.Fatalf("a -p run did not get the unattended note: %v", u)
 	}
-	evs, err, stderr = headlessEvents(t, "", "-p", "handle the three tickets at the same time")
-	if err != nil {
-		t.Fatalf("%v\n%s", err, stderr)
-	}
-	if u := evs["user.message"]; len(u) != 1 || u[0]["harness_note"] != nil {
-		t.Fatalf("named work got a note in -p: %v", u)
+	for _, ask := range []string{"handle the three tickets at the same time", "Merge these three branches at once"} {
+		evs, err, stderr = headlessEvents(t, "", "-p", ask)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, stderr)
+		}
+		if u := evs["user.message"]; len(u) != 1 || u[0]["harness_note"] != nil {
+			t.Fatalf("named work %q got a note in -p: %v", ask, u)
+		}
 	}
 }
 

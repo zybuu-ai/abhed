@@ -67,13 +67,16 @@ notes after your message for the model.
   terminal, Studio and the console get it. A run nobody can answer, such as
   `abhed -p`, a script through the SDK or rpc, or an unattended server run,
   gets no question. Only a vague request there, one that names speed or
-  parallelism and no concrete task (no action with an object such as fix,
-  delete or update, no bug, file or symbol), gets a note in its place: if
+  parallelism and no concrete task (no action such as fix, delete or update,
+  no bug, file or symbol, and no object beyond generic ones such as
+  "things", "everything" or "the project"), gets a note in its place: if
   the message only asks to speed things up or run things in parallel, make
   no code edits for it, and answer with a short plan that describes both
   readings, or with the one question it would ask; otherwise do the work. A
-  vague "speed up the project by running things in parallel" under `-p` so
-  gets a plan, while "delete these three files at once" is done as asked.
+  vague "speed up the project by running things in parallel" (or "make
+  everything run in parallel") under `-p` so gets a plan, while "delete
+  these three files at once" or "merge these three branches at once" is
+  done as asked.
 
 The parallel phrases are "in parallel", "at the same time", "at once",
 "simultaneously", "side by side", "parallelize" (or "parallelise"), "fan out",

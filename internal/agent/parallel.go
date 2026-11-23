@@ -425,12 +425,73 @@ var (
 )
 
 // vagueSpeedRequest reports a message that names speed or parallelism and no
-// concrete task: no action with an object, bug, file or symbol. Only such a
-// message gets the unattended note; "Delete these three files at once" is
-// work to do.
+// concrete task: no action with an object, bug, file or symbol, and no object
+// beyond generic ones ("things", "everything", "the project"). Only such a
+// message gets the unattended note; "Delete these three files at once" and
+// "Merge these three branches at once" are work to do. A list of verbs alone
+// kept missing the next one, so the object decides too.
 func vagueSpeedRequest(typed string) bool {
-	return speedOrParallel.MatchString(typed) && !concreteTask.MatchString(typed) && !namedThing.MatchString(typed)
+	return speedOrParallel.MatchString(typed) && !concreteTask.MatchString(typed) &&
+		!namedThing.MatchString(typed) && !specificObject(typed)
 }
+
+var (
+	// speedWords are stripped before objects are looked for, so "at the same
+	// time" is not read as an object "same".
+	speedWords = regexp.MustCompile(`(?i)\b(` + phraseWords + `|speed(s|ing)? up)\b`)
+	objectWord = regexp.MustCompile(`[\p{L}\p{N}'-]+`)
+	// determiners open a noun phrase whose head decides whether it is generic.
+	determiners = wordSet("the these those my our your their all both each every " +
+		"two three four five six seven eight nine ten eleven twelve several")
+	// quantifiers may stand between a determiner and its head.
+	quantifiers = wordSet("of the these those my our your their all both each every whole entire other " +
+		"two three four five six seven eight nine ten eleven twelve several")
+	// notAnObject heads are generic nouns or words that end the phrase with no
+	// noun ("do these three at the same time", "run all in parallel").
+	notAnObject = wordSet("thing things stuff everything anything work project projects repo repository " +
+		"codebase program system whole rest it them they this that in at on to by for with and or but up " +
+		"down out as so is are be same time way faster quicker slower more less much now please then " +
+		"run runs running go do done speed performance")
+)
+
+// specificObject reports a noun phrase opened by a determiner or a count
+// ("the three migrations", "these branches", "all three checks") whose head
+// is not generic.
+func specificObject(typed string) bool {
+	words := objectWord.FindAllString(strings.ToLower(speedWords.ReplaceAllString(typed, " ")), -1)
+	for i, w := range words {
+		if !determiners[w] && !isNumber(w) {
+			continue
+		}
+		j := i + 1
+		for j < len(words) && (quantifiers[words[j]] || isNumber(words[j])) {
+			j++
+		}
+		if j < len(words) && !notAnObject[words[j]] {
+			return true
+		}
+	}
+	return false
+}
+
+func isNumber(w string) bool {
+	for _, r := range w {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return w != ""
+}
+
+// madeVague reports a message that codeWork passed over only for "make"
+// ("Can you make everything run in parallel?"), with a parallel phrase and
+// nothing more concrete: as vague as the request the unattended note is for.
+func madeVague(typed string) bool {
+	rest := makeWord.ReplaceAllString(typed, " ")
+	return rest != typed && !codeWork.MatchString(rest) && parallelPhrase.MatchString(typed) && vagueSpeedRequest(typed)
+}
+
+var makeWord = regexp.MustCompile(`(?i)\bmakes?\b`)
 
 // parallelNote is the note for the person's own words, typed, or "". Only a
 // top-level loop that can still start a subagent with tasks adds it: a
@@ -457,6 +518,10 @@ func (l *Loop) parallelNote(typed string) string {
 			return ""
 		}
 		return ClarifyNote
+	case noNote:
+		if l.Unattended && madeVague(typed) {
+			return UnattendedClarifyNote
+		}
 	}
 	return ""
 }

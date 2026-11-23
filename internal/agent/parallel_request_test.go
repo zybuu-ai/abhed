@@ -665,6 +665,32 @@ func TestUnattendedRunGetsNoClarifyNote(t *testing.T) {
 		{"Fix the bug where two tabs opened at the same time crash the editor", ""},
 		// Subagents named with no speed or parallel word: nothing to clarify.
 		{"use subagents for this", ""},
+		// Concrete work whose verb no list names: the object makes it concrete.
+		{"Run the three migrations in parallel", ""},
+		{"Merge these three branches at once", ""},
+		{"Close the three tickets at once", ""},
+		{"Ship the three releases at once", ""},
+		{"Send the three emails at the same time", ""},
+		{"Answer the three questions at once", ""},
+		{"Run all three checks at once and report results", ""},
+		{"Merge these branches at once", ""},
+		{"Run 3 migrations in parallel", ""},
+		{"Restart each of the services at the same time", ""},
+		{"Make the parser faster in parallel", ""},
+		// Near misses: only generic objects, or a count with no noun, are
+		// still vague.
+		{"speed up the project by running things in parallel.", UnattendedClarifyNote},
+		{"Run things in parallel", UnattendedClarifyNote},
+		{"Run everything at once", UnattendedClarifyNote},
+		{"Run all of them at the same time", UnattendedClarifyNote},
+		{"Speed up the whole project by running all of it in parallel", UnattendedClarifyNote},
+		{"do all three at once", UnattendedClarifyNote},
+		// "make" alone does not make a vague request concrete.
+		{"Make it faster by doing things in parallel", UnattendedClarifyNote},
+		{"Can you make everything run in parallel?", UnattendedClarifyNote},
+		// ...but "make" with a sign of the program's own concurrency is code.
+		{"Make the workers use goroutines in parallel", ""},
+		{"Make the tests faster", ""},
 	} {
 		l, adapter, _ := noteLoop(t, true, nil)
 		l.Unattended = true
