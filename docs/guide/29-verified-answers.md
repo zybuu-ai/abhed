@@ -654,10 +654,14 @@ counts (`12 tests`, `replicas: 3`). Then:
   needs a known exit 0 that is X's own: one command, or an `&&` chain
   that ends in the test run. With `||`, `;` or a pipe (`pytest || true`,
   `npm test | tail -5`) the exit is another command's, so a success is not
-  shown. The output must hold no failure (FAIL, or a count such as "1
-  failed" or "2 failing"), and a test command must be a whole run that ran
-  tests (no `-run`, `-k` or other filter). A failure needs a known
-  non-zero exit; anything else it says must be in that run's own output.
+  shown. The output must hold no failure: FAIL, a count such as "1
+  failed", "2 failing", "1 failures" or "Failed: 1", or make's "Error 1
+  (ignored)". A test command must be a whole run by the same rules as a
+  test claim: only `cd` before it in the chain (no `trap`), in the
+  workspace, no variable that may filter it (`PYTEST_ADDOPTS`, `env
+  GOFLAGS=-run=…`), and no `-run`, `-k` or other filter. A failure needs
+  a known non-zero exit; anything else it says must be in that run's own
+  output.
 - **Edits are read from the session's own edits.** A change claim that
   names its file and the code it changed ("Changed `text.split(" ")` to
   `text.split()`", "Replaced the `range` loop with a `while` loop") is
@@ -1142,6 +1146,13 @@ makes them.
 - A change made by a tool other than `write`, `edit` or a shell command
   ("I scaled web to 2", "I deleted the web deployment") is never verified
   from that tool's call, even when it is true: a known false negative.
+- A project runner's own definition is not read. A Makefile recipe
+  `-pytest -q >test.log` or a `package.json` script `"test": "jest >
+  out.log || true"` exits 0 and prints nothing to read, so "Running
+  `make test` resulted in OK" is verified after it. A change this
+  session made to a Makefile or `package.json` before the run makes
+  `make` or `npm` (`pnpm`, `yarn`, `bun`) not a whole run, but a runner
+  that hid its failures before the session is not seen.
 - Labels do not stop a reply from streaming; the banner follows it, and
   strict mode's exit code is the gate for a script.
 - The checks lean to "unverified": most shell work (builds, scripts, test

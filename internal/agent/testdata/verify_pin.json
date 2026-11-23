@@ -7279,6 +7279,61 @@
       "name": "a pytest run said to result in success, five passing",
       "kind": "control",
       "hash": "8adc6c05aa06f675"
+    },
+    {
+      "name": "make test said to result in OK, rspec 1 failure and the error ignored",
+      "kind": "planted",
+      "hash": "8fbb1980119177d1"
+    },
+    {
+      "name": "make test said to result in success, minitest 1 failures",
+      "kind": "planted",
+      "hash": "74cdd11926b3a4bb"
+    },
+    {
+      "name": "make test said to result in OK, dotnet Failed: 1",
+      "kind": "planted",
+      "hash": "4bf104ccc7c301dd"
+    },
+    {
+      "name": "npm test said to result in success, rspec 1 failure",
+      "kind": "planted",
+      "hash": "70911070e970b095"
+    },
+    {
+      "name": "make test said to result in OK, only the ignored error shown",
+      "kind": "planted",
+      "hash": "4fbb3875e9501120"
+    },
+    {
+      "name": "a run said to result in OK, PYTEST_ADDOPTS filtering it",
+      "kind": "planted",
+      "hash": "3f6917b10468c9ff"
+    },
+    {
+      "name": "a run said to result in ok, GOFLAGS filtering it through env",
+      "kind": "planted",
+      "hash": "6827af435548557a"
+    },
+    {
+      "name": "a run said to result in OK, a trap setting its exit",
+      "kind": "planted",
+      "hash": "4d34203e4f99e8b0"
+    },
+    {
+      "name": "a run with no exit code said to result in OK",
+      "kind": "planted",
+      "hash": "15907bf2b2931150"
+    },
+    {
+      "name": "make test said to result in success, after an edit to the Makefile",
+      "kind": "planted",
+      "hash": "da6159f5388ebceb"
+    },
+    {
+      "name": "make test said to result in success, five passing",
+      "kind": "control",
+      "hash": "09c33537e628bcb6"
     }
   ],
   "strict": [

@@ -1642,6 +1642,53 @@ func countedNumber(cs []countFact, n string) bool {
 	return false
 }
 
+// wholeRun reads o as a whole run of kind and returns the folders it
+// covers: the whole line, or the last command of an && chain at its top with
+// only cd before it, so its exit is the run's; of that kind (a test run is no
+// build); in this session's workspace; with no variable that may filter it;
+// neither filtering, listing nor compiling without running; and, for a
+// project runner (make, npm), with no change to its Makefile or package.json
+// before it, which may have changed what the runner runs.
+func (ix *recordIndex) wholeRun(o *obsRec, kind string) ([]scopePat, bool) {
+	if o.tool != "bash" || o.exit == nil || !o.usable() || o.child != "" || kind == "" || ix.workDir == "" {
+		return nil, false
+	}
+	lf := o.line
+	if !lf.shape || !lf.leadCd || lf.finalCwd == "" || filepath.Clean(o.cwd) != filepath.Clean(ix.workDir) ||
+		commandKind(lf.final) != kind || !harmlessEnv(lf.finalAssigns) {
+		return nil, false
+	}
+	pats, ok := runScope(lf.final, lf.finalCwd)
+	if ok && (ix.packageShadows(lf.final, lf.finalCwd) || ix.runnerChanged(o)) {
+		return nil, false
+	}
+	return pats, ok
+}
+
+// runnerFiles define what a project runner runs.
+var runnerFiles = map[string]bool{"Makefile": true, "makefile": true, "GNUmakefile": true, "package.json": true}
+
+// runnerChanged reports a project runner's run (make, npm and the like)
+// after a change this session made to a Makefile or package.json.
+func (ix *recordIndex) runnerChanged(o *obsRec) bool {
+	switch filepath.Base(o.line.final[0]) {
+	case "make", "gmake", "npm", "pnpm", "yarn", "bun":
+	default:
+		return false
+	}
+	for _, m := range ix.mutations {
+		if m.pos >= o.pos || m.failed {
+			continue
+		}
+		for _, t := range append([]string{m.path}, m.targets...) {
+			if t != "" && runnerFiles[filepath.Base(t)] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // success checks a claim that tests passed or a command succeeded: a command
 // must have ended with exit 0 after the last change, and none of its kind
 // since may have failed.
@@ -1652,21 +1699,7 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, scope []string, c
 	// workspace; neither filtering, listing nor compiling without running;
 	// and covering, by path, what the claim names, or the whole workspace.
 	scopeDirs := claimScope(scope, ix.workDir)
-	fits := func(o *obsRec) ([]scopePat, bool) {
-		if o.tool != "bash" || o.exit == nil || !o.usable() || o.child != "" || testish == "" || ix.workDir == "" {
-			return nil, false
-		}
-		lf := o.line
-		if !lf.shape || !lf.leadCd || lf.finalCwd == "" || filepath.Clean(o.cwd) != filepath.Clean(ix.workDir) ||
-			commandKind(lf.final) != testish || !harmlessEnv(lf.finalAssigns) {
-			return nil, false
-		}
-		pats, ok := runScope(lf.final, lf.finalCwd)
-		if ok && ix.packageShadows(lf.final, lf.finalCwd) {
-			return nil, false
-		}
-		return pats, ok
-	}
+	fits := func(o *obsRec) ([]scopePat, bool) { return ix.wholeRun(o, testish) }
 	if contradict {
 		// Contradicted by a cited run of the same kind and the same scope
 		// that failed on its own: no runner around it, exit 1; only when the
@@ -2074,7 +2107,7 @@ func (ix *recordIndex) runResult(cmd, outcome string) finding {
 			return finding{out: missing, why: label + " does not end in its test run"}
 		}
 		if commandKind(last.line.final) == "test" {
-			if _, ok := runScope(last.line.final, last.line.finalCwd); !ok || ranNothing(last) {
+			if _, ok := ix.wholeRun(last, "test"); !ok || ranNothing(last) {
 				return finding{out: missing, why: label + " is not a whole test run that ran tests"}
 			}
 		}
@@ -2104,9 +2137,10 @@ var (
 	runSuccessOnlyRe = regexp.MustCompile(`^(?:(?:a|an|all|tests?|ok|success|successful|succeeded|passed|passing|pass|green|clean|build|run)\s*)+$`)
 	runFailureOnlyRe = regexp.MustCompile(`^(?:(?:a|an|fail|failed|failure|failing|error|errors|red|broken|build|run|tests?)\s*)+$`)
 	outputFailRe     = regexp.MustCompile(`\bFAIL(?:ED|URE|:)?\b|--- FAIL`)
-	// outputFailCountRe is a lower-case failure count ("1 failed", "2
-	// failing", "1 error"), as pytest, jest and mocha summarise a run.
-	outputFailCountRe = regexp.MustCompile(`\b[1-9]\d* (?:failed|failing|errors?)\b`)
+	// outputFailCountRe is a failure count as runners summarise one ("1
+	// failed", "2 failing", "1 failures", "Failed: 1", "Errors: 2"), or
+	// make carrying on past a failed recipe ("Error 1 (ignored)").
+	outputFailCountRe = regexp.MustCompile(`\b[1-9]\d* (?:failed|failing|failures?|errors?)\b|(?i:\b(?:fail(?:ed|ures?)?|errors?):\s*[1-9])|\bError [1-9]\d* \(ignored\)`)
 )
 
 // checkFileLine checks a path:line cite against the file as it is now, and,
