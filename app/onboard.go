@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/defaults"
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -371,7 +372,10 @@ func friendlyCause(err error, name string, p config.ProviderConfig, where, next 
 	var dns *net.DNSError
 	var se *model.StatusError
 	var ne net.Error
+	var overflow *agent.ContextOverflowError
 	switch {
+	case errors.As(err, &overflow):
+		return overflow.Error()
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return fmt.Sprintf("Nothing is answering at %s (model %q). Start the model server there. %s", where, name, next)
 	case errors.As(err, &dns) && dns.IsNotFound:
@@ -381,6 +385,9 @@ func friendlyCause(err error, name string, p config.ProviderConfig, where, next 
 		// users" says more than a status.
 		if p := model.ProblemOf(err); p != nil && se.Status < 500 && p.Message != "" && p.Message != http.StatusText(se.Status) {
 			where = fmt.Sprintf("%s (%q)", where, p.Message)
+		}
+		if pp := model.ProblemOf(err); pp != nil && pp.Kind == model.ProblemTooLarge {
+			return fmt.Sprintf("%s refused the request (%d). %s", where, se.Status, tooLargeNext(p.Model))
 		}
 		switch {
 		case se.Status == http.StatusUnauthorized || se.Status == http.StatusForbidden:

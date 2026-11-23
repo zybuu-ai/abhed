@@ -51,6 +51,7 @@ func (c *acpConn) sandboxNetwork(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errPolicy, "%s", err.Error()))
 		return
 	}
+	// The rule recorded is what Open opened: one host wherever one is named.
 	scope, rule := "session", "network(any host)"
 	if p.Host != "" {
 		rule = "network(" + strings.ToLower(strings.TrimSpace(p.Host)) + ")"

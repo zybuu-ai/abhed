@@ -22,6 +22,16 @@ All notable changes to Abhed are recorded here. The format follows
   startup cleanup; on another, the running server's startup lock
   (`~/.abhed/serve.lock`) makes it leave the running one's sessions and
   sandboxes alone.
+- An organisation's deny or ask rule whose flags end in a star, such as
+  `bash(rm -rf*)`, held only for the flags as written: `rm -r -f build` and
+  `rm -fr build` fell through to the destructive ask. Such a rule is now read
+  as its flags, in any order or grouping, then anything, as `bash(rm -rf *)`
+  already was. It only adds deny and ask matches; allow rules still match
+  only as written.
+- Abhed Studio's request to open the network for one host with scope
+  `workspace` opened, and kept, every host, while the record named only that
+  host. A named host now opens and keeps that host alone at every scope.
+
 - A profile's client followed a redirect from https to plain http on the
   same host, sending the server token in clear. Such a redirect is now
   refused.
@@ -1255,6 +1265,16 @@ All notable changes to Abhed are recorded here. The format follows
   message. See the MCP guide's Limits and Scale sections.
 
 ### Fixed
+
+- In Abhed Studio, a model endpoint where nothing answered (refused, a host
+  that does not resolve, a timeout) showed the raw Go error. It is now said
+  as at the terminal, with the next step (`_meta.providerError` kind
+  `unreachable`).
+- A provider's "context length exceeded" refusal, with nothing left to
+  compact, said to run `abhed doctor`. It now says the request is too large
+  for the model's window and what to do: shorten the input, start a new
+  conversation or compact, pick a model with a larger window, or adjust the
+  context settings (`_meta.providerError` kind `too_large`).
 
 - The verifier labelled a greeting ("I'm Abhed, your technical assistant")
   an unverified observed claim, and strict mode asked for a revision of it. A
