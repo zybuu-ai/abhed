@@ -1205,21 +1205,33 @@ cannot steer host git:
   past 200 files. The same check stops an issue's push.
 - The programs your configuration names for host git must be yours alone
   too: the SSH command (or `ssh` when you name none), `core.askPass` and
-  `SSH_ASKPASS`, `core.gitProxy` and each credential helper. Every word of
-  each is judged, and the value after `=` in each (ssh's `-o
-  ProxyCommand=…`): nothing is brokered while one is a relative path, or an
-  absolute one in the workspace or a folder commands can write, or another
-  user's or writable by others; while the program is found on `PATH` after
-  a folder commands can write; while a shell is given a command line (`sh
-  -c …`); or while a `!` credential helper is more than a program and its
-  words (a shell function such as `!f() { …; }; f`, a variable, a pipe or a
-  second command). If you use a shell-function helper, put it in a script
-  of your own and name the script instead: until then, a brokered git
-  remote command is refused, with the reason. Host git runs these
-  commands from an empty folder of your own, the repository given as
-  `GIT_DIR`, so nothing they name is found in the workspace.
-  `GIT_SSH`, `GIT_SSH_COMMAND` and `GIT_ASKPASS` in your environment are
-  not given to host git at all.
+  `SSH_ASKPASS`, `core.gitProxy` and each credential helper. Words are read
+  as git reads them: an askpass or git proxy is one path, spaces and all;
+  the SSH command and a credential helper are split as the shell splits
+  them, quotes honoured; a leading `~/` is your home. Every word, and the
+  value after `=` in each (ssh's `-o ProxyCommand=…`), is judged: nothing is
+  brokered while one is a relative path, or an absolute one in the
+  workspace or a folder commands can write, or another user's or writable
+  by others; while a shell is given a command line (`sh -c …`); or while a
+  `!` credential helper is more than a program and its words (a shell
+  function such as `!f() { …; }; f`, a variable, a pipe or a second
+  command). If you use a shell-function helper, put it in a script of your
+  own and name the script instead: until then, a brokered git remote
+  command is refused, with the reason.
+- So is your ssh configuration: `/etc/ssh/ssh_config`, `~/.ssh/config` (or
+  the file the SSH command names with `-F`) and every file they `Include`
+  (relative ones from `~/.ssh` or `/etc/ssh`, globs expanded), checked as
+  your git configuration files are, and every command a `ProxyCommand`,
+  `LocalCommand`, `KnownHostsCommand` or `Match exec` there runs, judged as
+  above.
+- Host git runs with your `PATH`, less every folder that is relative or
+  lies in the workspace or a folder commands can write (a project's `bin`,
+  `node_modules/.bin`), so no program is found there, by git, ssh, a
+  wrapper or a `ProxyCommand`; a stray folder like that leaves brokering on.
+  It runs from an empty folder of your own, the repository given as
+  `GIT_DIR`, so nothing it names is found in the workspace. `GIT_SSH`,
+  `GIT_SSH_COMMAND` and `GIT_ASKPASS` in your environment are not given to
+  host git at all.
 - A brokered line is given no vault secret (`secrets`): git run on the host
   as you needs none.
 - On Linux, the process tier (bubblewrap) and the fence hold git's files by

@@ -96,7 +96,7 @@ func TestPPEveryWordIsJudged(t *testing.T) {
 		{"core.sshCommand", "ssh -o ProxyCommand=" + filepath.Join(r.ws, "p"), "which commands can write"},
 		{"credential.helper", "!/bin/sh ./helper", "relative path"},
 		{"credential.helper", "!/usr/bin/env x; touch /tmp/y", "shell command"},
-		{"core.askPass", "/usr/bin/env ./ask", "relative path"},
+		{"core.sshCommand", "/usr/bin/env ./ask", "relative path"},
 	} {
 		run(t, r.home, "config", "--global", "--replace-all", c.key, c.value)
 		_, _, _, err := r.broker(Network{Open: true}).Ask(r.key("c"), r.ws, "git fetch")

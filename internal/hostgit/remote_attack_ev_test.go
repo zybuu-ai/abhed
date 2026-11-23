@@ -73,7 +73,6 @@ func TestEvPersonProgramsOutOfReach(t *testing.T) {
 		{"core.gitProxy", "./proxy", "relative path"},
 		{"credential.helper", "!" + inArea + " get", "which commands can write"},
 		{"credential.helper", "!f() { echo password=x; }; f", "shell command"},
-		{"credential.helper", "planted", "PATH"},
 	}
 	for _, c := range cases {
 		run(t, r.home, "config", "--global", "--replace-all", c.key, c.value)
@@ -88,6 +87,14 @@ func TestEvPersonProgramsOutOfReach(t *testing.T) {
 			run(t, r.home, "config", "--global", "--unset-all", c.key)
 		}
 	}
+	// A helper found only on a PATH folder commands write is found nowhere:
+	// that folder is left out of host git's PATH.
+	t.Setenv("PATH", area+string(os.PathListSeparator)+os.Getenv("PATH"))
+	run(t, r.home, "config", "--global", "credential.helper", "planted")
+	if _, _, _, err := r.broker(Network{Open: true}).Ask(r.key("c"), r.ws, "git fetch"); err != nil {
+		t.Errorf("a helper found only in a dropped PATH folder: %v", err)
+	}
+	run(t, r.home, "config", "--global", "--unset-all", "credential.helper")
 	t.Setenv("SSH_ASKPASS", inWS)
 	refused("SSH_ASKPASS", "which commands can write")
 	t.Setenv("SSH_ASKPASS", "")

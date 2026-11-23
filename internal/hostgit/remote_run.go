@@ -253,7 +253,7 @@ func hostScript(ctx context.Context, dir string, env []string, runs [][]string) 
 // repository from another folder: git's own dropped, the repository named
 // by its git folder (GIT_DIR) with the common one pinned, the safety
 // settings and cfg in the command-line scope, and remoteEnv.
-func repoEnv(ctx context.Context, cwd string, cfg [][2]string) ([]string, error) {
+func repoEnv(ctx context.Context, cwd string, cfg [][2]string, path string) ([]string, error) {
 	r := New(ctx, cwd)
 	if r.unknown != nil {
 		return nil, r.unknown
@@ -264,7 +264,7 @@ func repoEnv(ctx context.Context, cwd string, cfg [][2]string) ([]string, error)
 	if r.gitDir == "" {
 		return nil, fmt.Errorf("%s is not in a git repository", cwd)
 	}
-	over := append(append([]string{"GIT_DIR=" + r.gitDir}, personEnv()...), remoteEnv...)
+	over := append(append([]string{"GIT_DIR=" + r.gitDir, "PATH=" + path}, personEnv()...), remoteEnv...)
 	return hostEnv(r.env(nil), append(append(append([][2]string(nil), safety...), r.drivers...), cfg...), over...)
 }
 
@@ -407,7 +407,7 @@ func (b *HostBroker) hostCommand(ctx context.Context, cwd string, op remoteOp, p
 		cfg = append(cfg, [2]string{"core.hooksPath", relay.dir})
 		p.relay = relay
 	}
-	env, err := repoEnv(ctx, cwd, cfg)
+	env, err := repoEnv(ctx, cwd, cfg, b.hostPATH())
 	if err != nil {
 		return &exec.Cmd{Err: err}, p
 	}
@@ -461,7 +461,7 @@ func (b *HostBroker) pull(ctx context.Context, cwd string, op remoteOp, p plan) 
 			mergeOpts = append(mergeOpts, o)
 		}
 	}
-	env, err := repoEnv(ctx, cwd, remoteConfig(ctx, cwd, p.names))
+	env, err := repoEnv(ctx, cwd, remoteConfig(ctx, cwd, p.names), b.hostPATH())
 	if err != nil {
 		return &exec.Cmd{Err: err}
 	}
@@ -509,7 +509,8 @@ func (b *HostBroker) clone(ctx context.Context, cwd string, op remoteOp, p plan)
 	}
 	args = append(args, op.url, staged)
 	// Run outside every repository: no configuration but the person's is read.
-	env, err := hostEnv(Env(), append(append([][2]string(nil), safety...), remoteConfig(ctx, tmp, []string{"origin"})...), append(personEnv(), remoteEnv...)...)
+	env, err := hostEnv(Env(), append(append([][2]string(nil), safety...), remoteConfig(ctx, tmp, []string{"origin"})...),
+		append(append([]string{"PATH=" + b.hostPATH()}, personEnv()...), remoteEnv...)...)
 	if err != nil {
 		return &exec.Cmd{Err: fmt.Errorf("git clone: %w", err)}
 	}

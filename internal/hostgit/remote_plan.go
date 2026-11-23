@@ -155,12 +155,18 @@ func (b *HostBroker) personConfigHeld(ctx context.Context, cwd, verb string) err
 	areas := append([]string{b.workspace}, writableAreas()...)
 	err := PersonConfigWritable(ctx, cwd, areas)
 	if err == nil {
-		err = personProgramsHeld(ctx, cwd, areas)
+		err = personProgramsHeld(ctx, cwd, areas, hostPATH(areas))
 	}
 	if err != nil {
 		return fmt.Errorf("git %s: %v, so Abhed does not run git %s on the host as you; move it out of the agent's reach, or run it yourself", verb, err, verb)
 	}
 	return nil
+}
+
+// hostPATH is the PATH host git runs with for b: the person's own, less
+// the folders in the workspace, those commands can write, and relative ones.
+func (b *HostBroker) hostPATH() string {
+	return hostPATH(append([]string{b.workspace}, writableAreas()...))
 }
 
 // allowed says why the egress allowlist refuses host and port, nil when it does not.
