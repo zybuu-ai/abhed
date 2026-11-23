@@ -769,6 +769,22 @@ interface AskMeta {
   `permission.changed {op: "remove", list: "allow", rule, scope:
   "workspace"}`; refused inside an agent's command, `-32602` for an unknown
   id. With `managed` true none is loaded or offered.
+- **Machine grants (1.3.0, feature `machine`).** What the person let Abhed
+  use of their own setup (a kubeconfig context, an `~/.ssh/config` host, a
+  cluster kept from a pasted login) is theirs, not a session's or a
+  workspace's, so neither method takes a session. `_abhed/machine/list {}` →
+  `{grants: [{kind, name, what, grantedAt}]}`, `kind` one of `k8s-context`,
+  `ssh-host`, `k8s-login`; `what` names the server or address and, for a
+  login, the secret's name, never a token or a certificate.
+  `_abhed/machine/forget {kind, name}` → `{forgotten: true, kind, name}`:
+  the next first use asks again; a session that already approved it this
+  session keeps that approval. `-32602` for an unknown kind or a grant that
+  is not kept; refused inside an agent's command. A permission request for
+  a first use carries `meta.firstUse = {what, kept: "person"}`, and its
+  "always" option is named for what is kept; a user message that held a
+  pasted credential is followed by a note whose `meta.pastedCredentials` is
+  `[{id, kind}]`, so the editor can redraw the message as recorded, with
+  `[pasted:ID]` in place of the value.
 - An answer of "always" is recorded `approval.scope_granted {scope, by:
   "user"}` (**not implemented in 1.2.2**) so `session/load` can restore it.
 - A call whose input the record withheld is refused without asking, with a

@@ -354,3 +354,27 @@ func TestPastedLoginIsRefusedWhereNothingCanBeKept(t *testing.T) {
 		t.Fatalf("a server-side pasted login: %v", err)
 	}
 }
+
+// Offered for k8s_login alone, the reads and writes appear once a session logs in.
+func TestReadsAppearOnceASessionLogsIn(t *testing.T) {
+	grantsIn(t)
+	m := NewManager(Config{HiddenUntilLogin: true, KeptLogins: true})
+	if !(GetTool{M: m}).Hidden() || !(ApplyTool{M: m}).Hidden() {
+		t.Fatal("offered with nothing to reach")
+	}
+	// A login kept by another window counts as well.
+	_ = machinegrant.Keep(machinegrant.Grant{Kind: machinegrant.KindK8sLogin, Name: "x", Identity: "i", Login: &machinegrant.Login{Server: "https://x", Secret: "S"}})
+	if (GetTool{M: m}).Hidden() {
+		t.Fatal("hidden with a kept login")
+	}
+	_, _ = machinegrant.Forget(machinegrant.KindK8sLogin, "x")
+	if err := m.login(newSession(t), sessionCred{token: "t", cluster: LoginCluster{Name: "lab", Server: "https://lab.example"}}); err != nil {
+		t.Fatal(err)
+	}
+	if (GetTool{M: m}).Hidden() || (ApplyTool{M: m}).Hidden() {
+		t.Fatal("still hidden after a login")
+	}
+	if (GetTool{M: NewManager(Config{})}).Hidden() {
+		t.Fatal("hidden where it was not asked to be")
+	}
+}

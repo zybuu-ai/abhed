@@ -175,6 +175,9 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 				Sandbox: true,
 				// The agent the terminal runs, subagents and configured tools included.
 				ConfiguredTools: true,
+				// A subprocess of the person's own program, on their machine: their
+				// kubeconfig and ~/.ssh/config are offered as the terminal offers them.
+				MachineSetup: true,
 				// The configuration's turn limit binds, as it does from the terminal.
 				ConfiguredLimits: true,
 				// Stdout is the protocol; what the tool set skipped goes to stderr,

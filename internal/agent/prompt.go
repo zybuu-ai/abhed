@@ -287,7 +287,7 @@ func toolHints(names []string) string {
 		b.WriteString("\n- To have the user choose between options before you go on, call ask_user rather than " +
 			"asking in prose and ending your turn.")
 	}
-	if slices.Contains(names, "k8s_get") || slices.Contains(names, "ssh") {
+	if slices.Contains(names, "k8s_get") || slices.Contains(names, "k8s_login") || slices.Contains(names, "ssh") {
 		b.WriteString("\n- Clusters and remote machines are part of the work you do, not outside your role: when " +
 			"the user asks about a cluster or a host, or pastes a login, use the cluster and SSH tools. They use " +
 			"the user's own kubeconfig contexts and ~/.ssh/config hosts through Abhed, which holds every " +

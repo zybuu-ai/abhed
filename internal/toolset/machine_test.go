@@ -8,6 +8,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/machinegrant"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // machineHome is a throwaway home with a kubeconfig and an ~/.ssh/config.
@@ -68,14 +69,40 @@ func TestMachineSetupIsOfferedOnThePersonsOwnSurfaceOnly(t *testing.T) {
 	}
 }
 
-func TestNoMachineSetupOffersNothing(t *testing.T) {
+func TestWithNothingToReachOnlyK8sLoginIsOffered(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("KUBECONFIG", "")
 	old := machinegrant.Path
 	machinegrant.Path = func() string { return filepath.Join(home, "g.json") }
 	t.Cleanup(func() { machinegrant.Path = old })
-	if got := infraNames(config.Config{}, true); len(got) != 0 {
-		t.Fatalf("a machine with no kubeconfig or ssh config offers %v", got)
+	offered := func(machine bool) []string {
+		reg := tools.NewRegistry(InfraToolsFor(config.Config{}, nil, func(string, ...any) {}, machine)...)
+		var out []string
+		for _, d := range reg.Definitions() {
+			out = append(out, d.Name)
+		}
+		slices.Sort(out)
+		return out
+	}
+	// A pasted `oc login` must work on any machine: k8s_login is there, and
+	// the reads and writes wait for a cluster.
+	if got := offered(true); !slices.Equal(got, []string{"k8s_login"}) {
+		t.Fatalf("a machine with nothing to reach offers %v", got)
+	}
+	if got := offered(false); len(got) != 0 {
+		t.Fatalf("a server offers %v", got)
+	}
+	// Turned off in a file, not even k8s_login.
+	if got := infraNames(config.Config{SetKeys: []string{"k8s.enabled"}}, true); len(got) != 0 {
+		t.Fatalf("k8s.enabled false offers %v", got)
+	}
+	// Once a login is kept, the cluster tools are offered.
+	if err := machinegrant.Keep(machinegrant.Grant{Kind: machinegrant.KindK8sLogin, Name: "lab", Identity: "i",
+		Login: &machinegrant.Login{Server: "https://lab.example:6443", Secret: "K8S_LAB_TOKEN"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := offered(true); !slices.Equal(got, []string{"k8s_apply", "k8s_get", "k8s_login"}) {
+		t.Fatalf("with a kept login %v", got)
 	}
 }

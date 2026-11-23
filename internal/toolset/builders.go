@@ -369,7 +369,11 @@ func MachineSSH(cfg config.Config, machine bool) (*remote.SSHConfig, bool) {
 func InfraToolsFor(cfg config.Config, vault *secrets.Store, warn func(string, ...any), machine bool) []tools.Tool {
 	var out []tools.Tool
 	autoK8s := MachineK8s(cfg, machine)
-	if autoK8s {
+	// With nothing to reach yet, the person's own surface still offers
+	// k8s_login, so a pasted `oc login` works on any machine; the other
+	// cluster tools stay hidden from the model until a login exists.
+	loginOnly := machine && !autoK8s && !cfg.K8s.Enabled && !cfg.Sets("k8s.enabled") && !cfg.Managed
+	if autoK8s || loginOnly {
 		cfg.K8s.Enabled = true
 		// Writes are asked each time, with a dry run first; offered unless a file says otherwise.
 		if !cfg.Sets("k8s.allow_writes") {
@@ -400,9 +404,10 @@ func InfraToolsFor(cfg config.Config, vault *secrets.Store, warn func(string, ..
 			// A kubeconfig used because it is there asks before each context's
 			// first use; one the configuration turned on asks only before Abhed
 			// runs a context's credential helper.
-			FirstUseAll: autoK8s,
-			KeptLogins:  machine,
-			Secret:      secret,
+			FirstUseAll:      autoK8s,
+			HiddenUntilLogin: loginOnly,
+			KeptLogins:       machine,
+			Secret:           secret,
 		})
 		for _, c := range cfg.K8s.Clusters {
 			if c.InsecureSkipTLSVerify {

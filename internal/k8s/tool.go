@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/kubescope"
@@ -45,6 +46,8 @@ type Manager struct {
 	clusters map[string]*Cluster
 	// listing names the kubeconfig's contexts, read once, for the descriptions.
 	listing func() string
+	// loggedIn is set once any session of this manager logs in.
+	loggedIn atomic.Bool
 }
 
 func NewManager(cfg Config) *Manager {
@@ -137,6 +140,7 @@ func (m *Manager) login(sess *tools.Session, cred sessionCred) error {
 	}
 	cred.at = time.Now()
 	l.creds[cred.cluster.Name] = cred
+	m.loggedIn.Store(true)
 	// Drop the clients built with the old credential, connections included,
 	// so the next call uses the new one.
 	if c, ok := l.clusters[cred.cluster.Name]; ok {

@@ -173,8 +173,9 @@ instead of retrying.
 
 ### Your own clusters and machines
 
-On your own machine, in the terminal and in Abhed Studio, the cluster and SSH
-tools work with the setup you already have, with nothing to configure:
+On your own machine, in the terminal, in Abhed Studio and under `abhed rpc`,
+the cluster and SSH tools work with the setup you already have, with nothing
+to configure:
 
 - **Kubeconfig contexts.** `k8s_get` and `k8s_apply` reach the contexts in
   your kubeconfig (`KUBECONFIG`, every file it lists merged as `kubectl`
@@ -224,7 +225,9 @@ tools work with the setup you already have, with nothing to configure:
 
 This is on when no configuration file sets `k8s.enabled` (or `ssh.enabled`)
 and no managed configuration is in force, and the machine has a kubeconfig
-or kept logins (or an `~/.ssh/config` naming a host). `k8s_apply` is offered
+or kept logins (or an `~/.ssh/config` naming a host). With neither, your own
+surface still offers `k8s_login`, so a pasted `oc login` works on any
+machine; `k8s_get` and `k8s_apply` are offered once a login exists. `k8s_apply` is offered
 unless a file sets `k8s.allow_writes`. Setting `k8s.enabled` or
 `ssh.enabled` to `false`, in any file a workspace's included, turns it off;
 an organisation's managed configuration decides for its machines, and
@@ -232,7 +235,9 @@ setting them to `true` there keeps the kubeconfig and `~/.ssh/config`
 offered with each first use asked. `abhed serve` never offers its operator's
 own setup to the sessions it runs.
 
-`abhed machine list` shows what is kept for you, and
+`abhed doctor` lists the contexts with their servers (and the program a
+credential helper runs), the `~/.ssh/config` hosts and what is kept, by name,
+never a credential. `abhed machine list` shows what is kept for you, and
 `abhed machine forget KIND NAME` (`k8s-context`, `ssh-host` or `k8s-login`)
 drops one, so its next use asks again.
 

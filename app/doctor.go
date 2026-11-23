@@ -277,6 +277,10 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 			fmt.Printf("ssh host    %s → %s@%s%s\n", h.Name, h.User, h.Addr, warn)
 		}
 	}
+	// The person's own setup, as the terminal and Studio offer it.
+	for _, line := range machineDoctor(cfg) {
+		fmt.Println(line)
+	}
 	for _, c := range cfg.RAG.Corpora {
 		if c.Enabled {
 			fmt.Printf("rag corpus  %s → %s\n", c.Name, c.URL)

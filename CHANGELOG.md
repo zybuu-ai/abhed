@@ -177,8 +177,8 @@ All notable changes to Abhed are recorded here. The format follows
 ### Added
 
 - Configure once: the cluster and SSH tools work with the setup a developer
-  already has. On your own machine (the terminal and Abhed Studio, never
-  `abhed serve`), `k8s_get` and `k8s_apply` reach your kubeconfig contexts
+  already has. On your own machine (the terminal, Abhed Studio and
+  `abhed rpc`, never `abhed serve`), `k8s_get` and `k8s_apply` reach your kubeconfig contexts
   (`KUBECONFIG`'s files merged as `kubectl` merges them, or `~/.kube/config`)
   by name, and `ssh`, `ssh_put` and `ssh_get` reach the hosts your
   `~/.ssh/config` names, with their `HostName`, `User`, `Port`,
@@ -195,8 +195,12 @@ All notable changes to Abhed are recorded here. The format follows
   Cluster writes still ask each time. It is on where no file sets
   `k8s.enabled` or `ssh.enabled` and no managed configuration is in force;
   setting either to `false`, a workspace included, turns it off.
+  With no kubeconfig, `k8s_login` is still offered, so a pasted `oc login`
+  works on any machine, and the other cluster tools appear once a login
+  exists. `abhed rpc` offers the same as the terminal. `abhed doctor` lists
+  the contexts, hosts and kept grants, never a credential;
   `abhed machine list` and `abhed machine forget KIND NAME` show and drop
-  what is kept.
+  what is kept, as do ACP's `_abhed/machine/list` and `_abhed/machine/forget`.
 - A pasted login works in one approval. A credential pasted into a message
   (an `oc login --token=… --server=…` command, an OpenShift or `Bearer` token,
   a key of a known shape) reaches neither the model nor the record: both get

@@ -228,3 +228,18 @@ func (ApplyTool) KeepFirstUse(g tools.FirstUse) error { return keepFirstUse(g) }
 func (t ApplyTool) BoundSecrets(sess *tools.Session, raw json.RawMessage) []string {
 	return t.M.boundSecrets(sess, raw)
 }
+
+// hidden reports that the reads and writes are not offered yet: the manager
+// stands for k8s_login alone until a login exists.
+func (m *Manager) hidden() bool {
+	if m == nil || !m.cfg.HiddenUntilLogin || m.loggedIn.Load() {
+		return false
+	}
+	return len(machinegrant.Logins()) == 0
+}
+
+// Hidden keeps k8s_get from the model until there is a cluster to read.
+func (t GetTool) Hidden() bool { return t.M.hidden() }
+
+// Hidden keeps k8s_apply from the model until there is a cluster to change.
+func (t ApplyTool) Hidden() bool { return t.M.hidden() }

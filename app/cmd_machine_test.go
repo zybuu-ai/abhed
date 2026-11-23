@@ -2,10 +2,12 @@ package app
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/machinegrant"
 )
 
@@ -37,5 +39,41 @@ func TestMachineListAndForget(t *testing.T) {
 	}
 	if gs, _ := machinegrant.List(); len(gs) != 0 {
 		t.Fatalf("still kept: %v", gs)
+	}
+}
+
+// doctor names the contexts, hosts and kept grants, never a credential.
+func TestDoctorShowsTheMachineSetupWithoutSecrets(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("KUBECONFIG", "")
+	p := filepath.Join(home, "g.json")
+	old := machinegrant.Path
+	machinegrant.Path = func() string { return p }
+	t.Cleanup(func() { machinegrant.Path = old })
+	for path, text := range map[string]string{
+		".kube/config": "current-context: lab\nclusters:\n- name: lab\n  cluster:\n    server: https://lab.example:6443\n" +
+			"contexts:\n- name: lab\n  context:\n    cluster: lab\n    user: me\nusers:\n- name: me\n  user:\n    token: doctor-secret-token-77\n",
+		".ssh/config": "Host box\n  HostName 10.0.0.9\n",
+	} {
+		_ = os.MkdirAll(filepath.Dir(filepath.Join(home, path)), 0o700)
+		if err := os.WriteFile(filepath.Join(home, path), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = machinegrant.Keep(machinegrant.Grant{Kind: machinegrant.KindSSHHost, Name: "box", Identity: "i", What: "host box (me@10.0.0.9:22)"})
+	out := strings.Join(machineDoctor(config.Config{}), "\n")
+	for _, want := range []string{"1 contexts", "lab → https://lab.example:6443", "1 hosts", "box", "kept        1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "doctor-secret-token-77") {
+		t.Fatal("doctor printed the token")
+	}
+	empty := t.TempDir()
+	t.Setenv("HOME", empty)
+	if out := strings.Join(machineDoctor(config.Config{}), "\n"); !strings.Contains(out, "k8s_login is offered") {
+		t.Fatalf("with nothing set up: %s", out)
 	}
 }
