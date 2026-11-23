@@ -246,9 +246,12 @@ sessions are stopped and removed, a run still going included. Guests are
 held in the server's memory, so a restart ends them all. With guests on, a
 server removes what ended guests left at start and then hourly: on a shared
 Postgres, only sessions its own earlier run held, open ones whose server
-stopped heartbeating, and ended ones older than `auth.guest_hours`, so
-another server's live guests are never touched. Give every server of a
-deployment the same `auth.guest_hours`. With Postgres, removal crypto-shreds the session's
+stopped heartbeating, and ended ones (or open ones no server holds) older
+than `auth.guest_hours`, so another server's live guests are never touched.
+Give every server of a deployment the same `auth.guest_hours` and a
+`control_plane.ha.node_id` of its own: a server that finds another running under its
+id logs an error and does not treat that id's sessions as its earlier
+run's. With Postgres, removal crypto-shreds the session's
 content; each step's metadata stays, as for any deleted session. One
 address can start five guests an hour (behind a proxy, set
 `server.trust_proxy` so the client's address is the one counted). It needs
