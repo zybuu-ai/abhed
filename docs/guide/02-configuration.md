@@ -1669,7 +1669,18 @@ was given, so a web page whose own name an attacker points at your machine
 addresses, `server.canonical_host`, and the hosts of
 `server.allowed_origins` and `auth.redirect_url`. With `auth.mode` `none`,
 where the API is anyone's who reaches it, only loopback and
-`server.allowed_hosts` pass. Any other name gets `421` with what to set.
+`server.allowed_hosts` pass, and a request with no `Host` at all is refused
+too. Any other name gets `421` with what to set, without the
+`Abhed-Session-Node` header that a replica sends when a session runs on
+another one, so a client never retries it elsewhere.
+
+## Several servers on one machine
+
+The `abhed serve` that owns this machine's state holds `~/.abhed/serve.lock`
+while it runs. A second one under the same HOME on another address starts
+and serves, but leaves the first's sessions and session sandboxes alone: it
+takes back no session and sweeps no sandbox at start, and logs that it did
+not. On the same address it fails before doing anything.
 
 ## Stopping the server
 

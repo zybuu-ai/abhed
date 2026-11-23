@@ -281,6 +281,27 @@ terminates TLS at the router (`edge`) by default; with `tls.enabled` use
 `openshift-dns`; set `networkPolicy.dns` to match (the chart's
 `ci/route-values.yaml` shows how).
 
+## Names the server answers to
+
+The server refuses, with `421`, a request whose `Host` names it by a name it
+was not given (DNS rebinding; see [Configuration](02-configuration.md#names-the-server-answers-to)).
+The chart gives it the names a cluster uses: the Service's own (`<name>`,
+`<name>.<namespace>`, `<name>.<namespace>.svc` and
+`<name>.<namespace>.svc.<clusterDomain>`, `cluster.local` by default), every
+`ingress.hosts` host and the `route.host`, all in `server.allowed_hosts`
+together with any you list in `config.server.allowed_hosts`. Add other names
+clients use in `allowedHosts`:
+
+```yaml
+allowedHosts: [abhed.corp.example]
+clusterDomain: cluster.local
+```
+
+The startup, liveness and readiness probes send `Host: localhost`, so the
+kubelet's request, which would otherwise name the pod IP, is answered. A
+client that reaches a pod by its IP gets `421` with `auth.mode` `none`; with
+sign-in on, IP addresses are answered.
+
 ## Network policy
 
 Egress is denied except to the cluster DNS, `networkPolicy.modelEndpoints`,

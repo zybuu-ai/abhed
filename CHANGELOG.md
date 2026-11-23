@@ -169,7 +169,13 @@ All notable changes to Abhed are recorded here. The format follows
   sign-in on, IP addresses work as before. With `auth.mode` `none`, only
   loopback and `server.allowed_hosts` are answered. `abhed serve` and
   `abhed serve -check` say so in a `hosts` line when they listen beyond
-  loopback with no name configured.
+  loopback with no name configured. With `auth.mode` `none` a request with
+  no `Host` is refused too. A container or reverse proxy that reaches the
+  server by a name must have that name configured. The Helm chart does this
+  itself: its probes send `Host: localhost`, and it puts the Service's DNS
+  names, the ingress and route hosts and the new `allowedHosts` value in
+  `server.allowed_hosts`; upgrade the chart with the server
+  ([Kubernetes](docs/guide/27-kubernetes.md#names-the-server-answers-to)).
 - git fetch, pull, push, clone and ls-remote in Abhed Studio and the CLI
   now reach remotes with the person's own credentials (SSH agent, keychain,
   credential helpers), on the process tier and the fence; 1.2.9 ran them in

@@ -353,7 +353,14 @@ func hostGuard(cfg config.Config, log *slog.Logger, next http.Handler) http.Hand
 		h := normalHost(r.Host)
 		ip := net.ParseIP(h)
 		switch {
-		case h == "", named[h], h == "localhost", strings.HasSuffix(h, ".localhost"), ip != nil && ip.IsLoopback():
+		// No Host at all (HTTP/1.0): a browser always sends one, so this is
+		// no rebinding page; with sign-in on the request still has to sign
+		// in, but with auth.mode none it would be the whole API, so only
+		// a named host passes then.
+		case h == "" && !noAuth:
+			next.ServeHTTP(w, r)
+			return
+		case h != "" && (named[h] || h == "localhost" || strings.HasSuffix(h, ".localhost") || ip != nil && ip.IsLoopback()):
 			next.ServeHTTP(w, r)
 			return
 		case ip != nil && !noAuth:

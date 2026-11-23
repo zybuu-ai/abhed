@@ -186,7 +186,9 @@ delivers a queued message carries the same id as `queue_id`, and a
 Posting with `"interrupt": true` is Send now. Under the Enterprise edition's
 high availability (`control_plane.ha.node_id` on each replica), the queue
 routes and `/interrupt` answer `421` with `Abhed-Session-Node` for a session
-running on another node; a single server never answers `421`. An `/approve` there is recorded on the
+running on another node; a single server answers `421` only to a request
+whose `Host` it does not answer to, and then without `Abhed-Session-Node`
+([Configuration](02-configuration.md#names-the-server-answers-to)). An `/approve` there is recorded on the
 stored approval when it names no request or names the one the stored row
 asks about; one naming another request also gets the `421`. Streamed reasoning is recorded as
 `agent.reasoning.delta` events; `agent.reasoning` still follows with the whole
