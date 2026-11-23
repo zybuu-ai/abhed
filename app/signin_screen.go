@@ -221,15 +221,24 @@ func (p pendingServerSignIn) discard() {
 	if p.filed != nil && !*p.filed {
 		if reg, err := profiles.Load(p.path); err == nil {
 			if _, prof, err := reg.Get(""); err == nil && prof.Token != "" {
-				if c, err := prof.HTTPClient(); err == nil {
-					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					_ = profiles.Revoke(ctx, c, prof)
-					cancel()
+				if err := endToken(prof); err != nil {
+					fmt.Fprintf(os.Stderr, "abhed: the server sign-in that was not kept could not be ended at %s (%v); its token stays valid there until it expires\n", prof.URL, err)
 				}
 			}
 		}
 	}
 	_ = os.Remove(p.path)
+}
+
+// endToken tells p's server to end its token, retrying as abhed logout does.
+func endToken(p *profiles.Profile) error {
+	c, err := p.HTTPClient()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return profiles.Logout(ctx, c, p, logoutAttempts, logoutBackoff)
 }
 
 // serverLogin is the network part of a server sign-in: abhed login, into a
@@ -279,6 +288,11 @@ func (p pendingServerSignIn) file(s *identity.Store, rules identity.Rules) (iden
 	have, err := profiles.Load(dest)
 	if err != nil {
 		return identity.Principal{}, err
+	}
+	// A profile of the same name signed in before is replaced: its token is
+	// ended, or kept as a pending sign-out that later commands retry.
+	if old := have.Profiles[name]; old != nil && old.Token != "" && old.Token != prof.Token {
+		have.SignOut(name, endToken(old))
 	}
 	have.Profiles[name] = prof
 	have.Current = name

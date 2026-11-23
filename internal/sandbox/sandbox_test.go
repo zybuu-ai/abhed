@@ -517,6 +517,13 @@ func TestProcessCommandIsToldWhoIsWorking(t *testing.T) {
 	if !slices.Contains(env, "ABHED_GUEST=1") || !slices.Contains(env, "ABHED_ACCOUNT=a1") {
 		t.Errorf("process env %q", env)
 	}
+	// The no-sandbox terminal keeps them, and still drops Abhed's own settings.
+	t.Setenv("ABHED_DATABASE_URL", "postgres://canary")
+	host := hostEnv()
+	if !slices.Contains(host, "ABHED_GUEST=1") || !slices.Contains(host, "ABHED_ACCOUNT=a1") ||
+		slices.Contains(host, "ABHED_DATABASE_URL=postgres://canary") {
+		t.Errorf("host terminal env %q", host)
+	}
 }
 
 // The user's processes are counted once for commands started close together,

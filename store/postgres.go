@@ -713,6 +713,26 @@ func (p *Postgres) ListSessions(ctx context.Context, limit int) ([]SessionRecord
 	return p.listSessions(ctx, "", limit)
 }
 
+// OwnersWithPrefix lists the owners of live sessions whose name starts with
+// prefix, in one query: a server's start sweep uses it for console guests.
+func (p *Postgres) OwnersWithPrefix(ctx context.Context, prefix string) ([]string, error) {
+	rows, err := p.pool.Query(ctx, `SELECT DISTINCT user_id FROM sessions
+		WHERE deleted_at IS NULL AND starts_with(user_id, $1)`, prefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var o string
+		if err := rows.Scan(&o); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
 // ListSessionsOwnedBy is ListSessions for one owner, filtered in the query so
 // an owner's older sessions are not crowded out by the rest of the tenant's.
 func (p *Postgres) ListSessionsOwnedBy(ctx context.Context, owner string, limit int) ([]SessionRecord, error) {

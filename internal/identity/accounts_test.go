@@ -310,3 +310,30 @@ func TestWithCostIsPerStore(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// ForgetIf forgets only its own sign-in, checked and removed under the
+// accounts lock: another account remembered meanwhile, even while many
+// sign-outs of the first run at once, is never forgotten.
+func TestForgetIfNeverForgetsSomeoneElse(t *testing.T) {
+	s := testStore(t)
+	a, _, _ := s.Create("alice", pw, "", "")
+	b, _, _ := s.Create("bob", pw, "", "")
+	if err := s.Remember(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); _, _ = s.ForgetIf(a.ID) }()
+	}
+	if err := s.Remember(b.ID); err != nil {
+		t.Fatal(err)
+	}
+	wg.Wait()
+	if done, err := s.ForgetIf(a.ID); err != nil || done {
+		t.Fatalf("ForgetIf(alice) with bob remembered: %v %v", done, err)
+	}
+	if e, ok, _ := s.Remembered(nil); !ok || e.ID != b.ID {
+		t.Fatalf("bob's sign-in was forgotten: %v %+v", ok, e)
+	}
+}

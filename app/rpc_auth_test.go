@@ -458,6 +458,21 @@ func TestUnkeptServerSignInIsRevoked(t *testing.T) {
 		t.Fatalf("a kept sign-in's token was ended: %q", got)
 	default:
 	}
+
+	// Signing in again under the same profile name ends the token it replaces.
+	again := pending("tok-again")
+	if _, err := again.file(s, identity.Rules{}); err != nil {
+		t.Fatal(err)
+	}
+	again.discard()
+	select {
+	case got := <-revoked:
+		if got != "Bearer tok-kept" {
+			t.Fatalf("revoked %q, want the replaced token", got)
+		}
+	default:
+		t.Fatal("the replaced profile's token stays valid on the server")
+	}
 }
 
 // Plugins are the person's, as skills are: an account's store is in its own

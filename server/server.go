@@ -422,7 +422,9 @@ type Server struct {
 	holder string
 
 	// Throttles for the endpoints reachable before authentication succeeds.
-	signinLimiter  *limiter
+	signinLimiter *limiter
+	// guestLimiter bounds the console guests one address starts.
+	guestLimiter   *limiter
 	sessionLimiter *limiter
 	cliLimiter     *limiter
 	// Per-caller limits on the sandbox routes, from the settings registry.
@@ -797,6 +799,9 @@ func New(opts Options) *Server {
 		// A terminal polls every five seconds while it waits; this leaves room
 		// for a few at once behind one address and none for guessing codes.
 		cliLimiter: newLimiter(30, 30*time.Second),
+		// Each guest is a new owner whose limits start over, so one address
+		// starts few: five an hour, about forty over a guest's 8 hours.
+		guestLimiter: newLimiter(5, time.Hour),
 		state: &mutable{
 			registry: opts.Registry,
 			skills:   opts.SkillRegistry,
@@ -1176,6 +1181,8 @@ func (s *Server) throttle(next http.Handler) http.Handler {
 		switch r.URL.Path {
 		case "/v1/signin", "/v1/signup", "/v1/password":
 			rateLimit(s.signinLimiter, trustProxy, next).ServeHTTP(w, r)
+		case auth.GuestPath:
+			rateLimit(s.guestLimiter, trustProxy, next).ServeHTTP(w, r)
 		case auth.CLIDevicePath, auth.CLITokenPath, auth.CLIApprovePath, auth.CLIAuthorizePath, TokenExchangePath:
 			rateLimit(s.cliLimiter, trustProxy, next).ServeHTTP(w, r)
 		case "/v1/sessions":

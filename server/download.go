@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -391,6 +392,43 @@ func (s *Server) RemoveOwnerSessions(ctx context.Context, tenant, owner string) 
 			continue
 		}
 		n++
+	}
+	return n
+}
+
+// RemoveGuestLeftovers removes every console guest's session the store
+// still holds. A guest lives only in this process's memory, so after a
+// restart none can sign in again to reach them; they are what an end that
+// never ran (a restart, a crash) left. It returns how many it removed.
+func (s *Server) RemoveGuestLeftovers(ctx context.Context) int {
+	prefix := auth.ProviderGuest + ":"
+	owners := map[string]bool{}
+	if ol, ok := s.under().(interface {
+		OwnersWithPrefix(context.Context, string) ([]string, error)
+	}); ok {
+		list, err := ol.OwnersWithPrefix(ctx, prefix)
+		if err != nil {
+			s.log.Error("listing console guests' leftovers", "error", err)
+			return 0
+		}
+		for _, o := range list {
+			owners[o] = true
+		}
+	} else if s.sessions != nil {
+		recs, err := s.sessions.ListSessions(ctx, 100000)
+		if err != nil {
+			s.log.Error("listing sessions to remove console guests' leftovers", "error", err)
+			return 0
+		}
+		for _, r := range recs {
+			if strings.HasPrefix(r.User, prefix) {
+				owners[r.User] = true
+			}
+		}
+	}
+	n := 0
+	for o := range owners {
+		n += s.RemoveOwnerSessions(ctx, "", o)
 	}
 	return n
 }

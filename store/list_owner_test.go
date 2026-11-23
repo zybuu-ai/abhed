@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -141,4 +142,34 @@ func TestSessionNamedSetsTheTitle(t *testing.T) {
 	if err != nil || len(list) != 1 || list[0].Title != "Release notes" {
 		t.Fatalf("the list shows %+v, %v", list, err)
 	}
+}
+
+// OwnersWithPrefix lists each live owner with the prefix once, in one query:
+// a deleted session's owner and other owners are left out.
+func TestOwnersWithPrefix(t *testing.T) {
+	tenant := fmt.Sprintf("t-guests-%d", time.Now().UnixNano())
+	p := runtimeStore(t, tenant)
+	ctx := context.Background()
+	for i, u := range []string{"guest:a", "guest:a", "guest:b", "local:ana", "guest:gone"} {
+		if err := p.CreateSession(ctx, SessionRecord{ID: fmt.Sprintf("%s-%d", tenant, i), Tenant: tenant, User: u,
+			StartedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := p.DeleteSession(fmt.Sprintf("%s-4", tenant)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.OwnersWithPrefix(ctx, "guest:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(sortedCopy(got), ",") != "guest:a,guest:b" {
+		t.Fatalf("owners %v", got)
+	}
+}
+
+func sortedCopy(in []string) []string {
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	return out
 }

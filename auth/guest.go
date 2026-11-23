@@ -35,6 +35,7 @@ type GuestAuth struct {
 	now      func() time.Time
 	stop     chan struct{}
 	stopOnce sync.Once
+	reapOnce sync.Once
 }
 
 type guestSession struct {
@@ -56,7 +57,6 @@ func NewGuestAuth(ttl time.Duration, secure bool, tenant string, onEnd func(owne
 	}
 	g := &GuestAuth{TTL: ttl, Secure: secure, Tenant: tenant, CookieName: "abhed_guest", OnEnd: onEnd,
 		sessions: map[string]*guestSession{}, now: time.Now, stop: make(chan struct{})}
-	go g.reapLoop()
 	return g
 }
 
@@ -154,6 +154,9 @@ func (g *GuestAuth) start(w http.ResponseWriter, r *http.Request) {
 	}
 	g.sessions[sessionDigest(sid)] = &guestSession{subject: subject, expires: now.Add(g.TTL)}
 	g.mu.Unlock()
+	// The reaper starts with the first guest, so an Auth built and dropped
+	// (doctor, a test) leaves no goroutine behind.
+	g.reapOnce.Do(func() { go g.reapLoop() })
 	http.SetCookie(w, &http.Cookie{Name: g.CookieName, Value: sid, Path: "/", HttpOnly: true, Secure: g.Secure,
 		SameSite: http.SameSiteStrictMode, Expires: now.Add(g.TTL)})
 	writeAuthJSON(w, http.StatusOK, map[string]any{"guest": true, "owner": GuestOwner(subject), "expires": now.Add(g.TTL).Unix()})

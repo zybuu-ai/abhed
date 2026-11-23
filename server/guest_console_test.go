@@ -83,3 +83,38 @@ func TestConsoleGuestKeepsNothingAfterSigningOut(t *testing.T) {
 		t.Fatalf("%d events of the guest's session are kept", len(events))
 	}
 }
+
+// Each guest starts with fresh per-owner limits, so one address may start
+// only a few: the sixth within the hour is refused.
+func TestConsoleGuestsAreLimitedPerAddress(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "local"
+	cfg.Auth.Guest = true
+	local := auth.NewLocalAuth(auth.NewMemoryUserStore(), time.Hour, false)
+	g := auth.NewGuestAuth(time.Hour, false, "default", nil)
+	defer g.Close()
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{},
+		Registry: tools.NewRegistry(tools.Read{}),
+		Auth: &auth.Middleware{Providers: []auth.Provider{local, g},
+			PublicPaths: append(append([]string{"/"}, local.PublicPaths()...), g.PublicPaths()...)}})
+	h := s.Handler()
+	start := func(addr string) int {
+		req := httptest.NewRequest("POST", auth.GuestPath, strings.NewReader("{}"))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = addr
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	for i := 0; i < 5; i++ {
+		if code := start("192.0.2.1:1000"); code != http.StatusOK {
+			t.Fatalf("guest %d: %d", i+1, code)
+		}
+	}
+	if code := start("192.0.2.1:1001"); code != http.StatusTooManyRequests {
+		t.Fatalf("the sixth guest from one address: %d", code)
+	}
+	if code := start("192.0.2.2:1000"); code != http.StatusOK {
+		t.Fatalf("another address: %d", code)
+	}
+}

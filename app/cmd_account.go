@@ -202,8 +202,8 @@ and answers are read from the terminal, or one per line from stdin.`)
 			if note != "" {
 				fmt.Fprintln(errOut, note)
 			}
-		}
-		if err := s.Forget(); err != nil {
+		} else if err := s.Forget(); err != nil {
+			// signOutHere forgot its own sign-in; this clears one no longer good.
 			return fail(err)
 		}
 		fmt.Fprintln(out, "Signed out. The next start asks who is working.")

@@ -116,6 +116,11 @@ func (a *App) serveCmd(workspace, addr string) int {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
+	for _, p := range authMW.Providers {
+		if g, ok := p.(*auth.GuestAuth); ok {
+			defer g.Close()
+		}
+	}
 	// Unusable TLS stops here, before anything listens: never plain HTTP instead.
 	tlsL, err := buildTLS(cfg, workspace, slog.Default())
 	if err != nil {
@@ -209,7 +214,6 @@ func (a *App) serveCmd(workspace, addr string) int {
 		}
 	}
 	eventStore, closeStore, err := openServeStore(context.Background(), cfg)
-
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
@@ -370,6 +374,14 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 2
 	}
 	srv := server.New(opts)
+	// No console guest survives a restart, so what earlier ones left goes now.
+	func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if n := srv.RemoveGuestLeftovers(ctx); n > 0 {
+			slog.Info("removed console guests' sessions left from before this start", "sessions", n)
+		}
+	}()
 	if cfg.Auth.Guest {
 		// What a console guest kept goes when the guest signs out or expires.
 		end := func(owner string) {

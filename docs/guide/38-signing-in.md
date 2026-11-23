@@ -240,7 +240,13 @@ sign-in page. A guest works as an identity of its own (`guest:<id>`), with
 no groups and in the default tenant, under every rule, sandbox and approval
 anyone has; no guest can reach another's sessions. When the guest signs out,
 or its browser session ends (`auth.guest_hours`, 8 by default), its
-sessions are stopped and removed. It needs `auth.mode` `local` or `oidc`.
+sessions are stopped and removed, a run still going included. Guests are
+held in the server's memory, so a restart ends them all, and the next start
+removes what they left. With Postgres, removal crypto-shreds the session's
+content; each step's metadata stays, as for any deleted session. One
+address can start five guests an hour (behind a proxy, set
+`server.trust_proxy` so the client's address is the one counted). It needs
+`auth.mode` `local` or `oidc`.
 Think before turning it on: a guest's agent runs commands on the server for
 anyone who can reach the page.
 

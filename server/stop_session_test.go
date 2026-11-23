@@ -2,12 +2,14 @@ package server_test
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/server"
 	"github.com/zybuu-ai/abhed/server/servertest"
+	"github.com/zybuu-ai/abhed/store/local"
 )
 
 // hangingAdapter answers nothing until the run is cancelled.
@@ -68,5 +70,39 @@ func TestRemoveOwnerSessionsCancelsARunningGuestRun(t *testing.T) {
 	case <-ended:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the guest's run kept going after its sessions were removed")
+	}
+}
+
+// A guest lives only in the process's memory, so the sessions of guests from
+// before a restart are removed at start; no one else's are touched.
+func TestGuestLeftoversAreRemovedAtStart(t *testing.T) {
+	st, err := local.Open(local.Options{Dir: filepath.Join(t.TempDir(), "records")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := servertest.Proxy(t, func(o *server.Options) { o.Store = st })
+	ended := make(chan string, 3)
+	for _, u := range []string{"guest:old", "guest:older", "alice"} {
+		if _, err := s.StartSession(context.Background(), server.StartSpec{Prompt: "hi", User: u, Tenant: "default",
+			OnEnd: func(reason string, _ error) { ended <- reason }}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		select {
+		case <-ended:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the runs did not end")
+		}
+	}
+	if n := s.RemoveGuestLeftovers(context.Background()); n != 2 {
+		t.Fatalf("removed %d, want the two guests' sessions", n)
+	}
+	recs, err := st.ListSessions(context.Background(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 || recs[0].User != "alice" {
+		t.Fatalf("left %+v", recs)
 	}
 }
