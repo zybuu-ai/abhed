@@ -148,9 +148,27 @@ type Outcome struct {
 	Note string
 }
 
-// LegacyData reports whether ~/.abhed holds the person's state from before
-// sign-in: what an account takes over when it is first made.
+// LegacyData reports whether ~/.abhed holds a person's work from before
+// sign-in: sessions an earlier version recorded, or its prompt history.
+// Other items alone (trust.json, a plugin) are not enough, since a command
+// a 1.3 binary runs before anyone signs in could write them; what is there
+// still moves with the rest when an account takes the data over.
 func LegacyData() bool {
+	m, err := home.Machine()
+	if err != nil {
+		return false
+	}
+	for _, p := range legacyWork {
+		if nonEmpty(filepath.Join(m, p)) {
+			return true
+		}
+	}
+	return false
+}
+
+// LegacyItemsPresent reports whether any of LegacyItems is in ~/.abhed, for
+// abhed account adopt, which the person asks for by name.
+func LegacyItemsPresent() bool {
 	m, err := home.Machine()
 	if err != nil {
 		return false
@@ -163,11 +181,32 @@ func LegacyData() bool {
 	return false
 }
 
+// legacyWork are the items only a session writes.
+var legacyWork = []string{"records", "history"}
+
+// nonEmpty reports whether p is a file, or a folder with something in it.
+func nonEmpty(p string) bool {
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return false
+	}
+	if !fi.IsDir() {
+		return fi.Mode().IsRegular() && fi.Size() > 0
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	names, _ := f.Readdirnames(1)
+	return len(names) > 0
+}
+
 // LegacyItems are the person's state in ~/.abhed before sign-in, which the
 // first account takes over.
 var LegacyItems = []string{"records", "history", "drafts", "projects", "ABHED.md", "secrets.json",
 	"profiles.json", "trust.json", "command-trust.json", "startup-files.json", "exports", "push", "index",
-	"ui.json", "skills", "agents", "commands", "styles",
+	"ui.json", "skills", "agents", "commands", "styles", "plugins", "plugins.json", "plugin-trusted-root.json",
 	filepath.Join("state", "workspace-grants.json"), filepath.Join("state", "record-ship.json"),
 	filepath.Join("state", "debug-process-tier.json")}
 

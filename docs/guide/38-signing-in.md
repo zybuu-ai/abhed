@@ -34,7 +34,9 @@ Once you sign in, this machine remembers it until you sign out, change the
 password, or an administrator removes you. Signing out (`abhed account
 signout`, `/account signout`, Studio's Abhed: Sign Out) ends that sign-in
 everywhere on this machine, and for a server sign-in also ends its token at
-the server. Each later start says who is
+the server. A session already running in another window keeps working until
+it ends; anything it starts afterwards needs the sign-in again, and a server
+sign-in's calls fail once its token has ended. Each later start says who is
 signed in, under the banner, and `/account` signs out or switches (it ends
 the session; the next start asks again). `/status` shows it too.
 
@@ -43,9 +45,12 @@ in, and Studio signs you in over ACP (see the Studio contract).
 
 ### Moving data from 1.2.x
 
-If `~/.abhed` holds sessions, history or memory from an earlier version,
-the first choice is **Create my account and bring my data**. Abhed makes
-the account and moves those files into it by rename. It verifies every
+If `~/.abhed` holds sessions or history from an earlier version, the first
+choice is **Create my account and bring my data**. Abhed makes the account
+and moves your files into it by rename: sessions, history, memory, secrets,
+server sign-ins, trust decisions, skills and plugins (installs, approvals
+and trusted publishers) among them. A command run before anyone signed in,
+such as `abhed init`, does not by itself make this choice appear. It verifies every
 session's chain before and after, and the heads must match; if they do not,
 everything moves back and nothing is lost. A crash part way through
 resumes at the next start. Sessions recorded before sign-in stay yours.
@@ -98,6 +103,7 @@ account's next sign-in says it happened, when and from where.
 | `profiles.json`: your server sign-ins | logs, the configuration change log |
 | trust decisions, Studio folder grants | toolchain and package caches |
 | skills, agents, commands and styles of your own | |
+| plugins: installs, approvals, trusted publishers and root | |
 
 ## Guest
 
@@ -109,7 +115,10 @@ outright or the machine loses power, the next start of Abhed removes it.
 Removal is ordinary deletion; on an SSD it is not a secure erase.
 
 A guest cannot resume a session, keep a secret, add an MCP server or sign
-one in, sign in to a server, or change this machine's configuration. A
+one in, sign in to a server, install, approve or remove a plugin or change
+whom plugins are trusted from, or change this machine's configuration. A
+guest loads no plugin: it starts with none, and its folder goes when it
+ends. A
 guest uses the machine's configuration and defaults, and never an
 account's own trust decisions, grants or secrets. The machine's
 configuration (`~/.abhed/config.json`) is shared: what any account sets
@@ -119,7 +128,7 @@ changes in your workspace are the work itself, and stay.
 
 Every session's `session.started` says who was working: `principal`, with
 its `kind` (`account`, `server`, `guest` or `legacy`) and `owner`
-(`device:<username>`, or `guest`), and `by_default` when no one chose it.
+(`device:<username>`, or `guest:<id>`), and `by_default` when no one chose it.
 Where the managed configuration writes the record's OCSF copy
 (`record.ocsf`), a guest's sessions are written there too, as the
 organisation's, though nothing of them is kept in the guest's folder.

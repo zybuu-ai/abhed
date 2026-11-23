@@ -66,6 +66,9 @@ func TestResolveTable(t *testing.T) {
 				if err := os.MkdirAll(filepath.Join(m, "records"), 0o700); err != nil {
 					t.Fatal(err)
 				}
+				if err := os.WriteFile(filepath.Join(m, "records", "s1.jsonl"), []byte("{}\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			out, err := Resolve(s, c.req)
 			if c.err {
@@ -151,5 +154,40 @@ func TestAdmitsNormalisesServerURLs(t *testing.T) {
 		if err := r.Admits(Entry{Kind: KindServer, URL: u}); err == nil {
 			t.Errorf("%s admitted", u)
 		}
+	}
+}
+
+// Only work an earlier version recorded counts as data from before sign-in:
+// trust.json, a plugin or an empty records folder alone, which a 1.3 command
+// run before anyone signed in could leave, do not.
+func TestLegacyDataIsRecordedWork(t *testing.T) {
+	h, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", h)
+	t.Setenv(home.EnvPerson, "")
+	m, _ := home.Machine()
+	for _, p := range []string{"records", "history"} {
+		if err := os.MkdirAll(filepath.Join(m, p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{"trust.json", "plugins.json"} {
+		if err := os.WriteFile(filepath.Join(m, f), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if LegacyData() {
+		t.Fatal("trust.json, plugins.json and empty folders counted as data from before sign-in")
+	}
+	if !LegacyItemsPresent() {
+		t.Fatal("abhed account adopt would find nothing to move")
+	}
+	if err := os.WriteFile(filepath.Join(m, "history", "prompts"), []byte("hi\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !LegacyData() {
+		t.Fatal("an earlier version's history did not count")
 	}
 }

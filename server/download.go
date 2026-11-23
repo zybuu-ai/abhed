@@ -355,13 +355,15 @@ func (s *Server) removeSession(ctx context.Context, id, tenant, user string) err
 
 // RemoveOwnerSessions stops and removes every session owner holds, running
 // or kept: what a console guest leaves when it signs out or expires. It
-// returns how many it removed.
+// returns how many it removed. An empty tenant means any: each session is
+// then removed under its own tenant, so a running one is found, cancelled
+// and closed, not just deleted underneath its run.
 func (s *Server) RemoveOwnerSessions(ctx context.Context, tenant, owner string) int {
-	ids := map[string]bool{}
+	ids := map[string]string{}
 	s.mu.RLock()
 	for id, live := range s.running {
 		if live.User == owner && (tenant == "" || live.Tenant == tenant) {
-			ids[id] = true
+			ids[id] = live.Tenant
 		}
 	}
 	s.mu.RUnlock()
@@ -373,12 +375,18 @@ func (s *Server) RemoveOwnerSessions(ctx context.Context, tenant, owner string) 
 			s.log.Error("listing an owner's sessions to remove them", "owner", owner, "error", err)
 		}
 		for _, r := range recs {
-			ids[r.ID] = true
+			if _, live := ids[r.ID]; live || (tenant != "" && r.Tenant != "" && r.Tenant != tenant) {
+				continue
+			}
+			ids[r.ID] = tenant
+			if tenant == "" {
+				ids[r.ID] = r.Tenant
+			}
 		}
 	}
 	n := 0
-	for id := range ids {
-		if err := s.removeSession(ctx, id, tenant, owner); err != nil {
+	for id, t := range ids {
+		if err := s.removeSession(ctx, id, t, owner); err != nil {
 			s.log.Error("removing an owner's session", "owner", owner, "session", id, "error", err)
 			continue
 		}

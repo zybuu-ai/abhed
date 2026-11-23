@@ -50,3 +50,23 @@ func TestStopSessionStopsOnlyTheOwnersRun(t *testing.T) {
 		t.Fatal("the run did not end after StopSession")
 	}
 }
+
+// A console guest's run that is still going when the guest signs out or
+// expires is cancelled, not deleted underneath it: the end hook removes by
+// owner alone, with no tenant, and the run is in the deployment's tenant.
+func TestRemoveOwnerSessionsCancelsARunningGuestRun(t *testing.T) {
+	s := servertest.Proxy(t, func(o *server.Options) { o.Adapter = hangingAdapter{} })
+	ended := make(chan string, 1)
+	if _, err := s.StartSession(context.Background(), server.StartSpec{Prompt: "wait", User: "guest:abc", Tenant: "default",
+		OnEnd: func(reason string, _ error) { ended <- reason }}); err != nil {
+		t.Fatal(err)
+	}
+	if n := s.RemoveOwnerSessions(context.Background(), "", "guest:abc"); n != 1 {
+		t.Fatalf("removed %d sessions, want 1", n)
+	}
+	select {
+	case <-ended:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the guest's run kept going after its sessions were removed")
+	}
+}

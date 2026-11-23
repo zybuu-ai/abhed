@@ -313,7 +313,7 @@ and answers are read from the terminal, or one per line from stdin.`)
 		if err != nil {
 			return fail(err)
 		}
-		if !identity.LegacyData() {
+		if !identity.LegacyItemsPresent() {
 			fmt.Fprintln(out, "There is no data from before sign-in in ~/.abhed to move.")
 			return 0
 		}

@@ -168,3 +168,29 @@ func TestFirstStartAsksWhoIsWorking(t *testing.T) {
 	h.WaitText("hello there")
 	h.Exit(0)
 }
+
+// abhed init before anyone signed in does not make the machine look like one
+// an earlier version used: a later headless run is still a guest's, says
+// so, and keeps nothing, at the machine's root or anywhere else.
+func TestInitBeforeSignInLeavesLaterRunsGuest(t *testing.T) {
+	t.Parallel()
+	h := piped(t, Opts{NoAccount: true, Args: []string{"init"}, Script: `text "done"`})
+	if code := h.Wait(time.Second); code != 0 {
+		t.Fatalf("init: exit %d\n%s", code, h.Output())
+	}
+	next := exec.Command(Binary(t), "-p", "hi")
+	next.Dir = h.Workspace()
+	next.Env = h.env()
+	out, _ := next.CombinedOutput()
+	if strings.Contains(string(out), "running as before") || !strings.Contains(string(out), "running as guest, nothing is kept") {
+		t.Fatalf("the run after init:\n%s", out)
+	}
+	if guests, records := leftOf(t, h.Home()); len(guests) != 0 || len(records) != 0 {
+		t.Fatalf("left: guests %v records %v", guests, records)
+	}
+	for _, p := range []string{"trust.json", "records", "history"} {
+		if _, err := os.Lstat(filepath.Join(h.Home(), ".abhed", p)); err == nil {
+			t.Errorf("~/.abhed/%s was written before anyone signed in", p)
+		}
+	}
+}

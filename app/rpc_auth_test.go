@@ -18,6 +18,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/secrets"
+	"github.com/zybuu-ai/abhed/plugin"
 	"github.com/zybuu-ai/abhed/profiles"
 )
 
@@ -456,5 +457,40 @@ func TestUnkeptServerSignInIsRevoked(t *testing.T) {
 	case got := <-revoked:
 		t.Fatalf("a kept sign-in's token was ended: %q", got)
 	default:
+	}
+}
+
+// Plugins are the person's, as skills are: an account's store is in its own
+// folder, and a guest can neither install nor approve one, nor change whom
+// plugins are trusted from; it may still list them.
+func TestPluginsArePerPerson(t *testing.T) {
+	signInTest(t)
+	s, _ := identity.Open()
+	e, _, _ := s.Create("a1", "correct horse", "", "")
+	if err := usePrincipal(s.Principal(e)); err != nil {
+		t.Fatal(err)
+	}
+	root, _ := s.Root(e)
+	st, err := plugin.DefaultStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(st.Root, root+string(filepath.Separator)) || !strings.HasPrefix(st.StateFile, root+string(filepath.Separator)) {
+		t.Fatalf("an account's plugins outside its folder %s: %+v", root, st)
+	}
+	endGuest()
+	if err := usePrincipal(identity.GuestPrincipal()); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"plugin", "install", "x.tgz"}, {"plugin", "approve", "x"}, {"plugin", "rm", "x"},
+		{"plugin", "trusted-root", "f.json"}, {"plugin", "publishers", "add", "-issuer", "u", "id"}} {
+		if err := guestSubcommand(args); err == nil {
+			t.Errorf("a guest may %v", args)
+		}
+	}
+	for _, args := range [][]string{{"plugin", "list"}, {"plugin", "show", "x"}, {"plugin", "publishers", "list"}} {
+		if err := guestSubcommand(args); err != nil {
+			t.Errorf("a guest is refused %v: %v", args, err)
+		}
 	}
 }

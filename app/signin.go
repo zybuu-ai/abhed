@@ -56,7 +56,7 @@ const (
 var personCommands = map[string]bool{
 	"record": true, "logs": true, "sessions": true, "hawkeye": true, "mcp": true, "secret": true,
 	"trust": true, "resolve": true, "index": true, "login": true, "logout": true, "profile": true,
-	"bg": true, "policy": true, "acp": true, "rpc": true,
+	"bg": true, "policy": true, "acp": true, "rpc": true, "init": true, "plugin": true,
 }
 
 // signInFlags are what the command line says about who is working.
@@ -306,7 +306,8 @@ func guestRefusal(what string) error {
 
 // guestSubcommand refuses, to a guest, a subcommand that would keep state
 // past the run or change the machine's configuration: a stored secret, an
-// MCP server or its sign-in, a server sign-in. It returns the refusal or nil.
+// MCP server or its sign-in, a server sign-in, a plugin or its publishers.
+// It returns the refusal or nil.
 func guestSubcommand(rest []string) error {
 	verb := ""
 	if len(rest) > 1 {
@@ -324,6 +325,15 @@ func guestSubcommand(rest []string) error {
 			what = "an MCP server in this machine's configuration"
 		case "login":
 			what = "an MCP server's sign-in"
+		}
+	case "plugin":
+		switch verb {
+		case "install", "approve", "remove", "rm", "uninstall", "trusted-root":
+			what = "a plugin"
+		case "publishers":
+			if len(rest) > 2 && rest[2] != "list" {
+				what = "a trusted plugin publisher"
+			}
 		}
 	case "login", "logout":
 		what = "a server sign-in"

@@ -203,7 +203,7 @@ All notable changes to Abhed are recorded here. The format follows
   says who is signed in (`/account` signs out or switches). An account on
   this machine (`abhed account create`, `signin`, `signout`, `whoami`,
   `list`, `passwd`, `reset`, `rm`) keeps its record, history, memory,
-  secrets, server sign-ins and trust decisions in a folder of its own under
+  secrets, server sign-ins, trust decisions and plugins in a folder of its own under
   `~/.abhed/accounts/`; the password is bcrypt-hashed, a recovery code
   resets it, and so can the OS user, which the next sign-in reports. An
   account is a separate space, not encryption. A guest keeps nothing: its
