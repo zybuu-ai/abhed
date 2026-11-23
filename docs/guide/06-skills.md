@@ -56,9 +56,9 @@ From the directories the operator configured (`skills.dirs`, by default
 `~/.abhed/skills`), and from the workspace's own `.abhed/skills/<name>/`
 once you trust them. When two configured directories hold a skill of one
 name, the later directory's wins, and a warning names both. A workspace
-reads at most 64 skills, and says so when there are more. A skill body *is* instructions by construction, so a
-repository's skills load under the same hash-pinned trust as its agent
-definitions:
+reads at most 64 skills, and says so when there are more. A skill body
+*is* instructions by construction, so a repository's skills load under the
+same hash-pinned trust as its agent definitions:
 
 - `abhed trust` and the trust prompt show each workspace skill's name,
   description and hash. `abhed trust grant` trusts exactly that content

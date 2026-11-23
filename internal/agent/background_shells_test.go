@@ -793,7 +793,11 @@ func TestForegroundSubagentMovesToTheBackground(t *testing.T) {
 	if open := unreturned(evs); len(open) != 0 {
 		t.Fatalf("still owed: %v", open)
 	}
-	waitFor(t, "its notice", func() bool { return l.Background.Pending() > 0 || hasEvent(evs, EvSubagentNotice) })
+	// Re-read the record: a wake may deliver the notice, emptying Pending.
+	waitFor(t, "its notice", func() bool {
+		evs, _ := store.Events("parent")
+		return l.Background.Pending() > 0 || hasEvent(evs, EvSubagentNotice)
+	})
 }
 
 // A subagent moved to the background with no return yet is owed, so a crash

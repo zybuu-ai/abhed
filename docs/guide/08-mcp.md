@@ -601,6 +601,13 @@ offering a tool of one name, a deferred tool once loaded, pagination, an
 extension tool named like an MCP tool (refused), a server that hangs at
 start, and a long and a dotted name through each provider's wire format.
 
-Nothing caps how many servers you configure. What grows with them is
-startup, eight at a time, and the tool definitions in each request, which
-the limits above keep within the provider's.
+That run is the tested bound: 50 servers and 1,000 MCP tools. No setting
+caps how many servers you configure, but more than that has not been
+tested, and the costs grow with them. Each stdio server is a process of its
+own for the whole session; startup takes longer, eight servers at a time;
+and the always-offered tools (built-ins, extensions', servers offered in
+full) still count against `max_tools`, so a session can be refused before
+any MCP tool is searched for. In that run the tool definitions and listings
+came to about 16,000 tokens before the first message: the limits above keep
+a request's tools within the provider's, not that cost at zero. A single
+server's tools past 2,000 are not read.

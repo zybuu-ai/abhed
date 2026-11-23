@@ -713,6 +713,10 @@ All notable changes to Abhed are recorded here. The format follows
 - New `make test-scale`: 50 stub MCP servers of 20 tools, 300 skills and
   100 agent types in one session, checking routing, the provider's tool
   limit and the listing budgets; CI runs it as the integration-scale job.
+  That is the tested bound, not a ceiling the code enforces: more servers
+  have not been tested, each stdio server is a process of its own, and in
+  that run the tools and listings cost about 16,000 tokens before the first
+  message. See the MCP guide's Limits and Scale sections.
 
 ### Fixed
 
