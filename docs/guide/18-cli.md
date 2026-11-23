@@ -21,6 +21,8 @@ more often a mistyped command than a task.
 | Flag | |
 |---|---|
 | `-C DIR` | the workspace (default: the current directory) |
+| `-guest` | work as guest: nothing is kept when the run ends (also `ABHED_GUEST=1`); see [Signing in](38-signing-in.md) |
+| `-account NAME` | work as this account on this machine, which must be signed in; a run that cannot ask exits 10 otherwise (also `ABHED_ACCOUNT`) |
 | `-model NAME` | a configured provider for this run |
 | `-fallback-model A,B` | configured providers to move to when the model is unavailable |
 | `-mode MODE` | `default`, `accept-edits`, `plan`, `auto` or `bypass` |
@@ -194,7 +196,9 @@ provider is refused under a managed `model.default`, as `/model` is.
 | `/evidence [N \| #seq]` | the checks on the last answer: every statement with its verdict, or the record behind statement N, or one entry of the record — [Verified answers](29-verified-answers.md#where-you-see-it) |
 | `/copy` | put the last reply on the clipboard through the terminal (OSC 52); `cli.copy: false` turns it off — [The terminal](20-terminal.md#the-title-notifications-and-the-clipboard) |
 | `/config` | each setting and where it comes from: managed, a file, or the default |
-| `/config set KEY VALUE` | set `model.default`, `permissions.mode`, `sandbox.allow_network`, `limits.max_turns`, `tools.syntax_check` or `statusline.command` in your own `~/.abhed/config.json`, for the next session |
+| `/config set KEY VALUE` | set `model.default`, `permissions.mode`, `sandbox.allow_network`, `sandbox.tier`, `limits.max_turns`, `tools.syntax_check` or `statusline.command` in your own `~/.abhed/config.json`, for the next session |
+| `/network [workspace \| host NAME \| once [NAME]]` | what commands can reach; open the network to them for this workspace, one host, or this session, asked first. Not where the managed configuration holds the network |
+| `/config apply` | offer this session the models added to your own file since it started; nothing else of the file applies to it. When the file changes, the session says so after the task: a change applies to new sessions |
 
 `/config set` refuses a setting the managed configuration makes, and asks
 before a change that lets the agent do more: a broader mode, network on

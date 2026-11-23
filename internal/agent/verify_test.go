@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -476,12 +477,28 @@ func TestAnswerTool(t *testing.T) {
 	reason, err := l.Run(context.Background(), "how many replicas?")
 	// The pods claim cites a result that counts 5 pods: contradicted, and
 	// label mode spends its one revision on it.
+	// On a failure, say what t1 returned and how the answer was judged: a
+	// flake is then explainable from the log.
+	explain := func() string {
+		var t1 []string
+		evs, _ := store.Events("sess1")
+		for _, o := range payloads[Observation](evs, EvObservation) {
+			if o.CallID == "t1" {
+				exit := "none"
+				if o.ExitCode != nil {
+					exit = fmt.Sprint(*o.ExitCode)
+				}
+				t1 = append(t1, fmt.Sprintf("exit=%s error=%v unknown=%v content=%q", exit, o.IsError, o.OutcomeUnknown, o.Content))
+			}
+		}
+		return fmt.Sprintf("t1: %v; verdicts: %+v", t1, answerVerdicts(store))
+	}
 	if err != nil || reason != TermCompleted || len(ad.gotRequests) != 3 {
-		t.Fatalf("%s %v %d", reason, err, len(ad.gotRequests))
+		t.Fatalf("%s %v %d; %s", reason, err, len(ad.gotRequests), explain())
 	}
 	vs := answerVerdicts(store)
 	if len(vs) < 1 || vs[0].Source != "answer_tool" || vs[0].Verified != 1 || vs[0].Contradicted != 1 {
-		t.Fatalf("verdict: %+v", vs)
+		t.Fatalf("verdict: %s", explain())
 	}
 	msgs := l.Messages()
 	found := false
@@ -1268,5 +1285,107 @@ func TestRefusalIsNeverExternal(t *testing.T) {
 	av := AnswerVerdict{Claims: []ClaimVerdict{{Verdict: ClaimVerified, External: true, LoadBearing: true}}, Verified: 1}
 	if f := av.Footer(); strings.Contains(f, "-1") {
 		t.Fatalf("footer %q", f)
+	}
+}
+
+// Evidence given as objects ({"call_id", "quote"}), as models often give
+// it, is read: the call id is cited, and the quote is used only when the
+// cited output holds it.
+func TestEvidenceObjects(t *testing.T) {
+	cs := parseClaims(json.RawMessage(`[{"text":"a","evidence":[{"call_id":"c1","quote":"OK"},{"seq":12}]},{"text":"b","evidence":{"id":"c2"}}]`))
+	if len(cs) != 2 || strings.Join(cs[0].Evidence, ",") != "c1,#12" || cs[0].hintQuote != "OK" || cs[0].Quote != "" ||
+		strings.Join(cs[1].Evidence, ",") != "c2" {
+		t.Fatalf("claims %+v", cs)
+	}
+	b := newRec(t)
+	b.call("c1", "bash", map[string]string{"command": "printf 'replicas: 3\\n'"}, "replicas: 3\n", exit(0))
+	ok := checkCited(t, b, Claim{Text: "There are 3 replicas.", Kind: KindObserved, Evidence: []string{"c1"}, hintQuote: "not in the output"})[0]
+	if ok.Verdict != ClaimVerified {
+		t.Fatalf("a quote the output lacks, given beside a citation, sank the claim: %+v", ok)
+	}
+	bad := checkCited(t, b, Claim{Text: "There are 3 replicas.", Kind: KindObserved, Evidence: []string{"c1"}, Quote: "not in the output"})[0]
+	if bad.Verdict == ClaimVerified {
+		t.Fatalf("a quote of the claim's own that the output lacks was ignored: %+v", bad)
+	}
+}
+
+// The recorded strict fix, replayed through strict mode. Its code, run and
+// edit claims verify; its explanations of old code are shown apart. It
+// still ends unverified: on its two invented citations, and on the claims
+// that its own change works ("This correctly handles …", "The new logic
+// ensures …", "This allows it to correctly handle …"), which are work the
+// record does not show.
+func TestStrictRecordedFix(t *testing.T) {
+	run := func(t *testing.T, answer string) (TerminalReason, []string) {
+		l, store, _, dir := verifyHarness(t, VerifyStrict, true, nil)
+		for _, s := range []CorpusStep{realStrictFixStep0, realStrictFixStep1, realStrictFixStep2, realStrictFixStep3} {
+			raw, _ := json.Marshal(s.Args)
+			cwd := ""
+			if s.Tool == "bash" {
+				cwd = dir
+			}
+			_, _ = l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: s.ID, Tool: s.Tool, Args: raw})
+			_, _ = l.Recorder.Record(EvObservation, ActorTool, Untrusted, Observation{CallID: s.ID, Tool: s.Tool, Content: s.Output, Cwd: cwd, ExitCode: s.Exit, IsError: s.Exit != nil && *s.Exit != 0})
+		}
+		l.Adapter.(*scriptedAdapter).turns = []scriptedTurn{
+			{calls: []model.ToolCall{{ID: "a1", Name: "answer", Args: json.RawMessage(answer)}}},
+			{calls: []model.ToolCall{{ID: "a2", Name: "answer", Args: json.RawMessage(answer)}}},
+		}
+		reason, _ := l.Run(context.Background(), realStrictFixPrompt)
+		vs := answerVerdicts(store)
+		var bad []string
+		for _, c := range vs[len(vs)-1].Claims {
+			if c.LoadBearing && c.Verdict != ClaimVerified && !c.Explains {
+				bad = append(bad, clipRunes(c.Text, 30))
+			}
+		}
+		return reason, bad
+	}
+	withoutInvented := func() string {
+		var a map[string]any
+		_ = json.Unmarshal([]byte(realStrictFixAnswers[0]), &a)
+		var kept []any
+		for _, c := range a["claims"].([]any) {
+			ev, _ := json.Marshal(c.(map[string]any)["evidence"])
+			if !strings.Contains(string(ev), "bash_0") && !strings.Contains(string(ev), "bash_2") {
+				kept = append(kept, c)
+			}
+		}
+		a["claims"] = kept
+		raw, _ := json.Marshal(a)
+		return string(raw)
+	}
+	for _, c := range []struct {
+		name, answer string
+		bad          []string
+	}{
+		{"as given", realStrictFixAnswers[0], []string{"The initial test run showed 5 …", "The final test run after the f…",
+			"This correctly handles multipl…", "The new logic ensures that chu…"}},
+		{"without the invented citations", withoutInvented(), []string{"This correctly handles multipl…", "The new logic ensures that chu…"}},
+		{"the second answer", realStrictFixAnswers[1], []string{"This allows it to correctly ha…"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			reason, bad := run(t, c.answer)
+			if reason != TermUnverified || strings.Join(bad, "|") != strings.Join(c.bad, "|") {
+				t.Fatalf("got %s, unverified work %q, want %q", reason, bad, c.bad)
+			}
+		})
+	}
+	// The reviewer's case: a claim that the new code works, with only an
+	// unrelated module passing, fails strict.
+	l, _, _, dir := verifyHarness(t, VerifyStrict, false, nil)
+	for _, s := range []CorpusStep{stepTextFail, stepTextEdit, stepTextOtherPass} {
+		raw, _ := json.Marshal(s.Args)
+		cwd := ""
+		if s.Tool == "bash" {
+			cwd = dir
+		}
+		_, _ = l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: s.ID, Tool: s.Tool, Args: raw})
+		_, _ = l.Recorder.Record(EvObservation, ActorTool, Untrusted, Observation{CallID: s.ID, Tool: s.Tool, Content: s.Output, Cwd: cwd, ExitCode: s.Exit, IsError: s.Exit != nil && *s.Exit != 0})
+	}
+	reply := "The new implementation correctly handles tabs and newlines."
+	l.Adapter.(*scriptedAdapter).turns = []scriptedTurn{{text: reply}, {text: reply}}
+	if reason, _ := l.Run(context.Background(), "fix src/text.py"); reason != TermUnverified {
+		t.Fatalf("strict completed on a claim that the new code works: %s", reason)
 	}
 }

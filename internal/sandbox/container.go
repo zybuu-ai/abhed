@@ -52,6 +52,7 @@ func SandboxImage() string {
 // Container runs commands in an OCI container. The kernel is shared, so an
 // exploit crosses it: untrusted work needs TierVM.
 type Container struct {
+	choice
 	policy  Policy
 	runtime string // docker | podman | nerdctl
 	extra   []string

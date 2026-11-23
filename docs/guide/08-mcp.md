@@ -131,7 +131,9 @@ A stdio server does not inherit Abhed's environment, which holds model
 provider keys and Abhed's own settings. It gets `PATH`, `HOME`, `USER`,
 `LOGNAME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TMPDIR` and `TZ` from it (on
 Windows, also what a program needs to start, such as `SYSTEMROOT` and
-`TEMP`), then the entries in its `env`, which win: `"KEY=VALUE"` sets a
+`TEMP`), and `ABHED_GUEST` and `ABHED_ACCOUNT`, which say who is working
+(see [Signing in](38-signing-in.md)); its `env` cannot set or clear those
+two. Then come the entries in its `env`, which win: `"KEY=VALUE"` sets a
 value, and a bare `"KEY"` passes your own value of `KEY`, as `GITHUB_TOKEN`
 above. Anything else a server needs, a proxy setting included, is listed
 there.
@@ -489,12 +491,16 @@ warning. Built-in commands, and your own and the workspace's custom
 commands, keep their names: an MCP prompt that would take one is left out,
 and the session says so.
 
-A remote tool's name may hold only letters, digits, `_`, `.` and `-`, up to
-64 characters. The MCP specification allows names of up to 128, but model
-providers refuse tool names over 64, so a longer one is left out: a warning
+A prompt's name and its arguments' names may hold only letters, digits, `_`,
+`.` and `-`, up to 64 characters, since a person types them; a server may
+list up to 200 prompts, over up to 10 pages, and a warning names a server
+that lists more. A remote tool's name may hold the same characters, up to
+128, as the MCP specification allows; any other is left out: a warning
 names it and gives its length, `/mcp` and Studio list it under its server,
 and `abhed doctor` and the server's MCP status count the tools left out for
-their names beside each server.
+their names beside each server. A full name a model provider would refuse,
+longer than 64 or holding `.`, still works: see
+[Names on the wire](#names-on-the-wire).
 `abhed doctor` also says why each configured server that did not connect
 was not: a program that does not match its `digest`, a URL server given a
 `digest`, a server that would not start.
@@ -543,8 +549,22 @@ person added for themselves, has no one who has.
 ## Failure
 
 A server that will not start is reported and skipped; the agent runs without it
-rather than refusing to start. Tool lists are fetched lazily on first use, so an
-unreachable server costs nothing until something needs it.
+rather than refusing to start. Servers start when the session does, eight at
+a time, each within its own startup deadline: 60 seconds by default, set per
+server with `startup_timeout_seconds`. The deadline covers the handshake and
+reading its tool, prompt and resource lists. A server that has not started
+by then, one that hangs say, is reported as failed with the deadline it
+missed, its tools are absent, and the other servers start as they would
+without it; `/mcp restart <server>` tries it again. A server still starting
+after 5 seconds gives its place among the eight to the next one, while it
+keeps its own deadline, so hung servers delay the others' starts by 5
+seconds for each group of eight, not by a deadline. The session itself
+starts once every server has started or missed its deadline: with hung
+servers that is the longest deadline, plus 5 seconds for each further
+group of eight (16 hung servers at the default: about 65 seconds), where
+each one used to add a minute. Lower `startup_timeout_seconds` on a server
+you would rather lose than wait for. After the start, each
+request to a server (a tool call, a list page) waits at most 60 seconds.
 
 In a session, `/mcp` lists each enabled server, connected or with the reason
 it is not, and its tools; `/mcp restart <server>` reconnects one, and the
@@ -554,9 +574,11 @@ connection for want of a sign-in says to run `abhed mcp login <server>`.
 ## Many tools
 
 A server tool is registered only when its name is letters, digits, `_`, `.`
-and `-`, up to 64 characters; any other is left out with a warning on
+and `-`, up to 128 characters; any other is left out with a warning on
 stderr, and `/mcp` lists it under its server, its hidden characters shown as
-escapes.
+escapes. A tool list in pages is read to its end, following `nextCursor`, up
+to 100 pages and 2,000 tools a server; past either, the rest is left out and
+a warning names the server.
 
 With more than 40 MCP tools across the servers, the model is not given each
 one. A server of three tools or fewer is still offered in full, smallest
@@ -573,3 +595,89 @@ by the words in their names and descriptions and loads the ones it returns,
 with their parameters, from the next step. A loaded tool is policed, approved and
 recorded like any other, and a tool the model never searched for can still
 only run through policy.
+
+A server an administrator adds to a running `abhed serve` is checked and
+deferred the same way, from the next session. What a session loads is its own: a search in one session, or one user's
+session on a server, never loads or unloads a tool in another, and a
+subagent's loads stay its own. At most 100 tools stay loaded per session.
+Loading one more unloads the one loaded or called least recently, and
+`tool_search` says how many it unloaded; a search loads one again. A request also never offers the provider more tools than it
+takes (`max_tools`, 128 by default, of the provider serving the request; see
+[Configuration](02-configuration.md)): past that, the loop unloads loaded
+tools, least recently used first, before it sends. A built-in tool, an
+extension's, and an MCP tool offered in full are never unloaded, so when they
+alone pass the limit the request is refused before it is sent, with an error
+that names the count, the limit and what to narrow (an MCP server's
+`allow_tools`, a server or extension to disable, or `max_tools`), rather than
+a provider's 400.
+
+## Names on the wire
+
+Providers accept a tool name of letters, digits, `_` and `-`, up to 64
+characters. `mcp__<server>__<tool>` can be longer, and a tool's own name may
+hold `.`. Such a name is sent to the provider under a short wire name: its
+plain characters, up to 47 (so `mcp__<server>__` stays whole for a server
+name of up to 40 characters), then `_` and 16 hex digits (64 bits) of the
+full name's SHA-256, so `mcp__docs__search.pages` goes as
+`mcp__docs__search_pages_` followed by its hash. The wire name is the same in
+every request, so the prompt prefix stays cacheable, and a call by it is
+mapped back to the real name before anything else sees it. `tool_search`
+gives the wire name beside the real one. A tool whose name or wire name is
+already another tool's is not registered, with a warning, so a wire name
+always stands for one tool; a request that would still carry two names on
+one wire name is refused before it is sent.
+
+Only the request to the provider carries the wire name. Permission rules,
+approval cards, `always allow`, hooks and the record all use the real
+`mcp__<server>__<tool>` name, so a rule written for `mcp__docs__search.pages`
+matches it however it travelled.
+
+## Limits
+
+| What | Limit | Past it |
+|---|---|---|
+| A tool's name on its server | 128 characters, letters, digits, `_ . -` | left out, with a warning |
+| A tool list | 100 pages, 2,000 tools a server | the rest left out, with a warning |
+| Prompts | 200 a server, 10 pages; names up to 64 | the rest left out, with a warning |
+| Resources listed | 500 a server, 10 pages | the rest not listed, with a warning |
+| A tool's description | 1,024 bytes, cut on a character | cut, with `…` |
+| A tool's result, a prompt's text, a resource read | 30,000 bytes, cut on a character | cut, marked `[truncated]` |
+| One message on a stdio server's stdout | 16 MiB | the connection ends, with an error naming the server |
+| Starting a server | 60 s (`startup_timeout_seconds`), 8 servers at once; one still starting after 5 s gives its place to the next | reported as failed, its tools absent |
+| One request to a server | 60 s | the call fails with a timeout |
+| MCP tools offered in full | 40 across the servers, then `tool_search`; servers of 3 tools or fewer, 12 tools in all, stay in full | deferred |
+| Tools loaded by `tool_search` | 100 per session | least recently used unloaded |
+| Tools in one request | the provider's `max_tools`, 128 by default | loaded tools unloaded, then refused with a clear error |
+
+Skills and agent types have budgets of their own in the prompt; see
+[Skills](06-skills.md#why-only-the-description-is-in-the-prompt) and
+[Agent definitions](17-agent-definitions.md#many-definitions). A workspace
+reads at most 64 skills, 64 agent definitions and 128 custom commands a
+directory, and says so when there are more.
+
+## Scale
+
+What was tested, with stub servers on this machine and no network, in the
+`TestScaleIntegrations` check (`make test-scale`): 50 stdio servers of 20
+tools each (1,000 tools, some with dotted names and names past 64
+characters), 300 skills and 100 agent types in one session. All the servers
+start; calls on a sample of the servers' tools reach the right server with
+their arguments unchanged, through the registry and through the loop and an
+OpenAI-compatible adapter by their wire names; after 150 tools are searched
+for, 100 stay loaded and no request offers more than 128 tools, every name
+one a provider accepts; and the skill listing and the agent types each stay
+within their 8 KB budgets. Routing tests besides it cover three servers
+offering a tool of one name, a deferred tool once loaded, pagination, an
+extension tool named like an MCP tool (refused), one server and seventeen
+servers that hang at start, and a long and a dotted name through each provider's wire format.
+
+That run is the tested bound: 50 servers and 1,000 MCP tools. No setting
+caps how many servers you configure, but more than that has not been
+tested, and the costs grow with them. Each stdio server is a process of its
+own for the whole session; startup takes longer, eight servers at a time;
+and the always-offered tools (built-ins, extensions', servers offered in
+full) still count against `max_tools`, so a session can be refused before
+any MCP tool is searched for. In that run the tool definitions and listings
+came to about 16,000 tokens before the first message: the limits above keep
+a request's tools within the provider's, not that cost at zero. A single
+server's tools past 2,000 are not read.

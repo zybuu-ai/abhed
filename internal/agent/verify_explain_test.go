@@ -98,10 +98,11 @@ func TestACacheWalkthrough(t *testing.T) {
 	}
 }
 
-// In strict mode an answer whose only unverified sentence is an explanation
-// is still unverified: it gets the revision, and ends unverified when the
-// revision changes nothing. The explanation group is only shown.
-func TestStrictExplanationStillUnverified(t *testing.T) {
+// In strict mode an answer whose only unverified sentence is an
+// explanation of code the session read passes: the explanation is shown
+// apart as "explanation: not checked", counted in the note and the footer,
+// and never verified. Strict fails only on unverified work.
+func TestStrictExplanationNotChecked(t *testing.T) {
 	l, store, ad, dir := verifyHarness(t, VerifyStrict, false, nil)
 	path := filepath.Join(dir, "sum.go")
 	if err := os.WriteFile(path, []byte("package calc\n\n// Sum adds the numbers in nums.\nfunc Sum(nums []int) int {\n\ttotal := 0\n"+
@@ -112,21 +113,25 @@ func TestStrictExplanationStillUnverified(t *testing.T) {
 	ad.turns = []scriptedTurn{
 		{calls: []model.ToolCall{call("read", map[string]string{"path": path})}},
 		{text: reply},
-		{text: reply},
 	}
 	reason, _ := l.Run(context.Background(), "explain Sum")
-	if reason != TermUnverified {
-		t.Fatalf("want unverified, got %s", reason)
+	if reason != TermCompleted {
+		t.Fatalf("want completed, got %s", reason)
 	}
 	vs := answerVerdicts(store)
-	if len(vs) != 2 || vs[0].Revision == "" || vs[0].Outcome != ClaimUnverified || vs[1].Outcome != ClaimUnverified {
+	if len(vs) != 1 || vs[0].Revision != "" || vs[0].Outcome != ClaimVerified {
 		t.Fatalf("verdicts: %+v", vs)
 	}
-	if vs[0].Explained() != 1 || vs[0].Verified != 1 || vs[0].Unverified != 1 {
-		t.Fatalf("want one verified and one explanation: %+v", vs[0])
+	if vs[0].Explained() != 1 || vs[0].Verified != 1 || vs[0].Unverified != 1 || !strings.Contains(vs[0].Note, "1 explanation(s) not checked") {
+		t.Fatalf("want one verified and one explanation, noted: %+v", vs[0])
 	}
-	if !strings.Contains(vs[0].Revision, "running total") {
-		t.Fatalf("the revision note leaves out the explanation: %s", vs[0].Revision)
+	for _, c := range vs[0].Claims {
+		if c.Explains && (c.Verdict == ClaimVerified || !strings.HasPrefix(c.Reason, "explanation: not checked")) {
+			t.Fatalf("an explanation shown as checked: %+v", c)
+		}
+	}
+	if !strings.Contains(vs[0].Footer(), "1 explanation") {
+		t.Fatalf("footer %q", vs[0].Footer())
 	}
 }
 

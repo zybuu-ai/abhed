@@ -422,7 +422,9 @@ type Server struct {
 	holder string
 
 	// Throttles for the endpoints reachable before authentication succeeds.
-	signinLimiter  *limiter
+	signinLimiter *limiter
+	// guestLimiter bounds the console guests one address starts.
+	guestLimiter   *limiter
 	sessionLimiter *limiter
 	cliLimiter     *limiter
 	// Per-caller limits on the sandbox routes, from the settings registry.
@@ -797,6 +799,9 @@ func New(opts Options) *Server {
 		// A terminal polls every five seconds while it waits; this leaves room
 		// for a few at once behind one address and none for guessing codes.
 		cliLimiter: newLimiter(30, 30*time.Second),
+		// Each guest is a new owner whose limits start over, so one address
+		// starts few: five an hour, about forty over a guest's 8 hours.
+		guestLimiter: newLimiter(5, time.Hour),
 		state: &mutable{
 			registry: opts.Registry,
 			skills:   opts.SkillRegistry,
@@ -1176,6 +1181,8 @@ func (s *Server) throttle(next http.Handler) http.Handler {
 		switch r.URL.Path {
 		case "/v1/signin", "/v1/signup", "/v1/password":
 			rateLimit(s.signinLimiter, trustProxy, next).ServeHTTP(w, r)
+		case auth.GuestPath:
+			rateLimit(s.guestLimiter, trustProxy, next).ServeHTTP(w, r)
 		case auth.CLIDevicePath, auth.CLITokenPath, auth.CLIApprovePath, auth.CLIAuthorizePath, TokenExchangePath:
 			rateLimit(s.cliLimiter, trustProxy, next).ServeHTTP(w, r)
 		case "/v1/sessions":
@@ -2109,7 +2116,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		if registry != nil {
 			if _, ok := registry.Get("bash"); ok {
 				registry = registry.Clone()
-				registry.Add(bound.Bash)
+				registry.Replace(bound.Bash)
 			}
 		}
 		live.closeBash = func() error { release(); return nil }
@@ -2118,7 +2125,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 			if shared, ok := t.(tools.Bash); ok {
 				bash, release := s.opts.SessionBash(sessionID, rec, shared)
 				registry = registry.Clone()
-				registry.Add(bash)
+				registry.Replace(bash)
 				live.closeBash = release
 			}
 		}
@@ -4785,7 +4792,9 @@ type overviewResponse struct {
 	// either an open form or nothing at all — with only AllowSignup, an
 	// invite-only deployment is indistinguishable from a closed one and the
 	// UI correctly hides a door that is in fact open.
-	InviteSignup  bool   `json:"invite_signup"`
+	InviteSignup bool `json:"invite_signup"`
+	// GuestSignIn offers "Continue as guest" (auth.guest).
+	GuestSignIn   bool   `json:"guest_sign_in,omitempty"`
 	ProviderLabel string `json:"provider_label,omitempty"`
 	// AdminURL is where the Admin link goes, when an edition has mounted a
 	// page there. Empty means no page: the link is not drawn, whoever is
@@ -4880,6 +4889,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		o.AllowSignup = cfg.Auth.AllowSignup
 		o.InviteSignup = !cfg.Auth.AllowSignup && s.opts.Invites != nil
 	}
+	o.GuestSignIn = cfg.Auth.Guest
 	o.AdminURL = s.opts.AdminURL
 	for _, p := range s.signIns() {
 		if u, label := p.SignIn(); u != "" {

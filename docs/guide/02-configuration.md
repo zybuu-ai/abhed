@@ -33,7 +33,7 @@ configuration](#trusting-the-workspace-configuration).
 
 | Section | What it controls |
 |---|---|
-| `model` | providers and which one is default — [Models](03-providers.md); `ollama.assist` (`ask`, `local` or `off`): what Abhed offers when a chosen local Ollama model is not working yet — [A local Ollama model](03-providers.md#a-local-ollama-model); `completion`: the provider Studio's inline completions use, and `next_edit` and `commit` for its next-edit suggestions and commit messages (each falls back to `completion`) — [Inline completions](34-inline-completions.md); `allowed`: the only models any session may use — [Allowed models and MCP servers](#allowed-models-and-mcp-servers) |
+| `model` | providers and which one is default — [Models](03-providers.md); `ollama.assist` (`ask`, `local` or `off`): what Abhed offers when a chosen local Ollama model is not working yet, `ollama.auto_start` (`false`: never start Ollama without a click) and `ollama.idle_stop_minutes` (how long a server Abhed started may go unused before Abhed stops it; 10 by default, `-1` only at exit) — [A local Ollama model](03-providers.md#a-local-ollama-model); a provider's key by `api_key_env` or `api_key_secret`, stored with `abhed provider login` — [Authentication](03-providers.md#authentication); `abhed models add` and `abhed models default` change this section for you — [Adding models](03-providers.md#adding-models-and-choosing-the-default); `completion`: the provider Studio's inline completions use, and `next_edit` and `commit` for its next-edit suggestions and commit messages (each falls back to `completion`) — [Inline completions](34-inline-completions.md); `allowed`: the only models any session may use — [Allowed models and MCP servers](#allowed-models-and-mcp-servers) |
 | `completion` | `enabled` and `local_only`: turn Studio's model features (inline completions, next-edit suggestions, commit messages) off, or keep them to a model on this machine — [Inline completions](34-inline-completions.md) |
 | `permissions` | what runs unattended — [Permissions](04-permissions.md) |
 | `mode` | `default`: the mode new sessions start in where `permissions.mode` names none, such as the CLI's and Studio's new chats in this workspace; a `-mode` flag is chosen over it (`plan`, `default`, `accept-edits` or `auto`; never `bypass`, which is chosen for a session each time). `permissions.mode`, when set, wins, and a managed mode binds. An untrusted workspace file may only set it narrower than sessions would start in |
@@ -159,6 +159,15 @@ to let that many through. It applies to the OpenAI-compatible types (`ollama`,
 gateways); a value above 0 on any other type, or a negative one, is refused at
 startup on every provider, not only the default.
 
+**`max_tools` is the most tools one request to a provider offers.** 0, the
+default, is 128, the limit OpenAI-compatible endpoints set; it is used for
+every type unless set. Searched-for MCP tools are unloaded, least recently
+used first, to stay within it, and a request that the tools always offered
+still put past it is refused before it is sent, naming the count and the
+limit; see [MCP limits](08-mcp.md#limits). Set it lower for a local model
+that handles few tools well, or higher for a provider that takes more. A
+negative value is refused at startup.
+
 ## Limits
 
 ```json
@@ -181,8 +190,11 @@ limit](04-permissions.md#turn-limit).
 `reasoning_stall_tokens` (8000 by default) cuts a model reply that has only
 reasoned, with no text or tool call, past that many reasoning tokens
 (counted at about four characters a token), instead of holding it to the
-call's ten-minute cap. `reasoning_stall_seconds` (600 by default) is a time
-backstop for the same. Neither cuts a reply whose reasoning is still within
+call's ten-minute cap. `reasoning_stall_seconds` (300 by default) is a time
+backstop for the same, held to half the provider's `call_timeout_seconds`
+(which wins over the 30-second floor)
+so that it, not the call's cap, ends a slow reasoning reply and the turn
+can ask again. Neither cuts a reply whose reasoning is still within
 the request's own thinking budget (`thinking_budget`), which raises the token
 bound to it. Values under 1000 tokens or 30 seconds are raised to those
 floors, so a repository's configuration cannot cut every thinking reply. A
@@ -195,7 +207,9 @@ set a Gemini reply rarely reaches the bound and is held by the call's
 timeouts instead.
 
 A cut reply is charged as any cut call is (see below), and the turn asks once
-more, with thinking off (no effort, and no thinking budget sent) and a nudge
+more, with thinking off (no effort, and no thinking budget sent; for
+Ollama, whose `/v1` endpoint ignores `think`, `reasoning_effort: "none"` as
+well) and a nudge
 to answer or make the one tool call it needs. If an answer arrives just as
 the cut comes, it is kept; a text answer cut part way is kept and the model
 asked to finish it (`-p` returns the two parts as one answer), and a second
@@ -243,7 +257,10 @@ raised is marked `estimated` on the call:
   back.
 - A cut call (cancelled, timed out, or ended by an error once its stream
   opened) is charged at least its prompt and what came back. Under a dollar
-  cap, or for a model that reasons out of sight, it is charged at the most
+  cap, or for a model that may reason out of sight (the official OpenAI
+  API's o-series and gpt-5, or any server with a `think` switch other than
+  a local one known to stream its reasoning: Ollama, llama.cpp, or vLLM,
+  TGI or SGLang on a loopback address), it is charged at the most
   the request allowed: the provider took the request and worked, and bills
   what it produced whether or not it arrived, so interrupting a run, or a
   connection that drops, does not save money under a cap.
@@ -345,6 +362,42 @@ sessions started after it. See [Agent definitions](17-agent-definitions.md).
 "sandbox": { "allow_network": false }
 ```
 
+**Nothing a command starts outlives it.** When a foreground command ends,
+every process it started is ended with it, before the command is reported
+as finished; a background shell's are ended by `shell_kill` or the session
+ending ([Background commands](05-tools.md#background-commands)); and a
+session's sandbox closing ends whatever its foreground commands still run.
+A terminal's shell ends with its terminal, never with the sandbox. On
+Linux's process tier, bubblewrap does this itself: each command has a
+process namespace of its own that dies with it. On macOS, which has no such
+namespace, and on the `none` tier, Abhed ends only processes it can show
+are the command's own, and never one found otherwise:
+
+- those in the session the command leads;
+- those seen as its descendants while it ran: the process table is read
+  every 20 ms, and a process is followed when its parent is followed, even
+  after it leaves the session or its parent exits;
+- on macOS, one handed to launchd before a read saw it, when the process
+  that forked it was followed: the kernel keeps the unique id of the
+  parent that forked a process, and unique ids are never reused.
+
+Every process a command starts also carries its random marker,
+`ABHED_COMMAND_ID`, but a marker is not proof: an app started from a
+command's terminal inherits it, and `launchctl setenv` can plant it in any
+app. A marked process that is neither in the session nor followed is named
+in the command's result and left running, never ended.
+
+A process can still escape, and keep writing what the sandbox lets
+commands write (the workspace, `/private/tmp`, the account's temp folder)
+after the command and the session have ended. On macOS: one that starts a
+session of its own and whose parent was itself born and gone within one
+20 ms read, as a fast double fork does. On Linux's `none` tier, which has no
+such parent record: one that starts a session of its own and loses its
+parent within one read. Either is named in the command's result if it kept
+the marker. The command line, the
+server and the GitHub Action all run on this; on a Mac that is a person's
+own, use the container or vm tier for code you do not trust.
+
 Shell commands run in the sandbox. On the process tier a command may write the
 workspace and a few shared folders, not only the workspace:
 
@@ -358,7 +411,8 @@ workspace and a few shared folders, not only the workspace:
   `TMPDIR`. The toolchain caches commands write are folders of the
   sandbox's own, in `TMPDIR` and removed when the session ends:
   `XDG_CACHE_HOME`, `GOCACHE`, `GOMODCACHE`, `npm_config_cache`,
-  `PIP_CACHE_DIR` and `CARGO_HOME` point there, so nothing a command writes
+  `PIP_CACHE_DIR`, `CARGO_HOME` and `xcrun_db` (the cache of Apple's
+  `/usr/bin` shims) point there, so nothing a command writes
   reaches the real `~/.cache`, `~/Library/Caches`, `~/.npm`,
   `~/.cargo/registry` or `~/go/pkg/mod`, which stay readable. Go modules
   already in your module cache are read from it through `GOPROXY`
@@ -366,7 +420,12 @@ workspace and a few shared folders, not only the workspace:
   does; npm, pip and cargo start from an empty cache and need the network
   for what they fetch. Commands read in home only the workspace, `read_only_paths`, the
   toolchains, the caches and the files git, editors and shells read (see
-  [security posture](../trust/security-posture.md));
+  [security posture](../trust/security-posture.md)). Home here is both
+  `$HOME` and the account's own home when `HOME` names another folder (from
+  the user database, and, whatever that says, the `/Users/NAME` or
+  `/home/NAME` folder that holds `$HOME`, `/Users/Shared` excepted, which
+  is every account's; a lookup that fails is said in `abhed doctor`'s
+  sandbox line);
   `"readable_home": true` lets them read the rest of home but the credential
   paths again, and `read_only_paths` names a folder they need. `"shared_caches": true` lets commands write the real
   folders again, shared with the rest of your machine, where a command can
@@ -568,6 +627,75 @@ saying so and pointing at `web_search` and `web_fetch`. A command that exits 0
 gets the note only when it ran a network client (`curl`, `wget`, `git fetch`,
 `npm`, `pip` and the like) and the failure is in its last five lines, so
 output that merely mentions such an error, a log being read, does not.
+
+### Choosing the tier
+
+```json
+"sandbox": { "tier": "process" }
+```
+
+With no `tier`, Abhed uses the strongest tier available that meets
+`sandbox.min_tier`. `tier` chooses one instead: `process`, `container`, `vm`
+or `fence`. That tier is used or the session is refused; no other tier stands
+in for it, and it may not be weaker than `min_tier`, the managed file's
+included (`"tier": "process"` under a managed `"min_tier": "container"` is
+refused at load). It is your own setting: set it with
+`/config set sandbox.tier process|container|vm|fence|auto` (a chosen tier
+asks first; `auto` and a stronger tier do not), or in `~/.abhed/config.json`.
+A workspace file cannot set it, and the managed file pins it when it does.
+
+On a Mac, with no `tier`, no `sandbox.image` or `ABHED_SANDBOX_IMAGE`, and
+nothing in the managed file setting `tier` or `min_tier`, the container tier on
+the default image is passed over for the process tier, which still meets the
+minimum: with podman running, the bare default image (`debian:bookworm-slim`,
+no git, curl, ping or node, and no network to install them) is no place for
+your own workspace. Naming an image is choosing the container, so it is kept.
+Choose `"tier": "container"` to use the default image anyway. `abhed doctor`
+says why the tier was chosen, what the image lacks, and how to choose another
+within the minimum. Where an image is looked in (doctor, or the tier choice),
+it is started as commands are (its entry point, then `/bin/sh -c`), once per
+process and for at most 10 seconds; a look that fails keeps the container and
+the choice says so.
+
+### Opening the network from a session
+
+Commands have no network by default, and that stays the default. Where the
+network is off and the managed file does not set `sandbox.allow_network`,
+`sandbox.network` or `egress`, you can open it without editing a file. Only
+you can: the agent is told the network is off and that you can open it, and
+says what needs it. When one of its commands fails for the network, Studio
+offers Allow Network for This Workspace, Only a Host and This Chat Only, each
+asked first; at the terminal, `/network workspace`, `/network host <name>` or
+`/network once [name]` does the same, and `/network` alone says what commands
+can reach.
+
+- **This workspace:** any host, over http and https.
+- **One host:** that host, over http and https.
+- **This chat only:** any host, or one, for this chat; not kept.
+
+Commands reach what you opened through the session's egress proxy, so deny
+rules still win, and ssh, ping and other protocols still fail. A workspace or
+host choice is kept with the workspace's other kept approvals
+(`~/.abhed/state/workspace-grants.json`), applied before the first command of
+a later session there, listed in Manage Kept Approvals, and revoked there
+(`_abhed/grants/revoke` with id `network`); a revoke applies to new chats.
+Where the managed file holds the network nothing is offered and nothing kept
+is used. A tier that cannot hold the proxy (a container tier on a VM without
+`control_plane.relay_binary`) says so instead.
+
+### What the session tells the model
+
+From the first message you send, the model is told what this session can do,
+from its real state: the tier, the network (off, open, an allowlist, what
+you opened, or the host's own where there is no sandbox), whether git remote
+operations (fetch, pull, push, clone) are run on the host for it, the
+Kubernetes clusters configured when Kubernetes is enabled, and the tools the
+container image lacks, as one line of printable text. It is asked not to find these limits by
+trial, nor to dispute them with you. It is the system prompt's last section,
+read again each turn, so a change (opening the network) reaches the next
+request; it is never part of a message, so a rewind, fork or compaction neither
+carries nor loses it. Subagents are not told. The record has it as
+`session.facts`, each time it changes.
 
 ### The container tier's image
 

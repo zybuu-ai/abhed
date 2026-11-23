@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -127,9 +128,9 @@ func ancestorNames() []string {
 	return out
 }
 
-// marked lists this user's processes, other than this one, whose environment
-// holds marker followed by its terminating NUL.
-func marked(marker string) []int {
+// marked lists this user's processes started at or after since, other than
+// this one, whose environment holds marker followed by its terminating NUL.
+func marked(marker string, since uint64) []int {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil
@@ -141,6 +142,9 @@ func marked(marker string) []int {
 		if err != nil || pid <= 1 || pid == os.Getpid() {
 			continue
 		}
+		if st, ok := startTime(pid); since > 0 && (!ok || st < since) {
+			continue
+		}
 		// Another user's environment is not readable, so only this user's are matched.
 		env, err := os.ReadFile("/proc/" + e.Name() + "/environ") // #nosec G304 -- a numbered /proc entry
 		if err == nil && bytes.Contains(env, want) {
@@ -148,4 +152,30 @@ func marked(marker string) []int {
 		}
 	}
 	return out
+}
+
+// processStarts and processOrigin are macOS's: here a process that lost its
+// parent names no origin, and is followed only through its parent.
+func processStarts() map[int]uint64 { return nil }
+
+func processOrigin(int) (procOrigin, bool) { return procOrigin{}, false }
+
+// pinProcess opens a pidfd for pid: what is sent through it reaches the
+// process that held pid when it was opened, even if the number is reused.
+func pinProcess(pid int) (send func(syscall.Signal) error, release func(), err error) {
+	fd, err := unix.PidfdOpen(pid, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	return func(sig syscall.Signal) error { return unix.PidfdSendSignal(fd, sig, nil, 0) },
+		func() { _ = unix.Close(fd) }, nil
+}
+
+// processName is pid's command name, or "".
+func processName(pid int) string {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/comm") // #nosec G304 -- a numbered /proc entry
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }

@@ -95,14 +95,14 @@ var canOpenBrowser = func() bool {
 
 // signInOpener shows the person the browser sign-in address, and opens it
 // unless they asked only to see it (-no-browser).
-func signInOpener(noBrowser bool, errOut io.Writer) func(string) error {
+func signInOpener(noBrowser bool, errOut io.Writer, open func(string) error) func(string) error {
 	return func(u string) error {
 		if noBrowser {
 			fmt.Fprintf(errOut, "Open this address in a browser on this machine to approve the sign-in:\n  %s\n", u)
 			return nil
 		}
 		fmt.Fprintf(errOut, "Opening your browser to approve this sign-in. If it does not open, visit:\n  %s\n", u)
-		if err := openBrowser(u); err != nil {
+		if err := open(u); err != nil {
 			fmt.Fprintf(errOut, "abhed: could not open a browser (%v); use the link above, or run abhed login -device\n", err)
 		}
 		return nil
@@ -163,6 +163,22 @@ func profileName(raw string) string {
 }
 
 func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
+	return loginWith(workspace, args, out, errOut, loginOpts{open: openBrowser})
+}
+
+// loginOpts are what a caller of abhed login other than the command line
+// chooses: what opens the browser sign-in page (the person's browser, or a
+// request to a client such as Studio), and the profiles file to keep the
+// sign-in in, in place of the person's.
+type loginOpts struct {
+	open func(string) error
+	file string
+	// ctx, when set, ends the sign-in early: a client's cancel.
+	ctx context.Context
+}
+
+// loginWith is abhed login with o.
+func loginWith(workspace string, args []string, out, errOut io.Writer, o loginOpts) int {
 	if !profileNetwork(errOut) {
 		return 1
 	}
@@ -199,9 +215,11 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	path, err := profilesPath(workspace)
-	if err != nil {
-		return fail(err)
+	path := o.file
+	if path == "" {
+		if path, err = profilesPath(workspace); err != nil {
+			return fail(err)
+		}
 	}
 	reg, err := profiles.Load(path)
 	if err != nil {
@@ -237,7 +255,10 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	ctx := context.Background()
+	ctx := o.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	d, err := profiles.Discover(ctx, client, base)
 	if err != nil {
 		return fail(err)
@@ -283,7 +304,7 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 			fmt.Fprintln(errOut, "Waiting for approval…")
 		})
 	} else {
-		tok, err = profiles.PKCELogin(ctx, client, base, m, signInOpener(*noBrowser, errOut))
+		tok, err = profiles.PKCELogin(ctx, client, base, m, signInOpener(*noBrowser, errOut, o.open))
 	}
 	if err != nil {
 		return fail(profiles.GrantRemoved(base, err))

@@ -281,11 +281,11 @@ func TestInvariantRecordIsAppendOnly(t *testing.T) {
 // record, whether it comes back in the model's reply or a tool's output.
 func TestInvariantSecretsAreRedacted(t *testing.T) {
 	const canary = "abhed-canary-7f3c9e1d2b"
-	// The vault is where Abhed keeps it, ~/.abhed: one in a temp folder is
-	// refused at start-up, since commands can write there.
+	// The vault is where Abhed keeps it, the person's folder in ~/.abhed: one
+	// in a temp folder is refused at start-up, since commands can write there.
 	h := start(t, clitest.Opts{
 		Setup: func(home, _ string) {
-			if err := secrets.Open(filepath.Join(home, ".abhed", "secrets.json")).Set("API_TOKEN", canary); err != nil {
+			if err := secrets.Open(filepath.Join(clitest.PersonDir(home), "secrets.json")).Set("API_TOKEN", canary); err != nil {
 				t.Fatal(err)
 			}
 		},

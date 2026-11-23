@@ -43,8 +43,8 @@ func EndWithCommand(cmd *exec.Cmd) *exec.Cmd {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	cmd.SysProcAttr.Setsid = true
-	// Every process the command starts inherits this, a daemon that left its
-	// session and its parent included, so a cancel can still find it.
+	// Every process the command starts inherits this; a cancel ends one only
+	// while it is also in the command's session (see endMarked).
 	marker := commandMarker()
 	if cmd.Env == nil {
 		cmd.Env = os.Environ()
@@ -52,12 +52,14 @@ func EndWithCommand(cmd *exec.Cmd) *exec.Cmd {
 	cmd.Env = append(cmd.Env, marker)
 	backend := cmd.Cancel
 	cmd.Cancel = func() error {
-		defer endMarked(marker)
 		// A reaped leader's group id could be reused, so none is signalled once
 		// Wait has reaped it; a cancel racing that reap is the window left.
 		if errors.Is(cmd.Process.Signal(syscall.Signal(0)), os.ErrProcessDone) {
 			return os.ErrProcessDone
 		}
+		// The marker only narrows the session this command created.
+		since, _ := startTime(cmd.Process.Pid)
+		defer endMarked(marker, since, inSession(cmd.Process.Pid))
 		endTree(cmd.Process.Pid)
 		// Only the group this command leads: never one it does not own.
 		if pgid, gerr := syscall.Getpgid(cmd.Process.Pid); gerr != nil || pgid != cmd.Process.Pid {
@@ -127,20 +129,6 @@ func ownGroup(cmd *exec.Cmd) {
 	}
 }
 
-// EndLeft ends what cmd's command left running, found by its marker, after the
-// command itself has exited: a server it started in the background, or a child
-// that left its session.
-func EndLeft(cmd *exec.Cmd) {
-	// The group it led keeps its id while a member is left, which finds
-	// programs whose environment macOS hides from the marker search.
-	if cmd.Process != nil && cmd.SysProcAttr != nil && cmd.SysProcAttr.Setsid {
-		_ = killGroup(cmd.Process.Pid)
-	}
-	if m := markerIn(cmd.Env); m != "" {
-		endMarked(m)
-	}
-}
-
 // markerIn is the last marker in env, or "".
 func markerIn(env []string) string {
 	for i := len(env) - 1; i >= 0; i-- {
@@ -151,9 +139,6 @@ func markerIn(env []string) string {
 	return ""
 }
 
-// markerName is the variable that marks every process of one command.
-const markerName = "ABHED_COMMAND_ID"
-
 // commandMarker is a fresh markerName=value, unguessable, for one command.
 func commandMarker() string {
 	var b [12]byte
@@ -161,33 +146,55 @@ func commandMarker() string {
 	return markerName + "=" + hex.EncodeToString(b[:])
 }
 
-// endMarked stops then kills every process of this user carrying marker; one
-// that cleared its environment is not found.
-func endMarked(marker string) {
-	stopped := map[int]bool{}
+// markedPids lists the processes started at or after since (a start time as
+// startTime gives it; 0 for any) that carry a marker; replaced in tests.
+var markedPids = marked
+
+// endMarked stops then kills the processes carrying marker that signal agrees
+// to signal. A marker is no proof: an app started from a command's terminal
+// inherits it, and launchctl setenv can plant it in any app. So the marker only
+// narrows: signal must itself prove each pid the command's own (a member of
+// the session it created, or a process followed from its start) and refuse
+// anything else. It returns how many marked processes were not proven and
+// were left running, for the caller to report.
+//
+// Only processes started at or after since are read: one that was running
+// before the command (an editor, say) cannot be its own.
+func endMarked(marker string, since uint64, signal func(pid int, sig syscall.Signal) bool) (unproven int) {
+	stopped, refused := map[int]bool{}, map[int]bool{}
 	for range maxSweepPasses {
 		fresh := 0
-		for _, pid := range marked(marker) {
-			if !stopped[pid] && syscall.Kill(pid, stopSignal) == nil {
-				stopped[pid] = true
-				fresh++
+		for _, pid := range markedPids(marker, since) {
+			if stopped[pid] {
+				continue
 			}
+			if !signal(pid, stopSignal) {
+				refused[pid] = true
+				continue
+			}
+			stopped[pid], fresh = true, fresh+1
+			delete(refused, pid)
 		}
 		if fresh == 0 {
 			break
 		}
 	}
-	// Read again once stopped: a pid freed and taken by another process in
-	// between no longer carries the marker, and is continued, not killed.
+	// Read again once stopped: a pid no longer marked is continued, not killed.
 	still := map[int]bool{}
-	for _, pid := range marked(marker) {
+	for _, pid := range markedPids(marker, since) {
 		still[pid] = true
 	}
 	for pid := range stopped {
 		if still[pid] {
-			_ = syscall.Kill(pid, killSignal)
+			_ = signal(pid, killSignal)
 		} else {
-			_ = syscall.Kill(pid, syscall.SIGCONT)
+			_ = signal(pid, syscall.SIGCONT)
 		}
 	}
+	for pid := range refused {
+		if still[pid] {
+			unproven++
+		}
+	}
+	return unproven
 }

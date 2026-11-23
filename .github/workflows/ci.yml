@@ -101,6 +101,8 @@ jobs:
           ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:55432/abhed_test?sslmode=disable
           # The page tests need node and python3; here a missing one fails, not skips.
           ABHED_REQUIRE_PAGE_TESTS: "1"
+          # A throwaway runner: the tests that start and end real processes run.
+          ABHED_TEST_PROCESS_KILL: "1"
         run: go test ./... -count=1 -timeout 30m -coverprofile=coverage.out
 
       # abhed_app owns the tables; abhed_runtime is what a server should run
@@ -201,6 +203,8 @@ jobs:
       - name: Sandbox boundary tests actually ran
         env:
           CGO_ENABLED: "0" # the test binary is the egress relay; see the sandbox job
+          # A throwaway runner: the tests that end real process trees run (Linux only).
+          ABHED_TEST_PROCESS_KILL: "1"
         run: |
           set -euo pipefail
           go test ./internal/sandbox/ -count=1 -v > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
@@ -238,6 +242,116 @@ jobs:
           python3 scripts/ci/edition-boundary.py --self-test
           python3 scripts/ci/edition-boundary.py
 
+  # The GitHub Action and the TypeScript and Python SDKs: their own tests,
+  # then each against the abhed this commit builds, on a scripted model served
+  # from 127.0.0.1. No workflow, release or model outside the runner is used,
+  # and nothing here may skip.
+  integrations:
+    name: GitHub Action and SDKs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.10"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Install bubblewrap and let it make its namespaces
+        run: |
+          set -euo pipefail
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
+          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = 1 ]; then
+            printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
+              "profile abhed-ci-bwrap $(command -v bwrap) flags=(unconfined) {" '  userns,' '}' |
+              sudo tee /etc/apparmor.d/abhed-ci-bwrap > /dev/null
+            sudo apparmor_parser -r /etc/apparmor.d/abhed-ci-bwrap
+          fi
+      - name: Build abhed
+        run: go build -o "$RUNNER_TEMP/abhed" ./cmd/abhed
+      - name: The action's scripts, composite steps and real runs
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet --only-binary :all: --require-hashes -r scripts/ci/workflow-rules.requirements.txt
+          python scripts/ci/workflow-rules.py integrations/github-action/action.yml
+          cd integrations/github-action
+          # commonmark.js parses whole generated reviews: no HTML, no live mention, the note kept.
+          npm ci --prefix tests/markdown --ignore-scripts --no-audit --no-fund
+          ABHED_TEST_PROCESS_KILL=1 ABHED_BIN="$RUNNER_TEMP/abhed" python -m unittest discover -s tests -v 2>&1 | tee "$RUNNER_TEMP/action.log"
+          ! grep -E "skipped '" "$RUNNER_TEMP/action.log"
+      - name: Python SDK
+        working-directory: sdk/python
+        run: |
+          set -euo pipefail
+          ABHED_BIN="$RUNNER_TEMP/abhed" python -m unittest discover -s tests -v 2>&1 | tee "$RUNNER_TEMP/py.log"
+          ! grep -E "skipped '" "$RUNNER_TEMP/py.log"
+      - name: TypeScript SDK
+        working-directory: sdk/typescript
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          ABHED_BIN="$RUNNER_TEMP/abhed" npm test 2>&1 | tee "$RUNNER_TEMP/ts.log"
+          grep -q "^# skipped 0" "$RUNNER_TEMP/ts.log" || grep -qE "ℹ skipped 0" "$RUNNER_TEMP/ts.log"
+
+  # The action's real-engine runs on macOS, where the process tier is
+  # Seatbelt: a GitHub macOS runner gets it, and its temp folder rules
+  # differ from bubblewrap's. The tests force the process tier.
+  integrations-macos:
+    name: GitHub Action on macOS
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.10"
+      - name: Build abhed
+        run: go build -o "$RUNNER_TEMP/abhed" ./cmd/abhed
+      # What the Watch and the marker may signal is decided against fake
+      # process tables here; the tests that end real process trees build only
+      # on Linux and run in the Linux jobs.
+      - name: Only a command's proven processes are signalled (fake process tables)
+        run: |
+          set -euo pipefail
+          go test ./internal/sandbox -count=1 -v -run 'TestWatchSignalsOnlyTheCommandsOwnTree|TestAReparentedChildIsFollowedByItsOrigin|TestMarkerNarrowsNeverWidens|TestSessionProofIsTheSessionOnly|TestClosingSignalsNoMarkedProcessOfAnUnwatchedCommand|TestHostCommandsDoNotInheritAMarker|TestAReusedPidIsNeverSignalled|TestAChildOfAReusedParentPidIsNotFollowed|TestAStopThatLandsOnAReusedPidIsUndone|TestSessionProofWaitsForTheExitedRoot|TestEndedProcessesAreNamed|TestWaitAndEndRunTogether|TestTheMarkerSearchStartsAtTheRoot' 2>&1 | tee "$RUNNER_TEMP/watch.log"
+          ! grep -E -- "--- SKIP" "$RUNNER_TEMP/watch.log"
+          [ "$(grep -c -- "--- PASS" "$RUNNER_TEMP/watch.log")" -eq 13 ]
+      # A throwaway runner: the tests that end real process trees on macOS,
+      # skipped on a person's machine, run here, and none may skip.
+      - name: Real process trees are ended on macOS (throwaway runner)
+        env:
+          ABHED_TEST_PROCESS_KILL: "1"
+        run: |
+          set -euo pipefail
+          go test ./internal/sandbox ./internal/tools ./server -count=1 -v -run 'TestCancelKillsOnlyAGroupTheCommandLeads|TestTreeStopsOnlyProcessesWhoseParentIsInIt|TestCancelSignalsOnlyTheCommandsOwnGroup|TestRunawayCommandEndsAtItsDeadline|TestNoneShellEndsItsBackgroundJobs|TestSweepNeedsTheShellItNamed|TestBashCancelEndsWhatTheCommandStarted|TestBashReturnsWhenABackgroundJobHoldsTheOutput|TestBashBackgroundNoteOnAFailingCommand|TestBashTimeoutEndsADetachedChild|TestBashTimeoutEndsADaemon|TestShellKillEndsBackgroundJobs' 2>&1 | tee "$RUNNER_TEMP/kill.log"
+          ! grep -E -- "--- SKIP: (TestNoneShell|TestBash|TestShellKill|TestCancel|TestTree|TestSweepNeeds)" "$RUNNER_TEMP/kill.log"
+      - name: The action's run script and real runs
+        working-directory: integrations/github-action
+        run: |
+          set -euo pipefail
+          ABHED_BIN="$RUNNER_TEMP/abhed" python3 -m unittest tests.test_action.RunTest tests.test_action.EndToEnd -v 2>&1 | tee "$RUNNER_TEMP/action.log"
+          # Only the test that ends real process trees may skip: it runs on Linux.
+          ! grep -E "skipped '" "$RUNNER_TEMP/action.log" | grep -v "ends real process trees: Linux only"
+
+  # Many MCP servers, skills and agent types in one session: routing, the
+  # provider's tool limit and the listing budgets. Stub servers only; trimmed
+  # to run in about a minute (make test-scale).
+  integration-scale:
+    name: Integration scale
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.10"
+
+      - name: Scale check
+        run: make test-scale
+
   # The process tier on Linux is bubblewrap, and denying network needs a
   # namespace the hosted runner will not grant. A privileged container can, so
   # this is where the egress, credential and state boundaries are actually
@@ -268,6 +382,21 @@ jobs:
           grep -q -- "--- PASS: TestFenceSpecAsRootHidesShadow " sandbox.log || { echo "TestFenceSpecAsRootHidesShadow did not run and pass as root"; exit 1; }
           grep -q -- "--- PASS: TestEgressResolverInTheSandbox " sandbox.log || { echo "TestEgressResolverInTheSandbox did not run and pass as root"; exit 1; }
           echo "$(grep -c -- "--- PASS" sandbox.log) boundary tests ran under bubblewrap"
+      # What a command starts is ended with it on the process tier under
+      # bubblewrap as on the none tier: the real kill tests, whose process
+      # tier must run here (ABHED_REQUIRE_PROCESS_TIER fails a skip).
+      - name: Nothing a command starts outlives it, under bubblewrap
+        env:
+          CGO_ENABLED: "0"
+          ABHED_TEST_PROCESS_KILL: "1"
+          ABHED_REQUIRE_PROCESS_TIER: "1"
+        run: |
+          set -euo pipefail
+          go test ./internal/sandbox/ -run 'TestNothingACommandStartsOutlivesIt$|TestClosingTheSandboxEndsItsCommands$|TestAnEscapedProcessIsReportedNotEnded$' -count=1 -v > kill.log 2>&1 || { cat kill.log; exit 1; }
+          ! grep -- "--- SKIP" kill.log
+          for t in TestNothingACommandStartsOutlivesIt TestClosingTheSandboxEndsItsCommands TestAnEscapedProcessIsReportedNotEnded; do
+            grep -q -- "--- PASS: $t " kill.log || { echo "$t did not run and pass:"; cat kill.log; exit 1; }
+          done
       # The statusline's pinned script, end to end under bubblewrap: it runs,
       # and swapped for a link into ~/.abhed it neither runs nor reads.
       - name: The statusline script is pinned under bubblewrap

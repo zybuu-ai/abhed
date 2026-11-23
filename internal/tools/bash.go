@@ -991,6 +991,9 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		return res
 	}
 	endProc()
+	if left := output.leftNote(); left != "" {
+		content += "\n[" + left + "]"
+	}
 	res := b.finish(ctx, runCtx, s, a, content, truncated, held, err, elapsed, timeout)
 	if snapNote != "" {
 		res.Content = withNote(res.Content, snapNote)
@@ -1052,7 +1055,7 @@ func (b Bash) finish(ctx, runCtx context.Context, s *Session, a bashArgs, conten
 	// A non-zero exit is a valid observation the model must reason about, not a
 	// tool failure. Never convert a failing test run into an error.
 	header := fmt.Sprintf("exit %d · %s", exitCode, elapsed.Round(time.Millisecond))
-	note := ""
+	note, netOff := "", false
 	// On the host the same text is the operating system's refusal, not a sandbox's.
 	// Any exit code: a pipeline's last command can succeed after curl failed.
 	if missing := b.notFoundNote(s.Cwd, content, exitCode); missing != "" {
@@ -1060,6 +1063,7 @@ func (b Bash) finish(ctx, runCtx context.Context, s *Session, a bashArgs, conten
 	} else if b.network() == networkOff && (networkFailed(a.Command, content, exitCode) || exitCode != 0 && proxyRefused(content)) {
 		// With the network off a 403 is the egress proxy's: no registry is open yet.
 		content = withNote(content, b.networkNote(a.Command, content))
+		netOff = true
 	} else if kind, hint := sandboxHint(content); hint != "" && exitCode != 0 && b.ranTier() != "none" {
 		// A command that succeeded was not stopped: git warns of .abhed and still exits 0.
 		content = withNote(content, hint)
@@ -1071,6 +1075,7 @@ func (b Bash) finish(ctx, runCtx context.Context, s *Session, a bashArgs, conten
 		ExitCode:    &exitCode,
 		NoOutput:    noOutput,
 		SandboxNote: note,
+		NetworkOff:  netOff,
 	}
 }
 

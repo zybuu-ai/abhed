@@ -14,6 +14,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
@@ -61,6 +62,28 @@ var configKeys = []configKey{
 		get:    func(c config.Config) string { return strconv.FormatBool(c.Sandbox.AllowNetwork) },
 		check:  func(_ config.Config, v string) (any, error) { return strconv.ParseBool(v) },
 		widens: func(_ config.Config, o, n string) bool { return n == "true" && o != "true" }},
+	// The tier that confines commands: auto (the strongest available) or one
+	// chosen, never below the minimum in force, the managed one included.
+	{path: "sandbox.tier",
+		get: func(c config.Config) string { return orDefault(c.Sandbox.Tier, "auto") },
+		check: func(c config.Config, v string) (any, error) {
+			v = strings.TrimSpace(v)
+			if v == "auto" {
+				return "", nil
+			}
+			if !slices.Contains([]string{"process", "container", "vm", "fence"}, v) {
+				return nil, fmt.Errorf("use auto, process, container, vm or fence")
+			}
+			if tierStrength(v) < tierStrength(c.Sandbox.MinTier) {
+				return nil, fmt.Errorf("%s is weaker than the minimum tier in force, %s (sandbox.min_tier, from %s)", v, c.Sandbox.MinTier, source(c, "sandbox.min_tier"))
+			}
+			return v, nil
+		},
+		// Choosing a tier, rather than the strongest available, may let
+		// commands do more; moving to a weaker chosen tier does.
+		widens: func(_ config.Config, o, n string) bool {
+			return n != "" && n != "auto" && (o == "" || o == "auto" || tierStrength(n) < tierStrength(o))
+		}},
 	{path: "limits.max_turns",
 		get: func(c config.Config) string { return strconv.Itoa(c.Limits.MaxTurns) },
 		check: func(_ config.Config, v string) (any, error) {
@@ -91,6 +114,14 @@ var configKeys = []configKey{
 		widens: func(_ config.Config, o, n string) bool { return n != "" && n != o }},
 }
 
+// tierStrength orders tiers as the sandbox does; fence counts as process.
+func tierStrength(t string) int {
+	if t == "fence" {
+		t = "process"
+	}
+	return sandbox.Tier(t).Strength()
+}
+
 // source says which layer made a setting.
 func source(c config.Config, path string) string {
 	switch {
@@ -108,8 +139,11 @@ func slashConfig(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	if len(args) == 0 {
 		return false, e.ui.Panel(ctx, configPanel(e.st.appCfg))
 	}
+	if args[0] == "apply" {
+		return false, configApplyCLI(e)
+	}
 	if args[0] != "set" || len(args) < 3 {
-		return false, errors.New("usage: /config, or /config set <key> <value>")
+		return false, errors.New("usage: /config, /config set <key> <value>, or /config apply")
 	}
 	return false, configSet(ctx, e, args[1], strings.Join(args[2:], " "))
 }
@@ -241,19 +275,19 @@ func userFileConfig() (config.Config, error) {
 // writeUserSetting sets one dotted path in ~/.abhed/config.json, keeping
 // everything else in the file.
 func writeUserSetting(path string, v any) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	if err := guestRefusal("changing this machine's configuration"); err != nil {
 		return "", err
 	}
-	file := filepath.Join(home, ".abhed", "config.json")
-	doc := map[string]any{}
-	if data, err := os.ReadFile(file); err == nil { // #nosec G304 -- the person's own ~/.abhed/config.json
-		if err := json.Unmarshal(data, &doc); err != nil {
-			return file, fmt.Errorf("%s is not valid JSON, so it was not changed: %w", file, err)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	doc, file, err := readUserDoc()
+	if err != nil {
 		return file, err
 	}
+	setDocPath(doc, path, v)
+	return file, writeUserDoc(file, doc)
+}
+
+// setDocPath sets one dotted path in doc, making the objects on the way.
+func setDocPath(doc map[string]any, path string, v any) {
 	parts := strings.Split(path, ".")
 	m := doc
 	for _, p := range parts[:len(parts)-1] {
@@ -265,25 +299,66 @@ func writeUserSetting(path string, v any) (string, error) {
 		m = next
 	}
 	m[parts[len(parts)-1]] = v
+}
+
+// writeUserDoc replaces the person's own file with doc: written to a fresh
+// temporary file beside it, synced, given the old file's mode, then renamed
+// over it, so a reader sees the old file or the new one, never part of one.
+// The old content is kept as config.json.bak first. A link is followed to the
+// file it names, so a linked dotfile stays linked.
+func writeUserDoc(file string, doc map[string]any) error {
+	if err := guestRefusal("changing this machine's configuration"); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
-		return file, err
+		return err
 	}
+	data = append(data, '\n')
 	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
-		return file, err
+		return err
 	}
-	// A fresh name each time: a fixed one could be a planted link.
-	tmp, err := os.CreateTemp(filepath.Dir(file), "config.json.*.tmp")
+	target, mode := file, os.FileMode(0o600)
+	if real, err := filepath.EvalSymlinks(file); err == nil {
+		target = real
+	}
+	old, err := os.ReadFile(target) // #nosec G304 -- the person's own ~/.abhed/config.json
+	switch {
+	case err == nil:
+		if fi, err := os.Stat(target); err == nil {
+			mode = fi.Mode().Perm()
+		}
+		if err := atomicWrite(target+".bak", old, 0o600); err != nil {
+			return fmt.Errorf("the backup %s could not be written, so %s was not changed: %w", target+".bak", file, err)
+		}
+	case !errors.Is(err, os.ErrNotExist):
+		return err
+	}
+	return atomicWrite(target, data, mode)
+}
+
+// atomicWrite writes data to path through a fresh temporary name beside it:
+// a fixed one could be a planted link.
+func atomicWrite(path string, data []byte, mode os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
 	if err != nil {
-		return file, err
+		return err
 	}
 	defer func() { _ = os.Remove(tmp.Name()) }()
-	if _, err := tmp.Write(append(data, '\n')); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		return file, err
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
 	}
 	if err := tmp.Close(); err != nil {
-		return file, err
+		return err
 	}
-	return file, os.Rename(tmp.Name(), file)
+	return os.Rename(tmp.Name(), path)
 }

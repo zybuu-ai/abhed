@@ -212,11 +212,27 @@ checking tool calling... ok
 Ready.
 ```
 
+When the provider refuses (a key it does not take, no credit or quota left,
+a model it has retired or that this account cannot use, a rate limit), doctor
+shows the provider's own words and the next step, naming the configured
+models whose key is at hand to use instead. A model the provider called
+retired or not found is remembered for two weeks: the next session (the
+command line, and Studio when a chat opens) and doctor warn of it before the
+first call, and it is forgotten once it answers. In a session the same
+refusal is said in the chat with its next step, not only as an error.
+Doctor's `sandbox` line also says why the tier was chosen and how to choose
+another ([choosing the tier](02-configuration.md#choosing-the-tier)).
+
 ## First run
 
 ```bash
 abhed
 ```
+
+The first start asks who is working: an account on this machine, an
+account on an Abhed server, or guest. Create an account, and this machine
+remembers it until you sign out; if `~/.abhed` holds data from an earlier
+version, the account takes it over. See [Signing in](38-signing-in.md).
 
 The session opens at once: a check for a container runtime, and for the
 model endpoint, run behind the prompt. The banner says `process or stronger

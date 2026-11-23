@@ -75,6 +75,12 @@ type Options struct {
 	// tool is scoped to it.
 	Workspace string
 
+	// KeptNetwork is what the person opened to this workspace's commands
+	// before, and KeepNetwork keeps a new grant (Studio, /network); nil keeps
+	// none. Neither applies where the managed file holds the network.
+	KeptNetwork func() toolset.KeptNetwork
+	KeepNetwork func(all bool, host string) error
+
 	// ConfigDir loads .abhed/config.json from a directory, the same file the
 	// CLI reads, with the user's and the managed file. Provider overrides what
 	// it names. Without it only the managed file, if any, is read. That file
@@ -467,6 +473,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	set := toolset.Build(ctx, cfg, toolset.Options{
 		Workspace: opts.Workspace, ReadWithheld: pol.ReadWithheldFunc(), Bash: bash, Parts: parts, Extensions: opts.Extensions,
 		Vault: secrets.Default(), Warn: opts.Warn, Sandbox: sbox,
+		KeptNetwork: opts.KeptNetwork, KeepNetwork: opts.KeepNetwork,
 	})
 	// What New made is released on every error from here: the tools, and
 	// the sandbox's cgroup and private temp.
@@ -559,6 +566,9 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, loopCfg)
 	loop.Provider = cfg.Model.Default
 	loop.Unattended = !opts.Attended
+	if sbox != nil {
+		loop.SessionNote = func() string { return toolset.SessionNote(cfg, sbox, set.Network) }
+	}
 	if x.PlanExit {
 		loop.EnablePlanExit()
 	}
@@ -606,6 +616,9 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 			"workspace_trust": toolset.TrustState(opts.WorkspaceTrust, cfg.Workspace)}
 		if org := toolset.OrgPolicyState(cfg); org != nil {
 			start["org_policy"] = org
+		}
+		if x.Principal != nil {
+			start["principal"] = x.Principal
 		}
 		if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, start); err != nil {
 			return fail(fmt.Errorf("abhed: recording the session start: %w", err))

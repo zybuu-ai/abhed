@@ -11,8 +11,8 @@
 // the agent decides the skill applies. Putting every body in the prompt would
 // be simpler and quietly ruinous: twenty skills of a thousand tokens each is
 // 20k tokens paid on every request of every session, whether or not any of
-// them is relevant. The listing costs about fifteen tokens per skill and the
-// body is paid only when used.
+// them is relevant. The listing is names and descriptions within
+// ListingBudget; the body is paid only when used.
 //
 // Skills are also the most direct route for untrusted instructions to reach
 // the model, since a skill body IS instructions by construction. So Load
@@ -30,8 +30,10 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/frontmatter"
+	"github.com/zybuu-ai/abhed/internal/home"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -60,6 +62,8 @@ type Skill struct {
 	Workspace bool
 	// Plugin names the plugin the skill came with, "" for none.
 	Plugin string
+	// Cut says why the description was cut to MaxDescription, "" when it was not.
+	Cut string
 }
 
 // Registry holds the discovered skills.
@@ -74,7 +78,8 @@ func NewRegistry() *Registry {
 }
 
 // Load discovers skills under each root. Later roots win on a name collision,
-// so a project can override a team-wide skill deliberately.
+// so a project can override a team-wide skill deliberately; each override is
+// reported among the errors, as a warning, so it is never silent.
 func Load(roots []string) (*Registry, []error) {
 	r := NewRegistry()
 	var errs []error
@@ -84,10 +89,46 @@ func Load(roots []string) (*Registry, []error) {
 		errs = append(errs, problems...)
 		for _, s := range found {
 			s.Source = expanded
+			if old, ok := r.Get(s.Name); ok && old.Source != s.Source {
+				errs = append(errs, fmt.Errorf("skills: the skill %q in %s overrides the one in %s", s.Name, s.Source, old.Source))
+			}
 			r.add(s)
 		}
 	}
 	return r, errs
+}
+
+// MaxDescription bounds a skill's description in the listing, in
+// characters, as an agent definition's is; a longer one is cut, with a warning.
+const MaxDescription = 300
+
+// tailRoom is what the "and N more" line needs, kept free while items remain after i.
+func tailRoom(i, n int) int {
+	if i < n-1 {
+		return 120
+	}
+	return 0
+}
+
+// ListingBudget bounds the skill listing and the skill tool's names, in
+// bytes; the rest are counted, and still load by name or a word.
+const ListingBudget = 8 << 10
+
+// CapDescription cuts s's description to MaxDescription characters and
+// says so, or returns nil.
+func CapDescription(s *Skill) error {
+	if utf8.RuneCountInString(s.Description) <= MaxDescription {
+		return nil
+	}
+	n := 0
+	for i := range s.Description {
+		if n == MaxDescription-1 {
+			s.Description = strings.TrimSpace(s.Description[:i]) + "…"
+			break
+		}
+		n++
+	}
+	return fmt.Errorf("the description is longer than %d characters, so the listing shows its first %d", MaxDescription, MaxDescription-1)
 }
 
 func (r *Registry) add(s *Skill) {
@@ -146,7 +187,7 @@ func (r *Registry) Listing() string {
 	b.WriteString("Procedures this deployment has defined. When a request matches one, " +
 		"call the `skill` tool with its name to read the full instructions, then follow them. " +
 		"Do not guess at a skill's contents from its description.\n\n")
-	for _, s := range all {
+	for i, s := range all {
 		from := ""
 		switch {
 		case s.Workspace:
@@ -154,9 +195,63 @@ func (r *Registry) Listing() string {
 		case s.Plugin != "":
 			from = " (from the plugin " + s.Plugin + ")"
 		}
-		fmt.Fprintf(&b, "- `%s`%s — %s\n", s.Name, from, s.Description)
+		line := fmt.Sprintf("- `%s`%s — %s\n", s.Name, from, s.Description)
+		if b.Len()+len(line)+tailRoom(i, len(all)) > ListingBudget {
+			fmt.Fprintf(&b, "- and %d more; call `skill` with a word from the name or the task to search them\n", len(all)-i)
+			break
+		}
+		b.WriteString(line)
 	}
 	return b.String()
+}
+
+// NamesWithin are the skill names, joined by ", ", within budget bytes, and
+// how many more there are.
+func (r *Registry) NamesWithin(budget int) (string, int) {
+	names := r.Names()
+	var b strings.Builder
+	for i, n := range names {
+		if b.Len()+len(n)+2+tailRoom(i, len(names)) > budget {
+			return b.String(), len(names) - i
+		}
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(n)
+	}
+	return b.String(), 0
+}
+
+// Search is the skills whose name or description holds a word of query,
+// best first, at most limit.
+func (r *Registry) Search(query string, limit int) []*Skill {
+	words := strings.Fields(strings.ToLower(query))
+	type hit struct {
+		s     *Skill
+		score int
+	}
+	var hits []hit
+	for _, s := range r.All() {
+		name, desc := strings.ToLower(s.Name), strings.ToLower(s.Description)
+		score := 0
+		for _, w := range words {
+			if strings.Contains(name, w) {
+				score += 3
+			}
+			if strings.Contains(desc, w) {
+				score++
+			}
+		}
+		if score > 0 {
+			hits = append(hits, hit{s, score})
+		}
+	}
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].score > hits[j].score })
+	out := make([]*Skill, 0, min(len(hits), limit))
+	for _, h := range hits[:min(len(hits), limit)] {
+		out = append(out, h.s)
+	}
+	return out
 }
 
 // ---------------------------------------------------------------- discovery
@@ -227,6 +322,9 @@ func discover(root string) ([]*Skill, []error) {
 			continue
 		}
 		s.Dir = dir
+		if err := CapDescription(s); err != nil {
+			problems = append(problems, fmt.Errorf("skills: %s: %w", path, err))
+		}
 		// A pipeline lives in its own file rather than the frontmatter. The
 		// frontmatter parser is deliberately a narrow reader — a few flat
 		// keys, no YAML dependency, which is the right trade for an air-gapped
@@ -290,12 +388,7 @@ func FoldName(name string) string {
 }
 
 func expandHome(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, path[2:])
-		}
-	}
-	return path
+	return home.ExpandState(path)
 }
 
 // FromContent makes a skill from content already read, such as a
@@ -312,6 +405,10 @@ func FromContent(dir string, skillMD, pipeline []byte) (*Skill, error) {
 	}
 	if strings.IndexFunc(s.Name, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0 {
 		return nil, fmt.Errorf("the name %q holds a character that does not print as itself", s.Name)
+	}
+	// Every source is capped here, whoever reads the skill; the caller warns.
+	if err := CapDescription(s); err != nil {
+		s.Cut = err.Error()
 	}
 	s.Dir = dir
 	if pipeline != nil {

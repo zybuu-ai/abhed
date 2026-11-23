@@ -319,7 +319,8 @@ func parseClaims(raw json.RawMessage) []Claim {
 		if strings.TrimSpace(c.Text) == "" {
 			continue
 		}
-		out = append(out, Claim{Text: c.Text, Kind: strings.ToLower(c.Kind), Evidence: evidenceRefs(c.Evidence), Quote: c.Quote})
+		refs, quote := evidenceRefs(c.Evidence)
+		out = append(out, Claim{Text: c.Text, Kind: strings.ToLower(c.Kind), Evidence: refs, Quote: c.Quote, hintQuote: quote})
 		if len(out) == 60 {
 			break
 		}
@@ -327,16 +328,20 @@ func parseClaims(raw json.RawMessage) []Claim {
 	return out
 }
 
-func evidenceRefs(raw json.RawMessage) []string {
+// evidenceRefs reads a claim's evidence: call ids or #seq as strings or
+// numbers, or objects naming a call_id (or seq) and a quote, which a model
+// often gives. The first quote that comes with a reference is returned.
+func evidenceRefs(raw json.RawMessage) ([]string, string) {
 	var list []any
 	if json.Unmarshal(raw, &list) != nil {
 		var one any
 		if json.Unmarshal(raw, &one) != nil || one == nil {
-			return nil
+			return nil, ""
 		}
 		list = []any{one}
 	}
 	var out []string
+	quote := ""
 	for _, x := range list {
 		switch v := x.(type) {
 		case string:
@@ -345,9 +350,29 @@ func evidenceRefs(raw json.RawMessage) []string {
 			}
 		case float64:
 			out = append(out, fmt.Sprintf("#%d", int64(v)))
+		case map[string]any:
+			ref := ""
+			for _, k := range []string{"call_id", "id", "seq"} {
+				switch r := v[k].(type) {
+				case string:
+					ref = strings.TrimSpace(r)
+				case float64:
+					ref = fmt.Sprintf("#%d", int64(r))
+				}
+				if ref != "" {
+					break
+				}
+			}
+			if ref == "" {
+				continue
+			}
+			out = append(out, ref)
+			if q, ok := v["quote"].(string); ok && quote == "" {
+				quote = strings.TrimSpace(q)
+			}
 		}
 	}
-	return out
+	return out, quote
 }
 
 // beginAnswer starts a run's checks: no answer given yet, its one revision
@@ -440,7 +465,9 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 		default:
 			av.Unverified++
 		}
-		if c.LoadBearing && c.Verdict != ClaimVerified {
+		// An explanation of code the session read or changed is shown
+		// apart and not checked; it never fails the answer.
+		if c.LoadBearing && c.Verdict != ClaimVerified && !c.Explains {
 			bad++
 		}
 	}
@@ -454,6 +481,13 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	}
 	// A statement read as a fact about other software is never passed over
 	// in silence.
+	if n := av.Explained(); n > 0 {
+		note := fmt.Sprintf("%d explanation(s) not checked", n)
+		if av.Note != "" {
+			note = av.Note + "; " + note
+		}
+		av.Note = note
+	}
 	if ext := av.ExternalCount(); ext > 0 {
 		n := fmt.Sprintf("%d statement(s) read as facts about other software were not checked", ext)
 		if av.Note != "" {
@@ -465,7 +499,11 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	if v.Relevance {
 		if q := typedFrom(ctx); q != "" {
 			av.Relevance = RelevanceAddresses
-			if why := offTopic(q, text); why != "" {
+			var names []string
+			if l.Tools != nil {
+				names = l.Tools.Names()
+			}
+			if why := offTopic(q, text, names...); why != "" {
 				av.Relevance = RelevanceOffTopic
 				n := "the answer may not address the question: " + why
 				if av.Note != "" {

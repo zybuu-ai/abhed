@@ -35,10 +35,11 @@ var ErrUnknownModel = errors.New("abhed: no such model is configured")
 // ErrSwitchDuringRun is SwitchModelNamed's refusal while a run is in progress.
 var ErrSwitchDuringRun = errors.New("abhed: cannot switch the model while a run is in progress; switch after it returns")
 
-// offered reports whether a configured provider may be chosen by name. A
-// managed file that sets model.default pins the model to it.
-func (a *Agent) offered(name string) bool {
-	return a.cfg.ModelAllowed(name) == nil
+// offered reports whether cfg, a snapshot of the agent's configuration taken
+// under forkMu, offers the provider name. A managed file that sets
+// model.default pins the model to it.
+func offered(cfg config.Config, name string) bool {
+	return cfg.ModelAllowed(name) == nil
 }
 
 // Models lists the configured models SwitchModelNamed accepts, by name. Only
@@ -47,10 +48,12 @@ func (a *Agent) offered(name string) bool {
 func (a *Agent) Models() []Model {
 	a.forkMu.Lock()
 	current := a.current
+	cfg := a.cfg // AddModels replaces the providers map, never writes in it
 	a.forkMu.Unlock()
-	out := make([]Model, 0, len(a.cfg.Model.Providers))
-	for name, p := range a.cfg.Model.Providers {
-		if !a.offered(name) {
+	providers := cfg.Model.Providers
+	out := make([]Model, 0, len(providers))
+	for name, p := range providers {
+		if !offered(cfg, name) {
 			continue
 		}
 		out = append(out, Model{Name: name, Model: p.Model, Type: p.Type, Current: name == current, Images: readsImages(p)})
@@ -87,7 +90,7 @@ func (a *Agent) SwitchModelNamed(name string) error {
 		return fmt.Errorf("abhed: %s", redactText(a.redact, err.Error()))
 	}
 	if p.APIKey == "" && p.APIKeyEnv != "" {
-		return fmt.Errorf("abhed: model %q reads its key from %s, which is not set", name, p.APIKeyEnv)
+		return fmt.Errorf("abhed: model %q reads its key from %s, which is not set and not stored; run `abhed provider login %s`", name, p.APIKeyEnv, p.Type)
 	}
 	next, err := p.Adapter()
 	if err != nil {
@@ -108,4 +111,36 @@ func (a *Agent) recordRefused(source string, refused *config.ManagedError) {
 	_, _ = a.loop.Recorder.Record(agent.EvConfigRefused, agent.ActorSystem, agent.Trusted, agent.ConfigAttempt{
 		Layer: "command", Source: source, Key: refused.Key, Value: config.Printable(refused.Value),
 		Decision: "refused", Reason: refused.Reason, Principal: toolset.LocalPrincipal(sandbox.InAgentCommand())})
+}
+
+// AddModels offers this conversation the providers from that it does not
+// have yet: models a person added to their configuration while it was open.
+// Only additions are taken, each as that configuration resolved it (its key,
+// the managed allowlists); nothing else of it applies to this conversation.
+// It returns the names added, sorted.
+func (a *Agent) AddModels(from config.Config) []string {
+	a.forkMu.Lock()
+	defer a.forkMu.Unlock()
+	next := make(map[string]config.ProviderConfig, len(a.cfg.Model.Providers))
+	for n, p := range a.cfg.Model.Providers {
+		next[n] = p
+	}
+	var added []string
+	for n, p := range from.Model.Providers {
+		if _, have := next[n]; have {
+			continue
+		}
+		if from.ModelAllowed(n) != nil || a.cfg.EndpointRefused(p) != nil {
+			continue
+		}
+		next[n] = p
+		added = append(added, n)
+	}
+	if len(added) == 0 {
+		return nil
+	}
+	sort.Strings(added)
+	// A new map, so a reader holding the old one is never written under.
+	a.cfg.Model.Providers = next
+	return added
 }

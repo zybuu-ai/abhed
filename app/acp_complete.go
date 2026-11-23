@@ -126,8 +126,21 @@ type acpCompleter struct {
 	warmed     time.Time          // when the last warm-up was sent
 	warmCancel context.CancelFunc // ends a warm-up in flight when the session closes
 	// running are the requests sent and not yet counted; added to only
-	// while open, so the summary can wait for them.
-	running sync.WaitGroup
+	// while open, so the summary can wait for them. idle closes when they
+	// reach none, for a summary waiting.
+	running int
+	idle    chan struct{}
+}
+
+// finished says one request counted in running has been counted.
+func (k *acpCompleter) finished() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.running--
+	if k.running == 0 && k.idle != nil {
+		close(k.idle)
+		k.idle = nil
+	}
 }
 
 // took keeps one sent request's answer time.
@@ -632,11 +645,11 @@ func (c *acpConn) admit(k *acpCompleter, seq int64, name string, provider config
 	ctx, cancel := context.WithTimeout(context.Background(), completeTimeout)
 	k.cancel = cancel
 	// The caller's cancel, deferred, runs once the request is counted.
-	k.running.Add(1)
+	k.running++
 	var once sync.Once
 	done := func() {
 		cancel()
-		once.Do(k.running.Done)
+		once.Do(k.finished)
 	}
 	return ctx, done, k.adapter, "", ""
 }
@@ -816,8 +829,8 @@ func (c *acpConn) completeWarm(msg rpcMessage) {
 	ctx, cancel := context.WithTimeout(c.root(), warmTimeout)
 	defer cancel()
 	k.warmCancel = cancel
-	k.running.Add(1)
-	defer k.running.Done()
+	k.running++
+	defer k.finished()
 	k.mu.Unlock()
 	// Ended too when the editor's input ends, so it never holds the drain at exit.
 	go func() {
@@ -842,14 +855,45 @@ func (c *acpConn) completeWarm(msg rpcMessage) {
 }
 
 // completionSummary records the session's completions, once, as it closes.
-func (c *acpConn) completionSummary(s *acpSession) {
-	for _, feature := range []string{"complete", "next_edit", "commit"} {
-		c.featureSummary(s, feature)
+func (c *acpConn) completionSummary(s *acpSession, counted time.Time) {
+	c.stopEditors(map[string]*acpSession{s.id: s})
+	for _, feature := range closedFeatures {
+		c.featureSummary(s, feature, counted)
+	}
+}
+
+// closedFeatures are the features whose calls a session's close ends, in
+// the order their summaries are recorded.
+var closedFeatures = []string{"complete", "next_edit", "commit"}
+
+// stopEditors closes the sessions' editor features to new calls and
+// cancels those in flight, which count themselves as they end.
+func (c *acpConn) stopEditors(sessions map[string]*acpSession) {
+	c.compMu.Lock()
+	var ks []*acpCompleter
+	for id := range sessions {
+		for _, feature := range closedFeatures {
+			if k := c.comps[id+"\x00"+feature]; k != nil {
+				ks = append(ks, k)
+			}
+		}
+	}
+	c.compMu.Unlock()
+	for _, k := range ks {
+		k.mu.Lock()
+		k.closed = true
+		if k.cancel != nil {
+			k.cancel()
+		}
+		if k.warmCancel != nil {
+			k.warmCancel()
+		}
+		k.mu.Unlock()
 	}
 }
 
 // featureSummary records one editor feature's summary for a closing session.
-func (c *acpConn) featureSummary(s *acpSession, feature string) {
+func (c *acpConn) featureSummary(s *acpSession, feature string, counted time.Time) {
 	c.compMu.Lock()
 	k := c.comps[s.id+"\x00"+feature]
 	delete(c.comps, s.id+"\x00"+feature)
@@ -857,24 +901,24 @@ func (c *acpConn) featureSummary(s *acpSession, feature string) {
 	if k == nil {
 		return
 	}
+	// Its calls were cancelled by stopEditors and are counted (and charged)
+	// by their handlers: waited for until counted, one deadline for the
+	// whole close, so the summary has what the budget has.
 	k.mu.Lock()
-	k.closed = true
-	if k.cancel != nil {
-		k.cancel()
+	if k.running > 0 {
+		if k.idle == nil {
+			k.idle = make(chan struct{})
+		}
+		idle := k.idle
+		k.mu.Unlock()
+		t := time.NewTimer(time.Until(counted))
+		select {
+		case <-idle:
+		case <-t.C:
+		}
+		t.Stop()
+		k.mu.Lock()
 	}
-	if k.warmCancel != nil {
-		k.warmCancel()
-	}
-	k.mu.Unlock()
-	// The calls just cancelled are counted (and charged) by their handlers:
-	// waited for, briefly, so the summary has what the budget has.
-	ran := make(chan struct{})
-	go func() { k.running.Wait(); close(ran) }()
-	select {
-	case <-ran:
-	case <-time.After(summaryWait):
-	}
-	k.mu.Lock()
 	sum := k.sum
 	sum.LatencyP50Ms, sum.LatencyP90Ms, sum.LatencyMaxMs = latencies(k.lat)
 	k.mu.Unlock()

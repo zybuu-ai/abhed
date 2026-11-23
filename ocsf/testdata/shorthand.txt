@@ -126,5 +126,6 @@
 2026-10-19T12:00:09.123Z s-1#128 BASE:Other INFO model.waiting
 2026-10-19T12:00:10.123Z s-1#129 CONF:Log INFO plugin.loaded
 2026-10-19T12:00:11.123Z s-1#130 CONF:Log INFO config.changed plugins acme-review (plugin install)
-2026-10-19T12:00:12.123Z s-1#131 PROC:Launch INFO hostgit.brokered for c-1
-2026-10-19T12:00:13.123Z s-1#132 PROC:Terminate INFO hostgit.brokered for c-1
+2026-10-19T12:00:12.123Z s-1#131 LIFE:Stop INFO session ended: stdin_late
+2026-10-19T12:00:13.123Z s-1#132 PROC:Launch INFO hostgit.brokered for c-1
+2026-10-19T12:00:14.123Z s-1#133 PROC:Terminate INFO hostgit.brokered for c-1

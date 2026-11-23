@@ -11,12 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/term"
-
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/ollama"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
@@ -25,6 +24,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/internal/webfetch"
 	"github.com/zybuu-ai/abhed/orgpolicy"
+	"golang.org/x/term"
 )
 
 func run(a *App, workspace string, f *cliFlags) int {
@@ -176,6 +176,10 @@ func run(a *App, workspace string, f *cliFlags) int {
 			}
 			return newAdapter(p)
 		})
+		for _, name := range fallback.names {
+			p, _ := cfg.ProviderNamed(name)
+			fallback.limits = append(fallback.limits, p.MaxTools)
+		}
 		adapter = fallback
 	}
 	sess, err := tools.NewSession(workspace)
@@ -248,6 +252,9 @@ func run(a *App, workspace string, f *cliFlags) int {
 		Warn:    warnf,
 		Agents:  sessionDefs,
 		Sandbox: sb,
+		// What the person opened to this workspace's commands, as Studio keeps it.
+		KeptNetwork: func() toolset.KeptNetwork { return keptNetwork(workspace) },
+		KeepNetwork: func(all bool, host string) error { return keepNetwork(workspace, all, host) },
 	})
 	defer set.Close()
 	// A skill's own directory is reachable: its instructions reference files beside them.
@@ -259,6 +266,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	// The prompt is set once the tools are known, so it names only those there.
 	loopCfg := toolset.LoopConfig(cfg, "")
 	loopCfg.Egress = set.Guard()
+	loopCfg.SessionNote = func() string { return toolset.SessionNote(cfg, sb, set.Network) }
 
 	// Subagents share the parent's budget, so a fan-out cannot multiply spend
 	// invisibly. No Approver: a subagent answers to the approver of the loop
@@ -545,11 +553,17 @@ func fail(err error) {
 	os.Exit(1)
 }
 
-// endAtExit ends what an exit would leave behind: background shells, and
-// MCP servers' containers, which their closes did not reach.
+// endAtExit ends what an exit would leave behind: an Ollama server this
+// process started, background shells, and MCP servers' containers, which
+// their closes did not reach.
 func endAtExit() {
+	// First, and briefly: a server Abhed started itself, by its own pid only.
+	ollama.StopOwned("the Abhed that started it exited")
 	tools.EndBackgroundShells(shellEndWait)
 	sandbox.EndServers()
+	// Last: a guest's shells and servers have ended, so nothing writes into
+	// the folder as it goes.
+	endGuest()
 }
 
 // shellEndWait bounds how long an exit waits for background shells to end.
@@ -637,7 +651,7 @@ func skipPermissions(cfg config.Config, f *cliFlags, confirm func(config.Config)
 // -dangerously-skip-permissions.
 func startPayload(cfg config.Config, f *cliFlags, headless bool, model string) map[string]any {
 	return map[string]any{"surface": "cli", "headless": headless, "provider": cfg.Model.Default, "model": model,
-		"mode": cfg.StartMode(), "bypass_confirmed": f.skipPerms}
+		"mode": cfg.StartMode(), "bypass_confirmed": f.skipPerms, "principal": principalStart()}
 }
 
 // confirmBypass asks, on a terminal, before -dangerously-skip-permissions

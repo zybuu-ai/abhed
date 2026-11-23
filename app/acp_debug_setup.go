@@ -15,6 +15,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/debugrelay"
 	"github.com/zybuu-ai/abhed/internal/enginecli"
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/regularfile"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -357,11 +358,11 @@ func (c *acpConn) debugForgetConsent(msg rpcMessage) {
 // debugConsentFile keeps the workspaces whose person agreed to debug on the
 // process tier.
 var debugConsentFile = func() string {
-	home, err := os.UserHomeDir()
+	p, err := home.PersonPath("state", "debug-process-tier.json")
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".abhed", "state", "debug-process-tier.json")
+	return p
 }
 
 var debugConsentMu sync.Mutex

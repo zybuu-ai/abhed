@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -326,6 +327,13 @@ type gatedAdapter struct {
 // budget is seen.
 func (g gatedAdapter) SamplingDefaults() model.Params { return model.SamplingDefaultsOf(g.Adapter) }
 
+// ToolLimit is the wrapped adapter's.
+func (g gatedAdapter) ToolLimit() int { return model.ToolLimitOf(g.Adapter) }
+
+// CallTimeout passes the wrapped adapter's through, so the reasoning
+// backstop stays under it.
+func (g gatedAdapter) CallTimeout() time.Duration { return model.CallTimeoutOf(g.Adapter) }
+
 func (g gatedAdapter) Complete(ctx context.Context, req model.Request) (<-chan model.Chunk, error) {
 	if err := g.probe.check(ctx); err != nil {
 		return nil, err
@@ -343,6 +351,9 @@ func friendlyModelError(err error, name string, p config.ProviderConfig) string 
 	next := "Run `abhed doctor` to check the configuration, `abhed init` to write one, or set ABHED_BASE_URL to use another endpoint for this run."
 	var se *model.StatusError
 	msg := friendlyCause(err, name, p, where, next)
+	if hint := keyMismatchHint(err, p); hint != "" {
+		msg += "\n" + hint
+	}
 	// A local Ollama that is down or lacks the model: also what is wrong with it, and the steps.
 	if errors.Is(err, syscall.ECONNREFUSED) || errors.As(err, &se) && se.Status == http.StatusNotFound {
 		if steps := ollamaSteps(context.Background(), name, p); steps != "" {
@@ -366,14 +377,23 @@ func friendlyCause(err error, name string, p config.ProviderConfig, where, next 
 	case errors.As(err, &dns) && dns.IsNotFound:
 		return fmt.Sprintf("The host of %s does not resolve (model %q). Check base_url. %s", where, name, next)
 	case errors.As(err, &se):
+		// The provider's own words come first: "no longer available to new
+		// users" says more than a status.
+		if p := model.ProblemOf(err); p != nil && se.Status < 500 && p.Message != "" && p.Message != http.StatusText(se.Status) {
+			where = fmt.Sprintf("%s (%q)", where, p.Message)
+		}
 		switch {
 		case se.Status == http.StatusUnauthorized || se.Status == http.StatusForbidden:
 			key := "the key"
-			if p.APIKeyEnv != "" {
+			switch {
+			case p.KeySource.Kind != "":
+				key = keySourceText(p)
+			case p.APIKeyEnv != "" && os.Getenv(p.APIKeyEnv) == "":
+				key = "$" + p.APIKeyEnv + ", which is not set,"
+			case p.APIKeyEnv != "":
 				key = "the key in $" + p.APIKeyEnv
-				if os.Getenv(p.APIKeyEnv) == "" {
-					key = "$" + p.APIKeyEnv + ", which is not set,"
-				}
+			case p.KeySource.Name != "":
+				key = keySourceText(p) + " (store one with `abhed provider login " + loginArg(p) + "`)"
 			}
 			return fmt.Sprintf("%s refused the request (%d): check %s and that it may use model %q. %s", where, se.Status, key, p.Model, next)
 		case se.Status == http.StatusNotFound:
@@ -510,6 +530,9 @@ func listModels(ctx context.Context, base, key string) ([]string, error) {
 			out = append(out, d.ID)
 		}
 	}
+	// The server's order varies between calls (Ollama's follows use), and
+	// the first is the default choice: sorted, the same list each time.
+	sort.Strings(out)
 	return out, nil
 }
 
@@ -857,6 +880,9 @@ func looksLikeKey(v string) bool {
 // writeUserConfig writes the person's own configuration, which must not
 // exist yet. It holds a key's variable name, never a key.
 func writeUserConfig(name string, p config.ProviderConfig, autoMemory bool) (string, error) {
+	if err := guestRefusal("writing this machine's configuration"); err != nil {
+		return "", err
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

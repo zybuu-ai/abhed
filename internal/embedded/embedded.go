@@ -32,6 +32,9 @@ type Settings struct {
 	// PlanExit offers exit_plan in plan mode; the surface takes the plan with
 	// Loop.TakePlan and puts it to the person.
 	PlanExit bool
+	// Principal is who is working, as session.started records it: kind and
+	// owner (docs/architecture/sign-in.md).
+	Principal map[string]any
 }
 
 type settingsKey struct{}

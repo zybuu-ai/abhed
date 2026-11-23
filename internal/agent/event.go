@@ -162,6 +162,9 @@ const (
 	// TermWakeLimit: a wake run used its turns. The session goes on, and so
 	// do its background children.
 	TermWakeLimit TerminalReason = "wake_limit"
+	// TermStdinLate: a headless run was stopped because input came on its
+	// stdin after the wait for it; an answer without that input is not given.
+	TermStdinLate TerminalReason = "stdin_late"
 )
 
 // RunsOnForQueued reports whether a run that ended this way goes on for a
@@ -193,6 +196,8 @@ func (r TerminalReason) ExitCode() int {
 		return 7
 	case TermUnverified:
 		return 8
+	case TermStdinLate:
+		return 9
 	default:
 		return 1
 	}
@@ -265,6 +270,9 @@ type Observation struct {
 	// SandboxNote is set when bash added a note that the sandbox refused part
 	// of the command: the credential folder named, or "denied" for none.
 	SandboxNote string `json:"sandbox_note,omitempty"`
+	// NetworkOff is set by bash, never by a command's output, when the
+	// command failed because the network is off.
+	NetworkOff bool `json:"network_off,omitempty"`
 	// NotRun marks the answer to a call the turn ended before running.
 	NotRun bool `json:"not_run,omitempty"`
 	// OutcomeUnknown marks the answer to a call that may have run on a

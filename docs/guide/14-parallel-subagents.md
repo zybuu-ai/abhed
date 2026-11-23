@@ -63,10 +63,23 @@ notes after your message for the model.
 - **Ask.** Any other parallel phrase, or a mention of subagents, gets a note
   telling the model that if it is unclear whether you want independent pieces
   of work started as subagents or the program itself changed to run
-  concurrently, it should ask one short question before acting. A run nobody
-  can answer, such as `abhed -p`, a script through the SDK or rpc, or an
-  unattended server run, never gets this note, since its question would only
-  end the run; the terminal, Studio and the console get it.
+  concurrently, it should ask one short question before acting; the
+  terminal, Studio and the console get it. A run nobody can answer, such as
+  `abhed -p`, a script through the SDK or rpc, or an unattended server run,
+  gets no question. Only a vague request there, one that names speed or
+  parallelism and no concrete task (no action such as fix, delete or update,
+  no bug, file or symbol, no issue number, version or list of names, and
+  no object beyond generic ones such as "things", "everything" or "the
+  project"; what is sped up, and a phrase after a preposition or a comma,
+  such as "for the demo", is not an object), gets a note in its place: if
+  the message only asks to speed things up or run things in parallel, make
+  no code edits for it, and answer with a short plan that describes both
+  readings, or with the one question it would ask; otherwise do the work. A
+  vague "speed up the project by running things in parallel" (or "make
+  everything run in parallel") under `-p` so gets a plan, while "delete
+  these three files at once" or "merge these three branches at once" is
+  done as asked. This judgement knows English words only: a request in
+  another language gets no note in a run nobody can answer.
 
 The parallel phrases are "in parallel", "at the same time", "at once",
 "simultaneously", "side by side", "parallelize" (or "parallelise"), "fan out",

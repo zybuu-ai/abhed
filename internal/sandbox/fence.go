@@ -20,6 +20,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/fence/mountns"
 	"github.com/zybuu-ai/abhed/internal/fence/probe"
 	"github.com/zybuu-ai/abhed/internal/fence/seccomp"
+	"github.com/zybuu-ai/abhed/internal/home"
 )
 
 // Fence is the fence tier, a preview on Linux: Abhed re-executes itself as a
@@ -28,6 +29,7 @@ import (
 // once Abhed has recorded the launch runs the command in its place.
 // Chosen only by sandbox.tier; it never falls back, it refuses naming why.
 type Fence struct {
+	choice
 	policy Policy
 
 	once sync.Once
@@ -444,18 +446,18 @@ func (f *Fence) ServerCommand(ctx context.Context, name string, argv, env []stri
 	return cmd, nil
 }
 
-// skillDirs are ~/.abhed/skills and ~/.abhed/plugins, as written and
-// resolved, where each is a folder: a skill or an approved plugin can ship a
-// script its hook or server runs.
+// skillDirs are the person's skills and plugins folders (~/.abhed/skills
+// and ~/.abhed/plugins before sign-in), as written and resolved, where each
+// is a folder: a skill or an approved plugin can ship a script its hook or
+// server runs. Never another account's.
 func (f *Fence) skillDirs() []string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
 	var out []string
-	for _, st := range PathForms(filepath.Join(home, stateDir)) {
-		for _, sub := range []string{"skills", "plugins"} {
-			d := filepath.Join(st, sub)
+	for _, sub := range []string{"skills", "plugins"} {
+		dir, err := home.PersonPath(sub)
+		if err != nil {
+			continue
+		}
+		for _, d := range PathForms(dir) {
 			if info, err := os.Lstat(d); err == nil && info.IsDir() && !slices.Contains(out, d) {
 				out = append(out, d)
 			}

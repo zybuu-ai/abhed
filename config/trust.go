@@ -690,7 +690,8 @@ func tighten(cfg *Config, path string, data []byte, st *WorkspaceTrust) error {
 // field naming an environment variable, or a limit, is not.
 func secretKey(k string) bool {
 	k = strings.ToLower(k)
-	if strings.HasSuffix(k, "_env") || strings.HasPrefix(k, "max_") {
+	// api_key_secret names a stored key; the name is shown, so a person sees which key a file asks for.
+	if strings.HasSuffix(k, "_env") || strings.HasPrefix(k, "max_") || k == "api_key_secret" {
 		return false
 	}
 	for _, s := range []string{"api_key", "apikey", "secret", "password", "passwd", "token", "dsn", "header", "credential", "authorization", "signature"} {
@@ -991,7 +992,7 @@ var workspaceRules = map[string]fieldRule{
 	"limits.max_budget_usd":           {lowerFloat(func(c *Config) *float64 { return &c.Limits.MaxBudgetUSD }), "only lower"},
 	"limits.budget_spent":             {onlyTrue(func(c *Config) *bool { return &c.Limits.BudgetSpent }), "only true"},
 	"limits.reasoning_stall_tokens":   {lower(func(c *Config) *int { return &c.Limits.ReasoningStallTokens }, zeroIs(8000)), "only lower"},
-	"limits.reasoning_stall_seconds":  {lower(func(c *Config) *int { return &c.Limits.ReasoningStallSeconds }, zeroIs(600)), "only lower"},
+	"limits.reasoning_stall_seconds":  {lower(func(c *Config) *int { return &c.Limits.ReasoningStallSeconds }, zeroIs(300)), "only lower"},
 	"pricing":                         {nil, "sets what a model's calls cost, which a dollar budget is spent by (an operator's setting: not from a workspace, trusted or not)"},
 	"limits.max_subagents":            {lower(func(c *Config) *int { return &c.Limits.MaxSubagents }, zeroUnlimited), "only lower"},
 	"limits.max_parallel_subagents":   {lower(func(c *Config) *int { return &c.Limits.MaxParallelSubagents }, zeroIs(8)), "only lower"},

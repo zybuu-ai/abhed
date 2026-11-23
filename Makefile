@@ -11,7 +11,7 @@ else
 CGO ?= 0
 endif
 
-.PHONY: build test vet lint check clean docs image run help
+.PHONY: build test test-scale vet lint check clean docs image run help
 
 build: docs       ## Build the abhed binary for this machine into ./bin, docs embedded
 	CGO_ENABLED=$(CGO) $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/abhed ./cmd/abhed
@@ -21,6 +21,9 @@ docs:             ## Render docs/ into the tree the binary embeds (needs python3
 
 test:             ## Run the test suite
 	$(GO) test ./... -count=1 -timeout 30m
+
+test-scale:       ## Integration scale check: 50 stub MCP servers, 300 skills, 100 agents
+	$(GO) test -tags scale -run TestScaleIntegrations -count=1 -timeout 10m -v ./internal/toolset
 
 vet:              ## go vet
 	$(GO) vet ./...
@@ -40,4 +43,4 @@ clean:
 	rm -rf bin dist
 
 help:             ## This list
-	@grep -E '^[a-z]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
+	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'

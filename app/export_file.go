@@ -6,17 +6,14 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/nlink"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // exportsDir is where exports go by default: ~/.abhed/exports.
 func exportsDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".abhed", "exports"), nil
+	return home.PersonPath("exports")
 }
 
 // inExports reports whether path is in the exports folder, by its real path.

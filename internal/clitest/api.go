@@ -70,6 +70,10 @@ type Opts struct {
 
 	// NoConfig starts with no user config at all, as a first run does.
 	NoConfig bool
+	// NoAccount starts with no account on the machine, so an interactive
+	// start asks who is working. Otherwise the run is signed in as an
+	// account named "tester" (password TestPassword).
+	NoAccount bool
 	// UserConfig replaces DefaultUserConfig as ~/.abhed/config.json.
 	UserConfig string
 	// Podman is the body of the stub podman script ("" exits 1 at once);

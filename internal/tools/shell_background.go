@@ -149,9 +149,12 @@ func StartShellProc(cmd *exec.Cmd, stop func(), capBytes int) (*ShellProc, error
 		return nil, err
 	}
 	liveProcs.Store(p, struct{}{})
+	// Followed from its start: what it leaves running when it exits, or is
+	// stopped, is ended while it is still unreaped and only if proven its own.
+	watch := sandbox.StartWatch(cmd)
 	waited := make(chan error, 1)
 	go func() {
-		err := cmd.Wait()
+		_, err := watch.Wait()
 		sandbox.Exited(cmd, err)
 		waited <- err
 	}()
@@ -192,12 +195,18 @@ func (p *ShellProc) Done() <-chan struct{} { return p.done }
 // Pid is the process the command runs as, which leads its process group.
 func (p *ShellProc) Pid() int { return p.cmd.Process.Pid }
 
-// Stop ends the command and its process group, and what it left running
-// once it had exited, which its cancel no longer reaches.
+// Stop ends the command and what it started, and waits a while for them to
+// go: the command's Watch ends its own processes before it is reaped.
 func (p *ShellProc) Stop() {
 	p.stop()
-	sandbox.EndLeft(p.cmd)
+	select {
+	case <-p.done:
+	case <-time.After(stopWait):
+	}
 }
+
+// stopWait bounds Stop's wait: the Watch's sweep and the output's last read.
+const stopWait = 15 * time.Second
 
 // Exit reports the exit status once the command has ended, and how long it ran.
 func (p *ShellProc) Exit() (code int, ended bool, ran time.Duration) {
@@ -309,8 +318,10 @@ func EndBackgroundShells(wait time.Duration) {
 		procs = append(procs, k.(*ShellProc))
 		return true
 	})
+	// All are stopped first, then waited for together: each one's Watch ends
+	// what it left before it is reaped, under one deadline for them all.
 	for _, p := range procs {
-		p.Stop()
+		p.stop()
 	}
 	deadline := time.After(wait)
 	for _, p := range procs {

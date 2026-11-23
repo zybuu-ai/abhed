@@ -12,6 +12,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/customcmd"
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
@@ -309,7 +310,7 @@ func trustCommands(ctx context.Context, st *cliState, sf ui.Surface) error {
 	}
 	rows := [][]string{{"file", "sha256", "first line"}}
 	for _, f := range cs.wsFiles {
-		first := strings.TrimSpace(strings.SplitN(strings.TrimSpace(string(f.Data)), "\n", 2)[0])
+		first := commandSummary(f)
 		rows = append(rows, []string{f.Key, shortSum(config.HashOf(f.Data)), first})
 	}
 	choice, err := sf.Dialog(ctx, ui.DialogSpec{
@@ -392,18 +393,18 @@ func readCustomCommands(cfg config.Config, ws string) *customState {
 // and the workspace's, and reads the workspace's files with the hash a trust
 // decision covers. It is what a session and `abhed trust` both read.
 func workspaceCommands(cfg config.Config, ws string) (userDirs []string, files []customcmd.File, sum string, problems []string) {
-	home, _ := os.UserHomeDir()
+	osHome, _ := os.UserHomeDir()
 	// The workspace is the home directory or holds it: every path under home
 	// is in the workspace, so only a relative entry is taken as the workspace's.
-	atHome := home != "" && ws != "" && customcmd.Inside(ws, home)
+	atHome := osHome != "" && ws != "" && customcmd.Inside(ws, osHome)
 	var relative []string
-	if home != "" {
-		userDirs = append(userDirs, filepath.Join(home, ".abhed", "commands"))
+	if dir, err := home.PersonPath("commands"); err == nil {
+		userDirs = append(userDirs, dir)
 	}
 	for _, d := range cfg.Commands.Dirs {
 		switch {
-		case strings.HasPrefix(d, "~/") && home != "":
-			d = filepath.Join(home, d[2:])
+		case strings.HasPrefix(d, "~/") && osHome != "":
+			d = filepath.Join(osHome, d[2:])
 		case !filepath.IsAbs(d):
 			relative = append(relative, filepath.Join(ws, d))
 			continue
@@ -425,7 +426,7 @@ func workspaceCommands(cfg config.Config, ws string) (userDirs []string, files [
 		}
 	}
 	var errs []error
-	if !isHomeDir(ws, home) { // at home, .abhed/commands is the person's own
+	if !isHomeDir(ws, osHome) { // at osHome, .abhed/commands is the person's own
 		files, _, errs = customcmd.ReadWorkspace(ws)
 	}
 	more, moreErrs := customcmd.ReadWorkspaceDirs(ws, inside)
@@ -476,4 +477,38 @@ func headlessCustom(cs *customState, ws, task string) (*customcmd.Command, strin
 			c.Name, cs.wsReason, shellQuote(ws), cs.wsSum, shellQuote(ws))
 	}
 	return nil, "", nil
+}
+
+// commandSummary is what a review shows of a command file: its description,
+// or else the first line of its body, never the front matter's "---".
+func commandSummary(f customcmd.File) string {
+	if c, err := customcmd.Parse(f, customcmd.SourceWorkspace, nil); err == nil {
+		if d := strings.TrimSpace(c.Description); d != "" {
+			return d
+		}
+		for _, line := range strings.Split(c.Body, "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				return line
+			}
+		}
+		return ""
+	}
+	// A file that does not parse is shown by its first line past any front
+	// matter, or as it begins.
+	lines := strings.Split(string(f.Data), "\n")
+	start := 0
+	if len(lines) > 0 && strings.TrimSpace(lines[0]) == "---" {
+		for i := 1; i < len(lines); i++ {
+			if strings.TrimSpace(lines[i]) == "---" {
+				start = i + 1
+				break
+			}
+		}
+	}
+	for _, line := range lines[start:] {
+		if line = strings.TrimSpace(line); line != "" && line != "---" {
+			return line
+		}
+	}
+	return ""
 }

@@ -30,7 +30,7 @@ var subOwnFlags = map[string][]string{
 
 // noWorkspace are the subcommands that never read the workspace, so -C
 // means nothing to them.
-var noWorkspace = map[string]bool{"providers": true, "secret": true, "pki": true, "admin": true, "bg": true}
+var noWorkspace = map[string]bool{"providers": true, "provider": true, "models": true, "secret": true, "pki": true, "admin": true, "bg": true}
 
 // noArgs are the subcommands that take no arguments; doctor takes only
 // --json and -timeout, and version only --json.
@@ -55,6 +55,8 @@ func takesGlobal(sub, name string) bool {
 		}
 	case "settings":
 		return sub == "doctor"
+	case "guest", "account":
+		return personCommands[sub]
 	}
 	return false
 }

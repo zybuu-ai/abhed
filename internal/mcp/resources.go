@@ -56,22 +56,13 @@ func (c *Client) ListResources(ctx context.Context) (defs []ResourceDef, dropped
 		return nil, 0, ErrNoResources
 	}
 	var all []ResourceDef
-	cursor := ""
-	for page := 0; page < maxResourcePages && len(all) < maxResources; page++ {
-		var params json.RawMessage
-		if cursor != "" {
-			params, _ = json.Marshal(map[string]string{"cursor": cursor})
-		}
-		raw, err := c.call(ctx, "resources/list", params)
-		if err != nil {
-			return nil, 0, fmt.Errorf("resources/list: %w", err)
-		}
+	cut, err := c.listPages(ctx, "resources/list", maxResourcePages, func(raw json.RawMessage) (string, bool, error) {
 		var res struct {
 			Resources  []ResourceDef `json:"resources"`
 			NextCursor string        `json:"nextCursor"`
 		}
 		if err := json.Unmarshal(raw, &res); err != nil {
-			return nil, 0, fmt.Errorf("parse resources/list: %w", err)
+			return "", false, fmt.Errorf("parse the result: %w", err)
 		}
 		for _, r := range res.Resources {
 			if validResourceURI(r.URI) {
@@ -80,12 +71,15 @@ func (c *Client) ListResources(ctx context.Context) (defs []ResourceDef, dropped
 				dropped++
 			}
 		}
-		if cursor = res.NextCursor; cursor == "" {
-			break
-		}
+		return res.NextCursor, len(all) >= maxResources, nil
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("resources/list: %w", err)
 	}
-	if len(all) > maxResources {
-		all = all[:maxResources]
+	if len(all) > maxResources || cut {
+		warnf("abhed: warning: mcp server %q lists more resources than are read (%d pages or %d resources); "+
+			"only the first %d are listed\n", c.name, maxResourcePages, maxResources, min(len(all), maxResources))
+		all = all[:min(len(all), maxResources)]
 	}
 	return all, dropped, nil
 }
