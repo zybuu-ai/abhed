@@ -91,6 +91,9 @@ func personProgramsHeld(ctx context.Context, cwd string, areas []string, path st
 	if err := sshConfigHeld(sshWords, areas, path); err != nil {
 		return err
 	}
+	if err := httpTrustHeld(ctx, cwd, areas); err != nil {
+		return err
+	}
 	for _, p := range progs {
 		if why := programUntrusted(p.words, areas, path); why != "" {
 			return fmt.Errorf("the program your git configuration names for %s (%q) %s", p.what, strings.Join(p.words, " "), why)
@@ -411,7 +414,7 @@ func readSSHConfig(f, rel string, areas []string, path string, include func(file
 					include(m, rel)
 				}
 			}
-		case sshCommandsRun[key] || sshPathKeys[key] || key == "controlpath":
+		case sshCommandsRun[key] || sshPathKeys[key] || sshTrustKeys[key] || key == "controlpath":
 			if why := sshDirectiveUntrusted(key, rest, areas, path); why != "" {
 				return fmt.Errorf("your ssh configuration file %s sets %s %q, which %s", f, key, rest, why)
 			}
@@ -436,6 +439,78 @@ func readSSHConfig(f, rel string, areas []string, path string, include func(file
 // as a program of its own: a library (PKCS11Provider, SecurityKeyProvider)
 // or xauth.
 var sshPathKeys = map[string]bool{"pkcs11provider": true, "securitykeyprovider": true, "xauthlocation": true}
+
+// sshTrustKeys are the ssh keywords whose value is a file ssh trusts: the
+// host keys it accepts and revokes, and the certificate it presents. One
+// the agent could write would let it vouch for a host of its own.
+var sshTrustKeys = map[string]bool{"userknownhostsfile": true, "globalknownhostsfile": true, "revokedhostkeys": true, "certificatefile": true}
+
+// trustFileUntrusted says why a file ssh or git trusts (a known hosts file,
+// a certificate, a CA bundle or folder, a key), named as v, is not the
+// person's alone: a path ssh or git would expand (write the full path), a
+// relative one, one in areas or its folder there (links followed), or one
+// another user's, writable by others or unreadable. "" when it is, or
+// where none is there, outside every area.
+func trustFileUntrusted(v string, areas []string) string {
+	if why := sshExpanded(v); why != "" {
+		return why
+	}
+	p := expandHome(v)
+	if !filepath.IsAbs(p) {
+		return "is not an absolute path, so where it is found is not known; write the full path"
+	}
+	for _, a := range areas {
+		if a == "" {
+			continue
+		}
+		for _, q := range []string{p, filepath.Dir(p)} {
+			if within(q, a) {
+				return "is in " + a + ", which commands can write, where the agent could vouch for a host of its own"
+			}
+		}
+	}
+	if _, err := os.Stat(p); err != nil {
+		return ""
+	}
+	if why := untrustedFile(p); why != "" {
+		return why
+	}
+	if fh, err := os.Open(p); err != nil { // #nosec G304 -- the person's own file, read only
+		return "could not be read (" + err.Error() + ")"
+	} else {
+		_ = fh.Close()
+	}
+	return ""
+}
+
+// httpTrustKeys match the person's git settings naming a file https trusts
+// or presents, URL-scoped ones too.
+const httpTrustKeys = `^http\..*ssl(cainfo|capath|cert|key)$`
+
+// httpTrustHeld says why a CA bundle or folder, client certificate or key
+// the person's git configuration names for https is not theirs alone.
+func httpTrustHeld(ctx context.Context, cwd string, areas []string) error {
+	out, err := gitOut(ctx, cwd, "config", "--includes", "--name-only", "--get-regexp", httpTrustKeys)
+	if err != nil {
+		return nil // none set
+	}
+	seen := map[string]bool{}
+	for _, k := range strings.Fields(out) {
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		for _, v := range personValues(ctx, cwd, k) {
+			if v[1] == "" {
+				continue
+			}
+			if why := trustFileUntrusted(v[1], areas); why != "" {
+				return fmt.Errorf("the file your git configuration names for %s (%s) %s", k, v[1], why)
+			}
+		}
+	}
+	return nil
+}
 
 // sshExpanded says why an Include or -F value cannot be placed as ssh will
 // place it: ssh expands environment variables, % tokens and ~user in it.
@@ -471,6 +546,20 @@ func sshDirectiveUntrusted(key, value string, areas []string, path string) strin
 			return "is not an absolute path, so where ssh finds it is not known"
 		}
 		return pathUntrusted(v, areas)
+	case sshTrustKeys[key]:
+		words, ok := shellWords(value)
+		if !ok {
+			return "could not be read"
+		}
+		for _, w := range words {
+			if strings.EqualFold(w, "none") {
+				continue
+			}
+			if why := trustFileUntrusted(w, areas); why != "" {
+				return why
+			}
+		}
+		return ""
 	case key == "controlpath":
 		words, _ := shellWords(value)
 		if len(words) == 0 || strings.EqualFold(words[0], "none") {

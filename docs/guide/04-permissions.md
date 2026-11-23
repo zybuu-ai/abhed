@@ -1199,7 +1199,8 @@ cannot steer host git:
   SSH command or credential helper host git runs. Nor is it while such a
   file is a hard link (another name for it could lie in reach), is owned by
   another user, is writable by other users or sits in a folder they can
-  write, or cannot be read; while an include names another user's home
+  write (on macOS a folder only the `admin` group may also write, as
+  Homebrew's are, counts as yours), or cannot be read; while an include names another user's home
   (`~name/`) or git's install (`%(prefix)/`), which Abhed does not follow;
   while `GIT_CONFIG_GLOBAL` or `GIT_CONFIG_SYSTEM` is a relative path; or
   past 200 files. The same check stops an issue's push.
@@ -1231,6 +1232,16 @@ cannot steer host git:
   judged the same way. An `Include` or `-F` path that ssh would expand (an
   environment variable, a `%` token, `~user`) is refused: write the full
   path.
+- So are the files ssh and git trust: `UserKnownHostsFile`,
+  `GlobalKnownHostsFile` (each value), `RevokedHostKeys` and
+  `CertificateFile` in your ssh configuration or `-o` options, and
+  `http.sslCAInfo`, `http.sslCAPath`, `http.sslCert` and `http.sslKey` in
+  your git configuration, URL-scoped `http.<url>.*` ones too. Each must be a
+  full path (no `$`, `%` or `~user`; `~/` is your home) outside the
+  workspace and every folder commands can write, yours or root's, not
+  writable by others, and readable; `none` and the defaults
+  (`~/.ssh/known_hosts`, the system's CA store) pass. Otherwise the agent
+  could vouch for a host of its own.
 - Host git runs with your `PATH`, less every folder that is relative or
   lies in the workspace or a folder commands can write (a project's `bin`,
   `node_modules/.bin`), so no program is found there, by git, ssh, a

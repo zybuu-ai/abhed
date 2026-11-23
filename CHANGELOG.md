@@ -39,7 +39,6 @@ All notable changes to Abhed are recorded here. The format follows
 - Abhed Studio's request to open the network for one host with scope
   `workspace` opened, and kept, every host, while the record named only that
   host. A named host now opens and keeps that host alone at every scope.
-
 - `git submodule update`, given as the whole line on the process tier and
   the fence, ran through git on the host, where a submodule's own
   configuration or attributes could name a program it then ran outside the
@@ -47,7 +46,8 @@ All notable changes to Abhed are recorded here. The format follows
   smudge filter, `submodule.<name>.update = !cmd`). It is no longer run on
   the host: it runs in the sandbox, where updating a submodule already
   checked out can fail, so run it yourself outside Abhed. `git worktree`
-  add, remove and prune are still brokered.
+  add, remove and prune are still brokered. Affected: 1.2.8 and 1.2.9, on
+  the process tier and the fence.
 - A profile's client followed a redirect from https to plain http on the
   same host, sending the server token in clear. Such a redirect is now
   refused.
@@ -153,6 +153,16 @@ All notable changes to Abhed are recorded here. The format follows
   report of work the record does not prove ("Pulled, branched and
   pushed." after the push failed) is a claim it checks. See
   docs/guide/29-verified-answers.md.
+- Brokered git fetch, pull, push and clone are refused, with the reason,
+  where your own git or ssh setup could let the agent choose what runs as
+  you: a credential helper that is a shell function, variable or pipe
+  (`!f() { …; }; f`); an ssh command using `sh -c`; a `ProxyCommand`,
+  askpass or git proxy given as a relative path or one in the workspace or
+  a folder commands can write; an ssh `Include` or `-F` path with `~user`, a
+  `%` token or an environment variable; a program in a folder other users
+  can write. The fix: put the helper in a script of your own and name it,
+  and write full paths. The checks are in
+  [Permissions](docs/guide/04-permissions.md#git-fetch-pull-push-and-clone-through-your-own-git).
 - `abhed serve` reached by a DNS name now needs that name configured: set
   `server.allowed_hosts` (or `server.canonical_host`, or name it in
   `server.allowed_origins` or `auth.redirect_url`). Loopback and, with
@@ -334,10 +344,12 @@ All notable changes to Abhed are recorded here. The format follows
 ### Added
 
 - git fetch, pull, push, clone and ls-remote work in Abhed Studio and the
-  CLI with nothing to configure: their network part runs through the
-  person's own git on the host, with their keys, while merges, checkouts
-  and their pre-push hook run in the sandbox. Never on `abhed serve`. What
-  is brokered, refused, asked and recorded:
+  CLI with the git and ssh setup the person already has: their network part
+  runs through the person's own git on the host, with their keys, while
+  merges, checkouts and their pre-push hook run in the sandbox. Never on
+  `abhed serve`. A setup that could let the agent choose what runs as the
+  person is refused with the reason (see Upgrading). What is brokered,
+  refused, asked and recorded:
   [Permissions](docs/guide/04-permissions.md#git-fetch-pull-push-and-clone-through-your-own-git).
 
 - Commits made on the fence and container tiers carry the person's git

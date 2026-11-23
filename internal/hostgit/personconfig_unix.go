@@ -5,6 +5,7 @@ package hostgit
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 
 	"github.com/zybuu-ai/abhed/internal/sandbox"
@@ -30,7 +31,7 @@ func untrustedFile(f string) string {
 		return "has another name (a hard link), which could lie where commands can write"
 	case st.Uid != me && st.Uid != 0:
 		return "is owned by another user"
-	case info.Mode().Perm()&0o022 != 0:
+	case othersWrite(info):
 		return "is writable by other users"
 	}
 	if d, err := os.Stat(filepath.Dir(real)); err == nil {
@@ -38,7 +39,7 @@ func untrustedFile(f string) string {
 		switch {
 		case dst != nil && dst.Uid != me && dst.Uid != 0:
 			return "is in a folder owned by another user"
-		case d.Mode().Perm()&0o022 != 0 && d.Mode()&os.ModeSticky == 0:
+		case othersWrite(d) && d.Mode()&os.ModeSticky == 0:
 			return "is in a folder other users can write"
 		}
 	}
@@ -58,16 +59,43 @@ func untrustedProgram(p string) string {
 	if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Uid != me && st.Uid != 0 {
 		return "is owned by another user"
 	}
-	if info.Mode().Perm()&0o022 != 0 {
+	if othersWrite(info) {
 		return "is writable by other users"
 	}
 	if d, err := os.Stat(filepath.Dir(real)); err == nil {
 		if st, ok := d.Sys().(*syscall.Stat_t); ok && st.Uid != me && st.Uid != 0 {
 			return "is in a folder owned by another user"
 		}
-		if d.Mode().Perm()&0o022 != 0 && d.Mode()&os.ModeSticky == 0 {
+		if othersWrite(d) && d.Mode()&os.ModeSticky == 0 {
 			return "is in a folder other users can write"
 		}
 	}
 	return ""
+}
+
+// adminGID is macOS's admin group, which Homebrew's folders are writable by
+// (drwxrwxr-x person:admin): the machine's administrators, not other users
+// at large.
+const adminGID = 80
+
+// othersWrite reports whether info's file or folder is writable by others.
+func othersWrite(info os.FileInfo) bool {
+	st, _ := info.Sys().(*syscall.Stat_t)
+	gid := uint32(1<<32 - 1)
+	if st != nil {
+		gid = st.Gid
+	}
+	return writableByOthers(info.Mode().Perm(), gid, runtime.GOOS)
+}
+
+// writableByOthers is othersWrite's rule: writable by everyone, or by its
+// group, unless that group is macOS's admin group.
+func writableByOthers(perm os.FileMode, gid uint32, goos string) bool {
+	switch {
+	case perm&0o002 != 0:
+		return true
+	case perm&0o020 != 0:
+		return goos != "darwin" || gid != adminGID
+	}
+	return false
 }
