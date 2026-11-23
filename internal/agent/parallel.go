@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -436,42 +437,99 @@ func vagueSpeedRequest(typed string) bool {
 }
 
 var (
-	// speedWords are stripped before objects are looked for, so "at the same
-	// time" is not read as an object "same".
-	speedWords = regexp.MustCompile(`(?i)\b(` + phraseWords + `|speed(s|ing)? up)\b`)
-	objectWord = regexp.MustCompile(`[\p{L}\p{N}'-]+`)
+	// parallelMark and speedMark stand in for the parallel and speed words
+	// while objects are looked for, so "at the same time" is no object and
+	// what "speed up" or "faster" acts on can be told apart.
+	parallelWords = regexp.MustCompile(`(?i)\b(` + phraseWords + `|paralleli[sz]\w*|concurrent(ly)?)\b`)
+	speedWords    = regexp.MustCompile(`(?i)\b(speed(s|ing)? up|faster|quicker|slow|slower|performance)\b`)
+	objectToken   = regexp.MustCompile(`[\p{L}\p{N}#]+(?:[.'-][\p{L}\p{N}]+)*|[` + parallelMark + speedMark + `,;:!?.()]`)
+	versionToken  = regexp.MustCompile(`^(v?\d+(\.\d+)+|v\d+)$`)
 	// determiners open a noun phrase whose head decides whether it is generic.
 	determiners = wordSet("the these those my our your their all both each every " +
 		"two three four five six seven eight nine ten eleven twelve several")
 	// quantifiers may stand between a determiner and its head.
 	quantifiers = wordSet("of the these those my our your their all both each every whole entire other " +
-		"two three four five six seven eight nine ten eleven twelve several")
+		"two three four five six seven eight nine ten eleven twelve several first second third next last same")
+	// prepositions open an adjunct ("for the demo", "on 4 cores", "in the
+	// morning"): what follows one is not the work asked for.
+	prepositions = wordSet("for on with in into onto by during before after until till from to at via per " +
+		"within without across over under through about around since")
 	// notAnObject heads are generic nouns or words that end the phrase with no
 	// noun ("do these three at the same time", "run all in parallel").
-	notAnObject = wordSet("thing things stuff everything anything work project projects repo repository " +
-		"codebase program system whole rest it them they this that in at on to by for with and or but up " +
-		"down out as so is are be same time way faster quicker slower more less much now please then " +
-		"run runs running go do done speed performance")
+	notAnObject = wordSet("thing things stuff everything anything work project projects repo repos repository " +
+		"repositories codebase program system pipeline pipelines product products platform platforms site website " +
+		"tool tools agent agents subagents task tasks job jobs whole rest it them they this that in at on to by " +
+		"for with and or but up down out as so is are be same time way more less much now please then " +
+		"run runs running go do done speed")
 )
 
-// specificObject reports a noun phrase opened by a determiner or a count
-// ("the three migrations", "these branches", "all three checks") whose head
-// is not generic.
+const (
+	parallelMark = "\u00b7"
+	speedMark    = "\u00bb"
+)
+
+// specificObject reports something the message names to work on: a noun
+// phrase opened by a determiner or a count whose head is not generic ("the
+// three migrations", "these branches", "all three checks"), an issue number
+// ("#12"), a version ("v1.2"), a name with a number ("PR 12"), or a list of
+// two names ("nginx and redis"). A phrase after a preposition, a comma or a
+// parallel phrase is an adjunct or a new clause ("for the demo", ", the
+// deadline is close", "in parallel the first time"), and what "speed up" or
+// "faster" acts on is the vague part itself, so neither counts.
 func specificObject(typed string) bool {
-	words := objectWord.FindAllString(strings.ToLower(speedWords.ReplaceAllString(typed, " ")), -1)
-	for i, w := range words {
-		if !determiners[w] && !isNumber(w) {
+	marked := speedWords.ReplaceAllString(parallelWords.ReplaceAllString(typed, " "+parallelMark+" "), " "+speedMark+" ")
+	toks := objectToken.FindAllString(strings.ToLower(marked), -1)
+	at := func(i int) string {
+		if i < 0 || i >= len(toks) {
+			return ""
+		}
+		return toks[i]
+	}
+	// Every token is a word or one mark or punctuation character.
+	isWord := func(t string) bool {
+		return t != "" && !strings.ContainsAny(t, parallelMark+speedMark+",;:!?()") && t != "."
+	}
+	adjunct := func(prev string) bool { return prev != "" && (prepositions[prev] || !isWord(prev)) }
+	for i, w := range toks {
+		prev, next := at(i-1), at(i+1)
+		switch {
+		case len(w) > 1 && w[0] == '#' && isNumber(w[1:]):
+			return true
+		case versionToken.MatchString(w) && !prepositions[prev]:
+			return true
+		case isNumber(w) && isWord(prev) && !adjunct(prev) && !determiners[prev] && !quantifiers[prev] &&
+			(next == "" || next == "and" || next == "or" || !isWord(next)):
+			return true
+		case w == "and" && i >= 2 && namePart(prev) && namePart(next) && isWord(at(i-2)) && !adjunct(at(i-2)) &&
+			(at(i+2) == "" || !isWord(at(i+2))):
+			return true
+		}
+		if !determiners[w] && !isNumber(w) || adjunct(prev) {
 			continue
 		}
 		j := i + 1
-		for j < len(words) && (quantifiers[words[j]] || isNumber(words[j])) {
+		for j < len(toks) && (quantifiers[toks[j]] || isNumber(toks[j])) {
 			j++
 		}
-		if j < len(words) && !notAnObject[words[j]] {
+		if head := at(j); isWord(head) && !notAnObject[head] && at(j+1) != speedMark {
 			return true
 		}
 	}
 	return false
+}
+
+// namePart is a word that can be one of two names in a list.
+func namePart(t string) bool {
+	return isLetters(t) && !notAnObject[t] && !determiners[t] && !quantifiers[t] && !prepositions[t]
+}
+
+func isLetters(t string) bool {
+	for _, r := range t {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' && r != '\'' {
+			return false
+		}
+	}
+	return t != ""
 }
 
 func isNumber(w string) bool {
@@ -486,9 +544,11 @@ func isNumber(w string) bool {
 // madeVague reports a message that codeWork passed over only for "make"
 // ("Can you make everything run in parallel?"), with a parallel phrase and
 // nothing more concrete: as vague as the request the unattended note is for.
+// Only codeWork gives a message with a parallel phrase no note, so with
+// "make" taken out a remaining match is code work.
 func madeVague(typed string) bool {
-	rest := makeWord.ReplaceAllString(typed, " ")
-	return rest != typed && !codeWork.MatchString(rest) && parallelPhrase.MatchString(typed) && vagueSpeedRequest(typed)
+	return !codeWork.MatchString(makeWord.ReplaceAllString(typed, " ")) && parallelPhrase.MatchString(typed) &&
+		vagueSpeedRequest(typed)
 }
 
 var makeWord = regexp.MustCompile(`(?i)\bmakes?\b`)

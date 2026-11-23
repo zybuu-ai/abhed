@@ -963,7 +963,11 @@ All notable changes to Abhed are recorded here. The format follows
   A message that names work ("delete these three files at once", "merge
   these three branches at once", "run the three migrations in parallel")
   gets no note and is done as asked: a specific object counts as concrete,
-  not only a verb from a list. "Make everything run in parallel" counts as
+  not only a verb from a list, and so does an issue number, a version, a
+  name with a number ("PR 12") or two names ("nginx and redis"). What is
+  sped up, and a phrase after a preposition or a comma ("for the demo",
+  "the deadline is close"), is not an object, so a vague request keeps the
+  note. The judgement is English only. "Make everything run in parallel" counts as
   vague, as the request without "make" does. Explicit parallel requests
   still get the note that starts subagents.
 - The `-p` relevance check marked an answer `off_topic` when the question

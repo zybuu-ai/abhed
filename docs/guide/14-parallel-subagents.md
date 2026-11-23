@@ -68,15 +68,18 @@ notes after your message for the model.
   `abhed -p`, a script through the SDK or rpc, or an unattended server run,
   gets no question. Only a vague request there, one that names speed or
   parallelism and no concrete task (no action such as fix, delete or update,
-  no bug, file or symbol, and no object beyond generic ones such as
-  "things", "everything" or "the project"), gets a note in its place: if
+  no bug, file or symbol, no issue number, version or list of names, and
+  no object beyond generic ones such as "things", "everything" or "the
+  project"; what is sped up, and a phrase after a preposition or a comma,
+  such as "for the demo", is not an object), gets a note in its place: if
   the message only asks to speed things up or run things in parallel, make
   no code edits for it, and answer with a short plan that describes both
   readings, or with the one question it would ask; otherwise do the work. A
   vague "speed up the project by running things in parallel" (or "make
   everything run in parallel") under `-p` so gets a plan, while "delete
   these three files at once" or "merge these three branches at once" is
-  done as asked.
+  done as asked. This judgement knows English words only: a request in
+  another language gets no note in a run nobody can answer.
 
 The parallel phrases are "in parallel", "at the same time", "at once",
 "simultaneously", "side by side", "parallelize" (or "parallelise"), "fan out",

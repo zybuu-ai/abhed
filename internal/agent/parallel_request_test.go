@@ -676,7 +676,12 @@ func TestUnattendedRunGetsNoClarifyNote(t *testing.T) {
 		{"Merge these branches at once", ""},
 		{"Run 3 migrations in parallel", ""},
 		{"Restart each of the services at the same time", ""},
-		{"Make the parser faster in parallel", ""},
+		// A name with a number, an issue number, a version, or two names.
+		{"Merge PR 12 and PR 13 at once", ""},
+		{"Close #12 and #13 at once", ""},
+		{"Restart nginx and redis at the same time", ""},
+		{"Ship v1.2 and v1.3 at once", ""},
+		{"Clone the three repos at once and then run the services at once", ""},
 		// Near misses: only generic objects, or a count with no noun, are
 		// still vague.
 		{"speed up the project by running things in parallel.", UnattendedClarifyNote},
@@ -685,6 +690,22 @@ func TestUnattendedRunGetsNoClarifyNote(t *testing.T) {
 		{"Run all of them at the same time", UnattendedClarifyNote},
 		{"Speed up the whole project by running all of it in parallel", UnattendedClarifyNote},
 		{"do all three at once", UnattendedClarifyNote},
+		// An adjunct, a new clause, or what is sped up is no object.
+		{"Speed up the project by running things in parallel, the deadline is close", UnattendedClarifyNote},
+		{"Speed up the project by running things in parallel for the demo", UnattendedClarifyNote},
+		{"Speed up the project by running things in parallel on 4 cores", UnattendedClarifyNote},
+		{"Speed up the project by running things in parallel with 4 agents", UnattendedClarifyNote},
+		{"In the morning, run things in parallel", UnattendedClarifyNote},
+		{"Run things in parallel the first time", UnattendedClarifyNote},
+		{"Speed up the service by running things in parallel", UnattendedClarifyNote},
+		{"Speed up the pipeline by running things in parallel", UnattendedClarifyNote},
+		{"Speed up the product by running things in parallel", UnattendedClarifyNote},
+		{"Speed up the platform by running things in parallel", UnattendedClarifyNote},
+		{"Speed up my tasks by running them in parallel", UnattendedClarifyNote},
+		{"Run my tasks in parallel", UnattendedClarifyNote},
+		{"Run the three repos in parallel", UnattendedClarifyNote},
+		{"Make the parser faster in parallel", UnattendedClarifyNote},
+		{"Plan and execute at once", UnattendedClarifyNote},
 		// "make" alone does not make a vague request concrete.
 		{"Make it faster by doing things in parallel", UnattendedClarifyNote},
 		{"Can you make everything run in parallel?", UnattendedClarifyNote},
