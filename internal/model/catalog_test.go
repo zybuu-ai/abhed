@@ -174,3 +174,21 @@ func TestWindowNote(t *testing.T) {
 		t.Fatalf("note %q", n)
 	}
 }
+
+// The longest prefix decides, whatever order the rows are written in: a
+// family row placed above its members must not shadow them.
+func TestLookupLimitsIgnoresRowOrder(t *testing.T) {
+	saved := catalog
+	t.Cleanup(func() { catalog = saved })
+	reversed := make([]catalogRow, len(saved))
+	for i, r := range saved {
+		reversed[len(saved)-1-i] = r
+	}
+	catalog = reversed
+	for id, want := range map[string]int{"claude-haiku-4-5": 200_000, "claude-opus-4-1": 200_000, "gpt-4o-mini": 128_000,
+		"gemini-1.5-pro-002": 2_097_152, "qwen3-coder:30b": 262_144, "claude-opus-5-5": 1_000_000} {
+		if w, _, _ := LookupLimits(id); w != want {
+			t.Errorf("%s: %d, want %d", id, w, want)
+		}
+	}
+}

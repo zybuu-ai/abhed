@@ -382,3 +382,19 @@ func TestTruncatedPromptIsFitted(t *testing.T) {
 		t.Fatalf("%+v", o)
 	}
 }
+
+// Once a refusal has been compacted and retried, the next refusal gives up
+// at once, however much there would be left to compact.
+func TestOverflowAfterRetryNeverCompacts(t *testing.T) {
+	a := &windowAdapter{name: "m", window: 1_000_000}
+	l, store := fitLoop(t, a)
+	l.overflowRetried = true
+	before := len(l.messages)
+	reason, done, err := l.overflowRecovery(context.Background(), errors.New("prompt is too long"), 0)
+	if reason != TermError || !done || err == nil || a.summaries != 0 || len(l.messages) != before {
+		t.Fatalf("%s %v %v; %d summaries, %d messages of %d", reason, done, err, a.summaries, len(l.messages), before)
+	}
+	if l.overflowRetried || len(fitEvents(store, EvCompactStarted)) != 0 {
+		t.Fatal("gave up but compacted, or left the retry marked")
+	}
+}
