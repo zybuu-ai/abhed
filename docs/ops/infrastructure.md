@@ -1,9 +1,13 @@
 # Abhed — Clusters, Machines, and External Retrieval
 
 Four capabilities that let Abhed work on infrastructure rather than only on
-files. All are **off by default**: reaching a cluster, a VM, or a corpus is an
-authorization decision, and credentials already sitting on the machine are not
-a reason to hand them to an agent unasked.
+files. All are **off by default** wherever Abhed runs other people's
+sessions: reaching a cluster, a VM, or a corpus is an authorization decision,
+and credentials already sitting on the machine are not a reason to hand them
+to an agent unasked. On your own machine (the terminal and Abhed Studio), your
+kubeconfig contexts and `~/.ssh/config` hosts are offered with no setup, and
+the first use of each asks you once
+([Tools](../guide/05-tools.md#your-own-clusters-and-machines)).
 
 Under `sandbox.network: "allowlist"`, the Kubernetes and SSH tools and RAG
 over HTTP are judged by the `egress` rules, recorded as kinds `k8s`, `ssh`
