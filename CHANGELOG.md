@@ -703,23 +703,28 @@ All notable changes to Abhed are recorded here. The format follows
   ("This correctly handles multiple whitespace…") where the record shows
   only that the tests pass, and the first also cites two call ids the
   record never held. "Running `X` resulted in `OK`" is read from the
-  last run of exactly X, with no change after it: a success needs exit 0,
-  no FAIL in the output and, for tests, a whole run that ran some; a
-  failure needs a non-zero exit. A cite of a range (`a.py:22-81`), of a method named with its
-  class, or several cites in one statement are read; what the person
-  attached (piped stdin, an @ file) shows the values in it but never the
-  work; and an ssh call the policy ran as a read, whose command parses as
-  known readers, no longer makes earlier results out of date. On a regression check of a 1.3.0 candidate, the
-  strict fix's final answer now verifies in full, 3 of 5 line-cited
-  review statements verify (0 did), and both listed core dumps verify.
+  last run of exactly X, with no change after it. A success needs a known
+  exit 0 that is X's own (one command, or an `&&` chain ending in the
+  test run, so never `pytest || true`, `pytest; echo done` or
+  `npm test | tail`), no failure in the output (FAIL, or a count such
+  as "1 failed" or "2 failing") and, for tests, a whole run that ran
+  some; a failure needs a known non-zero exit. A cite of a range
+  (`a.py:22-81`), of a method named with its class, or several cites in
+  one statement are read; what the person attached (piped stdin, an @
+  file) shows the values in it but never the work; and an ssh call the
+  policy ran as a read, whose command parses as known readers, no longer
+  makes earlier results out of date. On a regression check of a 1.3.0
+  candidate, the strict fix's final answer now verifies in full, 3 of 5
+  line-cited review statements verify (0 did), and both listed core
+  dumps verify.
   The false-claim corpus gains the two sessions' statements (14 controls,
   2 planted, 8 neutral), the regression check's 42 statements (21
-  controls, 1 planted, 20 neutral), 128 more planted cases (62 of them
+  controls, 1 planted, 20 neutral), 141 more planted cases (62 of them
   changes said of another tool's call, or a pass "after the changes"
   that only another tool's call or a change outside the workspace made),
-  28 controls and 10 neutral known false negatives, and 3 true statements
-  that were neutral now verify; none of the 1111 planted claims verifies,
-  all 319 controls do, and none of the 469 true or neutral claims is
+  29 controls and 10 neutral known false negatives, and 3 true statements
+  that were neutral now verify; none of the 1124 planted claims verifies,
+  all 320 controls do, and none of the 470 true or neutral claims is
   contradicted.
 - In `abhed -p -runbook`, a change the runbook does not list was refused
   with the hint "rerun with -allow '…'", which could not help: under a bound

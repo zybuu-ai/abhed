@@ -2031,10 +2031,11 @@ func (ix *recordIndex) ranCommand(cmd string) finding {
 
 // runResult reads what a named command's last run resulted in. The run is
 // the latest of that exact command, as written, and must not predate a later
-// change. A success ("OK", "passed", "green") needs exit 0 and no FAIL in
-// the output, and for a test command a whole run that ran tests (no filter);
-// a failure needs a non-zero exit; anything else said of it must be in that
-// run's own output.
+// change. A success ("OK", "passed", "green") needs a known exit 0 that is
+// the command's own (one command, or an && chain ending in it), no failure
+// in the output, and for tests a whole run that ran some (no filter); a
+// failure needs a known non-zero exit; anything else said of it must be in
+// that run's own output.
 func (ix *recordIndex) runResult(cmd, outcome string) finding {
 	want := strings.Fields(cmd)
 	var last *obsRec
@@ -2052,22 +2053,28 @@ func (ix *recordIndex) runResult(cmd, outcome string) finding {
 	}
 	said := normText(outcome)
 	good, bad := runSuccessRe.MatchString(said), runFailureRe.MatchString(said)
-	exit := -1
-	if last.exit != nil {
-		exit = *last.exit
-	}
 	switch {
 	case good && bad:
 		return finding{out: missing, why: fmt.Sprintf("it says %q, both a pass and a failure", clipRunes(outcome, 40))}
 	case good:
-		if exit != 0 {
-			return finding{out: missing, why: fmt.Sprintf("%s exited %d", label, exit)}
+		if last.exit == nil {
+			return finding{out: missing, why: label + " has no exit code"}
 		}
-		if outputFailRe.MatchString(last.content) {
+		if *last.exit != 0 {
+			return finding{out: missing, why: fmt.Sprintf("%s exited %d", label, *last.exit)}
+		}
+		// With a pipe, ;, || or a group, the exit is another command's.
+		if !last.line.shape {
+			return finding{out: missing, why: label + " has an exit code that is not its command's own"}
+		}
+		if outputFailRe.MatchString(last.content) || outputFailCountRe.MatchString(last.content) {
 			return finding{out: missing, why: label + " reports a failure"}
 		}
+		if commandKind(last.line.final) != "test" && slices.ContainsFunc(last.line.cmds, func(c simpleCmd) bool { return commandKind(c.words) == "test" }) {
+			return finding{out: missing, why: label + " does not end in its test run"}
+		}
 		if commandKind(last.line.final) == "test" {
-			if _, ok := runScope(last.line.final, last.line.finalCwd); !ok || !last.line.shape || ranNothing(last) {
+			if _, ok := runScope(last.line.final, last.line.finalCwd); !ok || ranNothing(last) {
 				return finding{out: missing, why: label + " is not a whole test run that ran tests"}
 			}
 		}
@@ -2075,8 +2082,8 @@ func (ix *recordIndex) runResult(cmd, outcome string) finding {
 			return finding{out: missing, why: fmt.Sprintf("%s does not show %q", label, clipRunes(outcome, 40))}
 		}
 	case bad:
-		if exit == 0 {
-			return finding{out: missing, why: label + " exited 0"}
+		if last.exit == nil || *last.exit == 0 {
+			return finding{out: missing, why: label + " has no non-zero exit"}
 		}
 		if !runFailureOnlyRe.MatchString(said) && !strings.Contains(last.evidence().norm, said) {
 			return finding{out: missing, why: fmt.Sprintf("%s does not show %q", label, clipRunes(outcome, 40))}
@@ -2097,6 +2104,9 @@ var (
 	runSuccessOnlyRe = regexp.MustCompile(`^(?:(?:a|an|all|tests?|ok|success|successful|succeeded|passed|passing|pass|green|clean|build|run)\s*)+$`)
 	runFailureOnlyRe = regexp.MustCompile(`^(?:(?:a|an|fail|failed|failure|failing|error|errors|red|broken|build|run|tests?)\s*)+$`)
 	outputFailRe     = regexp.MustCompile(`\bFAIL(?:ED|URE|:)?\b|--- FAIL`)
+	// outputFailCountRe is a lower-case failure count ("1 failed", "2
+	// failing", "1 error"), as pytest, jest and mocha summarise a run.
+	outputFailCountRe = regexp.MustCompile(`\b[1-9]\d* (?:failed|failing|errors?)\b`)
 )
 
 // checkFileLine checks a path:line cite against the file as it is now, and,

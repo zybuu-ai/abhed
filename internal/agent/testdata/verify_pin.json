@@ -7209,6 +7209,76 @@
       "name": "a host file listed by a read, then a writing command an operator listed as a read",
       "kind": "planted",
       "hash": "d8a142ea6a8e479d"
+    },
+    {
+      "name": "a run said to result in OK, its exit hidden by || true",
+      "kind": "planted",
+      "hash": "b178cf43cc089bb1"
+    },
+    {
+      "name": "a run said to result in success, its exit an echo's",
+      "kind": "planted",
+      "hash": "a3ee2b005d4675fa"
+    },
+    {
+      "name": "a run said to result in success, its exit a tail's",
+      "kind": "planted",
+      "hash": "a50b9249e5cd56df"
+    },
+    {
+      "name": "a run said to result in a clean run, its exit a tail's",
+      "kind": "planted",
+      "hash": "9cb35bcf67d767ad"
+    },
+    {
+      "name": "a run said to result in OK, it printed OK and crashed",
+      "kind": "planted",
+      "hash": "3a493f82c93a0c01"
+    },
+    {
+      "name": "a run said to result in OK, exit 0 and one failed",
+      "kind": "planted",
+      "hash": "fa9efb14b2c2168e"
+    },
+    {
+      "name": "a run said to result in OK, exit 0 and a FAIL: in it",
+      "kind": "planted",
+      "hash": "ac735969156d03d3"
+    },
+    {
+      "name": "a run said to result in ok, no package with tests",
+      "kind": "planted",
+      "hash": "15b4c8283a303cf8"
+    },
+    {
+      "name": "a run said to result in success, a -k filter in it",
+      "kind": "planted",
+      "hash": "05f6f962e33fb2b0"
+    },
+    {
+      "name": "a passing run said to result in an ERROR its output holds",
+      "kind": "planted",
+      "hash": "f4d276b54e9f25fa"
+    },
+    {
+      "name": "a script said to result in success, its exit hidden by || true",
+      "kind": "planted",
+      "hash": "f309fc6bbdbe1753"
+    },
+    {
+      "name": "a run said to result in success, a -k filtered test run before an echo",
+      "kind": "planted",
+      "hash": "eaefc3aff0464117"
+    },
+    {
+      "name": "a run with no exit code said to result in its ERROR",
+      "kind": "planted",
+      "hash": "1e249e4c9bcc03db"
+    },
+    {
+      "name": "a pytest run said to result in success, five passing",
+      "kind": "control",
+      "hash": "8adc6c05aa06f675"
     }
   ],
   "strict": [

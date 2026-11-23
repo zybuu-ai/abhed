@@ -651,8 +651,12 @@ counts (`12 tests`, `replicas: 3`). Then:
   no value. "Running `X` resulted in `OK`" is read from the last run of
   exactly X, as written (not a longer or shorter command), and only when
   no change came after it. A success ("OK", "passed", "green", "clean")
-  needs exit 0 and no FAIL in the output, and for a test command a whole
-  run that ran tests (no `-run`, `-k` or other filter); a failure needs a
+  needs a known exit 0 that is X's own: one command, or an `&&` chain
+  that ends in the test run. With `||`, `;` or a pipe (`pytest || true`,
+  `npm test | tail -5`) the exit is another command's, so a success is not
+  shown. The output must hold no failure (FAIL, or a count such as "1
+  failed" or "2 failing"), and a test command must be a whole run that ran
+  tests (no `-run`, `-k` or other filter). A failure needs a known
   non-zero exit; anything else it says must be in that run's own output.
 - **Edits are read from the session's own edits.** A change claim that
   names its file and the code it changed ("Changed `text.split(" ")` to
