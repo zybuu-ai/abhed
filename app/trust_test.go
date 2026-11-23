@@ -337,6 +337,7 @@ func TestTrustFlagAfterTheSubcommand(t *testing.T) {
 
 // Every registered subcommand says whether it loads the workspace
 // configuration, and the ones that never read it do not take the flag.
+// ssh-acp reads no local workspace; the engine it runs on the host keeps its own trust.
 func TestSubcommandsDeclareTrust(t *testing.T) {
 	never := map[string]bool{"init": true, "trust": true, "providers": true, "secret": true, "admin": true, "version": true,
 		"login": true, "logout": true, "profile": true, "policy": true, "pki": true, "sandbox": true, "egress-proxy": true,

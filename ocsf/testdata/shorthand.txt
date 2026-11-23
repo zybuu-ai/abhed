@@ -126,3 +126,4 @@
 2026-10-19T12:00:09.123Z s-1#128 BASE:Other INFO model.waiting
 2026-10-19T12:00:10.123Z s-1#129 CONF:Log INFO plugin.loaded
 2026-10-19T12:00:11.123Z s-1#130 CONF:Log INFO config.changed plugins acme-review (plugin install)
+2026-10-19T12:00:12.123Z s-1#131 LIFE:Stop INFO session ended: stdin_late

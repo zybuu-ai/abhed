@@ -30,6 +30,10 @@ type OpenAICompatible struct {
 	// every request. Nil leaves the server's default in place.
 	Think *bool
 
+	// EffortOff also sends "reasoning_effort": "none" when thinking is off,
+	// for a server that reads that rather than "think" (Ollama's /v1).
+	EffortOff bool
+
 	// ReasoningTags strips inline reasoning from content for models that emit
 	// it in-band (e.g. <think>...</think>) rather than in a separate field.
 	// Reasoning must never reach tool-argument parsing.
@@ -161,10 +165,10 @@ type wireRequest struct {
 	// Think controls a hybrid-reasoning model's thinking phase.
 	//
 	// Separate from ReasoningEffort because the two are not the same knob and
-	// not every server honours both: Ollama ignores reasoning_effort entirely
-	// and reads "think", while OpenAI-style servers do the reverse. Sending
-	// whichever one is configured, and omitting the other, lets one adapter
-	// serve both without a per-vendor branch.
+	// not every server honours both. Ollama's OpenAI-compatible /v1 endpoint
+	// (0.33.2) ignores "think" and turns thinking off only for
+	// "reasoning_effort": "none", so with thinking off that is sent too where
+	// EffortOff says the server takes it (type ollama, or extra.think_off).
 	//
 	// This matters more than it looks. Measured on qwen3.8:27b through Ollama,
 	// an ELI5 question took 3m22s with thinking on and 55s with it off — the
@@ -303,6 +307,10 @@ func (c *OpenAICompatible) buildRequest(req Request) wireRequest {
 	if think == nil {
 		think = c.Think // provider-level default, when the request names none
 	}
+	effort := string(sp.Effort)
+	if c.EffortOff && think != nil && !*think {
+		effort = "none" // thinking off, in the field such a server reads
+	}
 	var parallel *bool
 	if c.ParallelToolCalls && len(tools) > 0 {
 		parallel = new(bool)
@@ -334,7 +342,7 @@ func (c *OpenAICompatible) buildRequest(req Request) wireRequest {
 		Stop:              sp.Stop,
 		Stream:            true,
 		StreamOptions:     &streamOpts{IncludeUsage: true},
-		ReasoningEffort:   string(sp.Effort),
+		ReasoningEffort:   effort,
 		Think:             think,
 		TopK:              sp.TopK,
 		MinP:              sp.MinP,

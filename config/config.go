@@ -688,6 +688,42 @@ func warnScoped(w warnSink, c Config, want func(string) bool) {
 	}
 }
 
+// warnOverriddenPrices says, once per file and model, that the managed
+// configuration's price replaced the one a lower layer set, which the guide
+// promises; a price already said to be set aside is not said twice.
+func warnOverriddenPrices(w warnSink, c Config) {
+	said := map[string]bool{}
+	for _, k := range c.SetAside {
+		if strings.HasPrefix(k.Key, "pricing.") {
+			said[k.File+"\x00"+priceModel(k.Key)] = true
+		}
+	}
+	for _, k := range c.Overridden {
+		if !strings.HasPrefix(k.Key, "pricing.") {
+			continue
+		}
+		model := priceModel(k.Key)
+		id := k.File + "\x00" + model
+		if said[id] {
+			continue
+		}
+		said[id] = true
+		w.emit("priceover\x00"+id, fmt.Sprintf("%s sets pricing.%s, which is ignored: the managed configuration sets that model's price, and its price is used", Printable(k.File), Printable(model)))
+	}
+}
+
+// priceModel is the model a pricing key names: pricing.<model>, or one of
+// its figures.
+func priceModel(key string) string {
+	m := strings.TrimPrefix(key, "pricing.")
+	for _, f := range []string{".input", ".output", ".cached_input", ".cache_write"} {
+		if strings.HasSuffix(m, f) {
+			return strings.TrimSuffix(m, f)
+		}
+	}
+	return m
+}
+
 // warnSetAside warns of each set-aside setting.
 func warnSetAside(w warnSink, keys []SetAsideKey) {
 	for _, k := range keys {
@@ -1845,7 +1881,8 @@ type LimitsConfig struct {
 	// ReasoningStallTokens cuts a model reply that has only reasoned, with no
 	// text or tool call, past this many reasoning tokens (or its thinking
 	// budget, if larger); ReasoningStallSeconds past this long, as a backstop.
-	// Zero is 8000 and 600; below 1000 and 30 the floors apply.
+	// Zero is 8000 and 300; below 1000 and 30 the floors apply, and the
+	// seconds are held to half the provider's call timeout, which wins over the floor.
 	ReasoningStallTokens  int  `json:"reasoning_stall_tokens,omitempty"`
 	ReasoningStallSeconds int  `json:"reasoning_stall_seconds,omitempty"`
 	MaxSubagents          int  `json:"max_subagents"`
@@ -2053,6 +2090,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		warnUnknown(w, cfg.Unknown)
 		warnDuplicates(w, cfg.Duplicates)
 		warnSetAside(w, cfg.SetAside)
+		warnOverriddenPrices(w, cfg)
 		warnNotYetInEffect(w, cfg)
 		warnReadOnlyHint(w, cfg)
 		warnNeverAllows(w, cfg.Permissions.Allow)

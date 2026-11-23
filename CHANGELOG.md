@@ -108,23 +108,31 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.9
 
-- The first interactive start asks who is working. With sessions,
-  history or memory from 1.2.9 in `~/.abhed`, choose **Create my account
-  and bring my data**: they move into the account, every session's chain
-  verified before and after. Until then, a run that cannot ask (`-p`,
-  rpc, scripts) works as 1.2.9 did, with one line on stderr; after it, such
+- The first interactive start asks who is working. With anything 1.2.9
+  kept in `~/.abhed` (sessions, history, memory, secrets, sign-ins, trust,
+  skills, plugins), choose **Create my account and bring my data**: it
+  moves into the account, every session's chain verified before and
+  after. Until then, a run that cannot ask (`-p`, rpc, scripts) works as
+  1.2.9 did where `~/.abhed` holds sessions or history, with one line on
+  stderr; after it, such
   a run uses your remembered sign-in. On a machine with no earlier data and
   no sign-in, such as a fresh CI runner, a run is guest and keeps nothing
   (`-guest` silences the note); a script that read the record afterwards
   (`abhed logs`, `-c`) should sign in once, or pass `-account NAME` to fail
   with code 10 instead. Before going back to 1.2.x, run `abhed account
   unmigrate`.
-- Your sessions are now recorded as `device:<username>` (or `guest`)
+- Your sessions are now recorded as `device:<username>` (or `guest:<id>`)
   rather than `$USER`; those recorded before sign-in stay the adopting
   account's.
 - `abhed login` on a machine no one is signed in to makes that server's
   account the one working here.
-
+- Under `-verify strict`, a statement that only explains code the session
+  read and did not change ("the running total is 0 because nothing has been
+  added yet"), or what changed code did before, no longer fails the
+  answer: it is shown as "explanation: not checked" and counted in the
+  verdict's `note`. 1.2.9 failed strict on it. A statement that the
+  session's own change works is still work, and still fails strict until
+  the record shows it.
 - A `*` or `?` in an `ssh.read_commands` entry now stands within one
   argument. An entry that relied on `*` spanning several words, such as
   `journalctl *` for `journalctl -u app -n 50`, no longer matches such a
@@ -811,7 +819,15 @@ All notable changes to Abhed are recorded here. The format follows
   go before the summaries are written, and each is written once. A call
   cancelled as its session closes is counted in the summary, as it is
   charged to the budget, instead of being left out when its handler had
-  not yet counted it.
+  not yet counted it. The close cancels every session's editor calls first
+  and then waits for them once, up to 1 s for the whole close rather than
+  1 s for each feature of each session, so slow calls no longer use up the
+  3 s a signal allows. A stop signal during a close begun by the input's
+  end now bounds it to 3 s from the signal, and a session opened during
+  the close is refused and shut by the close, with its `session.ended`
+  recorded, before the exit. A commit message call in flight is waited for
+  the same way, so its `commit_message.generated` and `model.call` come
+  before the session's end.
 - `next_edit.summary` counted a rename finished from the file as `local`
   but not as `served`, so a session whose only next edit was such a rename
   showed `served: 0`. It now counts in both; the metrics keep `served`
@@ -858,6 +874,66 @@ All notable changes to Abhed are recorded here. The format follows
   diagnostics for the language are off with one note on stderr naming the
   install (`abhed toolchain install -lsp python`), and a start that policy
   does not allow is a note too, never a denial of the agent's.
+- Answer checks refused correct claims on a real model. A command named in
+  a claim ("the tests were run using `python3 -m unittest tests.test_text`
+  and passed") was looked for only in tool output, never in the call that
+  ran it; an edit claim's file name was read as code that should have
+  changed; a `file:line` cite had to match the line almost exactly, and
+  was read from the file on disk rather than from the read the session
+  made; evidence given as `{"call_id", "quote"}` objects was dropped. On a
+  recorded review, 0 of 5 accurate, line-cited claims verified; on a
+  recorded correct fix, strict mode exited 8. A command is now shown by the
+  call that ran it, an edit claim by the session's own edit (what it took
+  away and put in), a `file:line` cite by the read's numbered lines within
+  three lines of the cite, "I fixed X" by the change to X and a test run
+  that passed after it and covers what failed before it, and evidence
+  objects are read. A change made by another tool's call (`k8s_apply`
+  scaling `web` to 2) is still not read from that call, whose text cannot
+  show the change held: such a claim stays unverified, a known false
+  negative. A `file:line` cite counts within three lines only inside the
+  same innermost definition (JavaScript and TypeScript arrow functions,
+  methods, object functions and class fields included), only at the
+  line itself where the line is in no definition, and the code and
+  numbers the claim gives must be there; "`f` is defined at L" needs
+  `f`'s definition there. An explanation of code the
+  session read, or of what changed code did before, with no event, count,
+  result, change, run or citation of its own, is shown as "explanation:
+  not checked" and no longer fails strict mode; a statement that the
+  session's own change works ("This correctly handles …", "The new logic
+  ensures …") is work. Of the two real answers' 24 statements, 14 now
+  verify (2 did) and 1 is an explanation. The recorded correct fix still
+  ends `unverified` in strict mode: its answers say their change works
+  ("This correctly handles multiple whitespace…") where the record shows
+  only that the tests pass, and the first also cites two call ids the
+  record never held. "Running `X` resulted in `OK`" is read from the
+  last run of exactly X, with no change after it. A success needs a known
+  exit 0 that is X's own (one command, or an `&&` chain ending in the
+  test run, so never `pytest || true`, `pytest; echo done` or
+  `npm test | tail`), no failure in the output (FAIL, a count such as
+  "1 failed", "1 failures" or "Failed: 1", TAP's "not ok", or make's
+  "Error 1 (ignored)") and, for tests, a whole run that ran some, by the
+  same rules as a test claim (only `cd` before it, no variable such as
+  `PYTEST_ADDOPTS` that may filter it, and no change to the Makefile,
+  `package.json` or pytest config before a `make`, `npm` or pytest
+  run); a failure needs a known non-zero exit. A pytest run that reports
+  tests "deselected" (a `-k` or `-m` in its config) is not a whole run,
+  for "All tests pass" too. A cite of a range (`a.py:22-81`), of a method named
+  with its class, or several cites in one statement are read; what the
+  person attached (piped stdin, an @ file) shows the values in it but
+  never the work; and an ssh call the policy ran as a read, whose
+  command parses as known readers, no longer makes earlier results out
+  of date. On a regression check of a 1.3.0 candidate, the strict fix's
+  final answer now verifies in full, 3 of 5 line-cited review statements
+  verify (0 did), and both listed core dumps verify.
+  The false-claim corpus gains the two sessions' statements (14 controls,
+  2 planted, 8 neutral), the regression check's 42 statements (21
+  controls, 1 planted, 20 neutral), 160 more planted cases (62 of them
+  changes said of another tool's call, or a pass "after the changes"
+  that only another tool's call or a change outside the workspace made),
+  31 controls and 10 neutral known false negatives, and 3 true statements
+  that were neutral now verify; none of the 1143 planted claims verifies,
+  all 322 controls do, and none of the 472 true or neutral claims is
+  contradicted.
 - In `abhed -p -runbook`, a change the runbook does not list was refused
   with the hint "rerun with -allow '…'", which could not help: under a bound
   runbook such a change asks whatever an allow rule says. The hint now says
@@ -928,7 +1004,8 @@ All notable changes to Abhed are recorded here. The format follows
 - A model reply that only reasons, with no text or tool call, is cut past
   `limits.reasoning_stall_tokens` reasoning tokens (8000 by default, or the
   request's thinking budget if larger), with `limits.reasoning_stall_seconds`
-  (600) as a time backstop, instead of being held to the ten-minute call cap
+  (300, held to half the provider's call timeout) as a time backstop,
+  instead of being held to the ten-minute call cap
   and failing the run with no answer. Floors of 1000 tokens and 30 seconds
   apply. The cut call is charged as any cut call is; an answer that arrives
   as the cut comes is kept; otherwise the turn asks once more with thinking
@@ -942,6 +1019,20 @@ All notable changes to Abhed are recorded here. The format follows
   suggestion and commit-message calls, which ask with thinking off, thought
   anyway (on Anthropic, a budget with thinking off made an invalid request),
   and a provider set to `think: false` with a budget still thought.
+- "Thinking off" now reaches Ollama. Its OpenAI-compatible `/v1` endpoint
+  ignores `think: false` and turns thinking off only for
+  `reasoning_effort: "none"`, which is now sent with it for type `ollama`
+  and an `openai-compatible` entry on the loopback port 11434; `extra.think_off`
+  (`reasoning_effort` or `think`) sets it for any other server. The
+  reasoning-stall retry, the critic, the next-prompt suggestion and the
+  commit message ask with thinking off.
+- A cancelled or cut call to a local server known to stream its reasoning
+  (Ollama and llama.cpp, or vLLM, TGI or SGLang on a loopback address) is
+  charged what came back rather than its whole output bound, unless a dollar
+  cap is set. Every other server with a `think` switch, which may front a
+  model that reasons out of sight, keeps the bound, and the official OpenAI
+  API's o-series and gpt-5 models now get it too, since their reasoning is
+  billed unseen.
 - Asking for work "in parallel" started no parallel subagents. The model read
   it as a request to make the project's code concurrent, or did the parts one
   after another: neither subagent tool said what such a request means. `tasks`
@@ -1196,6 +1287,39 @@ All notable changes to Abhed are recorded here. The format follows
   for it, or -no-stdin to silence this"). Input that starts after the wait
   stops the run with exit code 9 (see Upgrading). A lone `-`
   waits for stdin to end however late its input starts.
+- A vague request for parallel work or speed under `abhed -p` (or any run
+  nobody can answer) went straight to code edits: it got no note, since the
+  note that asks a question cannot be answered there. A message that names
+  speed or parallelism and no concrete task now gets a note: if it only
+  asks to speed things up or run things in parallel, make no code edits for
+  it, and answer with a plan of both readings or the question it would ask.
+  A message that names work ("delete these three files at once", "merge
+  these three branches at once", "run the three migrations in parallel")
+  gets no note and is done as asked: a specific object counts as concrete,
+  not only a verb from a list, and so does an issue number, a version, a
+  name with a number ("PR 12") or two names ("nginx and redis"), unless the
+  word before it opens an adjunct or is vague ("on Python 3", "things quick
+  and easy"); "steps", "parts", "the whole lot" and the like are as generic
+  as "things". What is
+  sped up, and a phrase after a preposition or a comma ("for the demo",
+  "the deadline is close"), is not an object, so a vague request keeps the
+  note. The judgement is English only. "Make everything run in parallel" counts as
+  vague, as the request without "make" does. Explicit parallel requests
+  still get the note that starts subagents.
+- The `-p` relevance check marked an answer `off_topic` when the question
+  named one of the session's tools ("call the ssh_connect tool, then show
+  the uptime"). A tool name is no longer taken as what the answer must
+  mention.
+- A run stopped while running because input came late on stdin is recorded
+  as `stdin_late`, not `user_interrupt`, in `session.ended` and the text
+  footer. Input that comes only after the run has ended still exits 9, but
+  the record keeps the reason the run ended with, usually `completed`.
+- First-run setup lists a local Ollama's models in name order, so the
+  default choice no longer changes between runs.
+- A managed price that replaces your own `pricing` entry for the same model
+  is now said once at start-up, as the guide says.
+- `abhed trust` and `/commands trust` show a command's description, or its
+  first body line, instead of its front matter's `---`.
 
 ### Go API
 

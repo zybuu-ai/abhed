@@ -152,6 +152,10 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 		k.cancel() // a newer request replaces one still waiting
 	}
 	k.cancel = cancel
+	// The session's close waits for this call's records (commit_message,
+	// model.call) before its end, as for completions.
+	k.running++
+	defer k.finished()
 	k.mu.Unlock()
 	clean := func(text string) string {
 		text = parts.Loop.Withheld(text)
