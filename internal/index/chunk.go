@@ -14,7 +14,7 @@ import (
 //
 // This splits on declaration boundaries using per-language patterns rather than
 // a fixed window. That is deliberately lighter than a tree-sitter parse — it
-// covers the languages a coding agent meets most, degrades to windowing for the
+// covers the languages an agent meets most, degrades to windowing for the
 // rest, and adds no CGo dependency to an air-gapped build.
 
 const (
