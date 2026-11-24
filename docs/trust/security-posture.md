@@ -392,7 +392,10 @@ reads in home only the workspace, `read_only_paths`, the toolchains (`~/go`,
 home with the install a program linked there comes from, never a whole folder
 at the top of home), the caches (`~/.cache`, `~/Library/Caches`) and the files
 git, vim and shells read (`~/.gitconfig`, `~/.config/git`, `~/.vimrc`,
-`~/.zshrc`, …). The credential list above still applies inside those. What
+`~/.zshrc`, …), and, read only, what git needs outside the workspace: the
+repository's top folder when the workspace is a folder inside one, and the
+git folders a linked worktree's or submodule's `.git` file names, when they
+name the work tree back. The credential list above still applies inside those. What
 remains: a secret kept inside one of those folders, such as a token in
 `~/.cache`, is readable, since the rules are paths, not contents; the
 container or vm tier keeps home out altogether, as Linux's bubblewrap does.

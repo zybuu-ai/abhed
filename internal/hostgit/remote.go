@@ -61,6 +61,9 @@ const (
 // HostBroker runs the brokered git commands on the host; see Broker.
 type HostBroker struct {
 	workspace string
+	// reach is sandbox.GitReach of the workspace, read once.
+	reachOnce sync.Once
+	reach     []string
 	tier      func() sandbox.Tier
 	net       Network
 	command   func(ctx context.Context, cwd, line string) *exec.Cmd
@@ -88,8 +91,10 @@ type repoState struct {
 	// cloned is a repository cloned during the session.
 	cloned   bool
 	settings string
-	// common is the real common git folder, inside the workspace.
-	common string
+	// common is the real common git folder, and gitDir the real git folder,
+	// as the session started: inside the workspace, or outside every folder
+	// a command may write (sandbox.GitReach).
+	common, gitDir string
 }
 
 type judgement struct {
@@ -147,27 +152,70 @@ func (b *HostBroker) learn(ctx context.Context, root string, cloned bool) {
 	if err != nil {
 		return
 	}
-	common := b.commonOf(ctx, root)
-	if common == "" {
+	common, gitDir := b.commonOf(ctx, root), b.gitDirOf(ctx, root)
+	if common == "" || gitDir == "" {
 		return
 	}
 	b.mu.Lock()
-	b.known[root] = repoState{settings: s, common: common, cloned: cloned}
+	b.known[root] = repoState{settings: s, common: common, gitDir: gitDir, cloned: cloned}
 	b.mu.Unlock()
 }
 
 // commonOf is root's real common git folder when it is inside the
-// workspace, "" otherwise.
+// workspace or one the workspace's git reaches (reachable), "" otherwise.
 func (b *HostBroker) commonOf(ctx context.Context, root string) string {
 	r := New(ctx, root)
 	if r.unknown != nil || r.common == "" {
 		return ""
 	}
-	c := sandbox.RealPath(r.common)
-	if !b.inWorkspace(c) {
+	return b.ownFolder(sandbox.RealPath(r.common))
+}
+
+// gitDirOf is root's real git folder, under the same rule as commonOf.
+func (b *HostBroker) gitDirOf(ctx context.Context, root string) string {
+	r := New(ctx, root)
+	if r.unknown != nil || r.gitDir == "" {
 		return ""
 	}
-	return c
+	return b.ownFolder(sandbox.RealPath(r.gitDir))
+}
+
+// ownFolder is p when it is in the workspace, or when it is a folder the
+// workspace's git reaches outside it that no command may write; "" otherwise.
+func (b *HostBroker) ownFolder(p string) string {
+	if b.inWorkspace(p) {
+		return p
+	}
+	if b.reachable(p) {
+		return p
+	}
+	return ""
+}
+
+// reachable reports whether p lies in a folder sandbox.GitReach gives the
+// workspace's git (read once, as the broker starts) and outside every folder
+// a sandboxed command may write, so no command can have changed it.
+func (b *HostBroker) reachable(p string) bool {
+	b.reachOnce.Do(func() { b.reach = sandbox.GitReach(b.workspace) })
+	in := false
+	for _, r := range b.reach {
+		for _, f := range sandbox.PathForms(r) {
+			if _, ok := sandbox.Within(p, sandbox.RealPath(f)); ok {
+				in = true
+			}
+		}
+	}
+	if !in {
+		return false
+	}
+	for _, area := range append(writableAreas(), b.workspace) {
+		for _, f := range sandbox.PathForms(area) {
+			if _, ok := sandbox.Within(p, sandbox.RealPath(f)); ok {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // onHost reports whether the tier runs commands on this host.

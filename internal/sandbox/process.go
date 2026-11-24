@@ -26,7 +26,10 @@ import (
 // sandbox-exec (Seatbelt) or Linux bubblewrap. Use TierVM for untrusted code.
 type Process struct {
 	choice
-	policy  Policy
+	policy Policy
+	// readGit is GitReach's folders for the workspace, in both forms, read
+	// once; see gitReads.
+	readGit func() []string
 	backend string // "sandbox-exec" | "bwrap"
 	// cmds are the commands made; a followed one still running is ended when
 	// the sandbox closes.
@@ -128,6 +131,9 @@ var bwrapRun = func(ctx context.Context, args ...string) ([]byte, error) {
 
 func NewProcess(p Policy) *Process {
 	s := &Process{policy: p}
+	// Read once, as the session starts: a .git file a command rewrites later
+	// does not change what is readable.
+	s.readGit = sync.OnceValue(func() []string { return formsOf(GitReach(p.Workspace)) })
 	switch runtime.GOOS {
 	case "darwin":
 		if _, err := exec.LookPath("sandbox-exec"); err == nil {
@@ -454,6 +460,8 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 			}
 		}
 		allow := append(append(s.workspaces(), formsOf(s.policy.ReadOnlyPaths)...), nonEmpty(readable)...)
+		// Read only: the repository top and git folders the workspace's git needs.
+		allow = append(allow, s.gitReads()...)
 		for _, home := range hs {
 			allow = append(allow, homeToolchains(home)...)
 		}
@@ -540,6 +548,11 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 		// A stat of it succeeds, so pytest, ls -R and git pass it by; listing
 		// it and reading what it holds do not.
 		fmt.Fprintf(&b, "(allow file-read-metadata (subpath %q))\n", state)
+	}
+	// A repository top read for a workspace inside it keeps its own state out.
+	for _, r := range s.gitReads() {
+		fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", filepath.Join(r, stateDir))
+		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", filepath.Join(r, stateDir))
 	}
 	// Seatbelt matches the path the kernel resolved, so a home reached
 	// through a link is named both ways.
@@ -1121,6 +1134,14 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		// /tmp first: a workspace under it is bound on top afterwards, or
 		// the tmpfs would hide it and every command would fail to start.
 		args = append(args, tmpArgs...)
+		// The repository top and git folders the workspace's git reads, read
+		// only and before the workspace, which is bound writable over them.
+		for _, r := range s.gitReads() {
+			args = append(args, "--ro-bind-try", r, r)
+			if info, err := os.Stat(filepath.Join(r, stateDir)); err == nil && info.IsDir() {
+				args = append(args, "--tmpfs", filepath.Join(r, stateDir))
+			}
+		}
 		args = append(args,
 			"--bind", s.policy.Workspace, s.policy.Workspace,
 			// An empty, throwaway directory over Abhed's own state: nothing in
@@ -1859,4 +1880,13 @@ func seatbeltPrivateDirs(dirs []string) string {
 		return ""
 	}
 	return "\n;; Folders made for this command alone.\n" + b.String()
+}
+
+// gitReads are the folders outside the workspace its git reads (GitReach),
+// readable to commands; none for a sandbox not made by NewProcess.
+func (s *Process) gitReads() []string {
+	if s.readGit == nil {
+		return nil
+	}
+	return s.readGit()
 }

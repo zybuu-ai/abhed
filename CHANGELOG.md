@@ -1216,6 +1216,18 @@ All notable changes to Abhed are recorded here. The format follows
   failed lookup of the account is said in the sandbox's description, which
   `abhed doctor` shows and the record keeps.
 
+- On the process tier, git works where a workspace's git folder lies outside
+  it, as in 1.2.9: a folder inside a repository, a linked worktree, or a
+  submodule checkout, under a home the sandbox otherwise keeps unreadable.
+  Commands may read the repository's top folder (for a folder inside it) and
+  the git folders the worktree's or submodule's `.git` file names, and write
+  none of them; under bubblewrap they are bound read-only. A git folder is
+  read only when it names the work tree back (a worktree's `gitdir`, a
+  submodule's `core.worktree`), so a `.git` file pointed at another
+  repository reaches nothing, and a home kept in git is never read. Remote
+  git (`fetch`, `pull`, `push`) runs through host git for these shapes too,
+  with the git folders pinned as the session starts.
+
 - The `served` field of the `next_edit.summary` record event now includes
   renames finished from the file, which are also counted in `local`; before,
   `served` left them out. A SIEM or other reader of the record that added
