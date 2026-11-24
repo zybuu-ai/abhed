@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -89,5 +90,49 @@ func TestCLIOffersAGuestNoAlways(t *testing.T) {
 	}
 	if opts := bashGrantOptions("git fetch", ws, ws, "b", res); len(opts) != 0 {
 		t.Fatalf("a guest was offered %v in Studio", opts)
+	}
+}
+
+// A run with nobody to ask (-p, rpc without approvals) still uses a grant
+// the person kept for this repository, as guide 04 says, and refuses the
+// rest; with approvals the rest goes to the caller.
+func TestHeadlessUsesTheKeptHostGitGrant(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "state", "workspace-grants.json")
+	old := grantsFile
+	grantsFile = func() string { return file }
+	defer func() { grantsFile = old }()
+	ws := t.TempDir()
+	host := policy.Result{Decision: policy.Ask, Step: hostgit.StepHostGit, Reason: "git fetch runs through host git as you", Scope: ws + "\x00aaaa"}
+	fetch := json.RawMessage(`{"command":"git fetch"}`)
+	headless := keptApprover{keep: cliKeeper{workspace: ws}, next: agent.AutoApprove{Yes: false}}
+	if ok, _ := headless.Approve(context.Background(), "bash", fetch, host); ok {
+		t.Fatal("approved with nothing kept and nobody to ask")
+	}
+	g, ok := cliKeeper{workspace: ws}.grantOf("bash", fetch, host)
+	if !ok {
+		t.Fatal("no grant for host git's ask")
+	}
+	if err := keepGrant(ws, g); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := headless.Approve(context.Background(), "bash", json.RawMessage(`{"command":"git pull"}`), host); !ok {
+		t.Fatal("a headless run did not use the kept grant")
+	}
+	if ok, _ := headless.Approve(context.Background(), "bash", json.RawMessage(`{"command":"git push origin main"}`), host); ok {
+		t.Fatal("the kept fetch grant answered a push")
+	}
+	locked := keptApprover{keep: cliKeeper{workspace: ws, locked: true}, next: agent.AutoApprove{Yes: false}}
+	if ok, _ := locked.Approve(context.Background(), "bash", fetch, host); ok {
+		t.Fatal("a kept grant answered where the permissions are managed")
+	}
+	asked := 0
+	withCaller := keptApprover{keep: cliKeeper{workspace: ws}, next: approverFunc(func(context.Context, string, json.RawMessage, policy.Result) (bool, error) {
+		asked++
+		return false, nil
+	})}
+	_, _ = withCaller.Approve(context.Background(), "bash", fetch, host)
+	_, _ = withCaller.Approve(context.Background(), "bash", json.RawMessage(`{"command":"git push origin main"}`), host)
+	if asked != 1 {
+		t.Fatalf("the caller was asked %d times, want only for the push", asked)
 	}
 }

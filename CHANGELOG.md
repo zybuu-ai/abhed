@@ -189,7 +189,9 @@ All notable changes to Abhed are recorded here. The format follows
   now reach remotes with the person's own credentials (SSH agent, keychain,
   credential helpers), on the process tier and the fence; 1.2.9 ran them in
   the sandbox, where they failed. With `sandbox.allow_network` off they
-  reach the repository's own remote after one approval. An allow rule kept
+  reach the repository's own remote after one approval, and an answer kept
+  as "always for this repository" also answers `-p` runs and `abhed rpc`
+  sessions, which have nobody to ask. An allow rule kept
   from 1.2.9, such as `bash(git push*)`, now reaches the network through the
   person's keys where it failed before. To turn it off, a person sets
   `sandbox.host_git: false` (or `sandbox.protect_git: false`, which also

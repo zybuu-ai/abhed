@@ -368,7 +368,9 @@ func run(a *App, workspace string, f *cliFlags) int {
 		// Either way the model must be told WHY, or it retries blindly: the
 		// first real run against a local model spent 20 turns re-phrasing the
 		// same rejected command.
-		approver = agent.AutoApprove{Yes: false}
+		//
+		// A grant the person kept for this repository still answers.
+		approver = keptApprover{keep: cliKeeper{workspace: sess.Root, locked: cfg.AllowLocked()}, next: agent.AutoApprove{Yes: false}}
 	} else {
 		// LazyStdout, not os.Stdout: the approver is built before
 		// editor.Capture() replaces os.Stdout with the raw-mode pipe that adds

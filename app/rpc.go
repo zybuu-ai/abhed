@@ -237,10 +237,21 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 					emit(rpcResponse{Type: "event", Event: &ev})
 				},
 			}
-			// Without approvals nobody is asked, so a call needing approval is refused.
+			// Without approvals nobody is asked, so a call needing approval is
+			// refused, unless a grant the person kept for this repository
+			// answers it, as in the terminal.
+			var next agent.Approver = agent.AutoApprove{Yes: false}
 			if req.Approvals {
-				opts.Approve = rpcApprover(approvals, emit)
+				next = approverFunc(rpcApprover(approvals, emit))
 			}
+			locked := false
+			if c, err := config.LoadWith(ws, config.LoadOptions{Trust: trust, Quiet: true, Warn: func(string) {}}); err == nil {
+				locked = c.AllowLocked()
+			} else {
+				locked = true // unread, nothing kept is used
+			}
+			opts.Approve = keptApprover{keep: cliKeeper{workspace: ws, locked: locked}, next: next}.Approve
+			opts.NobodyToAsk = !req.Approvals
 			na, err := abhed.New(embedded.With(ctx, embedded.Settings{Surface: "rpc", Principal: principalStart()}), opts)
 			made = na
 			cur = q.sess
