@@ -2208,6 +2208,14 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 			decision = hostAsked(decision, why, step, bind)
 		}
 	}
+	// What the call runs as, once the repository's configuration is applied
+	// (a git push its settings make a force or a mirror), is judged too: its
+	// deny and ask rules and the destructive confirmation only tighten.
+	if hi, ok := tool.(tools.HostImplier); ok && doomed == nil && decision.Decision != policy.Deny && l.Policy != nil {
+		if implied := hi.ImpliedHost(l.Session, call.Args); implied != "" {
+			decision = impliedJudged(decision, implied, l.Policy.Evaluate(tool.Name(), true, impliedArgs(implied)))
+		}
+	}
 	if doomed == nil && decision.Decision == policy.Ask {
 		if why := l.readFirst(ctx, tool, call); why != "" {
 			doomed = errors.New(why)
@@ -3624,4 +3632,27 @@ func (l *Loop) noteTrustedStartup() error {
 	}
 	_, err := l.Recorder.Record(EvStartupTrusted, ActorSystem, Trusted, map[string]any{"files": files})
 	return err
+}
+
+// impliedArgs are bash's arguments for the line a call runs as.
+func impliedArgs(line string) json.RawMessage {
+	b, _ := json.Marshal(map[string]string{"command": line})
+	return b
+}
+
+// impliedJudged tightens d with policy's judgement of what the call runs as
+// (implied): a deny refuses it; a deny or ask rule's ask, or the
+// destructive confirmation, asks under its own step, which no grant answers.
+func impliedJudged(d policy.Result, implied string, r policy.Result) policy.Result {
+	why := "the repository's configuration makes this " + implied
+	switch {
+	case r.Decision == policy.Deny:
+		r.Reason = why + ": " + r.Reason
+		return r
+	case r.Decision == policy.Ask && r.Step != "default" && r.Step != "mode":
+		r.Reason = strings.TrimSuffix(why+": "+r.Reason+"; "+d.Reason, "; ")
+		r.Scope = ""
+		return r
+	}
+	return d
 }

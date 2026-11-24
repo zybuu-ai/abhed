@@ -119,10 +119,10 @@ func (f *flagForm) matches(command string) bool {
 				have[canonFlag(eq, "-"+string(w[j]))] = true
 			}
 		case longFlag(w):
-			have[canonFlag(eq, w)] = true
-		case strings.HasPrefix(w, "--") && strings.Contains(w, "=") && eq[w[:strings.IndexByte(w, '=')]] != "":
+			have[canonFlag(eq, expandLong(eq, f.long, w))] = true
+		case strings.HasPrefix(w, "--") && strings.Contains(w, "=") && eq[expandLong(eq, f.long, w[:strings.IndexByte(w, '=')])] != "":
 			// --force-with-lease=main is the flag its table names.
-			have[canonFlag(eq, w[:strings.IndexByte(w, '=')])] = true
+			have[canonFlag(eq, expandLong(eq, f.long, w[:strings.IndexByte(w, '=')]))] = true
 		case len(w) > 1 && w[0] == '+' && eq[forceRefspec] != "":
 			// git push origin +main forces that ref, as -f does.
 			have[eq[forceRefspec]] = true
@@ -154,6 +154,44 @@ var flagSynonyms = map[string]map[string]string{
 	"chgrp":     {"--recursive": "-R"},
 	"git push":  {"--force": "-f", "--force-with-lease": "-f", forceRefspec: "-f"},
 	"git clean": {"--force": "-f"},
+}
+
+// expandLong is w, a long option as a command wrote it, as the long flag it
+// abbreviates, the way GNU getopt and git read --recur for --recursive: a
+// prefix of at least three letters of the table's flags or the rule's own,
+// whose candidates all mean the same. w itself where none or several differ.
+func expandLong(eq map[string]string, rule map[string]bool, w string) string {
+	if _, known := eq[w]; known || rule[w] || len(w) < len("--")+3 {
+		return w
+	}
+	found, canon := "", ""
+	consider := func(full string) bool {
+		if !strings.HasPrefix(full, w) {
+			return true
+		}
+		c := canonFlag(eq, full)
+		if found != "" && c != canon {
+			return false // ambiguous between flags that differ
+		}
+		if found == "" {
+			found, canon = full, c
+		}
+		return true
+	}
+	for full := range eq {
+		if strings.HasPrefix(full, "--") && !consider(full) {
+			return w
+		}
+	}
+	for full := range rule {
+		if !consider(full) {
+			return w
+		}
+	}
+	if found == "" {
+		return w
+	}
+	return found
 }
 
 // forceRefspec stands in the table for a refspec that forces (+main).
