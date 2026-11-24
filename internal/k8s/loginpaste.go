@@ -40,10 +40,12 @@ type pastePlan struct {
 	server, cluster, storeAs, namespace string
 	caPEM                               []byte
 	fingerprint, subject                string
-	// replaces marks a new token for a cluster kept already.
-	replaces bool
-	how      string // how TLS will be verified, for the person
-	kind     string
+	// replaces marks a new token for a cluster kept already; write that the
+	// token is written to the store; created that the paste flow made the
+	// secret, so a later paste may replace it.
+	replaces, write, created bool
+	how                      string // how TLS will be verified, for the person
+	kind                     string
 }
 
 type pastePlansKey struct{ m *Manager }
@@ -104,41 +106,37 @@ func (t LoginTool) planPasted(ctx context.Context, sess *tools.Session, a loginA
 	if t.M.isContext(a.Cluster) {
 		return fmt.Errorf("%q is a kubeconfig context on this machine; keep the pasted cluster under another name", a.Cluster)
 	}
+	value, err := t.pastedValue(p)
+	if err != nil {
+		return err
+	}
 	// The same token kept already: nothing to do, and nothing is sent.
 	for cluster, kl := range machinegrant.Logins() {
-		if t.Secret == nil || kl.Server != strings.TrimSuffix(p.Server, "/") {
+		if kl.Server != strings.TrimSuffix(p.Server, "/") {
 			continue
 		}
-		if v, err := t.Secret(kl.Secret); err == nil && strings.TrimSpace(v) == p.Value {
+		same := p.SecretRef != "" && kl.Secret == p.SecretRef
+		if !same && t.Secret != nil {
+			v, err := t.Secret(kl.Secret)
+			same = err == nil && strings.TrimSpace(v) == value
+		}
+		if same {
 			return fmt.Errorf("already kept: this is the token kept for cluster %s at %s (secret %s), so nothing was "+
 				"changed. Name it as cluster %q in k8s_get and k8s_apply", cluster, displayURL(kl.Server), kl.Secret, cluster)
 		}
 	}
-	name := storeName(a)
-	// Another token for a cluster kept already replaces its token, after the
-	// usual approval, under the secret it is kept with.
-	kept, replaces := t.M.keptLogin(a.Cluster)
-	if replaces && a.StoreAs == "" {
-		name = kept.Secret
+	target, err := t.pasteTarget(p, a, value)
+	if err != nil {
+		return err
 	}
-	replaces = replaces && name == kept.Secret
-	if !secrets.ValidName(name) || secrets.Held(name) {
-		return fmt.Errorf("store_as %q is not a secret name (upper-case letters, digits and '_')", name)
-	}
-	if t.Store == nil {
-		return fmt.Errorf("no secrets store is available here, so a pasted token cannot be kept")
-	}
-	if names, err := t.Store.Names(); err == nil && slices.Contains(names, name) && !replaces {
-		if v, err := t.Store.Value(name); err != nil || strings.TrimSpace(v) != p.Value {
-			return fmt.Errorf("a secret named %s already holds another value; choose another store_as", name)
-		}
-	}
+	name, replaces := target.name, target.replaces
 	u, err := url.Parse(p.Server)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return fmt.Errorf("the server pasted with %s is not an https:// URL with a host, so no token is sent to it", a.Pasted)
 	}
 	plan := pastePlan{server: strings.TrimSuffix(p.Server, "/"), cluster: a.Cluster, storeAs: name,
-		namespace: orDefault(a.Namespace, p.Namespace), kind: p.Kind, replaces: replaces}
+		namespace: orDefault(a.Namespace, p.Namespace), kind: p.Kind, replaces: replaces,
+		write: target.write, created: target.created}
 	if err := plan.readTLS(ctx, t.M); err != nil {
 		return err
 	}
@@ -296,8 +294,12 @@ func (t LoginTool) runPasted(ctx context.Context, sess *tools.Session, a loginAr
 	if !ok || strings.TrimSuffix(pasted.Server, "/") != p.server {
 		return errf("The credential pasted as %s is no longer held in this session; ask the user to paste it again.", a.Pasted)
 	}
+	value, err := t.pastedValue(pasted)
+	if err != nil {
+		return errf("%v", err)
+	}
 	lc := LoginCluster{Name: p.cluster, Server: p.server, CAPEM: p.caPEM, CAFingerprint: p.fingerprint}
-	c, err := OpenLogin(lc, "", pasted.Value, orDefaultNS(p.namespace, t.M.cfg.Namespace))
+	c, err := OpenLogin(lc, "", value, orDefaultNS(p.namespace, t.M.cfg.Namespace))
 	if err != nil {
 		return errf("%v", err)
 	}
@@ -307,7 +309,7 @@ func (t LoginTool) runPasted(ctx context.Context, sess *tools.Session, a loginAr
 	}
 	if !t.M.cfg.KeptLogins {
 		// A guest: the session logs in, and nothing is stored or kept.
-		if err := t.M.login(sess, sessionCred{token: pasted.Value, cluster: lc, namespace: p.namespace}); err != nil {
+		if err := t.M.login(sess, sessionCred{token: value, cluster: lc, namespace: p.namespace}); err != nil {
 			return errf("%v", err)
 		}
 		tools.DropPasted(sess, a.Pasted)
@@ -315,19 +317,21 @@ func (t LoginTool) runPasted(ctx context.Context, sess *tools.Session, a loginAr
 			"as a guest, nothing is stored or kept. Name it as cluster %q in k8s_get and k8s_apply.",
 			p.cluster, displayURL(p.server), c.Namespace, lc.Verification(""), p.cluster)}
 	}
-	if err := t.Store.Set(p.storeAs, pasted.Value); err != nil {
-		return errf("The token works, but it could not be stored as %s: %v. Nothing was kept.", p.storeAs, err)
+	if p.write {
+		if err := t.Store.Set(p.storeAs, value); err != nil {
+			return errf("The token works, but it could not be stored as %s: %v. Nothing was kept.", p.storeAs, err)
+		}
 	}
 	grant := machinegrant.Grant{Kind: machinegrant.KindK8sLogin, Name: p.cluster,
 		Identity: machinegrant.Identity(p.server, string(p.caPEM), p.storeAs),
 		What:     "cluster " + p.cluster + " at " + displayURL(p.server) + " with secret " + p.storeAs,
 		Login: &machinegrant.Login{Server: p.server, CAPEM: string(p.caPEM), CAFingerprint: p.fingerprint,
-			Secret: p.storeAs, Namespace: p.namespace}}
+			Secret: p.storeAs, Namespace: p.namespace, Created: p.created}}
 	kept := "kept for your later sessions"
 	if err := machinegrant.Keep(grant); err != nil {
 		kept = "NOT kept for later sessions (" + err.Error() + "); it holds for this session"
 	}
-	if err := t.M.login(sess, sessionCred{token: pasted.Value, cluster: lc, namespace: p.namespace}); err != nil {
+	if err := t.M.login(sess, sessionCred{token: value, cluster: lc, namespace: p.namespace}); err != nil {
 		return errf("%v", err)
 	}
 	tools.DropPasted(sess, a.Pasted)
@@ -349,4 +353,67 @@ func (t LoginTool) PinnedCertificate(sess *tools.Session, raw json.RawMessage) (
 		return "", "", false
 	}
 	return p.fingerprint, p.subject, true
+}
+
+// pastedValue is the pasted token: as held, or the stored secret it already is.
+func (t LoginTool) pastedValue(p tools.Pasted) (string, error) {
+	if p.SecretRef == "" {
+		return p.Value, nil
+	}
+	if t.Secret == nil {
+		return "", fmt.Errorf("no secrets store is available here, so the stored secret %s cannot be read", p.SecretRef)
+	}
+	v, err := t.Secret(p.SecretRef)
+	if err != nil {
+		return "", fmt.Errorf("the stored secret %s the login names cannot be read: %v", p.SecretRef, err)
+	}
+	return strings.TrimSpace(v), nil
+}
+
+// pasteTarget is where a pasted login's token is kept.
+type pasteTarget struct {
+	name                     string
+	write, replaces, created bool
+}
+
+// pasteTarget decides the secret a pasted login binds: the stored secret it
+// already is; else, for a cluster kept already, the secret the paste flow made
+// for that login alone, replaced; else store_as or K8S_<CLUSTER>_TOKEN, which
+// must be new or hold this very value. A secret another login binds, or one
+// that held another value, is never overwritten.
+func (t LoginTool) pasteTarget(p tools.Pasted, a loginArgs, value string) (pasteTarget, error) {
+	if p.SecretRef != "" {
+		return pasteTarget{name: p.SecretRef}, nil
+	}
+	if t.Store == nil {
+		return pasteTarget{}, fmt.Errorf("no secrets store is available here, so a pasted token cannot be kept")
+	}
+	logins := machinegrant.Logins()
+	boundElsewhere := func(name string) string {
+		for cluster, kl := range logins {
+			if kl.Secret == name && cluster != a.Cluster {
+				return cluster
+			}
+		}
+		return ""
+	}
+	if kept, ok := t.M.keptLogin(a.Cluster); ok && a.StoreAs == "" && kept.Created && boundElsewhere(kept.Secret) == "" {
+		return pasteTarget{name: kept.Secret, write: true, replaces: true, created: true}, nil
+	}
+	name := storeName(a)
+	if !secrets.ValidName(name) || secrets.Held(name) {
+		return pasteTarget{}, fmt.Errorf("store_as %q is not a secret name (upper-case letters, digits and '_')", name)
+	}
+	if other := boundElsewhere(name); other != "" {
+		return pasteTarget{}, fmt.Errorf("the secret %s is the one cluster %s is kept with; choose another store_as", name, other)
+	}
+	exists := false
+	if names, err := t.Store.Names(); err == nil && slices.Contains(names, name) {
+		exists = true
+		if v, err := t.Store.Value(name); err != nil || strings.TrimSpace(v) != value {
+			return pasteTarget{}, fmt.Errorf("a secret named %s already holds another value; choose another store_as", name)
+		}
+	}
+	_, kept := t.M.keptLogin(a.Cluster)
+	return pasteTarget{name: name, write: !exists, replaces: kept, created: !exists}, nil
 }

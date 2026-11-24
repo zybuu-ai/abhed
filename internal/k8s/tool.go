@@ -1342,12 +1342,25 @@ func (t LoginTool) declared(name string) (LoginCluster, error) {
 // BoundSecrets names the secret a kept login reads when the call names none,
 // or the one a pasted login stores into, so a deny rule on either refuses
 // the call before anything is stored or sent.
-func (t LoginTool) BoundSecrets(_ *tools.Session, raw json.RawMessage) []string {
+func (t LoginTool) BoundSecrets(sess *tools.Session, raw json.RawMessage) []string {
 	var a loginArgs
 	if t.M == nil || json.Unmarshal(raw, &a) != nil || a.TokenSecret != "" {
 		return nil
 	}
 	if a.Pasted != "" {
+		// The secret the login will actually bind and write: a deny rule on
+		// it refuses the call before anything is read or stored.
+		p, ok := tools.PastedValue(sess, a.Pasted)
+		if !ok {
+			return []string{storeName(a)}
+		}
+		value := p.Value
+		if p.SecretRef != "" {
+			return []string{p.SecretRef}
+		}
+		if target, err := t.pasteTarget(p, a, value); err == nil {
+			return []string{target.name}
+		}
 		return []string{storeName(a)}
 	}
 	if kl, ok := t.M.keptLogin(strings.TrimSpace(a.Cluster)); ok {

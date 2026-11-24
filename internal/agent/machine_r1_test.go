@@ -349,8 +349,9 @@ func TestAPastedLoginRefusedByTheOrganisationSaysWhy(t *testing.T) {
 }
 
 // A login pasted again whose token is already stored is still read as a
-// paste: the session holds the real token, not [secret:NAME], so the login
-// it asks for can never send the placeholder.
+// login: the session holds it by the secret's name, never the placeholder as
+// a value, so the login it asks for reads the secret and never sends
+// [secret:NAME].
 func TestARepastedStoredTokenIsStillAPaste(t *testing.T) {
 	vault := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
 	if err := vault.Set("K8S_LAB_TOKEN", pinTok); err != nil {
@@ -365,12 +366,94 @@ func TestARepastedStoredTokenIsStillAPaste(t *testing.T) {
 		t.Fatal(err)
 	}
 	p, ok := tools.PastedValue(sess, "P1")
-	if !ok || p.Value != pinTok || p.Server != "https://api.lab.example:6443" {
+	if !ok || p.SecretRef != "K8S_LAB_TOKEN" || p.Value != "" || p.Server != "https://api.lab.example:6443" {
 		t.Fatalf("held %+v %v", p, ok)
 	}
 	for _, m := range ad.gotRequests[0].Messages {
 		if strings.Contains(m.Content, pinTok) {
 			t.Fatal("the model was sent the token")
 		}
+	}
+}
+
+// A stored value pasted whole is withheld whole as [secret:NAME], whatever
+// shapes inside it look like: no part of it reaches the model or the record.
+func TestAStoredValueIsWithheldWholeBeforePastesAreRead(t *testing.T) {
+	for name, value := range map[string]string{
+		"postgres URL":      "postgres://alice:S3cretPassw0rd@db.internal.example:5432/prod",
+		"service account":   "{\"type\":\"service_account\",\"client_email\":\"bot@proj-x.iam.example\",\"private_key\":\"-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\n-----END PRIVATE KEY-----\n\"}",
+		"bearer and tenant": "Authorization: Bearer abcdefghijklmnop1234 tenant=acme-prod",
+	} {
+		t.Run(name, func(t *testing.T) {
+			vault := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
+			if err := vault.Set("MY_SECRET", value); err != nil {
+				t.Fatal(err)
+			}
+			sess, _ := tools.NewSession(t.TempDir())
+			store := NewMemStore()
+			rec := NewRecorder(store, "s", "")
+			rec.Redact = vault.Redactor()
+			ad := &scriptedAdapter{turns: []scriptedTurn{{text: "ok"}}}
+			l := NewLoop(ad, tools.NewRegistry(), policy.New(policy.ModeDefault), AutoApprove{}, sess, rec, DefaultConfig())
+			if _, err := l.Run(context.Background(), "use this: "+value+" please"); err != nil {
+				t.Fatal(err)
+			}
+			sent := ""
+			for _, m := range ad.gotRequests[0].Messages {
+				sent += m.Content
+			}
+			evs, _ := store.Events("s")
+			for _, e := range evs {
+				sent += string(e.Payload)
+			}
+			if !strings.Contains(sent, "[secret:MY_SECRET]") {
+				t.Fatalf("[secret:MY_SECRET] is not in what was sent and kept: %q", sent)
+			}
+			for _, part := range []string{"alice", "db.internal.example", "bot@proj-x.iam.example", "tenant=acme-prod", "S3cretPassw0rd", "abcdefghijklmnop1234"} {
+				if strings.Contains(value, part) && strings.Contains(sent, part) {
+					t.Fatalf("%q of the stored value reached the model or the record", part)
+				}
+			}
+		})
+	}
+}
+
+// A login whose token is a stored secret names that secret: held by name,
+// never as a value, and a deny rule on it refuses the login.
+func TestALoginWithAStoredTokenNamesTheSecret(t *testing.T) {
+	machineGrants(t)
+	vault := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
+	if err := vault.Set("OCP_TOKEN", pinTok); err != nil {
+		t.Fatal(err)
+	}
+	sess, _ := tools.NewSession(t.TempDir())
+	rec := NewRecorder(NewMemStore(), "s", "")
+	rec.Redact = vault.Redactor()
+	m := k8s.NewManager(k8s.Config{Kubeconfig: filepath.Join(t.TempDir(), "none"), KeptLogins: true, Secret: vault.Value})
+	reg := tools.NewRegistry(k8s.LoginTool{M: m, Secret: vault.Value, Store: vault})
+	pol := policy.New(policy.ModeDefault)
+	_ = pol.AddDeny("secret(OCP_TOKEN)")
+	ad := &scriptedAdapter{turns: []scriptedTurn{
+		{calls: []model.ToolCall{{ID: "c1", Name: "k8s_login", Args: json.RawMessage(`{"cluster":"lab","pasted":"P1"}`)}}},
+		{text: "ok"},
+	}}
+	appr := &firstUseApprover{}
+	l := NewLoop(ad, reg, pol, appr, sess, rec, DefaultConfig())
+	if _, err := l.Run(context.Background(), "oc login --token="+pinTok+" --server=https://api.lab.example:6443"); err != nil {
+		t.Fatal(err)
+	}
+	p, ok := tools.PastedValue(sess, "P1")
+	if !ok || p.SecretRef != "OCP_TOKEN" || p.Value != "" || p.Server != "https://api.lab.example:6443" {
+		t.Fatalf("held %+v %v", p, ok)
+	}
+	if appr.count() != 0 {
+		t.Fatal("a login with a denied secret was put to the person")
+	}
+	sent := ""
+	for _, msg := range ad.gotRequests[len(ad.gotRequests)-1].Messages {
+		sent += msg.Content
+	}
+	if !strings.Contains(sent, "secret OCP_TOKEN is denied") || strings.Contains(sent, pinTok) {
+		t.Fatalf("the model was told: %q", sent)
 	}
 }

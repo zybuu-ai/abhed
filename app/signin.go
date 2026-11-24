@@ -66,8 +66,9 @@ var personCommands = map[string]bool{
 	// machine lists and forgets the person's own kept clusters and hosts.
 	"machine": true,
 	// sandbox, and an edition's workspaces, read the server sign-in abhed
-	// login kept; eval runs sessions. doctor stays the machine's.
-	"sandbox": true, "eval": true, "workspaces": true,
+	// login kept; eval runs sessions. doctor reports the person's trust,
+	// secrets and kept grants beside the machine's facts, which it labels.
+	"sandbox": true, "eval": true, "workspaces": true, "doctor": true,
 }
 
 // signInFlags are what the command line says about who is working.

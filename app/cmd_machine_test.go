@@ -172,3 +172,21 @@ func TestDoctorUnderAManagedKubeconfig(t *testing.T) {
 		t.Fatalf("doctor:\n%s", out)
 	}
 }
+
+// doctor runs as the person working, and says whose state it shows.
+func TestDoctorReportsThePersonsState(t *testing.T) {
+	if !personCommands["doctor"] {
+		t.Fatal("doctor does not run as the person working")
+	}
+	if got := doctorPerson(identity.GuestPrincipal()); !strings.Contains(got, "guest: nothing is kept") || !strings.Contains(got, "this machine's") {
+		t.Fatalf("guest: %q", got)
+	}
+	endGuest()
+	if err := usePrincipal(identity.GuestPrincipal()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(endGuest)
+	if out := strings.Join(machineDoctor(config.Config{}), "\n"); !strings.Contains(out, "kept        guest: nothing is kept") {
+		t.Fatalf("doctor as a guest:\n%s", out)
+	}
+}

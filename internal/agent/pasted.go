@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/secretfiles"
@@ -14,6 +15,9 @@ import (
 // model is told what was pasted, never the value, so it can offer to log in:
 // k8s_login with that id stores it and keeps the cluster, on one approval.
 
+// secretRefRe is a stored secret's placeholder standing for a whole token.
+var secretRefRe = regexp.MustCompile(`^\[secret:([A-Z][A-Z0-9_]*)\]$`)
+
 // withholdPasted is text with each pasted credential replaced, what was
 // withheld as ID:kind, comma-separated, and the note the model gets.
 func (l *Loop) withholdPasted(text string) (string, string, string) {
@@ -25,7 +29,24 @@ func (l *Loop) withholdPasted(text string) (string, string, string) {
 	var ids, lines []string
 	last := 0
 	for _, p := range found {
-		id := tools.HoldPasted(l.Session, tools.Pasted{Kind: p.Kind, Value: p.Value(text), Server: p.Server, Namespace: p.Namespace})
+		held := tools.Pasted{Kind: p.Kind, Value: p.Value(text), Server: p.Server, Namespace: p.Namespace}
+		// A login whose token was a stored value reads [secret:NAME] here: it
+		// names that secret, and its text is left as the record keeps it.
+		if m := secretRefRe.FindStringSubmatch(held.Value); m != nil {
+			if p.Server == "" {
+				continue
+			}
+			held.Value, held.SecretRef, held.Kind = "", m[1], "a login with the stored secret "+m[1]
+			id := tools.HoldPasted(l.Session, held)
+			b.WriteString(text[last:p.End])
+			last = p.End
+			if id != "" {
+				ids = append(ids, id+":"+held.Kind)
+				lines = append(lines, fmt.Sprintf("%s is %s for the server %s", id, held.Kind, p.Server))
+			}
+			continue
+		}
+		id := tools.HoldPasted(l.Session, held)
 		b.WriteString(text[last:p.Start])
 		if id == "" {
 			// No session to hold it in: withheld all the same, unusable, and

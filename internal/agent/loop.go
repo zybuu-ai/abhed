@@ -723,10 +723,8 @@ func (l *Loop) deliverQueuedCount() (int, error) {
 		// A steer that cannot be recorded is not applied: the record is the
 		// session, and a message the model saw but the log did not would
 		// make a replay diverge from what happened.
-		// A paste is read first: a login whose token is already stored must
-		// still be seen as a paste, not as text holding [secret:NAME].
-		text, pasted, pastedNote := l.withholdPasted(q.Text)
-		text, withheld := l.withholdSecrets(text)
+		text, withheld := l.withholdSecrets(q.Text)
+		text, pasted, pastedNote := l.withholdPasted(text)
 		said := Message{Text: text, QueueID: q.ID, ClientID: q.ClientID, Steered: q.Steered, SecretsWithheld: withheld,
 			Pasted: pasted, Note: joinNotes(l.parallelNote(q.typed), pastedNote)}
 		if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, said); err != nil {
@@ -980,10 +978,10 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	if err := l.notePlugins(); err != nil {
 		return TermError, err
 	}
-	// A paste is read first: a login whose token is already stored must
-	// still be seen as a paste, not as text holding [secret:NAME].
-	text, pasted, pastedNote := l.withholdPasted(m.Text)
-	text, withheld := l.withholdSecrets(text)
+	// Stored values first, whole; a login whose token was one is read after
+	// as a login naming that secret (withholdPasted).
+	text, withheld := l.withholdSecrets(m.Text)
+	text, pasted, pastedNote := l.withholdPasted(text)
 	typed := m.Typed
 	if typed == "" {
 		typed = typedFrom(ctx)

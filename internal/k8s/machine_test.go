@@ -505,3 +505,107 @@ func TestAMaskedTokenIsNeverSent(t *testing.T) {
 		t.Fatalf("a masked bearer was sent: %v (%d)", err, hits)
 	}
 }
+
+// pasteRig is a self-signed cluster that takes any token, a store, a login
+// tool, and a function that pastes a token and runs the login.
+func pasteRig(t *testing.T) (*secrets.Store, LoginTool, string, func(cluster, token string) (json.RawMessage, *tools.Session)) {
+	t.Helper()
+	grantsIn(t)
+	srv, _ := tlsCluster(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"major":"1"}`) }))
+	store := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
+	m := NewManager(Config{Kubeconfig: filepath.Join(t.TempDir(), "none"), KeptLogins: true, Secret: store.Value})
+	login := LoginTool{M: m, Secret: store.Value, Store: store}
+	paste := func(cluster, token string) (json.RawMessage, *tools.Session) {
+		sess := newSession(t)
+		id := tools.HoldPasted(sess, tools.Pasted{Kind: "an OpenShift token", Value: token, Server: srv.URL})
+		return json.RawMessage(fmt.Sprintf(`{"cluster":%q,"pasted":%q}`, cluster, id)), sess
+	}
+	return store, login, srv.URL, paste
+}
+
+func keepLogin(t *testing.T, cluster, server, secret string, created bool) {
+	t.Helper()
+	if err := machinegrant.Keep(machinegrant.Grant{Kind: machinegrant.KindK8sLogin, Name: cluster, Identity: cluster,
+		Login: &machinegrant.Login{Server: server, Secret: secret, Created: created}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A new token for a kept cluster never overwrites a secret it does not own:
+// one two clusters share, or one that held the value before the login was
+// kept. It is stored under a fresh name and the login is rebound to it.
+func TestARepasteNeverOverwritesASecretItDoesNotOwn(t *testing.T) {
+	for _, tc := range []struct {
+		name, secret string
+		created      bool
+		other        bool
+	}{
+		{"shared by two clusters", "SHARED_TOKEN", true, true},
+		{"held before the login was kept", "OCP_TOKEN", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, login, server, paste := pasteRig(t)
+			if err := store.Set(tc.secret, "sha256~old-shared-token-0123456789"); err != nil {
+				t.Fatal(err)
+			}
+			keepLogin(t, "lab", server, tc.secret, tc.created)
+			if tc.other {
+				keepLogin(t, "lab2", "https://other.example:6443", tc.secret, true)
+			}
+			raw, sess := paste("lab", "sha256~new-token-value-0123456789abcdef")
+			if b := login.BoundSecrets(sess, raw); len(b) != 1 || b[0] != "K8S_LAB_TOKEN" {
+				t.Fatalf("the deny rules would be checked on %v", b)
+			}
+			if err := login.PrecheckContext(context.Background(), sess, raw); err != nil {
+				t.Fatal(err)
+			}
+			if res := login.Run(context.Background(), sess, raw); res.IsError {
+				t.Fatalf("%+v", res)
+			}
+			if v, _ := store.Value(tc.secret); v != "sha256~old-shared-token-0123456789" {
+				t.Fatalf("%s was overwritten: %q", tc.secret, v)
+			}
+			if v, _ := store.Value("K8S_LAB_TOKEN"); v != "sha256~new-token-value-0123456789abcdef" {
+				t.Fatalf("the new token is %q", v)
+			}
+			if kl := machinegrant.Logins()["lab"]; kl.Secret != "K8S_LAB_TOKEN" || !kl.Created {
+				t.Fatalf("lab is kept with %+v", kl)
+			}
+			if tc.other {
+				if kl := machinegrant.Logins()["lab2"]; kl.Secret != tc.secret {
+					t.Fatalf("lab2 lost its secret: %+v", kl)
+				}
+			}
+		})
+	}
+}
+
+// Replacing the token a paste made for a login alone writes that secret,
+// and a deny rule on it is checked: BoundSecrets names it.
+func TestReplacingAPasteMadeSecretNamesItForTheDenyRules(t *testing.T) {
+	store, login, server, paste := pasteRig(t)
+	if err := store.Set("K8S_LAB_TOKEN", "sha256~old-token-0123456789abcdef"); err != nil {
+		t.Fatal(err)
+	}
+	keepLogin(t, "lab", server, "K8S_LAB_TOKEN", true)
+	raw, sess := paste("lab", "sha256~new-token-0123456789abcdef")
+	if b := login.BoundSecrets(sess, raw); len(b) != 1 || b[0] != "K8S_LAB_TOKEN" {
+		t.Fatalf("BoundSecrets %v", b)
+	}
+}
+
+// A login naming a stored secret the kept login already binds is already
+// kept: nothing is sent.
+func TestALoginNamingTheKeptSecretIsAlreadyKept(t *testing.T) {
+	store, login, server, _ := pasteRig(t)
+	if err := store.Set("OCP_TOKEN", "sha256~tok-0123456789abcdef"); err != nil {
+		t.Fatal(err)
+	}
+	keepLogin(t, "lab", server, "OCP_TOKEN", false)
+	sess := newSession(t)
+	id := tools.HoldPasted(sess, tools.Pasted{Kind: "a login", SecretRef: "OCP_TOKEN", Server: server})
+	err := login.PrecheckContext(context.Background(), sess, json.RawMessage(fmt.Sprintf(`{"cluster":"x","pasted":%q}`, id)))
+	if err == nil || !strings.Contains(err.Error(), "already kept") {
+		t.Fatalf("%v", err)
+	}
+}

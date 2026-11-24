@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/machinegrant"
 	"github.com/zybuu-ai/abhed/internal/toolset"
@@ -114,6 +115,8 @@ func machineDoctor(cfg config.Config) []string {
 	}
 	gs, err := machinegrant.List()
 	switch {
+	case machinegrant.Guest():
+		out = append(out, "kept        guest: nothing is kept")
 	case err != nil:
 		out = append(out, "kept        UNREADABLE — "+err.Error())
 	case len(gs) > 0:
@@ -163,4 +166,16 @@ func k8sDoctor(cfg config.Config) []string {
 		out = append(out, fmt.Sprintf("k8s login   %s → %s%s", ui.VisibleLine(lc.Name), k8s.DisplayURL(lc.Server), warn))
 	}
 	return out
+}
+
+// doctorPerson says whose state doctor reports, and what is the machine's.
+func doctorPerson(p identity.Principal) string {
+	const machine = "; managed settings, sandbox tiers and programs are this machine's"
+	switch p.Kind {
+	case identity.Guest:
+		return "guest: nothing is kept" + machine
+	case identity.Legacy:
+		return "no sign-in: trust, secrets and kept grants are this machine's" + machine
+	}
+	return ui.VisibleLine(p.Display()) + ": trust, secrets and kept grants below are this account's" + machine
 }

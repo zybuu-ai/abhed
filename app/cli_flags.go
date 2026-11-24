@@ -399,6 +399,11 @@ func Main(args []string, opts ...Option) int {
 				if code := enter(); code != 0 {
 					return code
 				}
+				if rest[0] == "doctor" {
+					// It reports the person's state, and probes the model
+					// without keeping what it learns of the model's window.
+					model.SetWindowMemory(nil)
+				}
 			}
 			if err := guestSubcommand(rest); err != nil {
 				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)

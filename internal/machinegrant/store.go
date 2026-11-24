@@ -59,6 +59,10 @@ type Login struct {
 	CAFingerprint string `json:"ca_fingerprint,omitempty"`
 	Secret        string `json:"secret"`
 	Namespace     string `json:"namespace,omitempty"`
+	// Created marks a secret the paste flow itself made for this login: the
+	// only kind a later paste may replace. A secret that held the value
+	// before, or that another login binds, is never overwritten.
+	Created bool `json:"created,omitempty"`
 }
 
 // Identity sums parts into a grant identity. Parts are joined unambiguously.

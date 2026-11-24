@@ -19,6 +19,10 @@ type Pasted struct {
 	Server string
 	// Namespace is the namespace pasted with it (-n, --namespace), or "".
 	Namespace string
+	// SecretRef, when set, is the stored secret the pasted token already is:
+	// the message held its value, withheld as [secret:NAME] before the login
+	// was read. Value is then empty; the login reads the secret by name.
+	SecretRef string
 	At        time.Time
 }
 
@@ -51,7 +55,7 @@ func HoldPasted(sess *Session, p Pasted) string {
 	set.mu.Lock()
 	defer set.mu.Unlock()
 	for id, have := range set.items {
-		if have.Value != p.Value || p.Server != "" && have.Server != "" && have.Server != p.Server {
+		if have.Value != p.Value || have.SecretRef != p.SecretRef || p.Server != "" && have.Server != "" && have.Server != p.Server {
 			continue
 		}
 		if have.Server == "" && p.Server != "" {

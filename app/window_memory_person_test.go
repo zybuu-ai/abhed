@@ -135,8 +135,8 @@ func TestNoOneKeepsNoWindowMemory(t *testing.T) {
 	}
 }
 
-// abhed doctor is a machine command: it shows the model's window but no one
-// is working, so it reads and makes no window memory.
+// abhed doctor reports the person's state, but probes the model without
+// keeping what it learns: it reads and makes no window memory.
 func TestDoctorKeepsNoWindowMemory(t *testing.T) {
 	srv := doctorEndpoint(t)
 	h := accountHome(t)
