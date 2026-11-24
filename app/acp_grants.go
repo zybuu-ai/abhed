@@ -345,7 +345,7 @@ type grantOption struct {
 // brokered git family is offered.
 func hostGitGrantLabel(fam string) string {
 	if fam == hostgit.FamilyPush {
-		return "Always allow git push, without force, to this remote of this repository, while its URL stays the same"
+		return "Always allow git push, without force, to this remote of this repository, while its URL and its push settings (refspecs, mirror) stay the same"
 	}
 	return "Always allow git fetch, pull and ls-remote from this remote of this repository, while its URL stays the same"
 }

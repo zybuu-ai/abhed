@@ -23,7 +23,7 @@ func TestImpliedLineTightensOnly(t *testing.T) {
 	}
 	implied := "git push --force --mirror origin"
 	if got := impliedJudged(hostAsk, implied, deny.Evaluate("bash", true, impliedArgs(implied))); got.Decision != policy.Deny ||
-		!strings.Contains(got.Reason, "configuration makes this git push --force") {
+		!strings.Contains(got.Reason, "git configuration makes this git push --force") {
 		t.Fatalf("org deny: %+v", got)
 	}
 	plain := policy.New(policy.ModeDefault)

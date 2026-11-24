@@ -48,11 +48,19 @@ All notable changes to Abhed are recorded here. The format follows
   delete commits, and policy also judges the line it runs as (`git push
   --force --mirror origin`): an organisation's `bash(git push -f*)` deny or
   ask rule holds, and the destructive confirmation asks. The settings judged
-  are the settings it runs with, as before.
+  are the settings it runs with, as before. `mirror` is read as git reads a
+  boolean (a key with no value, `true`/`yes`/`on`, or any non-zero integer in
+  decimal, octal or hex with a `k`, `m` or `g` unit, such as `2`, `-1`, `1k`
+  or `0x1`; a value git cannot read is never taken as false). The question
+  says what the setting makes the push do (mirror, force a refspec, or delete
+  a named ref) and whether it is the repository's configuration or your own;
+  a push that names its own refspec takes none of the configured ones. An
+  "always" for a plain push holds only while the remote's URL and its push
+  settings (refspecs, mirror) stay as they were.
 - Deny and ask rules missed GNU abbreviations of long options (`rm --recur
-  --forc`, `chmod --recursiv`, `git clean --forc`). An unambiguous prefix of
-  at least three letters of a known long flag, or of the rule's own, now
-  counts as that flag. Deny and ask only; allow rules match as written.
+  --forc`, `chmod --recursiv`, `git clean --fo`). An unambiguous prefix of
+  any length, as getopt reads it, of a known long flag or of the rule's own
+  now counts as that flag. Deny and ask only; allow rules match as written.
 - `abhed rpc`, which Abhed Studio and scripts start sessions through, never
   fetched the org policy as a session started, so a deny rule published
   since did not reach those sessions until another command fetched it. It

@@ -982,44 +982,92 @@ func TestBrokerNoRemotesAndRemotesOff(t *testing.T) {
 	}
 }
 
-// A plain git push the repository's own configuration makes a mirror, a
-// forcing or a deleting push is asked each time, as one, never answered by
-// the family a person keeps; and ImpliedLine says what it runs as, so policy
-// judges that too.
+// A plain git push the configuration makes a mirror, a forcing or a
+// deleting push is asked each time, saying what and whose setting makes it
+// so; ImpliedLine says what it runs as, so policy judges that too. A push
+// naming its own refspec takes none of the configured ones.
 func TestBrokerConfigImpliedPushAsksAsDestructive(t *testing.T) {
 	for _, c := range []struct {
-		set  [][2]string
-		want string
+		set        [][2]string
+		global     bool
+		want, says string
 	}{
-		{[][2]string{{"remote.origin.mirror", "true"}}, "git push --force --mirror origin"},
-		{[][2]string{{"remote.origin.push", ":refs/heads/x"}}, "git push --delete origin"},
-		{[][2]string{{"remote.origin.push", "+refs/heads/*:refs/heads/*"}}, "git push --force origin"},
-		{[][2]string{{"remote.origin.push", "refs/heads/main:refs/heads/main"}}, ""},
-		{[][2]string{{"remote.origin.mirror", "false"}}, ""},
+		{[][2]string{{"remote.origin.mirror", "true"}}, false, "git push --force --mirror origin", "the repository's configuration makes it mirror every ref"},
+		{[][2]string{{"remote.origin.mirror", "2"}}, false, "git push --force --mirror origin", "mirror every ref"},
+		{[][2]string{{"remote.origin.mirror", "-1"}}, false, "git push --force --mirror origin", "mirror every ref"},
+		{[][2]string{{"remote.origin.mirror", "1k"}}, false, "git push --force --mirror origin", "mirror every ref"},
+		{[][2]string{{"remote.origin.mirror", "0x1"}}, false, "git push --force --mirror origin", "mirror every ref"},
+		{[][2]string{{"remote.origin.mirror", "true"}}, true, "git push --force --mirror origin", "your git configuration makes it mirror"},
+		{[][2]string{{"remote.origin.push", ":refs/heads/x"}}, false, "git push --delete origin refs/heads/x", "delete refs/heads/x on the remote"},
+		{[][2]string{{"remote.origin.push", "+refs/heads/*:refs/heads/*"}}, false, "git push --force origin +refs/heads/*:refs/heads/*", "force +refs/heads/*:refs/heads/*"},
+		{[][2]string{{"remote.origin.push", "refs/heads/main:refs/heads/main"}}, false, "", ""},
+		{[][2]string{{"remote.origin.push", ":"}}, false, "", ""},
+		{[][2]string{{"remote.origin.mirror", "false"}}, false, "", ""},
+		{[][2]string{{"remote.origin.mirror", "0"}}, false, "", ""},
+		{[][2]string{{"remote.origin.mirror", "0x0"}}, false, "", ""},
 	} {
 		r := newRemoteRig(t)
 		b := r.broker(Network{Open: true})
 		for _, kv := range c.set {
-			if out, err := exec.Command("git", "-C", r.ws, "config", "--add", kv[0], kv[1]).CombinedOutput(); err != nil {
+			args := []string{"-C", r.ws, "config", "--add", kv[0], kv[1]}
+			if c.global {
+				args = []string{"config", "--global", "--add", kv[0], kv[1]}
+			}
+			if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 				t.Fatalf("%v: %s", err, out)
 			}
 		}
 		if got := ImpliedLine(r.ws, "git push"); got != c.want {
 			t.Fatalf("%v: implied %q, want %q", c.set, got, c.want)
 		}
-		reason, step, _, err := b.Ask(r.key("c"), r.ws, "git push origin main")
+		reason, step, _, err := b.Ask(r.key("c"), r.ws, "git push origin")
 		if c.want == "" {
+			if strings.Contains(reason, "makes it") {
+				t.Fatalf("%v: asked as destructive: %q", c.set, reason)
+			}
 			continue
 		}
-		if err != nil || step != StepHostGitEach || !strings.Contains(reason, "repository's own configuration") {
+		if err != nil || step != StepHostGitEach || !strings.Contains(reason, c.says) {
 			t.Fatalf("%v: asked %q %q %v", c.set, reason, step, err)
 		}
-		if got := ImpliedLine(r.ws, "git push origin main"); !strings.HasPrefix(got, "git push --") || !strings.HasSuffix(got, "origin main") {
-			t.Fatalf("%v: implied for a named remote %q", c.set, got)
+		// A refspec named on the line replaces the configured ones.
+		if got := ImpliedLine(r.ws, "git push origin main"); got != "" {
+			t.Fatalf("%v: implied for an explicit refspec %q", c.set, got)
 		}
 	}
 	if ImpliedLine(t.TempDir(), "git push") != "" || ImpliedLine(t.TempDir(), "git status") != "" {
 		t.Fatal("implied outside a repository")
+	}
+}
+
+// gitBool reads a boolean as git config --type=bool does, and a value git
+// cannot read is never taken as false.
+func TestGitBoolIsGits(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config")
+	for _, v := range []string{"true", "TRUE", "yes", "On", "false", "No", "off", "", "1", "0", "2", "-1", "1k", "1K", "0k", "2m", "1g",
+		"0x1", "0x0", "0X10", "010", "00", "+1", "-0", " 1 "} {
+		if err := os.WriteFile(cfg, []byte("[x]\n\ty = "+v+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, err := exec.Command("git", "config", "--file", cfg, "--type=bool", "--get", "x.y").Output()
+		if err != nil {
+			t.Fatalf("git cannot read %q: %v", v, err)
+		}
+		if want := strings.TrimSpace(string(out)) == "true"; gitBool(v, true) != want {
+			t.Errorf("%q: gitBool %v, git %v", v, !want, want)
+		}
+	}
+	if !gitBool("", false) {
+		t.Error("a key with no value is true")
+	}
+	for _, v := range []string{"maybe", "1x", "1_0", "0x"} {
+		if !gitBool(v, true) {
+			t.Errorf("%q, which git cannot read, was read as false", v)
+		}
 	}
 }
 
