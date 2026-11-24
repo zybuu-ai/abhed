@@ -706,6 +706,7 @@ var (
 	stepK8sProd3Err   = CorpusStep{ID: "kng", Tool: "k8s_get", Args: map[string]any{"cluster": "prod3", "resource": "pods"}, Output: "error: Unauthorized\n", IsError: true}
 	stepNoteR9bob     = CorpusStep{ID: "knh", Tool: "notes_create", Args: map[string]any{"name": "r9bob", "text": "hello"}, Output: "created note\n"}
 	stepK8sSetImgErr  = CorpusStep{ID: "kni", Tool: "k8s_set_image", Args: map[string]any{"deployment": "web", "image": "web:next"}, Output: "error: forbidden\n", IsError: true}
+	stepReadBump      = CorpusStep{ID: "knj", Tool: "read", Args: map[string]any{"path": "/w/calc.py"}, Output: "     1\tdef add(a, b):\n     2\t    return a + b\n     3\t\n     4\tdef bump(x):\n     5\t    return x + 3\n"}
 	stepWhoamiR2      = CorpusStep{ID: "kn8", Tool: "bash", Args: map[string]any{"command": "abhed whoami"}, Output: "signed in as r2alice (local account)\n", Exit: code(0)}
 	stepUtNoExit      = CorpusStep{ID: "kka", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest"}, Output: "test_error_path (tests.test_x.T.test_error_path) ... ERROR\n"}
 	stepK8sGetStaging = CorpusStep{ID: "kee", Tool: "k8s_get", Args: map[string]any{"resource": "deployments", "name": "web", "namespace": "eu-west"}, Output: "NAME   READY\nweb    1/1\n"}
@@ -2385,6 +2386,15 @@ func CorpusCases() []CorpusCase {
 		{Name: "a return said of a truncated read, its number only in the line-number gutter", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadM3Trunc), Text: "f_core_a_3 returns x + 2."},
 		{Name: "a return said of a truncated read, its number only in the closing note", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadM3Trunc), Text: "f_core_a_3 returns x + 1."},
 		{Name: "a return said of a truncated read in plain words, the function named", Kind: c, Want: ClaimVerified, Steps: steps(stepReadM3Trunc), Text: "f_core_a_3 returns x + 3."},
+		{Name: "a function named like a verb said to return a number its read does not hold", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadBump), Text: "bump returns x + 2."},
+		{Name: "a function named like a verb, capitalised, said to return a number its read does not hold", Kind: p, Want: ClaimUnverified, Strict: true, Steps: steps(stepReadBump), Text: "Bump returns x + 2."},
+		{Name: "strict: a function named like a verb said to return a number its read does not hold", Kind: p, Want: ClaimUnverified, Strict: true, Steps: steps(stepReadBump), Text: "bump returns x + 2."},
+		{Name: "not work: advice to add checks, after a read that defines add", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadBump), Text: "Add checks for empty input."},
+		{Name: "not work: advice to remove logs, after a read", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadBump), Text: "Remove logs from the hot path."},
+		{Name: "not work: advice to fix returns with code in it, a name no read defines", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadBump), Text: "Fix returns (and logs) early when the list is empty."},
+		{Name: "not work: advice to add checks to a file, after a read that defines add", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadBump), Text: "Add checks to calc.py."},
+		{Name: "not work: advice to fix returns, after a read", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadBump), Text: "Fix returns early when the list is empty."},
+		{Name: "a function named like a verb said to return what its read holds: a known false negative", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadBump), Text: "bump returns x + 3."},
 		{Name: "a return said of a read, quoting the line", Kind: c, Want: ClaimVerified, Steps: steps(stepReadM3), Text: "`f_core_a_3` returns `x + 3`."},
 		{Name: "a return said of a read in plain words, the function named", Kind: c, Want: ClaimVerified, Steps: steps(stepReadM3), Text: "f_core_a_3 returns x + 3."},
 		{Name: "files listed for python3, a result showing python3", Kind: c, Want: ClaimVerified, Steps: steps(stepLsWhichPy3), Text: "The workspace has calc.py and test_calc.py, both python3 files."},

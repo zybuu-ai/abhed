@@ -678,7 +678,7 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	// with a verb no call of this session showed ("Restart the server").
 	// A noun that looks like a verb, with a past verb after it ("Release
 	// 4.1 fixed the leak"), reports something; it is no advice.
-	if f.imperative && len(c.Evidence) == 0 && !leadNounReport(c.Text) {
+	if f.imperative && len(c.Evidence) == 0 && !leadNounReport(c.Text) && !ix.describesName(c.Text) {
 		why := ""
 		low := normText(backtickRe.ReplaceAllString(c.Text, " "))
 		switch {
@@ -2652,6 +2652,47 @@ func leadNounReport(text string) bool {
 	}
 	return saysPast(normText(strings.Trim(words[2], ".,;:!?")))
 }
+
+// describesName reports a sentence that opens with a name the session saw
+// defined or the answer quotes, a verb of what it does, and code or a value
+// ("bump returns x + 2" after a read of `def bump`): a description, not
+// advice. "Add checks for empty input." stays advice.
+func (ix *recordIndex) describesName(text string) bool {
+	words := strings.Fields(text)
+	if len(words) < 3 || !describesVerb[normText(strings.Trim(words[1], ".,;:!?"))] ||
+		!codeValueRe.MatchString(strings.Join(words[2:], " ")) {
+		return false
+	}
+	name := strings.Trim(words[0], "`")
+	if strings.HasPrefix(words[0], "`") {
+		return true
+	}
+	if !plainIdentRe.MatchString(name) {
+		return false
+	}
+	// A sentence capitalises its first word: "Bump" is the name bump too.
+	alt := regexp.QuoteMeta(name)
+	if low := strings.ToLower(name[:1]) + name[1:]; low != name {
+		alt = "(?:" + alt + "|" + regexp.QuoteMeta(low) + ")"
+	}
+	def := regexp.MustCompile(`\b(?:def|func|function|fn|sub)\s+` + alt + `\b|\b` + alt + `\(`)
+	for _, o := range ix.obs {
+		if (o.tool == "read" || o.tool == "grep") && o.usable() && def.MatchString(o.content) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	// plainIdentRe is a plain identifier; codeValueRe code or a value after
+	// a verb: a digit, an operator, a bracket, a backtick or a literal word.
+	plainIdentRe = regexp.MustCompile(`^[A-Za-z_]\w*$`)
+	codeValueRe  = regexp.MustCompile("[\\d+\\-*/=<>()\\[\\]`]|\\b(?:true|false|none|nil|null)\\b")
+)
+
+// describesVerb are verbs that say what a named thing does or is.
+var describesVerb = wordSet(`returns is calls takes uses reads writes holds yields raises throws computes prints accepts expects gives sets gets checks skips loads stores sends logs handles wraps adds subtracts multiplies divides rounds`)
 
 // leadNumberRe is a number or version said after a noun.
 var leadNumberRe = regexp.MustCompile(`^v?\d+(?:\.\d+)*[.,;:]?$`)

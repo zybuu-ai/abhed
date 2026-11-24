@@ -7614,6 +7614,21 @@
       "name": "deployed services said running now, only a failed k8s call",
       "kind": "planted",
       "hash": "62f85d886ccfcd5b"
+    },
+    {
+      "name": "a function named like a verb said to return a number its read does not hold",
+      "kind": "planted",
+      "hash": "78020c1eaa6f46c6"
+    },
+    {
+      "name": "strict: a function named like a verb said to return a number its read does not hold",
+      "kind": "planted",
+      "hash": "c532968e8dc3a258"
+    },
+    {
+      "name": "a function named like a verb, capitalised, said to return a number its read does not hold",
+      "kind": "planted",
+      "hash": "531e734967433593"
     }
   ],
   "strict": [
@@ -8381,6 +8396,16 @@
       "scenario": "git-push-failed",
       "reply": "Pushed the branch to origin.",
       "want": "unverified"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "I added `continue` to `Sum` and all 12 tests pass. ⟶ (end of script)",
+      "want": "unverified"
+    },
+    {
+      "scenario": "read-sum",
+      "reply": "Merged changes are on main once the PR closes. ⟶ Git is a version control system.",
+      "want": "completed"
     }
   ]
 }

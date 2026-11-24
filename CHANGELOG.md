@@ -1334,6 +1334,17 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Two answers ended `verified`, exit 0, under `-verify strict` with their
+  work unproven. "bump returns x + 2." after a read of `return x + 3` was
+  read as advice (a function named like a verb), which never counts
+  against an answer. A sentence that opens with a name the session saw
+  defined (`def bump`, `bump(`) or the answer quotes, a verb of what it
+  does and code or a value now describes that thing; "Add checks for
+  empty input." stays advice. And a revision that showed nothing ("(end
+  of script)") after a first answer whose test run was refused completed;
+  a revision that verifies none of the work the first answer claimed (a
+  pass, a command run, or a change naming a file or code) now leaves it
+  unproven.
 - The verifier passed a report of work after the calls for it failed:
   "Pulled, branched feat-p1, committed and pushed." after the pull failed,
   the commit was refused and the push exited 128 ended `verified`, exit 0,
