@@ -16,9 +16,10 @@ All notable changes to Abhed are recorded here. The format follows
   `info/grafts`) that was not there before. The person's own git on the
   host (`git status`, or an editor's) then followed it to configuration of
   the command's choosing, which could run a program as the person, and a
-  planted `commondir` stayed after the sandbox closed. Releases 1.2.6 to
-  1.2.9 have this with no mitigation (1.2.6 kept it even past the next
-  command). This release mitigates it and does not close it:
+  planted `commondir` stayed after the sandbox closed. Releases 1.2.3
+  (where `protect_git` began) to 1.2.9 have this with no mitigation:
+  1.2.3 to 1.2.6 kept the plant even past the next command, and 1.2.3 did
+  not hold `.git/config` itself under bubblewrap. This release mitigates it and does not close it:
   - `info` and `objects/info` are held read-only whole, so the files in
     them cannot be made (`git gc` then cannot write the commit-graph);
   - a `commondir` is moved aside soon after it is made (an inotify watch,
@@ -29,9 +30,13 @@ All notable changes to Abhed are recorded here. The format follows
   has it read by host git runs that fall between a plant and its move; in
   a measured 60 s run about a third of the host's `git status` runs ran
   the command's program. On macOS's container tier there is no watch, only
-  the sweeps. A repository a command makes in the workspace is live to
+  the sweeps, so a planted `commondir` stays for the whole command and
+  every host git run during it follows it. A repository a command makes in the workspace is live to
   host tools (an editor that opens nested repositories) until the command
-  ends, when it is taken out. Commits keep working on these tiers. Until a
+  ends, when it is taken out. Commits keep working on these tiers. Each
+  command on these tiers now looks through the workspace's folders for git
+  folders twice (as it starts, and as it ends), within the same bound; a
+  large monorepo pays that twice. Until a
   later release closes this, keep host git tooling off a workspace an
   untrusted command is writing, or use the macOS process tier (Seatbelt),
   which denies these names outright and is not affected.

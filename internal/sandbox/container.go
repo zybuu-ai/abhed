@@ -281,11 +281,6 @@ func (c *Container) runArgsWith(ctx context.Context, cwd string, p Policy, netOp
 		args = append(args, "--pids-limit", strconv.Itoa(p.MaxProcs))
 	}
 
-	if p.ProtectGit {
-		if err := c.gitg.refuse(ctx, string(c.Tier()), p.Workspace, &c.git); err != nil {
-			return nil, err
-		}
-	}
 	mounts, err := mountArgs(ctx, p, string(c.Tier()), &c.git)
 	if err != nil {
 		return nil, err
@@ -293,8 +288,12 @@ func (c *Container) runArgsWith(ctx context.Context, cwd string, p Policy, netOp
 	args = append(args, mounts...)
 	if p.ProtectGit {
 		// The workspace is the host's, bind-mounted: a commondir made there is
-		// moved aside soon after it is made (a mitigation; see gitGuard).
+		// moved aside soon after it is made (a mitigation; see gitGuard), and
+		// one moved since the last command, or during this scan, refuses it.
 		c.gitg.watchFound(&c.git, p.Workspace)
+		if err := c.gitg.refuse(ctx, string(c.Tier()), p.Workspace, &c.git); err != nil {
+			return nil, err
+		}
 	}
 
 	workdir := cwd
@@ -383,7 +382,7 @@ func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd 
 	cmd := c.command(ctx, cwd, command)
 	// What the command left in a git folder is taken out as it ends.
 	if c.policy.ProtectGit && cmd.Err == nil {
-		OnExit(cmd, func(error) { sweepGit([]string{c.policy.Workspace}, string(c.Tier()), &c.git) })
+		OnExit(cmd, func(error) { sweepGit(c.gitg.workspaces(), string(c.Tier()), &c.git) })
 	}
 	return cmd
 }
@@ -585,7 +584,7 @@ func caseSpellings(dir, name string) []string {
 func (c *Container) Close() error {
 	c.gitg.stop()
 	if c.policy.ProtectGit {
-		sweepGit([]string{c.policy.Workspace}, string(c.Tier()), &c.git)
+		sweepGit(c.gitg.workspaces(), string(c.Tier()), &c.git)
 	}
 	return c.closeEgress()
 }

@@ -637,3 +637,39 @@ func TestBwrapRefusesLinkedHooksClearly(t *testing.T) {
 		t.Fatalf("not refused clearly: %v %s", err, out)
 	}
 }
+
+// A commondir the watch moves aside while a command's scan looks (made after
+// the scan passed its folder, and moved before the scan ended) refuses that
+// command: the refusal is read after the scan, so neither misses it.
+func TestAPlantMovedDuringTheScanRefusesTheCommand(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitTree(t, ws, "x")
+	c := &Container{policy: Policy{Workspace: ws, ProtectGit: true}}
+	planted := filepath.Join(ws, ".git", "commondir")
+	gitScanned = func() {
+		// As the watch does: made, then moved aside and noted.
+		if err := os.WriteFile(planted, []byte("/elsewhere\n"), 0o600); err != nil {
+			t.Error(err)
+			return
+		}
+		entries, _ := takeOutGitPlanted([]string{planted})
+		c.gitg.noteMoved(entries)
+	}
+	t.Cleanup(func() { gitScanned = nil })
+	cmd := c.Command(context.Background(), ws, "true")
+	gitScanned = nil
+	if cmd.Err == nil || !strings.Contains(cmd.Err.Error(), "commondir") {
+		t.Fatalf("a command whose scan a plant was moved aside during ran: %v", cmd.Err)
+	}
+	if _, err := os.Lstat(planted); err == nil {
+		t.Error("the planted commondir is still there")
+	}
+	// Refused once: the next command runs.
+	if cmd := c.Command(context.Background(), ws, "true"); cmd.Err != nil {
+		t.Errorf("the command after the refusal: %v", cmd.Err)
+	}
+}

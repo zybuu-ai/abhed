@@ -8,8 +8,6 @@ type gitWatch struct{}
 
 func (gg *gitGuard) watch([]string) {}
 
-func (gg *gitGuard) takePlanted() []map[string]any { return nil }
-
 func (gg *gitGuard) stop() {
 	gg.mu.Lock()
 	gg.closed = true

@@ -1073,8 +1073,12 @@ files that exist, with `info/` and `objects/info/` held whole; a
 as each command ends and as the sandbox closes, and the next command is
 refused. That is a mitigation: a command that plants one over and over
 still has it read by some of your own git runs on the host (about a third
-in a measured run), and a repository a command makes is live to host tools
-until the command ends. On those tiers, keep host git tooling (an editor's
+in a measured run on Linux; on macOS's container tier, which has no watch,
+every run while the command lasts), and a repository a command makes is
+live to host tools until the command ends. Releases 1.2.3 to 1.2.9 had no
+mitigation at all. To find git folders, each command on these tiers looks
+through the workspace's folders twice (as it starts and as it ends), within
+the same bound; in a large monorepo that cost is paid twice. On those tiers, keep host git tooling (an editor's
 git integration) off a workspace an untrusted command is writing.
 
 Because `config` is out of

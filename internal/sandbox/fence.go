@@ -732,17 +732,18 @@ func (f *Fence) plan(ctx context.Context) (*mountns.Plan, error) {
 		}
 	}
 	if f.policy.ProtectGit {
-		if err := f.gitg.refuse(ctx, string(TierFence), ws, &f.git); err != nil {
-			return nil, errors.New(strings.TrimPrefix(err.Error(), "sandbox: the command was not run: "))
-		}
 		found, err := gitGuardFor(ctx, ws, string(TierFence), &f.git, f.policy.GitRequired)
 		if err != nil {
 			return nil, errors.New(strings.TrimPrefix(err.Error(), "sandbox: the command was not run: "))
 		}
 		protected = append(protected, found...)
 		// A commondir made in a git folder is moved aside soon after it is
-		// made (a mitigation; see gitGuard).
+		// made (a mitigation; see gitGuard); one moved since the last command,
+		// or during this scan, refuses this one.
 		f.gitg.watchFound(&f.git, ws)
+		if err := f.gitg.refuse(ctx, string(TierFence), ws, &f.git); err != nil {
+			return nil, errors.New(strings.TrimPrefix(err.Error(), "sandbox: the command was not run: "))
+		}
 	}
 	for _, h := range holders(forms, protected) {
 		r, ok := rel(h)

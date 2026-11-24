@@ -1146,11 +1146,6 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		// Bubblewrap binds only what exists, so git folders found now are bound
 		// read-only; a planted commondir is taken out first.
 		if s.policy.ProtectGit {
-			// What the watch moved aside while an earlier command ran is said,
-			// and this command refused, as the scan below does for one it finds.
-			if err := s.gitg.refuse(ctx, s.backend, s.policy.Workspace, &s.git); err != nil {
-				return &exec.Cmd{Err: err}
-			}
 			for _, ws := range s.workspaces() {
 				found, err := gitGuardFor(ctx, ws, s.backend, &s.git, s.policy.GitRequired)
 				if err != nil {
@@ -1158,6 +1153,12 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 				}
 				protected = append(protected, found...)
 				s.gitg.watchFound(&s.git, ws)
+			}
+			// What the watch moved aside since the last command, or while the
+			// scan above looked, is said, and this command refused, as the scan
+			// does for one it finds.
+			if err := s.gitg.refuse(ctx, s.backend, s.policy.Workspace, &s.git); err != nil {
+				return &exec.Cmd{Err: err}
 			}
 		}
 		for _, p := range holders(s.workspaces(), protected) {
