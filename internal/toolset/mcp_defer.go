@@ -243,11 +243,13 @@ func (d *deferredTool) Run(ctx context.Context, sess *tools.Session, args json.R
 
 // deferrable reports whether t can be wrapped without losing an optional
 // interface: one whose mere presence the loop reads (SecretArgs, SecretPaths,
-// SecretWithholder, ModeScoped, FixedArgs) or that rebuilds the tool (StoreBound) cannot be forwarded.
+// SecretWithholder, ModeScoped, FixedArgs, and the host checks HostAsker and
+// HostImplier, which only tighten a decision and must never be lost) or that
+// rebuilds the tool (StoreBound) cannot be forwarded.
 func deferrable(t tools.Tool) bool {
 	switch t.(type) {
 	case tools.SecretArgs, tools.SecretPaths, tools.SecretWithholder, tools.ModeScoped, tools.FixedArgs, tools.StoreBound, tools.PlanPrechecker, tools.Cloner, tools.Rebinder,
-		tools.FirstUser, tools.BoundSecrets, tools.CertificatePinner, tools.PasteNoticer, tools.HostAsker, tools.ReadSecrets:
+		tools.FirstUser, tools.BoundSecrets, tools.CertificatePinner, tools.PasteNoticer, tools.HostAsker, tools.HostImplier, tools.ReadSecrets:
 		return false
 	}
 	return true
