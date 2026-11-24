@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 )
@@ -508,5 +509,124 @@ func TestPromptStoppedMidTurnExitsBySignal(t *testing.T) {
 	_ = helper.Process.Signal(syscall.SIGINT)
 	if code := exitOf(t, helper); code != 130 {
 		t.Fatalf("exited %d, want 130:\n%s", code, out)
+	}
+}
+
+// Studio ends acp's stdin and signals it at once, and the signal can come
+// first: every idle session's end is still recorded before the exit.
+func TestACPSignalBeforeEOFStillClosesSessions(t *testing.T) {
+	url, _ := stubModel(t, "")
+	ws, helper, stdin, _ := stopWorkspace(t, url, "acp")
+	home := t.TempDir()
+	// The helper's home is one the test reads the record from after.
+	for i, e := range helper.Env {
+		if strings.HasPrefix(e, "HOME=") {
+			helper.Env[i] = "HOME=" + home
+		}
+	}
+	helper.Stdout = nil
+	stdout, err := helper.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := helper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 0, 64<<10), 4<<20)
+	reply := func(id int) string {
+		for sc.Scan() {
+			if strings.Contains(sc.Text(), `"id":`+strconv.Itoa(id)+`,`) || strings.Contains(sc.Text(), `"id":`+strconv.Itoa(id)+`}`) {
+				return sc.Text()
+			}
+		}
+		_ = helper.Process.Kill()
+		t.Fatalf("no reply %d", id)
+		return ""
+	}
+	send := func(id int, method string, params any) {
+		raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+		_, _ = stdin.Write(append(raw, '\n'))
+	}
+	send(1, "initialize", map[string]any{"protocolVersion": 1})
+	reply(1)
+	var ids []string
+	for i := 0; i < 3; i++ {
+		send(2+i, "session/new", map[string]any{"cwd": ws, "mcpServers": []any{}})
+		var created struct {
+			Result struct {
+				SessionID string `json:"sessionId"`
+			} `json:"result"`
+		}
+		_ = json.Unmarshal([]byte(reply(2+i)), &created)
+		ids = append(ids, created.Result.SessionID)
+	}
+	go func() {
+		for sc.Scan() {
+		}
+	}()
+	// The signal first, the end of stdin about 100 µs after, as Studio's stop gives them.
+	_ = helper.Process.Signal(syscall.SIGTERM)
+	for start := time.Now(); time.Since(start) < 100*time.Microsecond; {
+	}
+	_ = stdin.Close()
+	if code := exitOf(t, helper); code != 128+int(syscall.SIGTERM) {
+		t.Fatalf("acp exited %d", code)
+	}
+	t.Setenv("HOME", home)
+	cfg, err := config.LoadWith(ws, config.LoadOptions{Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := openRecord(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rec.Close()
+	for _, id := range ids {
+		evs, err := rec.Events(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ended := false
+		for _, ev := range evs {
+			ended = ended || ev.Type == agent.EvSessionEnded
+		}
+		if !ended {
+			t.Fatalf("session %s has no session.ended (%d events)", id, len(evs))
+		}
+	}
+}
+
+// A lone stop signal with stdin open exits soon: after the grace for stdin.
+func TestACPLoneSignalExitsAfterTheGrace(t *testing.T) {
+	url, _ := stubModel(t, "")
+	_, helper, stdin, _ := stopWorkspace(t, url, "acp")
+	defer stdin.Close()
+	helper.Stdout = nil
+	stdout, err := helper.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := helper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	sc := bufio.NewScanner(stdout)
+	raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": 1}})
+	_, _ = stdin.Write(append(raw, '\n'))
+	if !sc.Scan() {
+		t.Fatal("no reply to initialize")
+	}
+	go func() {
+		for sc.Scan() {
+		}
+	}()
+	start := time.Now()
+	_ = helper.Process.Signal(syscall.SIGTERM)
+	if code := exitOf(t, helper); code != 128+int(syscall.SIGTERM) {
+		t.Fatalf("acp exited %d", code)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("a lone signal took %v to exit", took)
 	}
 }

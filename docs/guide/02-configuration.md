@@ -1,7 +1,9 @@
 # Configuration
 
 Abhed reads `.abhed/config.json` from the workspace. `abhed init` writes a
-starter file; everything below is optional and has a default.
+starter file; everything below is optional and has a default. The file must
+be a plain file of at most 4 MiB, or a link to one inside the workspace; see
+[The workspace file](#the-workspace-file).
 
 The workspace file is untrusted until you trust its exact contents, because a
 repository can ship one. Until then Abhed applies only what makes it stricter
@@ -31,7 +33,7 @@ configuration](#trusting-the-workspace-configuration).
 
 | Section | What it controls |
 |---|---|
-| `model` | providers and which one is default — [Models](03-providers.md); `ollama.assist` (`ask`, `local` or `off`): what Abhed offers when a chosen local Ollama model is not working yet — [A local Ollama model](03-providers.md#a-local-ollama-model); `completion`: the provider Studio's inline completions use, and `next_edit` and `commit` for its next-edit suggestions and commit messages (each falls back to `completion`) — [Inline completions](34-inline-completions.md); `allowed`: the only models any session may use — [Allowed models and MCP servers](#allowed-models-and-mcp-servers) |
+| `model` | providers and which one is default — [Models](03-providers.md); `ollama.assist` (`ask`, `local` or `off`): what Abhed offers when a chosen local Ollama model is not working yet, `ollama.auto_start` (`false`: never start Ollama without a click) and `ollama.idle_stop_minutes` (how long a server Abhed started may go unused before Abhed stops it; 10 by default, `-1` only at exit) — [A local Ollama model](03-providers.md#a-local-ollama-model); a provider's key by `api_key_env` or `api_key_secret`, stored with `abhed provider login` — [Authentication](03-providers.md#authentication); `abhed models add` and `abhed models default` change this section for you — [Adding models](03-providers.md#adding-models-and-choosing-the-default); `completion`: the provider Studio's inline completions use, and `next_edit` and `commit` for its next-edit suggestions and commit messages (each falls back to `completion`) — [Inline completions](34-inline-completions.md); `allowed`: the only models any session may use — [Allowed models and MCP servers](#allowed-models-and-mcp-servers) |
 | `completion` | `enabled` and `local_only`: turn Studio's model features (inline completions, next-edit suggestions, commit messages) off, or keep them to a model on this machine — [Inline completions](34-inline-completions.md) |
 | `permissions` | what runs unattended — [Permissions](04-permissions.md) |
 | `mode` | `default`: the mode new sessions start in where `permissions.mode` names none, such as the CLI's and Studio's new chats in this workspace; a `-mode` flag is chosen over it (`plan`, `default`, `accept-edits` or `auto`; never `bypass`, which is chosen for a session each time). `permissions.mode`, when set, wins, and a managed mode binds. An untrusted workspace file may only set it narrower than sessions would start in |
@@ -42,22 +44,23 @@ configuration](#trusting-the-workspace-configuration).
 | `storage` | in-memory or Postgres |
 | `control_plane` | `enabled` serves `/v1/sandboxes` from `abhed serve` (off); its limits and restart policy; `per_session` gives each session a sandbox of its own (off, but on by itself for an `abhed serve` with more than one account); `docker` and `podman` register the container drivers — [Sandboxes over the API](22-sandboxes.md) |
 | `auth` | who may use a server deployment; `cli`: `abhed login` for local accounts — [TLS and command-line sign-in](26-tls-and-cli-login.md) |
-| `server` | how `abhed serve` is reached: `tls` (certificates, client certificates, reload), origins, drain; `shared_sessions` keeps every account in the server's one workspace instead of the sandbox per session a multi-account server gets by default (off) — [TLS and command-line sign-in](26-tls-and-cli-login.md), [below](#stopping-the-server), [what accounts share](../ops/enabling-auth.md#what-accounts-share) |
+| `server` | how `abhed serve` is reached: `tls` (certificates, client certificates, reload), origins, drain; `shared_sessions` keeps every account in the server's one workspace instead of the sandbox per session a multi-account server gets by default (off); `background` turns on background jobs, a Team feature ([Background jobs](37-background-jobs.md)) — [TLS and command-line sign-in](26-tls-and-cli-login.md), [below](#stopping-the-server), [what accounts share](../ops/enabling-auth.md#what-accounts-share) |
 | `skills` | where skills are loaded from — [Skills](06-skills.md) |
 | `agents` | where subagent definitions are loaded from, or `disabled` — [Agent definitions](17-agent-definitions.md) |
 | `subagents` | what a background task's result does while the session is idle — [Parallel subagents](14-parallel-subagents.md#background-tasks) |
 | `extensions` | processes that can intercept — [Extensions](07-extensions.md) |
+| `plugins` | which plugin bundles may be installed and loaded: `disabled`, `require_signature`, `allowed_publishers`, `allowed_bundles`, `sources`, `org_source`, `trusted_root` — managed only, [Plugins](41-plugins.md#policy) |
 | `mcp` | Model Context Protocol servers — [MCP](08-mcp.md); `allowed` and `denied`: which servers may ever start — [Allowed models and MCP servers](#allowed-models-and-mcp-servers) |
 | `custom_providers` | providers added without a rebuild |
 | `network` | `upstream_proxy`: a corporate HTTP proxy all of Abhed's connections, and the allowlisted commands' traffic, go out through, with a CA bundle, credentials by secret name, a `no_proxy` list and `resolve_via_proxy` (off); never from a workspace, and the managed file can force it — [Network policy](21-network-policy.md#a-corporate-upstream-proxy) |
 | `web_search` | whether the agent can search the web, with which provider — managed only, [below](#web-search) |
 | `web_fetch` | whether the agent can read a web page, and from which hosts — managed only, [below](#web-fetch) |
-| `retrieval`, `rag` | the local index, and external corpora. Each session builds the index at start; with `retrieval.embed`, the embeddings are kept in `~/.abhed/index`, so a start embeds only chunks that changed, and `abhed index` builds them ahead of a session |
+| `retrieval`, `rag` | the local index, and external corpora. Each session builds the index at start; with `retrieval.embed`, the embeddings are kept in `~/.abhed/index`, so a start embeds only chunks that changed, and `abhed index` builds them ahead of a session. A file a read deny or ask rule covers is never indexed or embedded, and the `search` tool leaves it out before ranking, as if it were not indexed. The CLI and the SDK build the index to the session's own rules; `abhed serve` builds one index for every session from the configured rules, so a rule an edition's layer or a session adds keeps a file out of the hits but not out of that index or the embedding endpoint |
 | `k8s`, `ssh` | infrastructure tools, off by default; `k8s.clusters` names the only servers `k8s_login` sends a token to — [Clusters and machines](../ops/infrastructure.md) |
 | `additional_dirs` | directories outside the workspace the agent may reach |
 | `memory` | `auto`: whether the agent may keep notes (off); `import_depth`: how deep `@` imports go (5, at most 10) — [Memory](19-input-and-memory.md#memory) |
 | `rules`, `commands` | `dirs`: directories of rule files and of custom commands — [Input, memory and commands](19-input-and-memory.md) |
-| `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file); `bash_checkpoints` (`on`, `off` or `required`), `bash_checkpoint_mb` (32) and `bash_checkpoint_files` (20000): what is kept before each `bash` command so `/undo` takes its changes back — [Records](12-records.md#changes-made-through-bash) |
+| `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file); `bash_checkpoints` (`on`, `off` or `required`), `bash_checkpoint_mb` (32) and `bash_checkpoint_files` (20000): what is kept before each `bash` command so `/undo` takes its changes back — [Records](12-records.md#changes-made-through-bash); `diagnostics` (`auto`, `on` or `off`), `diagnostics_max` (20) and `diagnostics_wait_ms` (3000): a language server's diagnostics after the agent's edits — [Language servers](33-language-servers.md#diagnostics-after-the-agents-edits) |
 | `suggest` | the next prompt suggested after a turn in the terminal, the workbench, the console and Abhed Studio — [below](#suggestions) |
 | `verify` | whether each answer is checked against the session's record (`off`, `label`, `strict`), the critic, and the completion contract — [below](#verified-answers), [Verified answers](29-verified-answers.md) |
 | `monitor` | the supervisor, which reviews each call after policy and may only tighten the decision: on with the rules judge by default; `judge: "model"` adds a model judge — [The supervisor](04-permissions.md#the-supervisor) |
@@ -70,6 +73,7 @@ configuration](#trusting-the-workspace-configuration).
 "context": {
   "offload_at": 0.60,
   "compact_at": 0.80,
+  "compact_at_tokens": 200000,
   "memory_files": ["ABHED.md"]
 }
 ```
@@ -102,8 +106,26 @@ check reserves headroom for the turn about to happen, so a large tool result
 cannot take a session from under the threshold to over the hard limit in one
 step. The headroom is a quarter of the window, or half of `compact_at`'s
 share of it when that is less, so a low value still waits for history. The
-first check after a compaction leaves the headroom out, so a small window
-is not summarized twice in a row. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
+check made after a turn's tool results have landed, and the first check after
+a compaction, keep room for the model's reply only (its output cap, at most
+an eighth of the window), so a small window is not summarized twice in a row
+and the next call still has room to answer. Tokens are counted as the model
+counts them: the estimate is scaled by what the provider reported for the
+last prompt, since code, JSON and YAML run to more tokens per character than
+prose.
+
+**`compact_at_tokens` — a size ceiling.** However large the window, the
+conversation is compacted before it grows past this many tokens: the
+threshold, the headroom, the history kept after a compaction, offloading and
+the cap on each tool result all work within a window of `compact_at_tokens`
+divided by `compact_at`. Unset or 0 means 200,000. Without it a 1M-token model
+compacted at 0.90 sends calls of about 650,000 tokens, each costing dollars
+when the cache misses and tens of seconds to prefill; 200,000 is also the
+limit some accounts are held to. A window smaller than the ceiling is
+unaffected. Set it to the model's window to use all of it. A value under
+16,384 is refused: an agent's system prompt and tool schemas take several
+thousand tokens, so a smaller ceiling would compact on every turn and leave
+each tool result a few hundred characters. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
 and the token estimate is approximate. Not much below 0.5 either: a
 compaction keeps recent turns up to about half the window, so below roughly
 0.3 what it keeps is already over the threshold and it compacts on almost
@@ -115,9 +137,69 @@ name or code word given there survives however the summary restates it.
 after compaction. Project conventions belong there. The full order, imports
 and rules are in [Memory](19-input-and-memory.md#memory).
 
-**Size `context_window` for what the model can actually hold.** A local server
-reports the size it chose at startup; asking for more does not fail loudly, it
-simply stops fitting once a long session fills it.
+**The window is known without configuring it.** Abhed takes each model's
+context window and reply cap from its own table of published limits, asks the
+endpoint where it will say, and assumes 32,768 tokens for a model it cannot
+place, saying so; [Context windows](03-providers.md#context-windows) has the
+details, and `context_window` on the provider overrides all of it. A local
+server runs a model with the window it was started with, not the one the model
+was trained for; asking for more does not fail loudly, it simply stops fitting
+once a long session fills it, so for a local server either let Abhed read the
+window or set `context_window` to match the server.
+
+**A request refused as too long is recovered once.** When a provider refuses a
+request as longer than the window (Anthropic's `prompt is too long`, OpenAI's
+`context_length_exceeded`, Gemini's input token count, llama.cpp, vLLM, TGI,
+Mistral, watsonx and Ollama's own wording), the window is lowered to the limit
+it names, every tool result is cut to the new window's share, the history is
+compacted, and the turn is asked once more; the retry does not count as
+another turn. A refusal that names no limit (Bedrock's `Input is too long for
+requested model`) lowers the window to four fifths of the refused request's
+size, which brings the retry to about two fifths of it, so it fits any limit
+down to about half the refused size. A limit under 2,048 tokens is not
+believed. Limits are kept only for a signed-in account: a limit of 16,384
+tokens or more that the provider named is kept in `context-windows.json` in
+that account's (or server sign-in's) own folder under `~/.abhed/accounts`, so
+its next session, after a restart too, starts within it instead of paying a
+refused call to learn it again. On a machine where sign-in is not set up yet,
+the one person working keeps them in `~/.abhed`, as before sign-in. Nothing is
+kept before the sign-in gate has said who is working, for a guest (nothing is
+read, made or written, so a guest neither leaves the file behind nor sees an
+account's limits), or by `abhed doctor`, which probes the model without
+keeping its window. It is
+kept per provider type, endpoint, model and account, under a keyed hash of
+them (HMAC-SHA256 under a random secret made once in `context-windows.key`
+beside it, mode 0600, and used only for that folder): the file holds no URL, user,
+password, query or key, and without the secret it cannot confirm a guess of a
+credential, however short. When the secret cannot be read or made, nothing is
+kept and limits are learned per process. It lowers the table's or the
+endpoint's window but never a configured `context_window` (a refusal within a
+session still lowers that one for the session), and is learned again after 30
+days, since accounts are moved to larger windows. A smaller limit, which a
+gateway falling back to another model can relay, lasts only for the process,
+as does a limit Abhed only inferred (below a refusal that named none, or from
+a prompt a server cut). `abhed models list` shows a kept limit as "named by
+the provider on" its date, and `abhed models forget-window NAME`
+drops it for the provider configured as NAME. The file is the person's own
+state: the agent cannot write it and a workspace cannot set it. An OpenAI-shaped refusal whose prompt was within the limit and whose
+reply cap was not (`N in the messages, M in the completion`) is not treated as
+too long: lowering `max_tokens` is the fix, and compacting would not help. A second refusal in a row ends the
+run with what happened (the limit the provider named, or that it named none and
+how large the refused request was) and what to do: start a new conversation, `/compact`
+with what to keep, or `/model` for a larger window. It never loops. Both are
+recorded as `context.overflow` (`action` `compacted_retry` or `gave_up`). A
+server that cuts an over-long prompt instead of refusing it (Ollama) is caught
+by the prompt size it reports: the window is learned, the conversation
+compacted before the next call, and `context.overflow` records `truncated`.
+
+**Large tool results are cut before they enter the conversation.** One result
+may hold at most a quarter of the window, or of the window `compact_at_tokens`
+sets when that is smaller (about 200,000 characters on a 1M-token model at the
+default ceiling, about 29,000 on a 32k one). The head and tail are kept, and the
+cut says how much was left out and how to read it: the whole output is in the
+session record, and `recall` with the result's `call_id` and an offset reads
+the rest. This applies to every tool: a `k8s_get` of many pods, a long `bash`
+output, a `web_fetch`.
 
 **Each request to the model is bounded twice.** `call_timeout_seconds` (600 by
 default) is the most one request may take, from sending it to the last byte of
@@ -130,6 +212,40 @@ call is not retried on its own, so a hung endpoint costs one wait, not four.
 Raise `stall_timeout_seconds` for a local model whose prefill of a long prompt
 takes longer than five minutes. 0 keeps the default; a negative value is
 refused.
+
+**`max_concurrent_requests` bounds the requests sent to a provider at once.**
+Requests past it wait in Abhed, their timeouts start only when they are sent,
+and the wait is shown and recorded as `model.waiting`. Parallel subagents each
+call the model; a server that serves one request at a time queues the rest and
+sends them nothing until their turn, which the stall timeout used to end as a
+hung endpoint. The bound belongs to the server and model, not to one provider
+entry: every adapter in one Abhed process that reaches the same model at the
+same base URL (the session's, a subagent's on a named model, Studio's
+completions, and providers of different types naming that endpoint) shares it,
+and the smallest bound any of them sets applies to all. The bound only goes
+down within one Abhed process: a long-running `abhed serve` or Studio keeps the
+smallest bound it has seen for a server and model, even after the configuration
+raises it, until it is restarted. Two providers that reach the same hosted model
+with different accounts share it too. Base URLs that differ
+only by case, a default port or a trailing slash are one server. 0 (the
+default) is 1 for type `ollama` and no bound of its own for every other type.
+Ollama's FAQ gives `OLLAMA_NUM_PARALLEL`, the requests each model serves at
+once, as "default 1" (docs.ollama.com/faq, read 9 November 2026); some earlier
+Ollama releases chose 1 or 4 from the memory free. Set the key to the server's
+parallel slots (`OLLAMA_NUM_PARALLEL`, llama.cpp's `--parallel`, vLLM's batch)
+to let that many through. It applies to the OpenAI-compatible types (`ollama`,
+`vllm`, `llamacpp`, `tgi`, `sglang`, `openai-compatible` and the hosted
+gateways); a value above 0 on any other type, or a negative one, is refused at
+startup on every provider, not only the default.
+
+**`max_tools` is the most tools one request to a provider offers.** 0, the
+default, is 128, the limit OpenAI-compatible endpoints set; it is used for
+every type unless set. Searched-for MCP tools are unloaded, least recently
+used first, to stay within it, and a request that the tools always offered
+still put past it is refused before it is sent, naming the count and the
+limit; see [MCP limits](08-mcp.md#limits). Set it lower for a local model
+that handles few tools well, or higher for a provider that takes more. A
+negative value is refused at startup.
 
 ## Limits
 
@@ -145,11 +261,154 @@ refused.
 `nested_subagents` is a boolean, off by default: while it is off, a subagent
 cannot start one of its own, and its `task` or `tasks` call is refused.
 
+`max_continues` (3 by default) is how many times a person may continue a run
+that stopped at `max_turns` in one conversation, with `/continue` or
+`abhed -p --continue`; 0 turns continuing off. See [Turn
+limit](04-permissions.md#turn-limit).
+
+`reasoning_stall_tokens` (8000 by default) cuts a model reply that has only
+reasoned, with no text or tool call, past that many reasoning tokens
+(counted at about four characters a token), instead of holding it to the
+call's ten-minute cap. `reasoning_stall_seconds` (300 by default) is a time
+backstop for the same, held to half the provider's `call_timeout_seconds`
+(which wins over the 30-second floor)
+so that it, not the call's cap, ends a slow reasoning reply and the turn
+can ask again. Neither cuts a reply whose reasoning is still within
+the request's own thinking budget (`thinking_budget`), which raises the token
+bound to it. Values under 1000 tokens or 30 seconds are raised to those
+floors, so a repository's configuration cannot cut every thinking reply. A
+slow local model reasoning at a few tokens a second may need a higher
+`reasoning_stall_seconds`. Only reasoning the provider streams is watched:
+a model that reasons out of sight (OpenAI's o-series over chat completions)
+is bounded by the call's own timeouts. Gemini streams summaries of its
+thoughts, far shorter than the thinking it bills, so with a thinking budget
+set a Gemini reply rarely reaches the bound and is held by the call's
+timeouts instead.
+
+A cut reply is charged as any cut call is (see below), and the turn asks once
+more, with thinking off (no effort, and no thinking budget sent; for
+Ollama, whose `/v1` endpoint ignores `think`, `reasoning_effort: "none"` as
+well) and a nudge
+to answer or make the one tool call it needs. If an answer arrives just as
+the cut comes, it is kept; a text answer cut part way is kept and the model
+asked to finish it (`-p` returns the two parts as one answer), and a second
+cut before a full reply ends the run `stalled`. A second cut reply before the model next answers ends the run
+`stalled`, with the reasoning kept in the record, and each cut reply counts
+toward the three failed replies in a row that end a run. A workspace may only
+lower either bound.
+
 `max_budget_tokens` caps the whole session: the primary agent and every
 subagent it spawns draw on one allowance, so a fan-out cannot multiply spend
 invisibly. A session that exhausts it ends with the terminal reason
 `max_budget`, checked at a turn boundary so a turn already in flight
 finishes. Zero means no cap.
+
+`max_budget_usd` caps the session's cost in US dollars the same way,
+subagents included. A run that reaches it ends `max_budget` (exit `3`) and
+records `budget.stopped` with what was spent. With a dollar cap set, a model
+that has no price is refused before any call is made, rather than run at a
+guessed cost. Every model call passes that gate before its request and is
+charged after it: the turns, the critic, suggestions, the compaction summary,
+pipeline model steps, Studio's completions, next edits and commit messages,
+and a fallback model, which is not moved to while a dollar cap is set and it
+has no price. A completion model on this machine is no exception: a local
+address may front a paid model, so price it, at 0 if it is free. Under a
+managed or org dollar cap the refusal says an administrator sets the price:
+in the machine's managed file, or, for a model served on this machine, at 0
+in the org policy ([Signed org policy](35-org-policy.md)).
+
+`budget_spent: true` stops every run before its first model call with a
+`budget.stopped` of reason `allowance` (exit `3` under `-p`), and refuses
+every other call, a Studio completion included. An org server sets it in
+the policy it serves once what is left of a person's budget is nothing; a
+lower layer can only turn it on.
+
+What a provider reports is checked before it is charged, and anything
+raised is marked `estimated` on the call:
+
+- A whole prompt (with an Anthropic cache's reads and writes) reported as
+  nothing, or under a quarter of the request's own count, is charged at that
+  count, about four characters a token. A server that reports only the part
+  of the prompt it did not have cached (Ollama reuses its KV cache) reads
+  higher in Abhed's token totals and token budget than it says on warm turns;
+  a local model priced at 0 moves no dollars.
+- Output reported under a quarter of what came back is charged at what came
+  back.
+- A cut call (cancelled, timed out, or ended by an error once its stream
+  opened) is charged at least its prompt and what came back. Under a dollar
+  cap, or for a model that may reason out of sight (the official OpenAI
+  API's o-series and gpt-5, or any server with a `think` switch other than
+  a local one known to stream its reasoning: Ollama, llama.cpp, or vLLM,
+  TGI or SGLang on a loopback address), it is charged at the most
+  the request allowed: the provider took the request and worked, and bills
+  what it produced whether or not it arrived, so interrupting a run, or a
+  connection that drops, does not save money under a cap.
+- Only a call the provider never accepted (an error status, a connection
+  never made) is not charged.
+- Three failed replies in a row with no usable text or tool call (a reply
+  whose tool call could not be parsed included) end the run
+  `retry_exhausted` whatever the error said (a transport error's text
+  changes with its port), rather than being asked again to the turn limit.
+  The count starts again with each run.
+
+A cap set by the managed or org configuration also fixes the prices it is
+spent by (see below).
+
+A server can also hold a session to limits kept outside it, such as an
+organisation's periodic budgets. Those are asked before every turn, and a
+spent one ends the run `max_budget` with a `budget.stopped` of reason
+`allowance`, whose `scope` and `message` name the limit.
+
+### Prices
+
+Each model call is priced from its model's name as sent to the provider,
+in US dollars per million tokens. For `azure-openai` that name is the
+deployment, so `pricing` is keyed by deployment name. Abhed carries the
+Standard-tier list prices of some hosted models: the Claude models checked
+on 23 November 2026 against platform.claude.com/docs/en/about-claude/pricing
+(every current Fable, Mythos, Opus, Sonnet and Haiku model), the OpenAI ones
+on 9 November 2026 against developers.openai.com/api/docs/pricing. The list
+prices live in the same table as the [context windows](03-providers.md#context-windows),
+and a name is matched to it once the wrapping a gateway or cloud puts on it
+is removed: a `vendor/` prefix (`anthropic/claude-opus-5-5`), a Bedrock
+region and vendor (`us.anthropic.claude-opus-5-5`, `anthropic.claude-opus-5-5-v1:0`),
+a Vertex version (`claude-opus-5-5@…`), and a Claude snapshot date. Only the
+model's own id is priced, never a family: another vendor's dated snapshot
+(`gpt-4o-2024-05-13`) keeps its own price, and is unpriced here. These are
+Anthropic's and OpenAI's own list prices. Amazon Bedrock and Google Cloud
+invoice Claude at their own prices, and a regional or multi-region endpoint
+costs 10% more than a global one: a Bedrock id that names a geography
+(`us.anthropic.…`, `eu.…`, `apac.…`) is priced at the list price plus 10%, and
+any other at the list price, as an estimate. A Vertex region is not in the
+model id, so a regional Vertex endpoint is priced as global. Set `pricing`
+for those names when a dollar budget must match the cloud's bill.
+
+Claude Haiku 5.5 is priced by prompt length, as Anthropic bills it: a call
+whose prompt is over 100,000 tokens, counting cache reads and cache writes,
+pays $0.50/$2.50 per million instead of $0.10/$0.50 (and the matching cache
+prices), and each call is priced on its own, so a dollar budget spends what
+that call cost. Models priced by prompt length without a published tier
+here, such as the gpt-6 family, and retired models are not in the list, so
+they are unpriced until `pricing` names them. `pricing` sets other models,
+or overrides the list:
+
+```json
+"pricing": {
+  "gemma4:26b": {"input": 0, "output": 0},
+  "acme-large": {"input": 3, "output": 15, "cached_input": 0.3, "cache_write": 3.75}
+}
+```
+
+`cached_input` and `cache_write` default to the input price. A model with no
+price is shown as unpriced: its cost is in no total and is never guessed. A
+price with a negative figure is no price. `pricing` is an operator's
+setting: a workspace's configuration cannot set it, trusted or not, since a
+lower price would stretch a dollar budget. When the managed or org
+configuration sets `limits.max_budget_usd`, prices come only from that
+layer and the built-in list; `pricing` from the person's own file is set
+aside with a warning. The cost of each call is in its
+`model.call` event (`cost_usd`), and the session's in `session.ended`;
+`/usage`, `-p -output-format json`, HawkEYE and Studio show them.
 
 ## Background tasks
 
@@ -203,6 +462,42 @@ sessions started after it. See [Agent definitions](17-agent-definitions.md).
 "sandbox": { "allow_network": false }
 ```
 
+**Nothing a command starts outlives it.** When a foreground command ends,
+every process it started is ended with it, before the command is reported
+as finished; a background shell's are ended by `shell_kill` or the session
+ending ([Background commands](05-tools.md#background-commands)); and a
+session's sandbox closing ends whatever its foreground commands still run.
+A terminal's shell ends with its terminal, never with the sandbox. On
+Linux's process tier, bubblewrap does this itself: each command has a
+process namespace of its own that dies with it. On macOS, which has no such
+namespace, and on the `none` tier, Abhed ends only processes it can show
+are the command's own, and never one found otherwise:
+
+- those in the session the command leads;
+- those seen as its descendants while it ran: the process table is read
+  every 20 ms, and a process is followed when its parent is followed, even
+  after it leaves the session or its parent exits;
+- on macOS, one handed to launchd before a read saw it, when the process
+  that forked it was followed: the kernel keeps the unique id of the
+  parent that forked a process, and unique ids are never reused.
+
+Every process a command starts also carries its random marker,
+`ABHED_COMMAND_ID`, but a marker is not proof: an app started from a
+command's terminal inherits it, and `launchctl setenv` can plant it in any
+app. A marked process that is neither in the session nor followed is named
+in the command's result and left running, never ended.
+
+A process can still escape, and keep writing what the sandbox lets
+commands write (the workspace, `/private/tmp`, the account's temp folder)
+after the command and the session have ended. On macOS: one that starts a
+session of its own and whose parent was itself born and gone within one
+20 ms read, as a fast double fork does. On Linux's `none` tier, which has no
+such parent record: one that starts a session of its own and loses its
+parent within one read. Either is named in the command's result if it kept
+the marker. The command line, the
+server and the GitHub Action all run on this; on a Mac that is a person's
+own, use the container or vm tier for code you do not trust.
+
 Shell commands run in the sandbox. On the process tier a command may write the
 workspace and a few shared folders, not only the workspace:
 
@@ -216,7 +511,8 @@ workspace and a few shared folders, not only the workspace:
   `TMPDIR`. The toolchain caches commands write are folders of the
   sandbox's own, in `TMPDIR` and removed when the session ends:
   `XDG_CACHE_HOME`, `GOCACHE`, `GOMODCACHE`, `npm_config_cache`,
-  `PIP_CACHE_DIR` and `CARGO_HOME` point there, so nothing a command writes
+  `PIP_CACHE_DIR`, `CARGO_HOME` and `xcrun_db` (the cache of Apple's
+  `/usr/bin` shims) point there, so nothing a command writes
   reaches the real `~/.cache`, `~/Library/Caches`, `~/.npm`,
   `~/.cargo/registry` or `~/go/pkg/mod`, which stay readable. Go modules
   already in your module cache are read from it through `GOPROXY`
@@ -224,7 +520,12 @@ workspace and a few shared folders, not only the workspace:
   does; npm, pip and cargo start from an empty cache and need the network
   for what they fetch. Commands read in home only the workspace, `read_only_paths`, the
   toolchains, the caches and the files git, editors and shells read (see
-  [security posture](../trust/security-posture.md));
+  [security posture](../trust/security-posture.md)). Home here is both
+  `$HOME` and the account's own home when `HOME` names another folder (from
+  the user database, and, whatever that says, the `/Users/NAME` or
+  `/home/NAME` folder that holds `$HOME`, `/Users/Shared` excepted, which
+  is every account's; a lookup that fails is said in `abhed doctor`'s
+  sandbox line);
   `"readable_home": true` lets them read the rest of home but the credential
   paths again, and `read_only_paths` names a folder they need. `"shared_caches": true` lets commands write the real
   folders again, shared with the rest of your machine, where a command can
@@ -268,8 +569,11 @@ tells you within a few seconds, in every session that may listen on that
 port, and records it (`sandbox.port_contested`). It tells again within
 one read whenever a program it has not told of starts listening there,
 so a command cannot use the warning up in advance with programs of its
-own; only the same programs coming back after the port cleared are told
-at most once a minute. A
+own. Nothing holds a notice back from you: Abhed Studio keeps one entry
+per port and updates it in place with how many programs have joined. The
+record and the log take a port's first notice at once and then at most
+one entry per port every 30 seconds, with the joins in between, so a
+command that keeps starting listeners cannot flood them. A
 server and the workers it forks share one socket and count as one
 program, as does one program listening on both `127.0.0.1` and `::1`;
 separate sockets bound with `SO_REUSEPORT` count as more than one. It
@@ -390,6 +694,14 @@ mount namespace); `false` turns it off for the terminal CLI, `abhed -p` and
 `abhed rpc`. Studio and `abhed serve` hold them whatever it says. A workspace
 file you have not trusted cannot set it.
 
+`"host_git": false` keeps `git fetch`, `pull`, `push`, `clone` and
+`ls-remote` in the sandbox, with no credentials, instead of running their
+network part through your own git on the host (see
+[Permissions](04-permissions.md#git-fetch-pull-push-and-clone-through-your-own-git)).
+Any file may set it false, a workspace's too; none can set it back. In the
+managed file it is the organisation's switch, and the session tells the
+model why ("ask your administrator").
+
 `"terminal": "lines"` makes the workbench terminal run each line as a
 policy-checked command of its own instead of an interactive shell; the
 [workbench guide](16-workbench.md) says what each mode checks.
@@ -423,6 +735,78 @@ saying so and pointing at `web_search` and `web_fetch`. A command that exits 0
 gets the note only when it ran a network client (`curl`, `wget`, `git fetch`,
 `npm`, `pip` and the like) and the failure is in its last five lines, so
 output that merely mentions such an error, a log being read, does not.
+
+### Choosing the tier
+
+```json
+"sandbox": { "tier": "process" }
+```
+
+With no `tier`, Abhed uses the strongest tier available that meets
+`sandbox.min_tier`. `tier` chooses one instead: `process`, `container`, `vm`
+or `fence`. That tier is used or the session is refused; no other tier stands
+in for it, and it may not be weaker than `min_tier`, the managed file's
+included (`"tier": "process"` under a managed `"min_tier": "container"` is
+refused at load). It is your own setting: set it with
+`/config set sandbox.tier process|container|vm|fence|auto` (a chosen tier
+asks first; `auto` and a stronger tier do not), or in `~/.abhed/config.json`.
+A workspace file cannot set it, and the managed file pins it when it does.
+
+On a Mac, with no `tier`, no `sandbox.image` or `ABHED_SANDBOX_IMAGE`, and
+nothing in the managed file setting `tier` or `min_tier`, the container tier on
+the default image is passed over for the process tier, which still meets the
+minimum: with podman running, the bare default image (`debian:bookworm-slim`,
+no git, curl, ping or node, and no network to install them) is no place for
+your own workspace. Naming an image is choosing the container, so it is kept.
+Choose `"tier": "container"` to use the default image anyway. `abhed doctor`
+says why the tier was chosen, what the image lacks, and how to choose another
+within the minimum. Where an image is looked in (doctor, or the tier choice),
+it is started as commands are (its entry point, then `/bin/sh -c`), once per
+process and for at most 10 seconds; a look that fails keeps the container and
+the choice says so.
+
+### Opening the network from a session
+
+Commands have no network by default, and that stays the default. Where the
+network is off and the managed file does not set `sandbox.allow_network`,
+`sandbox.network` or `egress`, you can open it without editing a file. Only
+you can: the agent is told the network is off and that you can open it, and
+says what needs it. When one of its commands fails for the network, Studio
+offers Allow Network for This Workspace, Only a Host and This Chat Only, each
+asked first; at the terminal, `/network workspace`, `/network host <name>` or
+`/network once [name]` does the same, and `/network` alone says what commands
+can reach.
+
+- **This workspace:** any host, over http and https.
+- **One host:** that host, over http and https.
+- **This chat only:** any host, or one, for this chat; not kept.
+
+Commands reach what you opened through the session's egress proxy, so deny
+rules still win, and ssh, ping and other protocols still fail. A workspace or
+host choice is kept with the workspace's other kept approvals
+(`~/.abhed/state/workspace-grants.json`), applied before the first command of
+a later session there, listed in Manage Kept Approvals, and revoked there
+(`_abhed/grants/revoke` with id `network`); a revoke applies to new chats.
+Where the managed file holds the network nothing is offered and nothing kept
+is used. A tier that cannot hold the proxy (a container tier on a VM without
+`control_plane.relay_binary`) says so instead.
+
+### What the session tells the model
+
+From the first message you send, the model is told what this session can do,
+from its real state: the tier, the network (off, open, an allowlist, what
+you opened, or the host's own where there is no sandbox), whether git remote
+operations (fetch, pull, push, clone, ls-remote) have their network part run through
+your own git on the host for it (on the process tier and the fence where
+the sandbox holds git's configuration; see
+[Permissions](04-permissions.md#git-fetch-pull-push-and-clone-through-your-own-git)), the
+Kubernetes clusters configured when Kubernetes is enabled, and the tools the
+container image lacks, as one line of printable text. It is asked not to find these limits by
+trial, nor to dispute them with you. It is the system prompt's last section,
+read again each turn, so a change (opening the network) reaches the next
+request; it is never part of a message, so a rewind, fork or compaction neither
+carries nor loses it. Subagents are not told. The record has it as
+`session.facts`, each time it changes.
 
 ### The container tier's image
 
@@ -1273,6 +1657,39 @@ cursor is in the database and goes back with it; lines the file already
 holds for events after the backup point stay in the file, though those
 events are not in the restored database.
 
+## Names the server answers to
+
+```json
+"server": { "allowed_hosts": ["abhed.internal.example"] }
+```
+
+`abhed serve` answers a request only when its `Host` names it by a name it
+was given, so a web page whose own name an attacker points at your machine
+(DNS rebinding) cannot use the API from your browser. Loopback
+(`localhost`, `127.0.0.1`, `[::1]`) always passes. With sign-in on, so do IP
+addresses, `server.canonical_host`, and the hosts of
+`server.allowed_origins` and `auth.redirect_url`. With `auth.mode` `none`,
+where the API is anyone's who reaches it, only loopback and
+`server.allowed_hosts` pass, and a request with no `Host` at all is refused
+too. Any other name gets `421` with what to set, without the
+`Abhed-Session-Node` header that a replica sends when a session runs on
+another one, so a client never retries it elsewhere.
+
+## Several servers on one machine
+
+The `abhed serve` that owns this machine's state holds `~/.abhed/serve.lock`
+while it runs, and only it reconciles sandboxes or sweeps at start. A
+second one under the same HOME claims its address and the lock before it
+builds anything. On the same address it fails at once. On another address,
+with the sandbox control plane on it refuses to start (the control plane
+belongs to the first; serve from another HOME instead). The control plane is
+on with `control_plane.enabled`, and also, without it, on a server with sign-in
+that has or can gain more than one account (local accounts, say), where each
+session gets a sandbox of its own unless `server.shared_sessions` is set: such
+a second serve refuses too. With no sign-in, and no `control_plane.enabled`, it
+serves but takes back no session and sweeps no sandbox, and logs that it did
+not.
+
 ## Stopping the server
 
 ```json
@@ -1348,6 +1765,7 @@ wrote:
 | `abhed_fence_limits_total`, `abhed_sandbox_planted_total` | `limit`; `what` |
 | `abhed_fence_denied_total` | `source` (the fence tier's system-call profile, as its `fence.denied` names it), `call` (a system call that profile refuses) |
 | `abhed_lsp_starts_total` | `language` (`go`, `python`, `typescript`, `javascript`, `rust`, or `other`): language servers started for editors; a restart after a crash counts again — [Language servers](33-language-servers.md) |
+| `abhed_lsp_diagnostics_total` | `language`, `outcome` (`found`, `clean`, `timed_out`, `skipped`): language server diagnostics after the agent's edits — [Language servers](33-language-servers.md#diagnostics-after-the-agents-edits) |
 | `abhed_lsp_messages_total` | `language`, `outcome` (`passed`, `refused`): editors' messages to language servers, counted when each server ends |
 | `abhed_ollama_actions_total` | `op` (`start`, `install`, `pull`), `outcome` (`ok`, `failed`, `declined`, `refused`, `cancelled`, `manual`): a person's attempts to get a local Ollama model working — [A local Ollama model](03-providers.md#a-local-ollama-model) |
 | `abhed_record_write_seconds`, `abhed_record_write_errors_total`, `abhed_record_repairs_total` | `record` (events, audit) |
@@ -1492,9 +1910,64 @@ Later sources win, except that an org-managed file cannot be overridden:
 2. `~/.abhed/config.json`
 3. a `-settings` file or inline JSON, for one run
 4. `.abhed/config.json` in the workspace (whole only when trusted)
-5. environment (`ABHED_DATABASE_URL` and similar), except for a key the managed file sets
-6. command-line flags and the SDK's `Options`
-7. **managed settings**, which nothing below can loosen
+5. `.abhed/config.local.json` in the workspace, your own settings for it, under the same trust ([below](#the-local-file))
+6. environment (`ABHED_DATABASE_URL` and similar), except for a key the managed file sets
+7. command-line flags and the SDK's `Options`
+8. **managed settings**, which nothing below can loosen
+
+### The workspace file
+
+A repository chooses what is at `.abhed/config.json`, so Abhed opens it
+inside the workspace, the folder Abhed opened, and reads it only when it is
+one of these:
+
+- a plain file of at most 4 MiB
+- a link whose target is a plain file inside the workspace, such as one
+  config shared within a monorepo (`.abhed/config.json ->
+  ../shared/abhed.json`, which is `<workspace>/shared/abhed.json`)
+
+A link, or a link along the way such as a `.abhed` that is itself a link,
+that leads out of the workspace to a config is refused; a `.abhed` that
+leads out to a folder with no `config.json` means the workspace has no
+config. A link that leads to no file, a pipe or a device (`/dev/zero`,
+say), and a larger file are refused too. The session does not start, and
+the error names the file once and says what to do. A
+config above the opened folder, such as a monorepo root's over a
+subproject, is outside it: copy the file into the subproject, or open the
+monorepo root as the workspace. The file is opened relative to the
+workspace, so no folder swapped on the way can redirect it, and a pipe is
+never waited on. Whether the file is your own, so trusted as yours, is
+decided on the file that was read, never by looking the name up again,
+and only when the workspace is your home folder.
+
+When the workspace is your home folder, the file is your own
+`~/.abhed/config.json`. A link there may point anywhere, such as into your
+dotfiles; it must still lead to a plain file of at most 4 MiB.
+
+Studio's debug setup, which raises `sandbox.min_tier` in this file, does not
+write through a link: when the file is a link it asks you to set the tier in
+the file the link points to. `abhed init` writes a fresh file and renames it
+into place, so a link at that name is replaced, not written through.
+
+### The local file
+
+`.abhed/config.local.json` is for settings that are yours in one workspace
+and not the team's: a model, a limit, a rule while you work there. It is
+merged over `.abhed/config.json` and read the same way (inside the
+workspace, a plain file of at most 4 MiB). `abhed init` writes
+`.abhed/.gitignore` naming it; in a workspace set up otherwise, add it to
+the repository's ignore file yourself.
+
+A repository could still ship one, so it gets no more trust than the
+workspace file: the trust decision covers both files, one hash over the
+two, and the review shows both. Adding or changing the local file asks
+again. Untrusted, it applies only what tightens; trusted, it is merged like
+the workspace file, so a managed-only setting is set aside, the managed file
+still binds, and every managed deny rule still applies. `abhed trust`
+names it as `local`. Agent tools cannot write it: it is Abhed's state.
+`abhed init` trusts only the `config.json` it writes: a local file already
+in the workspace, which a cloned repository could have shipped, is shown
+with it and asked about on the next run.
 
 Some settings are **managed only**: a lower layer's value is set aside with a
 warning and a record event. They are `record.dir`, `record.retention_days`,
@@ -1918,7 +2391,7 @@ A workspace's `.abhed/users.json` is read only when the workspace is trusted;
 sign in (see [Accounts](#accounts)).
 
 Trust is for the file's exact contents: after an edit it is asked about again.
-`abhed init` trusts the file it writes. Your own `~/.abhed/config.json` and
+`abhed init` trusts the file it writes, and nothing else already there. Your own `~/.abhed/config.json` and
 the managed `/etc/abhed/config.json` are not affected, and the managed file
 still wins. The full classification of every setting is in [Workspace
 trust](../architecture/workspace-trust.md).

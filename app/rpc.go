@@ -59,6 +59,8 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 		// latest is the session the last start read will make; a steer goes there.
 		latest *rpcSession
 	)
+	// Asks put to the caller, answered by approve requests as they arrive.
+	approvals := newRPCApprovals()
 	wake := make(chan struct{}, 1)
 	signal := func() {
 		select {
@@ -76,6 +78,10 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			if err := json.Unmarshal(line, &req); err != nil {
 				emit(rpcResponse{ID: req.ID, Type: "error",
 					Error: "request is not JSON: " + err.Error()})
+				continue
+			}
+			if req.Method == "approve" {
+				emit(approvals.approve(req))
 				continue
 			}
 			mu.Lock()
@@ -108,10 +114,14 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 		mu.Lock()
 		eof, readErr = true, in.Err()
 		mu.Unlock()
+		// No answer can arrive now, so every ask still open is refused.
+		approvals.end()
 		signal()
 	}()
 
 	var cur *rpcSession
+	// started is set by the first start: who is working is fixed from then on.
+	started := false
 	// undelivered says, before the session closes, what steering it never read.
 	undelivered := func(why string) {
 		if cur == nil || cur.agent == nil {
@@ -154,7 +164,16 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			a = cur.agent
 		}
 		switch req.Method {
+		case "auth.status", "auth.signin", "auth.register", "auth.guest":
+			emit(rpcAuth(req, started))
+			continue
+
 		case "start":
+			if err := pendingSignIn(); err != nil {
+				emit(rpcResponse{ID: req.ID, Type: "error", Error: err.Error() + "; send auth.signin, auth.register or auth.guest first"})
+				continue
+			}
+			started = true
 			if a != nil {
 				undelivered("a new session was started")
 				a.Close()
@@ -163,16 +182,27 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			if ws == "" {
 				ws = workspace
 			}
+			// The org policy is fetched as each session starts, as the terminal
+			// and an editor connection do, so a rule published since applies.
+			if err := orgPolicyAfterNetwork(ctx, ws, config.LoadOptions{Trust: trust, Quiet: true}, errOut); err != nil {
+				emit(rpcResponse{ID: req.ID, Type: "error", Error: "the network configuration: " + err.Error()})
+				continue
+			}
 			// made is the agent New returns; a wake starts only after a run of it.
 			var made *abhed.Agent
 			opts := abhed.Options{
 				Workspace: ws, ConfigDir: ws, Mode: req.Mode, WorkspaceTrust: config.GrantFor(trust, workspace, ws), AllowDefaultModel: true,
 				Allow: req.Allow, Deny: req.Deny, Verify: req.Verify,
-				Runbook: req.Runbook,
+				// Unset, answers are labelled as the terminal labels them.
+				VerifyByDefault: true,
+				Runbook:         req.Runbook,
 				// bash runs in the configured tier, as it would from the terminal.
 				Sandbox: true,
 				// The agent the terminal runs, subagents and configured tools included.
 				ConfiguredTools: true,
+				// A subprocess of the person's own program, on their machine: their
+				// kubeconfig and ~/.ssh/config are offered as the terminal offers them.
+				MachineSetup: true,
 				// The configuration's turn limit binds, as it does from the terminal.
 				ConfiguredLimits: true,
 				// Stdout is the protocol; what the tool set skipped goes to stderr,
@@ -207,7 +237,22 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 					emit(rpcResponse{Type: "event", Event: &ev})
 				},
 			}
-			na, err := abhed.New(embedded.With(ctx, embedded.Settings{Surface: "rpc"}), opts)
+			// Without approvals nobody is asked, so a call needing approval is
+			// refused, unless a grant the person kept for this repository
+			// answers it, as in the terminal.
+			var next agent.Approver = agent.AutoApprove{Yes: false}
+			if req.Approvals {
+				next = approverFunc(rpcApprover(approvals, emit))
+			}
+			locked := false
+			if c, err := config.LoadWith(ws, config.LoadOptions{Trust: trust, Quiet: true, Warn: func(string) {}}); err == nil {
+				locked = c.AllowLocked()
+			} else {
+				locked = true // unread, nothing kept is used
+			}
+			opts.Approve = keptApprover{keep: cliKeeper{workspace: ws, locked: locked}, next: next}.Approve
+			opts.NobodyToAsk = !req.Approvals
+			na, err := abhed.New(embedded.With(ctx, embedded.Settings{Surface: "rpc", Principal: principalStart()}), opts)
 			made = na
 			cur = q.sess
 			mu.Lock()
@@ -330,8 +375,8 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 
 		default:
 			emit(rpcResponse{ID: req.ID, Type: "error",
-				Error: fmt.Sprintf("unknown method %q; want start, prompt, steer, "+
-					"usage, export, providers, tasks, cancel_task, wake or quit", req.Method)})
+				Error: fmt.Sprintf("unknown method %q; want start, prompt, steer, approve, "+
+					"usage, export, providers, tasks, cancel_task, wake, quit or auth.status, auth.signin, auth.register, auth.guest", req.Method)})
 		}
 	}
 }
@@ -402,10 +447,23 @@ type rpcRequest struct {
 	Wake   string `json:"wake,omitempty"`
 	TaskID string `json:"task_id,omitempty"`
 	// Verify, on start, is off, label or strict: how each answer is checked
-	// against the record. Unset takes verify.mode, off when that is unset.
+	// against the record. Unset takes verify.mode, label when that is unset.
 	Verify string `json:"verify,omitempty"`
 	// Runbook, on start, is a runbook the host approves for the session.
 	Runbook *abhed.Runbook `json:"runbook,omitempty"`
+	// Approvals, on start, puts each call needing approval to the caller as
+	// an approval line instead of refusing it.
+	Approvals bool `json:"approvals,omitempty"`
+	// RequestID, Decision (allow or deny), Remember and Approver answer an
+	// approval; Remember keeps the offered scope for the session.
+	RequestID string `json:"request_id,omitempty"`
+	Decision  string `json:"decision,omitempty"`
+	Remember  bool   `json:"remember,omitempty"`
+	Approver  string `json:"approver,omitempty"`
+	// Username, Password and Email are auth.signin's and auth.register's.
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+	Email    string `json:"email,omitempty"`
 }
 
 type rpcResponse struct {
@@ -423,6 +481,15 @@ type rpcResponse struct {
 	// Verdict, on a prompt's answer or error, is the check of that answer
 	// when answers are checked.
 	Verdict *abhed.AnswerVerdict `json:"verdict,omitempty"`
+	// Approval is a call put to the caller for an answer.
+	Approval *rpcApproval `json:"approval,omitempty"`
+	// Principal answers the auth methods: who is working.
+	Principal *rpcPrincipal `json:"principal,omitempty"`
+	// RecoveryCode, on auth.register, is shown once.
+	RecoveryCode string `json:"recovery_code,omitempty"`
+	// Notice, on auth.signin, is what the person must be told, such as a
+	// password reset since their last sign-in.
+	Notice string `json:"notice,omitempty"`
 }
 
 // rpcRunsOn reports whether a prompt's run goes on for messages queued as it

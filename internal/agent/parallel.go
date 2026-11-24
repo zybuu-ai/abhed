@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -41,6 +44,11 @@ type Tasks struct {
 	MaxParallel int
 }
 
+// inGit reports whether worktree isolation can be offered: the workspace is
+// in a git repository now, or is not known. It is asked each time the tool
+// is described, so a git init during the session offers it from then on.
+func (t Tasks) inGit() bool { return t.Workspace == "" || InGitRepo(t.Workspace) }
+
 func (Tasks) Name() string  { return "tasks" }
 func (Tasks) Mutates() bool { return false } // each child's tools are policed on their own
 
@@ -64,12 +72,15 @@ func (t Tasks) MutatesCall(raw json.RawMessage) bool {
 }
 
 func (t Tasks) Description() string {
-	return "Run several subagents AT THE SAME TIME, each with a fresh context and a " +
-		"complete self-contained prompt. Use for independent subtasks — investigating " +
-		"separate areas, or trying alternative approaches. Set isolation to \"worktree\" " +
-		"when subagents will edit files: each then works on its own git branch in its " +
-		"own checkout, and you receive each branch's changes and how to merge them. " +
-		"Returns every subagent's summary, in order."
+	iso := "Set isolation to \"worktree\" when subagents will edit files: each then works on " +
+		"its own git branch in its own checkout, and you receive each branch's changes and how " +
+		"to merge them."
+	if !t.inGit() {
+		iso = "Not a git repository, so no isolation \"worktree\": give subagents that edit separate files."
+	}
+	return "Run several subagents AT THE SAME TIME, each with a fresh context and a complete " +
+		"self-contained prompt. " + parallelUse + " Also for independent subtasks: separate " +
+		"areas, or alternative approaches. " + iso + " Returns every subagent's summary, in order."
 }
 
 func (t Tasks) Schema() json.RawMessage {
@@ -89,11 +100,20 @@ func (t Tasks) Schema() json.RawMessage {
 					"required": []string{"prompt", "description"},
 				},
 			},
-			"isolation": map[string]any{"type": "string", "enum": []string{"none", "worktree"},
-				"description": "worktree: each subagent edits its own git branch in its own checkout. Required when subagents will change files. Default none."},
+			"isolation": isolationSchema(t.inGit()),
 		}, nil, t.Background != nil),
 		"required": []string{"tasks"},
 	})
+}
+
+// isolationSchema is the isolation property: worktree only where git is.
+func isolationSchema(git bool) map[string]any {
+	if !git {
+		return map[string]any{"type": "string", "enum": []string{"none"},
+			"description": "Outside a git repository subagents share the workspace. Default none."}
+	}
+	return map[string]any{"type": "string", "enum": []string{"none", "worktree"},
+		"description": "worktree: each subagent edits its own git branch in its own checkout. Required when subagents will change files. Default none."}
 }
 
 type tasksArgs struct {
@@ -134,6 +154,10 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 	for i, tk := range a.Tasks {
 		if strings.TrimSpace(tk.Prompt) == "" {
 			return tools.Result{Content: fmt.Sprintf("tasks[%d].prompt is required and must be self-contained.", i), IsError: true}
+		}
+		// The label is what the person sees on each subagent's card.
+		if strings.TrimSpace(tk.Description) == "" {
+			a.Tasks[i].Description = labelFrom(tk.Prompt)
 		}
 		if a.Tasks[i].AgentType == "" {
 			a.Tasks[i].AgentType = "general"
@@ -245,6 +269,367 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 	return tools.Result{Content: b.String(), IsError: failed == len(outcomes)}
 }
 
+// labelFrom is a short label from a prompt, for a task given none.
+func labelFrom(prompt string) string {
+	words := strings.Fields(prompt)
+	if len(words) > 5 {
+		return strings.Join(words[:5], " ") + "…"
+	}
+	return strings.Join(words, " ")
+}
+
+// Which note a message gets. A denylist alone let fresh phrasings about code
+// through each round, and so did words that merely appeared together, so the
+// strong note now depends on the sentence's shape: the message must open with
+// the reading or analysis work itself, after an optional "please", "can you"
+// or "could you" — a reading verb, "fan out and" one, or subagents named as
+// the doers ("use/using/with/via … subagents") — and no "to <reading verb>"
+// or "so it/they/that <reading verb>" may follow a noun, since there the
+// reading is what a program is to be changed to do. Any other mention of
+// parallel work gets only a note asking the model to check which the person
+// means. A message that names a change to code, CI, or the program's own
+// concurrency gets neither: a note there sends the model the wrong way, and
+// /parallel always asks outright.
+const readingVerbs = `review(s|ing)?|audit(s|ing)?|check(s|ing)?|investigat(e|es|ing)|` +
+	`look(ing)? at|read(s|ing)?|summari[sz](e|es|ing)|compar(e|es|ing)|research(es|ing)?|` +
+	`analy[sz](e|es|ing)|explor(e|es|ing)|search(es|ing)?|find(s|ing)?|triag(e|es|ing)|test`
+
+var (
+	parallelPhrase = regexp.MustCompile(`(?i)\b(in[ -]parallel|at the same time|at once|simultaneously|` +
+		`side[ -]by[ -]side|paralleli[sz]e|fan(ning)?[ -]out|en paralelo)\b|समानांतर`)
+	subagentsNamed = regexp.MustCompile(`(?i)\bsub-?agents?\b`)
+	// readingWork is work that reads or judges rather than changes.
+	readingWork = regexp.MustCompile(`(?i)\b(` + readingVerbs + `)\b`)
+	// readingLead is a message that opens with the reading work, or with
+	// subagents named as the ones to do it.
+	readingLead = regexp.MustCompile(`(?i)^\s*(please\s+|(can|could)\s+you\s+)?(` +
+		`(` + readingVerbs + `)\b|fan(ning)?[ -]out\s+and\s+(` + readingVerbs + `)\b|` +
+		`(use|using|with|via)\s+(\S+\s+){0,2}?sub-?agents\b)`)
+	// leadSubagents is a message that opens with subagents as the doers.
+	leadSubagents = regexp.MustCompile(`(?i)^\s*(please\s+|(can|could)\s+you\s+)?(use|using|with|via)\s+(\S+\s+){0,2}?sub-?agents\b`)
+	// programToRead is a noun followed by what it is to read: "the crawler to
+	// read", "the loader so it reads". The subagents a message opens with are
+	// the doers, not a program.
+	programToRead = regexp.MustCompile(`(?i)\b(\w[\w-]*)\s+(to|so\s+(it|they|that))\s+(` + readingVerbs + `)\b`)
+	// codeWork names a change to code, the program's own concurrency, or a
+	// library or file that does it; it suppresses both notes.
+	codeWork = regexp.MustCompile(`(?i)\b(build|builds|building|deploy|deploys|deploying|implement|implements|` +
+		`add|adds|make|makes|refactor\w*|write|rewrit\w*|code|app|apps|cluster|compose|docker|should|must|` +
+		`creat\w*|design(s|ed)?\s+(a|an|the|how|our|my|your|new)|designing|enabl\w*|switch\w*|turn on|spawn\w*|` +
+		`ci|etl|multiprocessing|github actions?|workflows?|jenkins|pre-commit|xdist|pytest-xdist|makefile|tox|nox|` +
+		`race|races|racy|goroutines?|threads?|thread-?safe|threadpool|threadpoolexecutor|asyncio|async|await|` +
+		`errgroup|rayon|mutex(es)?|locks?|scheduler|worker[ -]?pools?|for[ -]loop|gpus?|connections?|connecting|` +
+		`test suite|tests in parallel|safe to (call|run|use))\b|promise\.all|` +
+		`\b[\w-]+\.(py|go|js|ts|tsx|jsx|rs|java|rb|c|cc|cpp|h|cs|kt|swift)\b|(^|\s)(-p\s*\d|-{1,2}parallel\b)`)
+	// programRunning says the parallel phrase describes how a program runs,
+	// not how the work is to be done: it comes within three words of a verb
+	// for running, after a why/whether/that/how/if clause, or with a sign of
+	// the program's own concurrency. It turns the strong note into the one
+	// that asks.
+	programRunning = regexp.MustCompile(`(?i)\b(run|runs|running|ran|happen|happens|happening|execute|executes|executing|` +
+		`fire|fires|fired|process|processes|processed|processing|fetch|fetches|fetched|fetching|query|queries|` +
+		`queried|querying|dispatch|dispatches|dispatched|dispatching|load|loads|loaded|loading|deadlock|deadlocks)` +
+		`(\s+\S+){0,3}\s+(` + phraseWords + `)`)
+	clauseBefore = regexp.MustCompile(`(?i)\b(why|whether|that|how|if)\b.*\b(` + phraseWords + `)`)
+	// changeSigns say the message also asks for a change to a program: the
+	// phrase is "parallelize", a pronoun for the program stands right before
+	// a reading verb or the phrase ("have it read", "parallelize its reads"),
+	// or it speaks of performance ("speed up", "by reading").
+	changeSigns = regexp.MustCompile(`(?i)paralleli[sz]|\b(it|its|them|they)\s+(` + readingVerbs + `|` + phraseWords + `)\b|` +
+		`\b(speed(s|ing)? up|faster|slow|slower|performance)\b|\bby\s+\w+ing\b`)
+	programSigns = regexp.MustCompile(`(?i)\b(deadlocks?|workers|jobs|requests|instead of|rather than|one by one|one after another|serially|sequentially)\b`)
+)
+
+// phraseWords are the parallel phrases, for the patterns that look at what
+// comes before one.
+const phraseWords = `in[ -]parallel|at the same time|at once|simultaneously|side[ -]by[ -]side`
+
+// noteTier is which note the person's own words get.
+type noteTier int
+
+const (
+	noNote noteTier = iota
+	clarifyNote
+	strongNote
+)
+
+// parallelTier judges the person's own words.
+func parallelTier(typed string) noteTier {
+	if codeWork.MatchString(typed) {
+		return noNote
+	}
+	phrase := parallelPhrase.MatchString(typed)
+	lead := leadSubagents.MatchString(typed)
+	if (phrase || lead) && readingLead.MatchString(typed) && readingWork.MatchString(typed) &&
+		!readingForAProgram(typed, lead) && !programRunning.MatchString(typed) &&
+		!clauseBefore.MatchString(typed) && !programSigns.MatchString(typed) && !changeSigns.MatchString(typed) {
+		return strongNote
+	}
+	if phrase || subagentsNamed.MatchString(typed) {
+		return clarifyNote
+	}
+	return noNote
+}
+
+// readingForAProgram reports a "to <reading verb>" or "so it <reading verb>"
+// after a noun, other than the subagents a message opens with.
+func readingForAProgram(typed string, lead bool) bool {
+	for _, m := range programToRead.FindAllStringSubmatch(typed, -1) {
+		if lead && subagentsNamed.MatchString(m[1]) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// ParallelNote is what Abhed adds after a message that asks for reading or
+// analysis work in parallel. The tool descriptions say what such a request
+// means, and a small local model still made the project's code concurrent;
+// these words beside the message turned it to subagents, where conditional
+// or softer wordings did not.
+const ParallelNote = "[Abhed: this message asks for work in parallel. Unless it asks in so many words " +
+	"to change the program to run concurrently, it means how you do the work: split it into " +
+	"independent parts and start them all at once as subagents with one tasks call.]"
+
+// ClarifyNote is what Abhed adds after any other mention of parallel work,
+// where the words alone do not say which the person means.
+const ClarifyNote = "[Abhed: this message mentions parallel work. If it is unclear whether the person " +
+	"wants independent pieces of work started as subagents, or the program itself changed to run " +
+	"concurrently, ask one short question before acting.]"
+
+// UnattendedClarifyNote is the clarify note for a run nobody can answer
+// (-p, rpc, a server's unattended run), given only to a vague request (see
+// vagueSpeedRequest): the question cannot be asked, and a real model went
+// straight to making the program concurrent. It stays conditional, as the
+// note that asks does, so work the message does ask for is still done.
+const UnattendedClarifyNote = "[Abhed: nobody can answer a question in this run. If this message only asks to " +
+	"speed things up or to run things in parallel, and names no concrete change, it is unclear whether the person " +
+	"wants independent pieces of work started as subagents or the program itself changed to run concurrently: " +
+	"then make no code edits for it, and answer with a short plan that describes both readings, or with the one " +
+	"question you would ask. Otherwise do the work it asks for.]"
+
+var (
+	// speedOrParallel names speed or parallelism itself.
+	speedOrParallel = regexp.MustCompile(`(?i)\b(in[ -]parallel|at the same time|at once|simultaneously|side[ -]by[ -]side|` +
+		`paralleli[sz]\w*|concurrent(ly)?|speed(s|ing)? up|faster|quicker|slow|slower|performance)\b`)
+	// concreteTask is a task the message names: an action with an object, a
+	// bug, or a file or symbol.
+	concreteTask = regexp.MustCompile(`(?i)\b(fix|fixes|fixing|delete|deletes|deleting|remove|removes|removing|update|updates|updating|` +
+		`bump|bumps|bumping|add|adds|adding|rename|renames|renaming|move|moves|moving|edit|edits|editing|change|changes|changing|` +
+		`replace|replaces|replacing|migrate|migrates|migrating|install|installs|upgrade|upgrades|upgrading|write|writes|writing|` +
+		`create|creates|creating|refactor|refactors|refactoring|review|reviews|reviewing|test|tests|testing|document|documents|` +
+		`translate|convert|converts|format|formats|lint|clean|cleans|generate|generates|handle|handles|handling|` +
+		`bug|bugs|crash|crashes|crashing|error|errors|fail|fails|failing|failure|broken|timeout|timeouts|regression|issue|issues)\b`)
+	// namedThing is a file, a path or an identifier.
+	namedThing = regexp.MustCompile(`[A-Za-z0-9_./-]*(?:[a-z][A-Z]|_[A-Za-z]|\.[A-Za-z]{1,5}\b|/[A-Za-z])[A-Za-z0-9_./-]*`)
+)
+
+// vagueSpeedRequest reports a message that names speed or parallelism and no
+// concrete task: no action with an object, bug, file or symbol, and no object
+// beyond generic ones ("things", "everything", "the project"). Only such a
+// message gets the unattended note; "Delete these three files at once" and
+// "Merge these three branches at once" are work to do. A list of verbs alone
+// kept missing the next one, so the object decides too.
+func vagueSpeedRequest(typed string) bool {
+	return speedOrParallel.MatchString(typed) && !concreteTask.MatchString(typed) &&
+		!namedThing.MatchString(typed) && !specificObject(typed)
+}
+
+var (
+	// parallelMark and speedMark stand in for the parallel and speed words
+	// while objects are looked for, so "at the same time" is no object and
+	// what "speed up" or "faster" acts on can be told apart.
+	parallelWords = regexp.MustCompile(`(?i)\b(` + phraseWords + `|paralleli[sz]\w*|concurrent(ly)?)\b`)
+	speedWords    = regexp.MustCompile(`(?i)\b(speed(s|ing)? up|faster|quicker|slow|slower|performance)\b`)
+	objectToken   = regexp.MustCompile(`[\p{L}\p{N}#]+(?:[.'-][\p{L}\p{N}]+)*|[` + parallelMark + speedMark + `,;:!?.()]`)
+	versionToken  = regexp.MustCompile(`^(v?\d+(\.\d+)+|v\d+)$`)
+	// determiners open a noun phrase whose head decides whether it is generic.
+	determiners = wordSet("the these those my our your their all both each every " +
+		"two three four five six seven eight nine ten eleven twelve several")
+	// quantifiers may stand between a determiner and its head.
+	quantifiers = wordSet("of the these those my our your their all both each every whole entire other " +
+		"two three four five six seven eight nine ten eleven twelve several first second third next last same")
+	// prepositions open an adjunct ("for the demo", "on 4 cores", "in the
+	// morning"): what follows one is not the work asked for.
+	prepositions = wordSet("for on with in into onto by during before after until till from to at via per " +
+		"within without across over under through about around since")
+	// notAnObject heads are generic nouns or words that end the phrase with no
+	// noun ("do these three at the same time", "run all in parallel").
+	notAnObject = wordSet("thing things stuff everything anything work project projects repo repos repository " +
+		"repositories codebase program system pipeline pipelines product products platform platforms site website " +
+		"tool tools agent agents subagents task tasks job jobs step steps stage stages part parts piece pieces " +
+		"bit bits chunk chunks item items load loads lot lots whole rest it them they this that in at on to by " +
+		"for with and or but up down out as so is are be same time way more less much now please then " +
+		"run runs running go do done speed")
+)
+
+const (
+	parallelMark = "\u00b7"
+	speedMark    = "\u00bb"
+)
+
+// specificObject reports something the message names to work on: a noun
+// phrase opened by a determiner or a count whose head is not generic ("the
+// three migrations", "these branches", "all three checks"), an issue number
+// ("#12"), a version ("v1.2"), a name with a number ("PR 12"), or a list of
+// two names ("nginx and redis"). A phrase after a preposition, a comma or a
+// parallel phrase is an adjunct or a new clause ("for the demo", ", the
+// deadline is close", "in parallel the first time"), and what "speed up" or
+// "faster" acts on is the vague part itself, so neither counts.
+func specificObject(typed string) bool {
+	marked := speedWords.ReplaceAllString(parallelWords.ReplaceAllString(typed, " "+parallelMark+" "), " "+speedMark+" ")
+	toks := objectToken.FindAllString(strings.ToLower(marked), -1)
+	at := func(i int) string {
+		if i < 0 || i >= len(toks) {
+			return ""
+		}
+		return toks[i]
+	}
+	// Every token is a word or one mark or punctuation character.
+	isWord := func(t string) bool {
+		return t != "" && !strings.ContainsAny(t, parallelMark+speedMark+",;:!?()") && t != "."
+	}
+	adjunct := func(prev string) bool { return prev != "" && (prepositions[prev] || !isWord(prev)) }
+	for i, w := range toks {
+		prev, next := at(i-1), at(i+1)
+		switch {
+		case len(w) > 1 && w[0] == '#' && isNumber(w[1:]):
+			return true
+		// A name is work only when the word before it is not an adjunct's
+		// or a vague subject's: "on Python 3", "with Go 1.22", ", top 3",
+		// "things quick and easy", "be smart and fast" are not.
+		case versionToken.MatchString(w) && !weakLead(prev, adjunct) && !weakLead(at(i-2), adjunct):
+			return true
+		case isNumber(w) && isWord(prev) && !weakLead(prev, adjunct) && !weakLead(at(i-2), adjunct) &&
+			!determiners[prev] && !quantifiers[prev] && (next == "" || next == "and" || next == "or" || !isWord(next)):
+			return true
+		case w == "and" && i >= 2 && namePart(prev) && namePart(next) && !weakLead(at(i-2), adjunct) &&
+			(at(i+2) == "" || !isWord(at(i+2))):
+			return true
+		}
+		if !determiners[w] && !isNumber(w) || adjunct(prev) {
+			continue
+		}
+		j := i + 1
+		for j < len(toks) && (quantifiers[toks[j]] || isNumber(toks[j])) {
+			j++
+		}
+		if head := at(j); isWord(head) && !notAnObject[head] && at(j+1) != speedMark {
+			return true
+		}
+	}
+	return false
+}
+
+// weakLead reports a word before a name that makes it no work to do: a
+// preposition, a mark or punctuation, a generic subject or a copula. ""
+// (the start of the message) is not one.
+func weakLead(t string, adjunct func(string) bool) bool {
+	return adjunct(t) || weakLeads[t]
+}
+
+// weakLeads are generic subjects, copulas and "using", which opens an adjunct
+// as a preposition does. "run" is not one: "Run alpha and beta at once" is
+// work.
+var weakLeads = wordSet("things thing stuff everything anything it them they this that " +
+	"be is are was were been being using like than")
+
+// namePart is a word that can be one of two names in a list.
+func namePart(t string) bool {
+	return isLetters(t) && !notAnObject[t] && !determiners[t] && !quantifiers[t] && !prepositions[t]
+}
+
+func isLetters(t string) bool {
+	for _, r := range t {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' && r != '\'' {
+			return false
+		}
+	}
+	return t != ""
+}
+
+func isNumber(w string) bool {
+	for _, r := range w {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return w != ""
+}
+
+// madeVague reports a message that codeWork passed over only for "make"
+// ("Can you make everything run in parallel?"), with a parallel phrase and
+// nothing more concrete: as vague as the request the unattended note is for.
+// Only codeWork gives a message with a parallel phrase no note, so with
+// "make" taken out a remaining match is code work.
+func madeVague(typed string) bool {
+	return !codeWork.MatchString(makeWord.ReplaceAllString(typed, " ")) && parallelPhrase.MatchString(typed) &&
+		vagueSpeedRequest(typed)
+}
+
+var makeWord = regexp.MustCompile(`(?i)\bmakes?\b`)
+
+// parallelNote is the note for the person's own words, typed, or "". Only a
+// top-level loop that can still start a subagent with tasks adds it: a
+// subagent's prompt is the model's writing, and a nested spawn is refused by
+// default.
+func (l *Loop) parallelNote(typed string) string {
+	if typed == "" || l.depth != 0 || l.Tools == nil || strings.HasPrefix(typed, parallelLead) || !l.Budget.CanSpawn() {
+		return ""
+	}
+	if _, ok := l.Tools.Get("tasks"); !ok {
+		return ""
+	}
+	switch parallelTier(typed) {
+	case strongNote:
+		return ParallelNote
+	case clarifyNote:
+		// A question nobody can answer would end the run with it: an
+		// unattended run gets a note only for a vague request, which it
+		// answers with a plan or the question.
+		if l.Unattended {
+			if vagueSpeedRequest(typed) {
+				return UnattendedClarifyNote
+			}
+			return ""
+		}
+		return ClarifyNote
+	case noNote:
+		if l.Unattended && madeVague(typed) {
+			return UnattendedClarifyNote
+		}
+	}
+	return ""
+}
+
+type typedKey struct{}
+
+// WithTyped marks ctx's run as one the person asked for in typed, their own
+// words without what they attached, for a caller that passes the message as
+// one string with its attachments.
+func WithTyped(ctx context.Context, typed string) context.Context {
+	return context.WithValue(ctx, typedKey{}, typed)
+}
+
+func typedFrom(ctx context.Context) string {
+	s, _ := ctx.Value(typedKey{}).(string)
+	return s
+}
+
+// parallelLead opens /parallel's turn.
+const parallelLead = "Run this work as parallel subagents, now."
+
+// ParallelPrompt is the turn /parallel sends: the person's work, with the
+// instruction to split it into subagents that run at the same time.
+func ParallelPrompt(work string) string {
+	return parallelLead + " Split it into its independent parts and " +
+		"start them all in ONE tasks call: one entry per part, each with a complete, " +
+		"self-contained prompt and a 3-5 word description. Do not do the parts yourself one " +
+		"after another, and do not change the project's code to add parallelism. When they " +
+		"return, report each part's result.\n\nThe work:\n" + strings.TrimSpace(work)
+}
+
 // startAll starts every task in the background, each settling its own
 // worktree when it ends.
 func (t Tasks) startAll(ctx context.Context, a tasksArgs, trees []*worktree, epoch int, held *slots) tools.Result {
@@ -321,6 +706,25 @@ func git(ctx context.Context, r *hostgit.Repo, args ...string) (string, error) {
 	return strings.TrimSpace(out.String()), nil
 }
 
+// InGitRepo reports whether ws or a folder above it holds .git, for what the
+// tasks tool offers. It runs nothing: it is asked as every session starts,
+// and running git there cost a second. The tool itself asks git.
+func InGitRepo(ws string) bool {
+	if ws == "" {
+		return false
+	}
+	for d := filepath.Clean(ws); ; {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
+			return true
+		}
+		up := filepath.Dir(d)
+		if up == d {
+			return false
+		}
+		d = up
+	}
+}
+
 func requireGitRepo(ctx context.Context, ws string) error {
 	if _, err := exec.LookPath("git"); err != nil {
 		return fmt.Errorf("git is not installed")
@@ -386,4 +790,26 @@ func worktreeChanges(ctx context.Context, dir string) (string, int) {
 		stat = status
 	}
 	return stat, n
+}
+
+// refreshFacts reads the session note again, for a top-level loop, and
+// records it when it changed, so the record says what the model was told.
+func (l *Loop) refreshFacts() {
+	if l.SessionNote == nil || l.depth != 0 {
+		return
+	}
+	n := l.SessionNote()
+	if n == "" || n == l.facts {
+		return
+	}
+	l.facts = n
+	l.record(EvSessionFacts, ActorSystem, SessionFacts{Text: n})
+}
+
+// system is the system prompt with the session's facts, when it has them.
+func (l *Loop) system() string {
+	if l.facts == "" {
+		return l.Config.SystemPrompt
+	}
+	return l.Config.SystemPrompt + "\n\nSession: " + l.facts
 }

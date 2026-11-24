@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"net/url"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/defaults"
 	"github.com/zybuu-ai/abhed/internal/egress"
@@ -28,6 +30,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/nlink"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/toolchain"
+	"github.com/zybuu-ai/abhed/plugin"
 )
 
 type Config struct {
@@ -46,13 +49,18 @@ type Config struct {
 	Subagents   SubagentsConfig   `json:"subagents"`
 	K8s         K8sConfig         `json:"k8s,omitempty"`
 	SSH         SSHConfig         `json:"ssh,omitempty"`
-	Limits      LimitsConfig      `json:"limits"`
-	Sandbox     SandboxConfig     `json:"sandbox"`
-	MCP         MCPConfig         `json:"mcp"`
-	Retrieval   RetrievalConfig   `json:"retrieval"`
-	WebSearch   WebSearchConfig   `json:"web_search"`
-	WebFetch    WebFetchConfig    `json:"web_fetch,omitempty"`
-	Extensions  []ExtensionConfig `json:"extensions,omitempty"`
+	// MachineSetup false, in the managed configuration or an org policy,
+	// turns off the person's own machine setup (their kubeconfig contexts,
+	// ~/.ssh/config hosts and pasted cluster logins); see MachineSetupOff.
+	// Set anywhere else it changes nothing.
+	MachineSetup *bool             `json:"machine_setup,omitempty"`
+	Limits       LimitsConfig      `json:"limits"`
+	Sandbox      SandboxConfig     `json:"sandbox"`
+	MCP          MCPConfig         `json:"mcp"`
+	Retrieval    RetrievalConfig   `json:"retrieval"`
+	WebSearch    WebSearchConfig   `json:"web_search"`
+	WebFetch     WebFetchConfig    `json:"web_fetch,omitempty"`
+	Extensions   []ExtensionConfig `json:"extensions,omitempty"`
 	// CustomProviders adds model providers without a rebuild.
 	CustomProviders []CustomProviderConfig `json:"custom_providers,omitempty"`
 	Storage         StorageConfig          `json:"storage"`
@@ -80,6 +88,8 @@ type Config struct {
 	Record RecordConfig `json:"record,omitempty"`
 	// Hooks governs the extension hooks.
 	Hooks HooksConfig `json:"hooks,omitempty"`
+	// Plugins governs plugin bundles. Managed only.
+	Plugins PluginsConfig `json:"plugins,omitempty"`
 	// Studio governs what Abhed Studio may offer beside the agent.
 	Studio StudioConfig `json:"studio,omitempty"`
 	// Suggest governs the next-prompt suggestion shown after a turn.
@@ -90,6 +100,18 @@ type Config struct {
 	Completion CompletionConfig `json:"completion,omitzero"`
 	// Monitor governs the supervisor, which may only tighten a decision.
 	Monitor MonitorConfig `json:"monitor,omitempty"`
+	// Pricing sets model prices in US dollars per million tokens, by the
+	// model's name as sent to the provider, over the built-in list.
+	Pricing map[string]PriceConfig `json:"pricing,omitempty"`
+	// PricingLoopbackOnly names the prices an org policy that does not pin
+	// its keys set, which are 0: each holds only for a model every
+	// configured provider of which is a server on this machine.
+	PricingLoopbackOnly map[string]bool `json:"-"`
+	// managedMCP are the MCP servers the managed file defines, by name.
+	managedMCP map[string]MCPServerConfig
+	// WorkspaceProviders names the providers a workspace's file defined or
+	// changed, which a managed dollar cap does not trust as local servers.
+	WorkspaceProviders map[string]bool `json:"-"`
 	// Plan governs what an accepted plan may carry.
 	Plan PlanConfig `json:"plan,omitempty"`
 	// Mode is the default mode new sessions start in where permissions.mode
@@ -128,6 +150,9 @@ type Config struct {
 	modeChosen bool
 	// Workspace is what loading decided about the workspace's own file.
 	Workspace WorkspaceTrust `json:"-"`
+	// Bare is a run that keeps, of memory, rules, skills and extensions,
+	// only what the organisation sets (-bare).
+	Bare bool `json:"-"`
 	// SetAside are settings a file made that its layer may not make, such
 	// as a managed-only key in the user's file; each was left out.
 	SetAside []SetAsideKey `json:"-"`
@@ -144,6 +169,13 @@ type Config struct {
 	// webIntents and origins are what loading holds until the managed file.
 	webIntents []webIntent
 	origins    map[string]origin
+	// mergingManaged is set while the managed document merges: only it
+	// replaces a simple hook of a name an earlier layer gave.
+	mergingManaged bool
+	// loadedPlugins are the approved plugins loading added; see LoadedPlugins.
+	loadedPlugins []plugin.Loaded
+	// orgPlugins is the org policy's plugins section, a layer of its own.
+	orgPlugins *orgPlugins
 	// ruleLayers names the layer each permission rule came from; see RuleLayer.
 	ruleLayers map[string]string
 	// allowLayers are each file's own model.allowed and mcp lists, applied
@@ -156,6 +188,9 @@ type Config struct {
 	// managedRules are the rules the managed file itself lists, by list and
 	// rule as ruleLayers keys them.
 	managedRules map[string]bool
+	// orgRules are the managed rules the org policy made and the machine's
+	// file does not list, keyed as ruleLayers is.
+	orgRules map[string]bool
 }
 
 // SettingsSource names a -settings file and the hash of what was merged.
@@ -335,6 +370,33 @@ type HooksConfig struct {
 	// ManagedOnly sends hook events only to the managed file's extensions;
 	// every other keeps only the tools it provides. Managed only.
 	ManagedOnly bool `json:"managed_only,omitempty"`
+	// Run are the simple hooks: a command or an HTTP endpoint per event. Each
+	// layer adds to them; only the managed file replaces a hook an earlier
+	// layer named, and a later file's hook of that name is set aside.
+	Run []HookConfig `json:"run,omitempty"`
+}
+
+// HookConfig is one simple hook. A command gets the event as JSON on stdin
+// and runs in the session's sandbox: exit 0 goes on, exit 2 blocks with
+// stderr as the reason. A url is POSTed the event instead, under the egress
+// allowlist. Either can only make a decision stricter.
+type HookConfig struct {
+	Name    string   `json:"name"`
+	Events  []string `json:"events"`
+	Command string   `json:"command,omitempty"`
+	URL     string   `json:"url,omitempty"`
+	// Headers are sent with an HTTP hook's request; HeadersEnv sends each
+	// header with the value of the variable it names, read from Abhed's
+	// environment, so a token need not be written here.
+	Headers    map[string]string `json:"headers,omitempty"`
+	HeadersEnv map[string]string `json:"headers_env,omitempty"`
+	// Match narrows tool events to the calls a rule matches, e.g. bash(git *).
+	Match     []string `json:"match,omitempty"`
+	TimeoutMS int      `json:"timeout_ms,omitempty"`
+	// Async runs the events that only observe without waiting for the hook.
+	Async bool `json:"async,omitempty"`
+	// Layer is the layer the hook came from, as loading credits it.
+	Layer string `json:"-"`
 }
 
 // SetAsideKey is a setting a file made that was left out, and why.
@@ -377,6 +439,7 @@ var managedOnly = map[string]string{
 	"record.ship":                        "only the managed configuration ships the record to the org server",
 	"org_policy":                         "only the managed configuration says where the org policy comes from",
 	"hooks.disabled":                     "only the managed configuration switches hooks off, since that removes their vetoes",
+	"plugins":                            "only the managed configuration (or the signed org policy) sets which plugins may be installed and loaded",
 	"hooks.managed_only":                 "only the managed configuration limits hooks to its own extensions",
 	"studio.disable_host_terminal":       "only the managed configuration removes Studio's host terminal",
 	"sandbox.network":                    "only the managed configuration, or your own file narrowing allow_network, turns on the egress allowlist",
@@ -392,6 +455,7 @@ var managedOnly = map[string]string{
 	"control_plane.kubernetes":           "only the managed configuration configures the Kubernetes driver",
 	"control_plane.interceptors":         "only the managed configuration sets what admits sandbox calls",
 	"auth.bound_claims":                  "only the managed configuration sets which identity provider tokens are accepted",
+	"auth.client":                        "only the managed configuration or the org policy says who may work on this machine",
 	"control_plane.ha.relay_peer":        "only the managed configuration names the replicas a relayed call is accepted from",
 	"control_plane.ha.relay_key_command": "only the managed configuration names a program serve runs for the relay key",
 }
@@ -460,8 +524,12 @@ func clearManagedOnly(c *Config, key string) {
 		c.Record.Ship = ShipConfig{}
 	case "org_policy":
 		c.Org = OrgPolicyConfig{}
+	case "auth.client":
+		c.Auth.Client = ClientAuthConfig{}
 	case "hooks.disabled":
 		c.Hooks.Disabled = false
+	case "plugins":
+		c.Plugins = PluginsConfig{}
 	case "hooks.managed_only":
 		c.Hooks.ManagedOnly = false
 	case "studio.disable_host_terminal":
@@ -608,6 +676,60 @@ func valueIn(data []byte, key string) string {
 	return out
 }
 
+// warnScoped gives only the warnings about settings whose key want accepts.
+func warnScoped(w warnSink, c Config, want func(string) bool) {
+	warnUnknown(w, slices.DeleteFunc(slices.Clone(c.Unknown), func(u UnknownKey) bool { return !want(u.Path) && (u.Suggest == "" || !want(u.Suggest)) }))
+	warnDuplicates(w, slices.DeleteFunc(slices.Clone(c.Duplicates), func(d DuplicateKey) bool {
+		return !want(strings.TrimPrefix(d.Path+"."+d.Key, "."))
+	}))
+	warnSetAside(w, slices.DeleteFunc(slices.Clone(c.SetAside), func(k SetAsideKey) bool { return !want(k.Key) }))
+	for _, k := range c.NotYetInEffect() {
+		if want(k) {
+			w.emit("reserved\x00"+k, NotYetInEffectMessage(k))
+		}
+	}
+	if want("permissions") {
+		warnNeverAllows(w, c.Permissions.Allow)
+		warnRuleFindings(w, c.RuleFindings())
+	}
+}
+
+// warnOverriddenPrices says, once per file and model, that the managed
+// configuration's price replaced the one a lower layer set, which the guide
+// promises; a price already said to be set aside is not said twice.
+func warnOverriddenPrices(w warnSink, c Config) {
+	said := map[string]bool{}
+	for _, k := range c.SetAside {
+		if strings.HasPrefix(k.Key, "pricing.") {
+			said[k.File+"\x00"+priceModel(k.Key)] = true
+		}
+	}
+	for _, k := range c.Overridden {
+		if !strings.HasPrefix(k.Key, "pricing.") {
+			continue
+		}
+		model := priceModel(k.Key)
+		id := k.File + "\x00" + model
+		if said[id] {
+			continue
+		}
+		said[id] = true
+		w.emit("priceover\x00"+id, fmt.Sprintf("%s sets pricing.%s, which is ignored: the managed configuration sets that model's price, and its price is used", Printable(k.File), Printable(model)))
+	}
+}
+
+// priceModel is the model a pricing key names: pricing.<model>, or one of
+// its figures.
+func priceModel(key string) string {
+	m := strings.TrimPrefix(key, "pricing.")
+	for _, f := range []string{".input", ".output", ".cached_input", ".cache_write"} {
+		if strings.HasSuffix(m, f) {
+			return strings.TrimSuffix(m, f)
+		}
+	}
+	return m
+}
+
 // warnSetAside warns of each set-aside setting.
 func warnSetAside(w warnSink, keys []SetAsideKey) {
 	for _, k := range keys {
@@ -744,6 +866,31 @@ type OllamaConfig struct {
 	// install or download) or off (say what is wrong and the steps, and do
 	// nothing). A managed configuration that sets it holds it.
 	Assist string `json:"assist,omitempty"`
+	// AutoStart false never starts Ollama without the person's click each
+	// time: a standing "always start" is neither offered nor honoured.
+	// Unset is true.
+	AutoStart *bool `json:"auto_start,omitempty"`
+	// IdleStopMinutes is how long a server Abhed started itself runs with no
+	// session using a local model before Abhed stops it: 0 is 10 minutes, -1
+	// never (it is still stopped when the Abhed that started it exits).
+	IdleStopMinutes int `json:"idle_stop_minutes,omitempty"`
+}
+
+// OllamaAutoStart is model.ollama.auto_start, true when unset.
+func (c Config) OllamaAutoStart() bool {
+	return c.Model.Ollama.AutoStart == nil || *c.Model.Ollama.AutoStart
+}
+
+// OllamaIdleStop is how long a server Abhed started may sit unused; 0 means never.
+func (c Config) OllamaIdleStop() time.Duration {
+	switch m := c.Model.Ollama.IdleStopMinutes; {
+	case m < 0:
+		return 0
+	case m == 0:
+		return 10 * time.Minute
+	default:
+		return time.Duration(m) * time.Minute
+	}
 }
 
 // OllamaAssist is model.ollama.assist, ask when unset.
@@ -759,15 +906,22 @@ type ProviderConfig struct {
 	// Type names a registered provider — run `abhed providers` for the list.
 	// "openai-compatible" remains the generic escape hatch for any endpoint
 	// speaking that API.
-	Type            string   `json:"type"`
-	BaseURL         string   `json:"base_url"`
-	Model           string   `json:"model"`
-	APIKey          string   `json:"api_key,omitempty"`
-	APIKeyEnv       string   `json:"api_key_env,omitempty"`
-	ContextWindow   int      `json:"context_window"`
-	MaxOutputTokens int      `json:"max_output_tokens,omitempty"`
-	ToolCallFormat  string   `json:"tool_call_format,omitempty"`
-	ReasoningTags   []string `json:"reasoning_tags,omitempty"`
+	Type      string `json:"type"`
+	BaseURL   string `json:"base_url"`
+	Model     string `json:"model"`
+	APIKey    string `json:"api_key,omitempty"`
+	APIKeyEnv string `json:"api_key_env,omitempty"`
+	// APIKeySecret names a key stored with `abhed provider login`, in the
+	// Keychain or Abhed's secret store; api_key_env, when set in the
+	// environment, wins over it. With neither, a hosted type at its official
+	// endpoint uses its own name (ANTHROPIC_API_KEY for anthropic).
+	APIKeySecret string `json:"api_key_secret,omitempty"`
+	// KeySource says where the key came from once resolved, never the key.
+	KeySource       KeySource `json:"-"`
+	ContextWindow   int       `json:"context_window"`
+	MaxOutputTokens int       `json:"max_output_tokens,omitempty"`
+	ToolCallFormat  string    `json:"tool_call_format,omitempty"`
+	ReasoningTags   []string  `json:"reasoning_tags,omitempty"`
 	// Think turns a hybrid-reasoning model's thinking phase on or off.
 	// Omit to leave the server's default alone. Ollama reads this; an
 	// OpenAI-style server uses reasoning_effort instead.
@@ -795,6 +949,17 @@ type ProviderConfig struct {
 	// the defaults, 600 and 300.
 	CallTimeoutSeconds  int `json:"call_timeout_seconds,omitempty"`
 	StallTimeoutSeconds int `json:"stall_timeout_seconds,omitempty"`
+
+	// MaxConcurrentRequests bounds the requests sent to this provider at
+	// once, shared by every adapter built from it in the process; requests
+	// past it wait in Abhed, before their timeouts start. 0 is 1 for type
+	// ollama (its FAQ gives OLLAMA_NUM_PARALLEL "default 1", read 2026-11-09)
+	// and no bound for other types. OpenAI-compatible types only.
+	MaxConcurrentRequests int `json:"max_concurrent_requests,omitempty"`
+
+	// MaxTools caps the tools one request offers; 0 is 128. Loaded MCP tools
+	// are unloaded, least recently used first, to stay under it.
+	MaxTools int `json:"max_tools,omitempty"`
 
 	// Extra passes provider-specific settings through without this struct
 	// growing a field per vendor.
@@ -861,8 +1026,20 @@ type PermissionsConfig struct {
 	GitExtensions []string `json:"git_extensions,omitempty"`
 }
 
+// MinCompactAtTokens is the smallest context.compact_at_tokens taken. An
+// agent's system prompt and tool schemas take several thousand tokens on
+// their own; below 16,384 a ceiling leaves no room for a turn and compacts on
+// every one, and the share left for each tool result is a few hundred
+// characters.
+const MinCompactAtTokens = 16_384
+
 type ContextConfig struct {
 	CompactAt float64 `json:"compact_at"`
+	// CompactAtTokens bounds how large the conversation grows before it is
+	// compacted, whatever the window: a 1M-token window compacted at its
+	// fraction sends calls of 650k tokens, each a cost and a wait. Zero
+	// means 200,000; set it to the model's window to use all of it.
+	CompactAtTokens int `json:"compact_at_tokens,omitempty"`
 	// OffloadAt is the fraction of the context window at which old, large
 	// tool results are replaced in the window by a stub; the full text stays
 	// in the session record and the recall tool reads it back. It should sit
@@ -886,6 +1063,13 @@ type AuthConfig struct {
 	// AllowSignup lets anyone create a local account. Off by default: an
 	// open signup on an internal tool is rarely what an operator intends.
 	AllowSignup bool `json:"allow_signup,omitempty"`
+	// Guest offers "Continue as guest" on the console: a browser session as
+	// an identity of its own, with no groups, whose sessions are removed when
+	// it signs out or expires. Off by default; an agent that runs commands
+	// for whoever reaches the server is rarely what an operator intends.
+	Guest bool `json:"guest,omitempty"`
+	// GuestHours is how long a guest's browser session lasts (8).
+	GuestHours int `json:"guest_hours,omitempty"`
 	// DefaultTenant is assigned to accounts created without one.
 	DefaultTenant string `json:"default_tenant,omitempty"`
 	// UsersFile is where local accounts are kept when there is no database.
@@ -941,6 +1125,70 @@ type AuthConfig struct {
 	// GitHub restricts GitHub sign-in, which only the paid editions provide.
 	// The Community Edition validates these keys and otherwise ignores them.
 	GitHub GitHubAuthConfig `json:"github,omitempty"`
+	// Client is who may work on this machine: the sign-in every start asks
+	// for. Managed only; an org policy may only tighten it.
+	Client ClientAuthConfig `json:"client,omitzero"`
+}
+
+// Values of auth.client.sign_in.
+const (
+	SignInOptional = ""         // an account, a server or guest
+	SignInRequired = "required" // an account on this machine or a server
+	SignInServer   = "server"   // a server: auth.client.server, else the org policy's
+)
+
+// ClientAuthConfig is the sign-in a start of the CLI, Studio or an ACP
+// client asks for. See docs/architecture/sign-in.md.
+type ClientAuthConfig struct {
+	// SignIn is "", "required" or "server".
+	SignIn string `json:"sign_in,omitempty"`
+	// Server is the only server whose sign-in counts under sign_in "server";
+	// empty is the org policy's server.
+	Server string `json:"server,omitempty"`
+	// Guest, when false, removes guest: no screen offers it, -guest and
+	// ABHED_GUEST are refused, and a run with no sign-in fails.
+	Guest *bool `json:"guest,omitempty"`
+	// RememberDays bounds a remembered sign-in; unset, it lasts until sign-out.
+	// 0 asks at every start.
+	RememberDays *int `json:"remember_days,omitempty"`
+}
+
+// GuestAllowed reports whether guest may be chosen.
+func (c ClientAuthConfig) GuestAllowed() bool { return c.Guest == nil || *c.Guest }
+
+// SignInServer is the server whose sign-in counts under sign_in "server":
+// auth.client.server, else the org policy's server the machine names, else
+// the one it took its org policy from.
+func (c Config) SignInServer() string {
+	for _, s := range []string{c.Auth.Client.Server, c.Org.URL, c.OrgPolicy.URL} {
+		if s = strings.TrimRight(s, "/"); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func (c Config) validateClientAuth() error {
+	a := c.Auth.Client
+	switch a.SignIn {
+	case SignInOptional, SignInRequired:
+	case SignInServer:
+		if c.SignInServer() == "" {
+			return fmt.Errorf("auth.client.sign_in is server, but neither auth.client.server, org_policy.url nor an org policy names one")
+		}
+	default:
+		return fmt.Errorf("unknown auth.client.sign_in %q (want required or server, or leave it out)", a.SignIn)
+	}
+	if s := a.Server; s != "" {
+		u, err := url.Parse(s)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			return fmt.Errorf("auth.client.server must be an http or https URL, got %q", Printable(s))
+		}
+	}
+	if d := a.RememberDays; d != nil && (*d < 0 || *d > 3650) {
+		return fmt.Errorf("auth.client.remember_days is %d; use 0 (ask every start) to 3650", *d)
+	}
+	return nil
 }
 
 // GitHubAuthConfig says which GitHub accounts may sign in.
@@ -1238,6 +1486,12 @@ type ServerConfig struct {
 	// single-domain deployment and wrong only if the console is served from
 	// somewhere other than the API.
 	AllowedOrigins []string `json:"allowed_origins,omitempty"`
+	// AllowedHosts are the host names (no port) a request's Host may name,
+	// beyond loopback, IP addresses, canonical_host and the hosts of
+	// allowed_origins and auth.redirect_url. Any other name is refused,
+	// so a site that points its own name at this server (DNS rebinding) is
+	// not served. With auth.mode none only loopback and these are answered.
+	AllowedHosts []string `json:"allowed_hosts,omitempty"`
 	// TrustProxy makes rate limiting read X-Forwarded-For. Only enable it when
 	// a proxy you control is the sole route to the port: otherwise a client
 	// sets its own limiter key and rotates it at will.
@@ -1272,6 +1526,8 @@ type ServerConfig struct {
 	SharedSessions bool `json:"shared_sessions,omitempty"`
 	// Metrics serves Prometheus metrics; off unless enabled. See metrics.go.
 	Metrics ServerMetricsConfig `json:"metrics,omitempty"`
+	// Background is jobs people start on the server; see background.go.
+	Background ServerBackgroundConfig `json:"background,omitzero"`
 }
 
 // ServerTLSConfig is the TLS `abhed serve` terminates. Relative paths are
@@ -1346,16 +1602,20 @@ type RetrievalConfig struct {
 
 // SkillsConfig points at directories holding skills.
 //
-// Deliberately NOT the workspace: a skill body is instructions by
-// construction, so reading them from the repository the agent is editing would
-// let any cloned project carry its own orders to the agent reading it. Skills
-// come from where the operator put them.
+// Not the workspace: a skill body is instructions by construction, so a
+// directory here never makes the repository's skills load. A workspace's own
+// .abhed/skills loads only under a trust decision bound to its exact content
+// (see trust_skills.go).
 type SkillsConfig struct {
 	// Dirs each contain one directory per skill, holding a SKILL.md.
 	// Defaults to ~/.abhed/skills when unset.
 	Dirs []string `json:"dirs,omitempty"`
 	// Disabled turns skills off entirely, including the default directory.
 	Disabled bool `json:"disabled,omitempty"`
+	// DisableWorkspace keeps a workspace's own .abhed/skills from loading,
+	// however it is trusted. The managed configuration sets it to keep
+	// skills to the ones the organisation and the person installed.
+	DisableWorkspace bool `json:"disable_workspace,omitempty"`
 }
 
 // AgentsConfig points at directories of subagent definitions: markdown files
@@ -1371,9 +1631,11 @@ type AgentsConfig struct {
 	Disabled bool `json:"disabled,omitempty"`
 }
 
-// K8sConfig enables cluster access. Off by default: reaching a cluster is an
-// authorization decision, and the credentials already on the machine are not
-// a reason to hand them to an agent without being asked.
+// K8sConfig enables cluster access. Off by default where Abhed serves other
+// people's sessions: reaching a cluster is an authorization decision. On the
+// person's own machine, with neither k8s.enabled set nor a managed
+// configuration, their kubeconfig is offered, each context asked before its
+// first use (see toolset.MachineK8s).
 type K8sConfig struct {
 	Enabled bool `json:"enabled"`
 	// Kubeconfig path; empty uses $KUBECONFIG then ~/.kube/config.
@@ -1445,11 +1707,29 @@ type SSHConfig struct {
 	// "uptime" or "systemctl status *", each one simple command. A matching
 	// call is allowed in plan mode and asks in no mode; deny and ask rules hold.
 	ReadCommands []string `json:"read_commands,omitempty"`
+	// ListedReadsOnly turns the read-only classifier off: on a declared
+	// host, a command whose text is provably a read (programs on the
+	// read-only list, in read forms, piped) no longer runs unasked, and only
+	// ReadCommands do.
+	ListedReadsOnly bool `json:"listed_reads_only,omitempty"`
+	// ReadContents lets the read-only classifier also run, unasked, programs
+	// that print the contents of files (cat, head, tail, grep, journalctl,
+	// docker logs, systemctl cat, …). Off by default: only metadata (ls, du,
+	// df, ps, stat, …) and lines piped from it run unasked. Only the person's
+	// own file or the managed file sets it; a workspace cannot.
+	ReadContents bool `json:"read_contents,omitempty"`
 	// Transfers offers ssh_put and ssh_get, which move files over SFTP.
 	Transfers bool `json:"transfers,omitempty"`
 	// TransferMaxMB bounds one transfer; 0 is 16.
 	TransferMaxMB int `json:"transfer_max_mb,omitempty"`
+	// MaxTimeoutSeconds bounds the timeout_seconds an ssh call may ask for;
+	// 0 is 120, the default a call gets when it asks for none. At most
+	// MaxSSHTimeoutSeconds.
+	MaxTimeoutSeconds int `json:"max_timeout_seconds,omitempty"`
 }
+
+// MaxSSHTimeoutSeconds is the largest ssh.max_timeout_seconds, a day.
+const MaxSSHTimeoutSeconds = 86400
 
 type SSHHostConfig struct {
 	Name         string `json:"name"`
@@ -1524,6 +1804,28 @@ type MCPServerConfig struct {
 	// HostFiles runs a stdio server with the host's files rather than
 	// confined to its own home and the workspace on the process tier.
 	HostFiles bool `json:"host_files,omitempty"`
+	// StartupTimeoutSeconds bounds the server's start; 0 is 60. Past it the
+	// server is reported and its tools are absent.
+	StartupTimeoutSeconds int `json:"startup_timeout_seconds,omitempty"`
+	// OAuth configures `abhed mcp login` for a URL server; a server needs it
+	// only for a client registered ahead of time or particular scopes.
+	OAuth *MCPOAuthConfig `json:"oauth,omitempty"`
+	// TrustReadOnlyHint believes the server's readOnlyHint, so a tool it
+	// marks read-only runs unasked as a read. Off by default, and honoured
+	// only in the managed file's own entry for the server.
+	TrustReadOnlyHint bool `json:"trust_read_only_hint,omitempty"`
+}
+
+// MCPOAuthConfig is how `abhed mcp login` signs in to a URL server.
+type MCPOAuthConfig struct {
+	// ClientID is a client registered ahead of time; without one, Abhed
+	// registers itself where the server's authorization server offers that.
+	ClientID string `json:"client_id,omitempty"`
+	// ClientSecretEnv names the environment variable holding that client's
+	// secret, read at login only; a public client has none.
+	ClientSecretEnv string `json:"client_secret_env,omitempty"`
+	// Scopes are asked for; none asks for what the server says it supports.
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // SandboxConfig controls execution isolation. Defaults deny egress, because a
@@ -1531,7 +1833,11 @@ type MCPServerConfig struct {
 type SandboxConfig struct {
 	MinTier string `json:"min_tier"` // none|process|container|vm
 	// Tier chooses the backend instead of the strongest available one:
-	// "fence", the Linux preview. Empty selects as before.
+	// process, container, vm, or fence (the Linux preview), never weaker
+	// than min_tier; the chosen tier is used or the session is refused.
+	// Empty selects the strongest available, preferring the process tier on
+	// a Mac when the container image has no git and nothing managed sets the
+	// tier. A person's own setting; a workspace file cannot set it.
 	Tier         string `json:"tier,omitempty"`
 	AllowNetwork bool   `json:"allow_network"`
 	// Network "allowlist" sends commands' traffic through the session's
@@ -1612,6 +1918,11 @@ type SandboxConfig struct {
 	// wherever the tier can hold them; true requires it; false turns it off
 	// where no surface requires it.
 	GitProtect *bool `json:"protect_git,omitempty"`
+	// HostGit is sandbox.host_git: unset or true, git fetch, pull, push,
+	// clone and ls-remote have their network part run through the person's
+	// own git on the host (docs/guide/04-permissions.md); false keeps them
+	// in the sandbox. Any layer may turn it off; none turns it back on.
+	HostGit *bool `json:"host_git,omitempty"`
 	// MicroVMSocket is the socket of an abhed-microvm driver; when set, the
 	// control plane can choose the microvm driver by name. Managed only.
 	MicroVMSocket string `json:"microvm_socket,omitempty"`
@@ -1634,9 +1945,22 @@ type LimitsConfig struct {
 	MaxTokens int `json:"max_tokens"`
 	// MaxBudgetTokens caps total spend across a session AND its subagents.
 	// Zero means unlimited.
-	MaxBudgetTokens int  `json:"max_budget_tokens"`
-	MaxSubagents    int  `json:"max_subagents"`
-	NestedSubagents bool `json:"nested_subagents"`
+	MaxBudgetTokens int `json:"max_budget_tokens"`
+	// MaxBudgetUSD caps a session's cost in US dollars, subagents included.
+	// Zero means unlimited. With a cap, a model with no price is refused.
+	MaxBudgetUSD float64 `json:"max_budget_usd,omitempty"`
+	// BudgetSpent stops every run before its first model call, as an org
+	// policy says once what is left of a person's budget is nothing.
+	BudgetSpent bool `json:"budget_spent,omitempty"`
+	// ReasoningStallTokens cuts a model reply that has only reasoned, with no
+	// text or tool call, past this many reasoning tokens (or its thinking
+	// budget, if larger); ReasoningStallSeconds past this long, as a backstop.
+	// Zero is 8000 and 300; below 1000 and 30 the floors apply, and the
+	// seconds are held to half the provider's call timeout, which wins over the floor.
+	ReasoningStallTokens  int  `json:"reasoning_stall_tokens,omitempty"`
+	ReasoningStallSeconds int  `json:"reasoning_stall_seconds,omitempty"`
+	MaxSubagents          int  `json:"max_subagents"`
+	NestedSubagents       bool `json:"nested_subagents"`
 	// MaxParallelSubagents bounds how many of a `tasks` call's subagents run
 	// at once. Zero means all of them, up to the tool's own cap of eight.
 	MaxParallelSubagents int `json:"max_parallel_subagents,omitempty"`
@@ -1649,6 +1973,20 @@ type LimitsConfig struct {
 	// BackgroundShells bounds a session's commands run with run_in_background
 	// at once. Zero allows none. Default 4.
 	BackgroundShells int `json:"background_shells"`
+	// MaxContinues bounds how many times a person may continue a run that
+	// stopped at max_turns in one conversation (/continue, -p --continue).
+	// Zero allows none. Default 3.
+	MaxContinues int `json:"max_continues"`
+}
+
+// ContinuesAllowed is the bound on continuing a run past its turn limit. A
+// managed limits.max_turns binds the whole conversation, so unless the
+// managed file also sets limits.max_continues, none is allowed.
+func (c Config) ContinuesAllowed() int {
+	if c.ManagedSets("limits.max_turns") && !c.ManagedSets("limits.max_continues") {
+		return 0
+	}
+	return max(c.Limits.MaxContinues, 0)
 }
 
 // SubagentsConfig is what a background subagent's result does when it
@@ -1713,6 +2051,8 @@ func Default() Config {
 			Ask: []string{"bash(*ABHED_TRUST_WORKSPACE*)", "bash(*trust-workspace*)",
 				"write(ABHED.md)", "edit(ABHED.md)", "write(ABHED.local.md)", "edit(ABHED.local.md)",
 				"write(AGENTS.md)", "edit(AGENTS.md)",
+				// A folder's own ABHED.md is loaded when the agent works there.
+				"write(**/ABHED.md)", "edit(**/ABHED.md)",
 				// Files that commonly hold credentials are read only with a
 				// yes. A speed bump for the read tool, not credential protection:
 				// a command can still print them.
@@ -1728,7 +2068,7 @@ func Default() Config {
 		Limits: LimitsConfig{
 			MaxTurns: 100, MaxTokens: 8192, MaxBudgetTokens: 0,
 			MaxSubagents: 20, NestedSubagents: false,
-			MaxBackgroundSubagents: 4, BackgroundMaxMinutes: 60,
+			MaxBackgroundSubagents: 4, BackgroundMaxMinutes: 60, MaxContinues: 3,
 			BackgroundShells: 4,
 		},
 		Subagents: SubagentsConfig{Wake: "auto", MaxWakesPerHour: 4, WakeMaxTurns: 8},
@@ -1785,7 +2125,16 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		sum := sha256.Sum256(o.Settings)
 		cfg.Settings = SettingsSource{Name: o.SettingsName, SHA256: hex.EncodeToString(sum[:])}
 	}
+	beforeWS := maps.Clone(cfg.Model.Providers)
 	st, err := mergeWorkspace(&cfg, workspace, userFile, o)
+	for name, p := range cfg.Model.Providers {
+		if was, ok := beforeWS[name]; !ok || !reflect.DeepEqual(was, p) {
+			if cfg.WorkspaceProviders == nil {
+				cfg.WorkspaceProviders = map[string]bool{}
+			}
+			cfg.WorkspaceProviders[name] = true
+		}
+	}
 	noteUsers(&st, workspace, o)
 	cfg.Workspace = st
 	if err != nil {
@@ -1798,21 +2147,31 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		return cfg, err
 	}
 	cfg.noteRuleLayer(LayerManaged)
+	skillsOff(&cfg)
 	cfg.origins = nil
 	applyWebIntents(&cfg)
 	dropLockedAllow(&cfg, userFile, cfg.Workspace.File, o.SettingsName)
 	userAllowlistNarrows(&cfg)
+	w := warnSink(o.Warn)
+	// After the managed file, whose plugins policy decides, and before the
+	// allow lists, which judge a plugin's servers as any other.
+	applyPlugins(&cfg, w)
 
 	applyEnv(&cfg)
 	narrowToAllowLists(&cfg)
-	w := warnSink(o.Warn)
 	warnOrgFallback(w, cfg)
-	warnUnknown(w, cfg.Unknown)
-	warnDuplicates(w, cfg.Duplicates)
-	warnSetAside(w, cfg.SetAside)
-	warnNotYetInEffect(w, cfg)
-	warnNeverAllows(w, cfg.Permissions.Allow)
-	warnRuleFindings(w, cfg.RuleFindings())
+	if o.WarnFor == nil {
+		warnUnknown(w, cfg.Unknown)
+		warnDuplicates(w, cfg.Duplicates)
+		warnSetAside(w, cfg.SetAside)
+		warnOverriddenPrices(w, cfg)
+		warnNotYetInEffect(w, cfg)
+		warnReadOnlyHint(w, cfg)
+		warnNeverAllows(w, cfg.Permissions.Allow)
+		warnRuleFindings(w, cfg.RuleFindings())
+	} else {
+		warnScoped(w, cfg, o.WarnFor)
+	}
 	if !o.Quiet {
 		warnUntrusted(w, cfg.Workspace)
 	}
@@ -1854,8 +2213,18 @@ func readMerge(cfg *Config, path string) ([]byte, error) {
 func mergeData(cfg *Config, path string, data []byte) ([]byte, error) {
 	// Unmarshalling onto the existing struct merges: fields absent from the
 	// file keep their current value, and lists are replaced wholesale.
+	// Simple hooks are the exception: each file adds to them.
+	below := cfg.Hooks.Run
+	cfg.Hooks.Run = nil
 	if err := json.Unmarshal(data, cfg); err != nil {
+		cfg.Hooks.Run = below
 		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	var kept []HookConfig
+	cfg.Hooks.Run, kept = joinHooks(below, cfg.Hooks.Run, cfg.mergingManaged)
+	for _, h := range kept {
+		cfg.SetAside = append(cfg.SetAside, SetAsideKey{File: path, Key: "hooks.run", Value: h.Name,
+			Reason: "a hook of that name comes from the " + orLayer(h.Layer) + " configuration; only the managed configuration replaces one"})
 	}
 	cfg.Unknown = append(cfg.Unknown, unknownKeys(path, data, reflect.TypeFor[Config]())...)
 	cfg.Duplicates = append(cfg.Duplicates, duplicateKeys(path, data)...)
@@ -1925,8 +2294,8 @@ func ValidateProvider(p ProviderConfig) error {
 	if p.Model == "" {
 		return fmt.Errorf("watsonx needs model (e.g. openai/gpt-oss-120b)")
 	}
-	if p.APIKey == "" && p.APIKeyEnv == "" {
-		return fmt.Errorf("watsonx needs api_key_env naming the variable holding the key")
+	if p.APIKey == "" && p.APIKeyEnv == "" && p.APIKeySecret == "" {
+		return fmt.Errorf("watsonx needs api_key_env or api_key_secret naming the key")
 	}
 	if p.ProjectID == "" && p.SpaceID == "" {
 		return fmt.Errorf("watsonx needs either project_id or space_id")
@@ -1975,9 +2344,7 @@ func (c Config) providerNamed(name string) (ProviderConfig, error) {
 			"model %q is not defined. Available: %s",
 			name, strings.Join(providerNames(c.Model.Providers), ", "))
 	}
-	if p.APIKey == "" && p.APIKeyEnv != "" {
-		p.APIKey = os.Getenv(p.APIKeyEnv)
-	}
+	p = c.resolveKeyNamed(name, p)
 	if err := ValidateProvider(p); err != nil {
 		return p, fmt.Errorf("model %q: %w", name, err)
 	}
@@ -2006,6 +2373,17 @@ type ToolsConfig struct {
 	// BashCheckpointFiles the files looked at (20000 when zero).
 	BashCheckpointMB    int `json:"bash_checkpoint_mb,omitempty"`
 	BashCheckpointFiles int `json:"bash_checkpoint_files,omitempty"`
+	// Diagnostics is whether the agent is given a language server's
+	// diagnostics after each write or edit: "auto" (the default) runs a
+	// server only where policy and the supervisor allow its command, "on"
+	// also where the mode would ask about it, "off" never. Off wherever no
+	// sandbox or no server is installed. A workspace file may only set off.
+	Diagnostics string `json:"diagnostics,omitempty"`
+	// DiagnosticsMax bounds the diagnostics given per file (20 when zero,
+	// at most 200); DiagnosticsWaitMS how long an edit waits for them
+	// (3000 when zero, at most 30000).
+	DiagnosticsMax    int `json:"diagnostics_max,omitempty"`
+	DiagnosticsWaitMS int `json:"diagnostics_wait_ms,omitempty"`
 }
 
 func (c Config) Validate() error {
@@ -2013,6 +2391,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.validateNetwork(); err != nil {
+		return err
+	}
+	if err := c.validateMCPOAuth(); err != nil {
 		return err
 	}
 	switch c.Subagents.Wake {
@@ -2065,6 +2446,12 @@ func (c Config) Validate() error {
 	if k := c.ControlPlane.Kubernetes; len(k) > 0 && !jsonObject(k) {
 		return errors.New("control_plane.kubernetes must be a JSON object of the Kubernetes driver's options")
 	}
+	if err := c.Plugins.validate(); err != nil {
+		return err
+	}
+	if err := c.validateHooks(); err != nil {
+		return err
+	}
 	if err := c.Monitor.validate(); err != nil {
 		return err
 	}
@@ -2089,6 +2476,24 @@ func (c Config) Validate() error {
 	}
 	if c.Limits.BackgroundMaxMinutes > 480 {
 		return fmt.Errorf("limits.background_max_minutes is %d; at most 480", c.Limits.BackgroundMaxMinutes)
+	}
+	// max_concurrent_requests is checked on every provider, not only the
+	// default: another is built when first used, which is too late to say so.
+	names := make([]string, 0, len(c.Model.Providers))
+	for name := range c.Model.Providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		pc := c.Model.Providers[name]
+		switch {
+		case pc.MaxConcurrentRequests < 0:
+			return fmt.Errorf("provider %q: max_concurrent_requests may not be negative", name)
+		case pc.MaxTools < 0:
+			return fmt.Errorf("provider %q: max_tools may not be negative", name)
+		case pc.MaxConcurrentRequests > 0 && model.Known(pc.Type) && !model.HonoursMaxConcurrent(pc.Type):
+			return fmt.Errorf("provider %q: max_concurrent_requests is honoured only by OpenAI-compatible types, not %q", name, pc.Type)
+		}
 	}
 	p, err := c.providerNamed(c.Model.Default)
 	if err != nil {
@@ -2132,6 +2537,12 @@ func (c Config) Validate() error {
 	if err := new(policy.Engine).AllowRemoteReads(c.SSH.ReadCommands...); err != nil {
 		return err
 	}
+	if t := c.SSH.MaxTimeoutSeconds; t < 0 || t > MaxSSHTimeoutSeconds {
+		return fmt.Errorf("ssh.max_timeout_seconds is %d; use a number of seconds up to %d (a day), or 0 for the default (120)", t, MaxSSHTimeoutSeconds)
+	}
+	if n := c.Context.CompactAtTokens; n < 0 || n > 0 && n < MinCompactAtTokens {
+		return fmt.Errorf("context.compact_at_tokens must be 0 (the default, 200,000) or at least %d, got %d", MinCompactAtTokens, n)
+	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt > 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)
 	}
@@ -2146,10 +2557,22 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("unknown auth.mode %q (want none, local, proxy or oidc)", c.Auth.Mode)
 	}
+	if err := c.validateClientAuth(); err != nil {
+		return err
+	}
+	if c.Auth.Guest && c.Auth.Mode != "local" && c.Auth.Mode != "oidc" {
+		return fmt.Errorf("auth.guest offers guests beside signed-in people, so it needs auth.mode local or oidc")
+	}
+	if h := c.Auth.GuestHours; h < 0 || h > 720 {
+		return fmt.Errorf("auth.guest_hours is %d; use 1 to 720, or 0 for 8", h)
+	}
 	if err := c.validateTLS(); err != nil {
 		return err
 	}
 	if err := c.Server.Metrics.validate(); err != nil {
+		return err
+	}
+	if err := c.Server.Background.validate(); err != nil {
 		return err
 	}
 	if err := c.validateCLILogin(); err != nil {
@@ -2220,6 +2643,14 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("unknown tools.bash_checkpoints %q (want on, off or required)", c.Tools.BashCheckpoints)
 	}
+	switch c.Tools.Diagnostics {
+	case "", "auto", "on", "off":
+	default:
+		return fmt.Errorf("unknown tools.diagnostics %q (want auto, on or off)", c.Tools.Diagnostics)
+	}
+	if c.Tools.DiagnosticsMax < 0 || c.Tools.DiagnosticsMax > 200 || c.Tools.DiagnosticsWaitMS < 0 || c.Tools.DiagnosticsWaitMS > 30000 {
+		return fmt.Errorf("tools.diagnostics_max must be 0 to 200 and tools.diagnostics_wait_ms 0 to 30000")
+	}
 	if c.Tools.BashCheckpointMB < 0 || c.Tools.BashCheckpointMB > 4096 || c.Tools.BashCheckpointFiles < 0 || c.Tools.BashCheckpointFiles > 1000000 {
 		return fmt.Errorf("tools.bash_checkpoint_mb must be 0 to 4096 and tools.bash_checkpoint_files 0 to 1000000")
 	}
@@ -2229,9 +2660,12 @@ func (c Config) Validate() error {
 		return fmt.Errorf("unknown sandbox.min_tier %q (want none|process|container|vm)", c.Sandbox.MinTier)
 	}
 	switch c.Sandbox.Tier {
-	case "", "fence":
+	case "", "process", "container", "vm", "fence":
 	default:
-		return fmt.Errorf("unknown sandbox.tier %q (want fence, or leave it unset)", c.Sandbox.Tier)
+		return fmt.Errorf("unknown sandbox.tier %q (want process, container, vm or fence, or leave it unset)", c.Sandbox.Tier)
+	}
+	if t, m := tierRank[c.Sandbox.Tier], tierRank[c.Sandbox.MinTier]; c.Sandbox.Tier != "" && c.Sandbox.Tier != "fence" && t < m {
+		return fmt.Errorf("sandbox.tier %s is weaker than sandbox.min_tier %s; choose %s or stronger", c.Sandbox.Tier, c.Sandbox.MinTier, c.Sandbox.MinTier)
 	}
 	if c.Fence.CPUPercent < 0 || c.Fence.CPUPercent > 102400 {
 		return fmt.Errorf("fence.cpu_percent %d is outside 0 to 102400", c.Fence.CPUPercent)
@@ -2487,4 +2921,13 @@ func ParseListenPorts(spec []string) ([]int, error) {
 	}
 	sort.Ints(out)
 	return out, nil
+}
+
+// PriceConfig is one model's price in US dollars per million tokens. Zero
+// cached_input or cache_write bills those tokens at the input price.
+type PriceConfig struct {
+	Input       float64 `json:"input"`
+	Output      float64 `json:"output"`
+	CachedInput float64 `json:"cached_input,omitempty"`
+	CacheWrite  float64 `json:"cache_write,omitempty"`
 }

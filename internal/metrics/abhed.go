@@ -17,7 +17,7 @@ import (
 var Steps = []string{
 	"hook", "deny", "destructive", "screen", "ask", "mode", "allow", "default", "monitor",
 	"handover", "plan", "precheck", "unknown", "withheld", "owner", "args", "unanswered",
-	"interrupted", "attachment", "state", "workspace", "preview", "person",
+	"interrupted", "attachment", "state", "workspace", "preview", "person", "pin", "hostgit", "hostgit_each",
 }
 
 // ToolchainOutcomes are how a toolchain install ended.
@@ -36,7 +36,7 @@ var OllamaOutcomes = []string{agent.OllamaOK, agent.OllamaFailed, agent.OllamaDe
 var Methods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE"}
 
 // Approvers are who an approval or denial names as deciding.
-var Approvers = []string{agent.ByPolicy, agent.ByReviewer, agent.ByUser, agent.BySessionScope, agent.ByWorkspaceGrant, agent.ByHeadless, agent.BySystem, agent.ByCarried}
+var Approvers = []string{agent.ByPolicy, agent.ByReviewer, agent.ByUser, agent.BySessionScope, agent.ByWorkspaceGrant, agent.ByHeadless, agent.BySystem, agent.ByCarried, agent.BySetting}
 
 // VerdictCodes are the supervisor's codes; Skipped and Unavailable stand for
 // a call the judge did not, or could not, answer.
@@ -86,6 +86,7 @@ type Abhed struct {
 	fenceDenied      *Counter
 	ollama           *Counter
 	lspStarts        *Counter
+	lspDiagnostics   *Counter
 	completions      *Counter
 	completionTokens *Counter
 	nextEdits        *Counter
@@ -185,13 +186,15 @@ func New() *Abhed {
 		completionTokens: r.Counter("abhed_completion_tokens_total",
 			"Tokens editor inline completions used, by kind (in, out).", "kind"),
 		nextEdits: r.Counter("abhed_next_edits_total",
-			"Editor next-edit suggestions by outcome (served, empty, failed, cancelled after sending; refused, superseded before), counted when each session closes.", "outcome"),
+			"Editor next-edit suggestions by outcome (served, empty, failed, cancelled after sending; refused, superseded before; local, a rename finished from the file with no model request; local_dropped, a rename left to the person), counted when each session closes.", "outcome"),
 		nextEditTokens: r.Counter("abhed_next_edit_tokens_total",
 			"Tokens editor next-edit suggestions used, by kind (in, out).", "kind"),
 		commitMessages: r.Counter("abhed_commit_messages_total",
 			"Commit messages editors asked for, by outcome (served, empty, failed).", "outcome"),
 		lspStarts: r.Counter("abhed_lsp_starts_total",
 			"Language servers started for editors, by language; a restart after a crash counts again.", "language"),
+		lspDiagnostics: r.Counter("abhed_lsp_diagnostics_total",
+			"Language server diagnostics after the agent's edits, by language and outcome (found, clean, timed_out, skipped).", "language", "outcome"),
 		lspRequests: r.Counter("abhed_lsp_messages_total",
 			"Editor messages to language servers, by language and outcome (passed, refused), counted when each server ends.", "language", "outcome"),
 		ollama: r.Counter("abhed_ollama_actions_total",
@@ -287,12 +290,21 @@ func (m *Abhed) Observe(ev agent.Event) {
 			if ev.Type == agent.EvNextEditSummary {
 				count, tokens = m.nextEdits, m.nextEditTokens
 			}
-			count.Add(float64(p.Served), "served")
+			// Outcomes are exclusive: served from the model apart from local (from the file).
+			// Clamped once for both lines, as an older summary's served left local out.
+			fromModel := max(0, p.Served-p.Local)
+			count.Add(float64(fromModel), "served")
 			count.Add(float64(p.Refused), "refused")
 			count.Add(float64(p.Failed), "failed")
 			count.Add(float64(p.Cancelled), "cancelled")
 			count.Add(float64(p.Superseded), "superseded")
-			count.Add(float64(max(0, p.Requests-p.Served-p.Failed-p.Cancelled)), "empty")
+			if p.Local > 0 {
+				count.Add(float64(p.Local), "local")
+			}
+			if p.LocalDropped > 0 {
+				count.Add(float64(p.LocalDropped), "local_dropped")
+			}
+			count.Add(float64(max(0, p.Requests-fromModel-p.Failed-p.Cancelled)), "empty")
 			tokens.Add(float64(p.TokensIn), "in")
 			tokens.Add(float64(p.TokensOut), "out")
 		}
@@ -303,8 +315,22 @@ func (m *Abhed) Observe(ev agent.Event) {
 		}
 	case string(agent.EvLSPStarted):
 		var p agent.LSPStarted
-		if json.Unmarshal(ev.Payload, &p) == nil {
+		if json.Unmarshal(ev.Payload, &p) == nil && p.Purpose == "" {
 			m.lspStarts.Add(1, oneOf(p.Language, lspLangs))
+		}
+	case string(agent.EvLSPDiagnostics):
+		var p agent.LSPDiagnostics
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			outcome := "found"
+			switch {
+			case p.Skipped != "":
+				outcome = "skipped"
+			case p.TimedOut:
+				outcome = "timed_out"
+			case p.Total == 0:
+				outcome = "clean"
+			}
+			m.lspDiagnostics.Add(1, oneOf(p.Language, lspLangs), outcome)
 		}
 	case string(agent.EvLSPStopped):
 		var p agent.LSPStopped

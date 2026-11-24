@@ -63,3 +63,45 @@ func TestServerEnvConfiguredWins(t *testing.T) {
 		t.Fatalf("env: %q", env)
 	}
 }
+
+// Who is working reaches a server from Abhed's environment only: a server's
+// configured env can neither set nor clear ABHED_GUEST or ABHED_ACCOUNT.
+func TestServerEnvCarriesWhoIsWorking(t *testing.T) {
+	has := func(env []string, kv string) bool {
+		for _, e := range env {
+			if e == kv {
+				return true
+			}
+		}
+		return false
+	}
+	named := func(env []string, k string) int {
+		n := 0
+		for _, e := range env {
+			if strings.HasPrefix(strings.ToUpper(e), k+"=") {
+				n++
+			}
+		}
+		return n
+	}
+	t.Setenv("ABHED_GUEST", "1")
+	t.Setenv("ABHED_ACCOUNT", "")
+	os.Unsetenv("ABHED_ACCOUNT")
+	env := ServerEnv([]string{"ABHED_GUEST=0", "abhed_guest=", "ABHED_ACCOUNT=bob", " ABHED_ACCOUNT =bob", "MODE=ro"})
+	if !has(env, "ABHED_GUEST=1") || named(env, "ABHED_GUEST") != 1 {
+		t.Errorf("a guest's server must see ABHED_GUEST=1 and nothing else: %q", env)
+	}
+	if named(env, "ABHED_ACCOUNT") != 0 || named(env, " ABHED_ACCOUNT ") != 0 {
+		t.Errorf("configured ABHED_ACCOUNT reached the server: %q", env)
+	}
+	if !has(env, "MODE=ro") {
+		t.Errorf("an ordinary entry was dropped: %q", env)
+	}
+
+	os.Unsetenv("ABHED_GUEST")
+	t.Setenv("ABHED_ACCOUNT", "alice")
+	env = ServerEnv([]string{"ABHED_GUEST=1", "ABHED_ACCOUNT"})
+	if !has(env, "ABHED_ACCOUNT=alice") || named(env, "ABHED_ACCOUNT") != 1 || named(env, "ABHED_GUEST") != 0 {
+		t.Errorf("an account's server must see only ABHED_ACCOUNT=alice: %q", env)
+	}
+}

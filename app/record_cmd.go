@@ -53,7 +53,12 @@ A session is its id, a unique id prefix, its name, or the path of its file.
 		return usage()
 	}
 	// The witness and record shipping connect through the upstream proxy.
-	cfg, err := loadNetworked(workspace, config.LoadOptions{Trust: trust, Quiet: true})
+	o := config.LoadOptions{Trust: trust, Quiet: true}
+	if args[0] == "verify" {
+		// Verify's answer depends only on these; warnings about session settings would bury it.
+		o.WarnFor = verifyWarns
+	}
+	cfg, err := loadNetworked(workspace, o)
 	if err != nil {
 		fmt.Fprintf(stderr, "abhed: %v\n", err)
 		return 1
@@ -91,6 +96,18 @@ A session is its id, a unique id prefix, its name, or the path of its file.
 		return c.ship(args[1:])
 	}
 	return usage()
+}
+
+// verifyWarns are the settings whose warnings verify keeps: where the record
+// is, how it is stored and witnessed, the network the witness is reached
+// through, and the org policy.
+func verifyWarns(key string) bool {
+	for _, p := range []string{"record", "storage", "network", "org_policy"} {
+		if key == p || strings.HasPrefix(key, p+".") {
+			return true
+		}
+	}
+	return false
 }
 
 type recordCtx struct {
@@ -489,11 +506,10 @@ func exportPath(given, id, format string) (string, error) {
 	if given != "" {
 		return given, nil
 	}
-	home, err := os.UserHomeDir()
+	dir, err := exportsDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".abhed", "exports")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}

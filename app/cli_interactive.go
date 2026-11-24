@@ -44,7 +44,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	// stdin is not a terminal, since raw mode on a pipe corrupts the input.
 	editor := ui.NewLineReader(ui.Prompt(s))
 	defer editor.Close()
-	setupTerminal(editor, r, workspace)
+	setupTerminal(editor, r, workspace, sess)
 	editor.SetAttention(ui.Attention{Title: appCfg.CLI.Title, Notify: appCfg.CLI.Notify})
 	// Raw mode turns off the terminal's own newline translation, so every
 	// print in the program would otherwise staircase down the screen.
@@ -53,7 +53,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	// The banner is drawn once the terminal has said what its background
 	// is, in the theme that suits it, and joins the transcript.
 	fmt.Print(ui.Banner(s, a.version, provider.Model, workspace, sandboxLabel, storageLabel(appCfg), toolset.SupervisorLabel(appCfg)))
-	fmt.Printf("\n%s\n\n", s.Dim("Type a task, or /help. Esc interrupts, Ctrl-C twice exits."))
+	fmt.Printf("\n%s\n%s\n\n", s.Dim(whoLine(currentPrincipal())), s.Dim("Type a task, or /help. Esc interrupts, Ctrl-C twice exits."))
 	start.sandbox.noteIfNone(os.Stderr)
 	// The endpoint check started with the session. A server that is down is
 	// named now; one still being dialled is left to the first task.
@@ -61,6 +61,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	_, viaOllama := toolset.OllamaTarget(appCfg, appCfg.Model.Default)
 	if err := start.probe.firstResult(100 * time.Millisecond); err != nil {
 		fmt.Printf("  %s %s\n", s.Red("!"), friendlyModelError(err, appCfg.Model.Default, provider))
+	}
+	if w := defaultModelWarning(appCfg); w != "" {
+		fmt.Printf("  %s %s\n", s.Red("!"), strings.ToUpper(w[:1])+w[1:])
 	}
 
 	// Approval input rides the one stdin reader the editor owns. Without this
@@ -115,6 +118,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		sandbox: start.sandbox, set: start.set, registry: registry, version: a.version,
 		checkpoint: r.Checkpoint,
 	}
+	sessionState.configChangedNote() // what the file says now, to tell later changes by
 	if ap, ok := approver.(*ui.Approver); ok {
 		sessionState.scopes = ap.Session
 	}
@@ -163,6 +167,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		// Built on the startup adapter, whose name the prompt carries, then moved
 		// to the one selected now, so a /model switch holds and the prompt follows it.
 		loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
+		loop.SubdirMemory = subdirMemory(sessionState.appCfg, pol, sess.Root)
 		loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 		loop.EnablePlanExit()
 		if !sessionState.appCfg.Plan.Runbooks {
@@ -176,6 +181,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			v.Install(loop)
 		}
 		loop.Monitor = toolset.Supervisor(sessionState.appCfg, registry, false)
+		loop.Diagnostics = toolset.Diagnostics(sessionState.appCfg, registry)
 		toolset.Summarize(loop.Compactor, extHost, id)
 		// Background tasks belong to the conversation and outlive a task;
 		// their results are shown as they arrive, at the prompt too.
@@ -378,7 +384,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 					}
 					continue
 				}
-				loop.Steer(msg)
+				loop.QueueMessage(agent.Message{Text: msg, Typed: msg})
 				if !editor.Raw() { // on a terminal the dock shows it, queued
 					fmt.Printf("  %s\n", s.Dim("steering — applied at the next step"))
 				}
@@ -399,6 +405,10 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 
 		if line := runErrorLine(runErr, woken); line != "" {
 			fmt.Printf("%s %s\n", s.Red("error:"), friendlyModelError(runErr, sessionState.appCfg.Model.Default, sessionState.provider))
+			if pp := explainProvider(sessionState.appCfg, sessionState.appCfg.Model.Default, runErr); pp != nil {
+				noteProviderProblem(pp)
+				fmt.Printf("  %s\n", s.Dim("Next: "+pp.Next))
+			}
 			if hint := switchBackHint(sessionState, runErr); hint != "" {
 				fmt.Printf("  %s\n", s.Dim(hint))
 			}
@@ -409,6 +419,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		if runErr == nil {
 			releaseRefused(sessionState, runReason)
 		}
+		if note := sessionState.configChangedNote(); note != "" {
+			fmt.Printf("  %s\n", s.Dim(note))
+		}
 		settleTurn(sessionState, runErr)
 		if !editor.Raw() { // on a terminal the footer carries both
 			printUsage(r, spent)
@@ -417,7 +430,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			}
 		}
 		if runReason == agent.TermMaxTurns {
-			fmt.Println(s.Dim("  " + turnLimitNote(appCfg, cfg.MaxTurns)))
+			fmt.Println(s.Dim("  " + turnLimitNote(appCfg, cfg.MaxTurns, sessionState.loop.ContinuesLeft())))
 		}
 		fmt.Println()
 
@@ -550,6 +563,29 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		}
 		if line == modeCycleLine {
 			ft.cycleMode(sessionState, pol)
+			continue
+		}
+		if strings.TrimSpace(line) == "/continue" {
+			// A run that stopped at its turn limit goes on, recorded and bounded.
+			if sessionState.loop == nil {
+				fmt.Printf("  %s\n", s.Dim("nothing to continue yet"))
+				continue
+			}
+			var refused error
+			cont := func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error) {
+				reason, err := loop.ContinueAfterLimit(ctx, "tui")
+				if errors.Is(err, agent.ErrNothingToContinue) || errors.Is(err, agent.ErrContinueRefused) {
+					refused = err
+					return agent.TermCompleted, nil
+				}
+				return reason, err
+			}
+			if code, quit := runTurn(cont); quit {
+				return code
+			}
+			if refused != nil {
+				fmt.Printf("  %s %v\n", s.Red("✕"), refused)
+			}
 			continue
 		}
 		if isCommandLine(line) {

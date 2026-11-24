@@ -41,10 +41,24 @@ model as well as a strong one.
 | `strict` | as `label`, and the agent is given the `answer` tool. When a statement about the session's work is not verified, the agent gets **one** revision turn with the findings; if it is still not verified, the run ends `unverified` |
 
 Unset, the surface chooses. The interactive terminal, the workbench and
-console, and Abhed Studio use `label`, because a person reads the answer there
-and labelling costs nothing unless the answer contradicts the record. `abhed -p`, `abhed rpc`, unattended server runs
-and the SDK check nothing unless asked, so a script's output does not change
-under it.
+console, Abhed Studio, `abhed -p`, `abhed rpc` and unattended server runs use
+`label`: labelling costs nothing unless the answer contradicts the record, and
+a headless run's result then says whether its answer was verified. The SDK
+checks nothing unless asked, through 1.x: set `Options.Verify`, or
+`Options.VerifyByDefault: true` to label as the terminal does (what `abhed
+rpc` and Studio do). `label` never changes an exit code, but when a statement
+is contradicted the agent's one revision can change the answer returned.
+For CI that fails closed, use `strict`:
+
+```bash
+abhed -p "fix the failing tests" -mode auto -allow 'bash(go test*)' -verify strict
+```
+
+`-verify off` (or `"verify":"off"` on `rpc` and `POST /v1/sessions`, or
+`verify.mode: off` in your own configuration) still turns checking off, where
+a managed `verify.mode` allows it. A flag or a session's `verify` also
+lowers a trusted workspace's `verify.mode: strict`: the workspace sets the
+default, not a floor. Only a managed `verify.mode` binds every run.
 
 Per run or session:
 
@@ -72,10 +86,47 @@ only as one of a few adjectives ("Cited", "Related", "Suggested",
 "Deployed" and "No breaking changes" stay claims), questions, courtesies
 ("let me know if…"), advice
 ("run `make test` to confirm") and stated intentions ("I'll update the docs")
-are left out, and at most 40 statements are checked. From each statement Abhed
+are left out, and at most 40 statements are checked. A statement that is
+wholly the assistant introducing itself or saying what it can do in general
+("I'm Abhed, your technical assistant", "I can help with code and
+infrastructure", "I can read files, run commands and edit code") is no claim
+about the session's work, whatever kind the agent gave it: it is unverified
+and never counts against the answer. Only a fixed set of words makes one: a
+role (Abhed, your assistant, a harness for agents), or a general verb (help,
+read, run, edit…) with plain objects (code, files, commands, questions,
+your workspace…). Any other word, such as an adjective, a past participle or a
+second clause ("I'm Abhed, and the server is healthy", "I'm your assistant
+with a healthy server", "I can help with the secure code"), leaves the
+sentence to be checked as any claim is. From each statement Abhed
 takes what can be compared: quoted text and backticked text, file paths, host
 names and addresses, versions, dates, numbers, and a number with the word it
-counts (`12 tests`, `replicas: 3`). Then:
+counts (`12 tests`, `replicas: 3`). What a change is said to have made,
+or what it put in ("changed `bump` to return `x + 4`", "`bump` now
+returns `x + 5`"), is shown only by what a change put in and no later
+change of that file took away, never by what a change was given to
+remove or by the line numbers of an edit's report. A word with a digit
+in it (`python3`, `r2alice`, `v2`, `feat-p1`) is a name that a result
+must hold as written, not a number, or that an `ssh` or Kubernetes call
+which succeeded was made to (its `host`, `cluster`, `context`,
+`namespace`, `name` or `deployment`; never what it was given to write).
+Such a call shows only that the session reached that target, not what
+is on it: a `k8s_get` on `prod2` that found nothing still shows "on
+prod2". The line numbers the read tool puts before each line, and a
+truncated read's closing note, are not part of what a read shows. A report with its subject left out ("Pulled, branched and
+pushed.", "Committed the note.", "Added a test.") is about the session's
+work, as "I pushed" is, so a failed or refused call never lets it pass,
+and strict mode does not complete on it. A past form that opens a
+sentence as an adjective is not such a report: before a hyphen
+("Built-in functions…"), before a main verb within three words
+("Released versions are tagged…", "Rebased branches need…"), or in a
+short heading with nothing after its colon ("Changed files:"). A git or
+deploy verb before a work noun whose state is said to be new ("Pushed
+branches are visible on origin now.", "Committed work is safe now.") is
+still a report of the work, but only in a session that made a git or
+deploy call; "Pushed commits are visible to everyone with access" is
+prose. A look
+said with nothing named ("listed") needs a read, listing or search that
+returned a result. Then:
 
 - **The evidence must exist and be from this session.** A statement can only
   rest on a tool result the agent's own calls produced in this session. A cited
@@ -318,7 +369,34 @@ counts (`12 tests`, `replicas: 3`). Then:
     "sorted", "keyed", "scoped", "bounded", "nested", "shared",
     "required", "expected", "allowed", "supported", "meant" or "known",
     and "built-in", "hard-coded", "so-called", "well-known" and
-    "zero-based".
+    "zero-based";
+  - code described in the present, which is what a read of it shows: a
+    present passive of a verb of data flow or wiring ("is initialized
+    with", "are eventually passed to", "is stored in", "is returned"), a
+    participle that names what produced or receives a value ("the
+    documents returned by `archivist_worker`", "passed to the
+    `synthesizer` node"), and one that qualifies a noun ("the combined
+    results", a label such as "Specialized Worker Role:" with no word of
+    change in it). None of these is a verb of change or of finished work
+    (added, changed, fixed, merged, processed, resolved, handled, built,
+    deployed and the like), and none is in the past: "was initialized"
+    stays an event, and "now", "my change" or "I initialized" still make
+    it one. The names in such a sentence must still be in a current read,
+    so a class said to be initialized with a type the code never names
+    stays unverified. "Passed to" or "passed through" is no result unless
+    the sentence is about tests, CI, a build, checks, a pipeline, review,
+    lint or QA.
+
+  Finished work said in the present ("the issue is resolved", "the
+  service is deployed", "the cache is now populated") is a statement
+  about the session's work, checked as one. So is wiring or configuration
+  said in the present ("is registered", "is configured", "is enabled", "is
+  wired", "is mounted", "is set up"): the checks cannot tell from a read
+  that one thing is wired into another, or that a flag holds the value
+  said, so "the handler is registered in `init()`" and "both are
+  configured in `init()`" stay unverified even when a read shows them.
+  These are known false negatives; quote the line instead
+  ("`init()` calls `app.register(handler)`").
 
   The cost is on purpose: some sentences about code as it stands with
   another participle ("negative numbers are skipped") are events, and stay
@@ -420,16 +498,83 @@ counts (`12 tests`, `replicas: 3`). Then:
     `-c`, `pytest -k` or `--collect-only`, `cargo test --no-run` and anything
     else not read as a plain run leave it out);
   - is given no variable but `NO_COLOR`, `FORCE_COLOR`, `CLICOLOR` or
-    `CLICOLOR_FORCE`, which only colour its output: any other
+    `CLICOLOR_FORCE`, which only colour its output, or `PYTHONPATH=.`
+    (a `PYTHONPATH` of other folders inside the workspace, such as `src`,
+    can import another copy, so the run is not whole): any other
     (`GOFLAGS=-run=TestA`, `PYTEST_ADDOPTS='-k x'`, `CI=true`), before it or
     through `env`, may filter it or change what passes. Runners that load
     variables from a file are not read either: `pipenv run` (the project's
     `.env`), `hatch run` (its environment's variables), and `uv run
     --env-file`, `dotenv` and `direnv exec`, which are not taken off, so the
     run is not one of a known kind;
-  - covers, by path, the packages or folders the statement names, or the
-    whole workspace (`./...` from the workspace) when it names none.
-    A cached run (`ok … (cached)`) counts like any other;
+  - covers, by path, what the statement names: packages or folders
+    (`internal/auth`), test files (`tests/test_x.py`, `test_tip.py`) or
+    test modules (`tests.test_text`, read as `tests/test_text.py`).
+    A folder named with `/...` (`pkg/x/...`) needs a run of everything
+    beneath it (`go test ./pkg/x/...`), not of the folder alone.
+    "The tests pass" with nothing named means the test runs the person
+    asked for: test modules and files given to `python -m unittest`,
+    `pytest` or "run" (`run tests/test_x.py`), and `go test` folders
+    (`go test ./pkg/x`). Only what the person typed counts, in every
+    message they sent in the session: a file attached with `@`, piped
+    stdin or a linked resource never names the tests, and a later message
+    never narrows what an earlier one asked (each message must name test
+    runs; their union is the scope, and a message that names none means
+    the whole workspace). A message narrows only when, once its runner
+    commands, "the tests", "make sure" and "make it" are taken out (not
+    "run make it" or "run: make it", which run a target), every word left, split on white
+    space and CJK sentence punctuation and trimmed of sentence
+    punctuation at its ends, is exactly one of a few connective words:
+    fix, it, fails, failing, failed, and, then, please, run, tell, me,
+    the, a, result, so, that, pass, passes, sure, now, its, test's, error,
+    broken. A word with a `/`, an inner `.`, a digit, `$`, a backtick or
+    any symbol or letter outside ASCII is none of them. A runner command
+    given an argument this reading does not know (`pytest tests/test_a.py
+    ./a`) counts as a whole-suite run. Any other word leaves the whole
+    workspace: a path or file name outside a runner command (`./run`,
+    `./a`, even the file to fix, as in "fix src/utils/text.py and run the tests": it
+    could as well be a script to run), a bare "make", another runner or
+    target (`npm test`, `make test`, `tox`), "CI", the build, lint, the
+    pipeline, smoke checks, "the api tests", "also" or "too", a negation
+    or a contrast ("don't run", "skip", "except", "instead of", "I used to
+    run"), a runner given a flag or `./...`, or a request for more ("all",
+    "the whole suite"). So does any letter outside ASCII: a message in
+    another language is not read, so it never narrows. This errs towards
+    "unverified": a task split over two messages, "`pytest
+    tests/test_a.py` fails; fix it" and then "run the tests", leaves the
+    whole workspace, because the second message names no run. A statement of every test or the suite ("all tests
+    pass", "the whole suite passes", "every test"), or one that names a
+    test as one among more ("the tests pass, including tests.test_new"),
+    still needs a run of the whole workspace (`./...` from the
+    workspace), whatever the task named. So after `python3 -m unittest
+    tests.test_text` passes, "All tests in tests.test_text passed" is
+    verified, and so is "The tests pass" when the task was "`python3 -m
+    unittest tests.test_text` fails; fix it and run the tests"; "All
+    tests pass" is not, and neither is "The tests pass" when the task
+    said "so all the tests pass". A run of another module, of one class
+    in it, a run that failed, or a change after the run leaves them
+    unverified, and so does a run that ran no test: go's `[no test
+    files]` or `[no tests to run]`, unittest's `Ran 0 tests` or every
+    test skipped or an expected failure, pytest with only skipped,
+    deselected, xfailed or xpassed tests, and cargo with none passed (a
+    whole-workspace run included). A go statement about one package needs
+    that package's own line to show a test passing (`ok`, or a passing
+    test in `-json` output): after `go test ./pkg/x ./pkg/y` where `pkg/y`
+    has no test files, "the tests in pkg/y pass" is unverified. The
+    package is found by its exact import path, from the module path in the
+    nearest `go.mod` at or above the run's folder, so `other/pkg/x`
+    passing never shows `pkg/x`; with no `go.mod` to read, such a
+    statement stays unverified. A dotted name part
+    of which is a package (`tests.test_api`, with
+    `tests/test_api/__init__.py`) is what Python imports, so its run is not
+    read as covering `tests/test_api.py`.
+    A cached run (`ok … (cached)`) counts like any other. For `python -m
+    unittest`, a pattern (`-p`, or discover's second word) selects, a
+    start folder other than the workspace narrows, and test names cover
+    only themselves (`tests.test_text.TextTest` covers that class, not
+    the module); its summary, "Ran 3
+    tests … OK", counts 3 passed when it is the only one in the output
+    (not "OK (skipped=1)");
   - exited 0 after the last call that may have changed anything.
 - **"I changed X" is checked against the calls.** It is verified by the last
   call that changed X, as the statement writes it, when that call succeeded:
@@ -493,7 +638,13 @@ counts (`12 tests`, `replicas: 3`). Then:
   (`deployment/checkout`) is a resource, not a file. The arguments are decoded
   first, so a tab or a newline before the code still matches. A note to
   memory, a commit message, a formatter, any other shell writer and every
-  other tool never count. Otherwise it is unverified, never contradicted.
+  other tool never count. Otherwise it is unverified, never contradicted. A file tool's relative path (`tip.py`) is read against the
+  workspace, as a statement's is. Code a statement names is compared with
+  the spacing around operators and brackets ignored, so `amount * percent`
+  matches an edit that wrote `amount*percent`, and "I changed `Tip` to
+  return …" is met by a change inside `Tip`. Spacing between two operators
+  (`a < -b` is not `a<-b`) still counts, and code with a quote or comment
+  in it (`', '.join`, `# …`) must match exactly.
 - **"I ran `Y`" is checked against the commands.** It is verified when Y, as
   written (assignments and the program's path included), perhaps with more
   arguments after it, is a line's first command, or any command of an `&&`
@@ -504,9 +655,115 @@ counts (`12 tests`, `replicas: 3`). Then:
   deep): its results are evidence and its calls are changes, placed at the
   parent's entry for its return. Its runs do not show the workspace's tests
   passing, and its folder is not known.
-- **`file:line` cites are checked against the file now.** Text a cite quotes
-  must be on that line or the two either side; a cite the file does not hold
-  now leaves the statement unverified.
+- **`file:line` cites are checked against what a read showed.** The lines
+  of a current read of that file, as the read numbered them, come first; the
+  file as it is now is read only when no read of it is current. Code the
+  statement says is there, and every number it gives ("returns 2",
+  "returns `2`"), must be within three lines of the cited one and inside
+  the same innermost definition (`def`, `class`, `func`, `fn`; in
+  JavaScript and TypeScript a `function`, a `class`, a method, a `const`,
+  `let` or `var` given a function or an arrow function, and `name: () =>`
+  or `name: function` in an object, `export default` and `async` forms
+  included, and each class field with its decorators; read by
+  indentation): models cite a method's line for its class or a call's
+  line for its result, never a line of the next function. In a file
+  whose definitions are not read here (Python, Go, JavaScript and
+  TypeScript, and Rust are), or at a line that lies in no definition,
+  only the cited line counts. A range (`a.py:22-81`) is read as its first
+  line. A method named with its class (`` `HybridRetriever.retrieve` ``)
+  is at a line inside that method, inside that class. The file a matched
+  cite names ("`rag_agent.py` imports …") needs no tool output naming it.
+  With several cites, each line must show some of the code the statement
+  names and each piece of it must be at one of them; a statement naming a
+  different definition at each cite stays unverified. "`f` (a.py:L)" or "… in `f`"
+  needs L inside `f`, with no definition nested in `f` holding L; "`f` is
+  defined at a.py:L" needs `f`'s definition at L (or one line off past
+  blank or decorator lines). A cite further off, or of a file that
+  cannot be read, leaves the statement unverified.
+- **A command is shown by the call that ran it.** "The tests were run
+  using `python3 -m unittest tests.test_text` and passed" is matched to the
+  bash call whose command that is (or, for a test run, to the test names it
+  was given), and to that run's exit and output for the pass; text that only
+  appears inside a command's arguments ("`printf ok # replicas: 5`") shows
+  no value. "Running `X` resulted in `OK`" is read from the last run of
+  exactly X, as written (not a longer or shorter command), and only when
+  no change came after it. A success ("OK", "passed", "green", "clean")
+  needs a known exit 0 that is X's own: one command, or an `&&` chain
+  that ends in the test run. With `||`, `;` or a pipe (`pytest || true`,
+  `npm test | tail -5`) the exit is another command's, so a success is not
+  shown. The output must hold no failure: FAIL, a count such as "1
+  failed", "2 failing", "1 failures", "1 test failed", "Failed: 1",
+  "ℹ fail 1" or `failures="1"`, TAP's "not ok", or make's "Error 1
+  (ignored)". A test command must be a whole run by the same rules as a
+  test claim: only `cd` before it in the chain (no `trap`), in the
+  workspace, no variable that may filter it (`PYTEST_ADDOPTS`, `env
+  GOFLAGS=-run=…`), and no `-run`, `-k` or other filter. A failure needs
+  a known non-zero exit; anything else it says must be in that run's own
+  output.
+- **Edits are read from the session's own edits.** A change claim that
+  names its file and the code it changed ("Changed `text.split(" ")` to
+  `text.split()`", "Replaced the `range` loop with a `while` loop") is
+  matched to the edit of that file, by what it took away and put in; code
+  the claim says was replaced is found in what the edit took away, not in
+  output after it. The file's own name and the tests a claim names are not
+  read as code that changed. "I fixed the bugs in `src/utils/text.py`" is
+  shown by a change to that file and, after the last change, a test run
+  that passed and covers what the last failing run before the change
+  covered (the same test module, package or names, or more); with no
+  failing run before it, a whole run or one of the file's folder. An
+  unrelated module passing shows no fix. "After the changes" or "following
+  the fix" needs the session to have changed its work: a `write` or an
+  `edit` of a file in the workspace, or a shell command whose every file
+  is known and in the workspace. A file outside it (`echo x > /tmp/f`,
+  `cp src/a.py /tmp/a.py`, a write of `/tmp/scratch.txt`), a command whose
+  files are not known, or a call of another tool (a cluster scale, an
+  issue created) is not such a change, nor is a write to `.git/`,
+  `.abhed/` or a subagent's own worktree, or to a path a shell line made a
+  link to somewhere outside the workspace (`ln -s /tmp/out src/out`). A
+  subagent's edit of a workspace file counts as the session's work.
+- **What the person attached is evidence for what it holds.** Piped stdin
+  and an @-mentioned file, attached to the message, show the values,
+  lines and code in them ("the input has `replicas: 3`"), and never the
+  session's work: a pasted test log does not show the tests pass, and a
+  pasted diff does not show a change. Only the attached blocks count, not
+  what the person typed around them. A pasted block shows what was
+  pasted, not the live state: "the service runs 2.4.1" from a pasted
+  config is verified even if the service has moved on.
+- **A read on a host does not make earlier results out of date.** An ssh
+  call the policy ran as a read (under `ssh.read_only`, or as an entry of
+  `ssh.read_commands`) and whose command parses as known readers changed
+  nothing; any other ssh call may have, including a writing command an
+  operator listed in `ssh.read_commands`.
+- **A change made by another tool is not read from its call.** "web in
+  demo was scaled to 2", "I deleted the web deployment" and the like stay
+  unverified even when a call of the agent's own (`k8s_apply`, an MCP
+  tool) did it: a tool's text output cannot show that the change held, in
+  the scope and on the object the claim names, and was not undone later.
+  Only `write`, `edit` and shell commands are read as changes. This is a
+  known false negative; cite the read that shows the new state instead
+  ("`kubectl get deploy web` shows 2/2 ready (#9)").
+- **An explanation of code is not checked, and never fails an answer.** A
+  statement that only says how or why code the session read behaves, or
+  what code did before the session changed it ("The previous
+  implementation skipped the tail if it didn't fit"), is shown as
+  "explanation: not checked", counted in the footer and in the verdict's
+  `note`, and never verified. It qualifies only when it holds no pass,
+  count, number, change, deed, run, `file:line`, state, outcome, judgement
+  or citation, says no event but what code does ("skipped", "to be
+  added"), and names something one of the session's reads or edits holds.
+  A statement that the session's own change works is not an explanation
+  but a claim about the work, whatever its wording: its subject is the new
+  code, implementation or logic, "this", the fix or change, or a function
+  or file the session edited, with a word such as correctly, properly,
+  now, works, allows, lets, supports, fixes, ensures, prevents or handles
+  ("This correctly handles multiple whitespace…", "The new logic ensures
+  …"). Strict mode fails on it until the record shows it. So do "This
+  ensures all 12 tests pass", "…, so the deploy succeeded", "This handles
+  retries, which I added" and an invented citation.
+- **Evidence may be given as objects.** A claim's `evidence` may list
+  `{"call_id": …, "quote": …}` as well as ids; such a quote is used only
+  when the cited output holds it. A later clause that opens with its verb
+  ("… and passed successfully") keeps the first clause's subject and code.
 
 A statement with nothing in it to compare ("the design is sound") is
 unverified, and so is general knowledge. These are not counted as about the
@@ -535,18 +792,90 @@ answer through a tool rather than as text:
 `text` is what the person reads; it is shown as the agent's reply, and the call
 itself is not drawn. Each claim names the results that show it, by `call_id` or
 `#seq`, and may quote them. `knowledge` claims are labelled unverified and not
-checked; a `knowledge` claim about the session's own work (that tests pass,
-that a file changed) is checked anyway. A model that ignores the tool and
-answers in text is checked as text. The tool adds no model call: it is how the
-last turn ends.
+checked; a `knowledge` claim about the session's own work, in any wording
+(that tests pass, that a file changed, "the tests were updated by fixing
+the bugs in `src/utils/text.py`", "typed errors added", "the PR is
+merged", "this change dropped the retry", "its change dropped the
+retry"), is checked anyway. Under `strict`, every `knowledge` claim that
+says a change, an event or a finished state is checked as work, with no
+exemption: a fact about other software ("TLS 1.3 removed RSA key
+exchange") comes out unverified and gets the revision. That is the cost
+of strict, the mode that asks for everything to be shown. In `label` mode
+such a sentence is shown as "not checked: about other software" (never
+verified; the footer and the verdict's `note` count it) only when all of
+this holds: its subject (the words before its verb; the first word and
+capitalised words are never the verb) opens with a technology from a
+fixed list (TLS, SSL, HTTP, HTTP/2, HTTP/3, QUIC, IPv6, OAuth, OpenID,
+JSON, YAML, Unicode, POSIX, ECMAScript or `ES<n>`, C89 to C23 written
+joined, C++, C#, Java, JDK, Go as "Go 1.<n>" or "Go's latest release",
+Rust, Python, Ruby, PHP, Node.js, Node, TypeScript, Kotlin, Swift, Scala,
+Perl, Lua, Linux, Windows, macOS, iOS, Android, FreeBSD, Kubernetes,
+Docker, PostgreSQL, MySQL, SQLite, Redis, OpenSSL, glibc, LLVM, GCC, Git,
+npm, pip, Chrome, Firefox, Safari, or `RFC <n>`) with a version or release
+word after it or a year before it; and nothing in the whole sentence ties
+it to the session: no first person or possessive, no code or path, no
+name that one of the session's reads, calls or changes holds, no
+passive, no upgrade, bump, migration or switch, no "the" before a noun
+after the verb, and the name is not the workspace's own project. So
+"TLS 1.3 removed RSA key exchange", "Python 3 dropped print statements",
+"RFC 9110 removed the 2xx body rule" and "Go's latest release added
+generics" are not checked, while "Go 1.22 fixed our flaky test", "Linux
+6.1 support was added", "The Node 20 upgrade fixed the build", "Node 20
+fixed a lockfile bug" ("a" or "an" before a noun after the verb counts as
+"the" does) and "Release 4.1 fixed the leak" are work. A statement about
+a refusal is never read as about other software. Some world facts are checked as
+work and stay unverified ("Go 1.22 fixed the loop variable bug", "The
+C++20 update added modules"); none can be verified. `text` is checked too:
+each of its statements that no claim repeats is a claim with nothing cited,
+so an answer cannot pass strict mode by giving only `knowledge` claims while
+its text says "The tests now pass". When an answer passes with nothing
+verified, because no statement in it was read as a claim about the
+session's work, the verdict says so in `note`. A model that ignores the tool and answers in text is
+checked as text. The tool adds no model call: it is how the last turn ends.
+
+A call that policy refused shows only the refusal: that it was refused,
+by which rule, from which layer. A statement that quotes what the agent
+was told ("`Denied: denied by rule bash(curl*) from the org policy …`"),
+or says the call was denied by its rule ("the call was denied by rule
+bash(curl*) from the org policy"), is checked against the refusal's own
+fields: a code span in it must be the rule, the reason or the refused
+command, and a layer it names must be the refusal's own (the org policy
+or an admin, a managed or machine configuration, the workspace or
+project, your own user configuration, a settings file, a flag, a session
+rule you approved, a hook, the mode, or the default; "IT", "it" before
+policy, team, department or rules, the security team and infosec are the
+org). A statement that names no layer ("from the
+policy") is not checked for one. Once those and the
+refusal's wording are taken out, only a few connective words may be
+left: "`curl …` succeeded after being blocked by rule bash(curl*)", or a
+layer the checks do not know ("the team firewall"), stays unverified. The refusal is never
+evidence for anything else: its reason can hold text the model chose (an
+unknown tool's name, a hook's output), so no number, value or quote is
+read from it, and a refused command never shows that it ran or
+succeeded.
 
 ## The revision turn
+
+A revision that shows none of the work the first answer claimed (it
+verifies nothing, as a bare "(end of script)" does) leaves the first
+answer's claims unproven when they were claims of work (a pass, a command
+run, or a change naming a file or code), or when it says nothing at all
+("Understood.", "(end of script)"): strict mode and a contract end
+`unverified`, not completed.
 
 When a statement comes out contradicted (from what it cites), in `label` or `strict` mode, or when
 a statement about the session's work comes out unverified in `strict` mode or
 under a contract, the agent is sent one note, recorded in the `answer.verdict`
 event, listing each one and why: "Check what you can with a tool, then give
-your answer again… say plainly what you could not verify." Its next answer is
+your answer again… say plainly what you could not verify." The note also
+lists the session's own tool results the agent may cite, newest last (up to
+20): by `call_id` when it answers through the `answer` tool, by `#seq` when it
+answers in text, each with its tool, command or path and exit code. The
+command, the path and each statement are shown as quoted data, with any
+newline escaped and backticks written as `\x60`, so text the model chose
+cannot start a line or a code span of its own in the note. A cited
+id that is not in the record still counts as no evidence, and leaves the
+statement unverified. Its next answer is
 checked the same way. There is only one revision per run. "I could not verify
 X" is an answer the checks accept. In `label` mode the run then ends as it
 would have, with the second answer labelled; a statement still contradicted
@@ -680,14 +1009,37 @@ Each check is an `answer.verdict` event: the mode, the source (`answer_tool` or
 was compared, and for a contradicted claim the conflicting entry and an
 excerpt; the counts; the contract's results; whether the critic checked; the
 revision note when one was sent; and the outcome, `verified` only when every
-statement about the session's work was verified and any contract was met. A
+statement about the session's work was verified and any contract was met.
+`verified` means nothing about the work was left unproven, not that every
+statement was checked: an answer of general knowledge, or (in `label`
+mode) of facts about other software, ends `verified` with nothing
+verified, and its `note` says so. CI should run `-verify strict`, which
+checks every change claim as work, or read the counts (`verified`,
+`unverified`, `contradicted`) and the `note` as well as `outcome`. A
 rebuilt or forked conversation includes the revision note, as the model saw it.
+
+### Does it answer the question?
+
+Under `abhed -p`, the verdict also says whether the answer seems to speak to
+the question typed: `relevance` is `addresses` or `off_topic`. The check is
+cheap and makes no model call. It flags only the plain case: the question
+names something (a quoted phrase, a file, an identifier) and the answer
+mentions none of it, or the question has several topic words and the answer
+shares none. The name of one of the session's tools ("call the ssh_connect
+tool, then show the uptime") says how to work, not what to answer about, so
+it is not one of those names; with no other, the topic words decide. An
+`off_topic` answer adds "the answer may not address the question: …" to the
+`note`, and the text output's verdict line ends "may not address the
+question". It is a note only: the outcome, the exit code and the revision
+turn are never changed by it, so a script that wants to act on it reads
+`relevance`. A custom command's turn, whose text is the command's and not
+the person's question, is not checked.
 
 ## Measuring it
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 706 plant a wrong claim. Some cite the result that shows them wrong
+session. 1011 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -768,7 +1120,21 @@ named as what was read, a block or a route deleted with its function named,
 a change said of the line it was, values set under their YAML key, nested
 key and TOML section, a change placed by its function header or an anchor
 line, a decorator added under a route decorator, "Tested:" and "I tested
-it:" over a passing run, and "Added:" and "Changed:" over a real change. 96
+it:" over a passing run, "Added:" and "Changed:" over a real change, a
+test module's pass against a run of another module, of one class in it, a
+failed run or an edit since, "all tests" or "the whole suite" against one
+module's run, "the tests" when the task named none or `./...`, asked for
+more than it named, named a test only in passing, or when a steer or an
+attached file named the run, a `/...` claim against a run of the folder
+alone, a message that also names another runner, CI, the api or
+integration tests or a test file outside a command, a message that
+excludes the run it names, is in another language or asks for the build,
+lint or the pipeline, a package with no test files in a run of several, a
+package whose import path only ends like the one named, a message that
+also runs a script, a config file or a bare `make`, a run that ran no test or only expected
+failures, a dotted name that is a package, "the tests,
+including X" against a run of X, and a pass citing a call id the record
+does not hold. 96
 are neutral: general knowledge, and true claims the checks cannot stand
 behind, such as a build claim against a failed test run, a filtered or
 timed-out run, a run of another or a wider scope, a count of the same thing
@@ -779,11 +1145,14 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 706
-planted claims is shown as verified (32 are contradicted: 30 from cited,
+tail, a port not listening, a file not in a response). Today none of the 1011
+planted claims is shown as verified (33 are contradicted: 31 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
-shows; the rest unverified), all 201 controls are verified,
-and none of the 301 true or neutral claims is contradicted. 19 of the
+shows; the rest unverified), all 276 controls are verified,
+and none of the 396 true or neutral claims is contradicted. Among the
+controls are the claims of two real sessions on a local model, recorded as
+they were given: a review that cited `file:line` and a fix checked in
+strict mode. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
 shares no word with the read (5 did before the rule), and no planted claim
@@ -793,7 +1162,7 @@ mode on an answer whose only unverified sentence is an explanation: it is
 still unverified, gets the revision with that sentence in the note, and ends
 unverified. A regression pin (`TestRegressionPin`,
 `internal/agent/testdata/verify_pin.json`) freezes every planted case and
-control, by name and by a hash of its text and calls, and 147 strict-mode
+control, by name and by a hash of its text and calls, and 151 strict-mode
 answers from the reviews: it fails if a case is changed without being pinned
 again, a planted claim ever verifies, a control stops verifying, or a strict
 answer ends otherwise than pinned. The test fails if a planted claim is
@@ -822,10 +1191,33 @@ makes them.
 - Remote state (a cluster, a host over ssh) is only as current as the last
   command that read it; any later call that may change state outside a file
   makes that output out of date.
+- A change made by a tool other than `write`, `edit` or a shell command
+  ("I scaled web to 2", "I deleted the web deployment") is never verified
+  from that tool's call, even when it is true: a known false negative.
+- A project runner's own definition is not read. A Makefile recipe
+  `-pytest -q >test.log` or a `package.json` script `"test": "jest >
+  out.log || true"` exits 0 and prints nothing to read, so "Running
+  `make test` resulted in OK" is verified after it. A change this
+  session made to a Makefile or `package.json` (including `npm pkg set`
+  or `npm set-script`) before the run makes `make` or `npm` (`pnpm`,
+  `yarn`, `bun`) not a whole run, as a change to `pytest.ini`,
+  `pyproject.toml`, `setup.cfg` or `tox.ini` does for pytest; a pytest
+  run that reports tests "deselected" is never a whole run. A runner
+  that hid its failures before the session is not seen, nor is one of
+  these files written by a script that does not name it
+  (`python3 -c "open('package.json','w')…"`).
 - Labels do not stop a reply from streaming; the banner follows it, and
   strict mode's exit code is the gate for a script.
 - The checks lean to "unverified": most shell work (builds, scripts, test
-  runners other than `go test`, `golangci-lint`, `ruff`, and linters run
+  runners other than `go test` and `python -m unittest` given only test
+  names (split on "/" and ".", every lower-case part starts with "test"
+  and every upper-case part has "Test" or "TEST" in it), folders inside the workspace, a
+  pattern starting with "test", no discover word given twice or both
+  ways, no `cd` out of the folder, and output flags; neither it nor `go
+  test` is a reader after a variable set on its own earlier in the line
+  (`PATH=…;`), pytest, whose config can
+  turn on writing,
+  `golangci-lint`, `ruff`, and linters run
   with `--fix`) counts as a possible
   change with unknown files, so
   what was read before it, and claims about files it may have changed, are
@@ -878,7 +1270,9 @@ makes them.
   or sent to `/dev/null`, are not read as conflict reports. A
   modify/delete conflict resolved by `git rm` and a commit leaves "I
   resolved the merge conflicts" unverified, since no read can show the
-  markers gone. Conflicts left by `git apply -3` or `git checkout -m`
+  markers gone. A change said with no direction and the function it was made in
+  ("I edited `calc.go` so that `Product` skips zeros with `continue`") is
+  matched by its code and place, not by the prose between them. Conflicts left by `git apply -3` or `git checkout -m`
   are not read as conflicts git reported, and a synthetic progress line
   that puts a status code after a carriage return (`\rUU `) counts as
   one. "The pull was clean" is not read as a merge claim, so it is not
@@ -887,4 +1281,8 @@ makes them.
   scoped to one folder (`cd services/orders && go test ./...`), an
   unscoped "all tests passed" is unverified, even when that folder is
   what the person asked about: say "the services/orders tests pass", which
-  that run verifies, or run the whole suite.
+  that run verifies, or run the whole suite. "The tests pass" means the
+  person's test runs only when every message they typed names them as
+  runner arguments and asks for nothing more; a folder named in prose
+  ("fix services/orders") is not read as one, and a test run named in two
+  messages needs one run covering both.

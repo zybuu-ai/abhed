@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/filelock"
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/nlink"
 )
 
@@ -32,6 +33,12 @@ type TrustRecord struct {
 	// differs from Decision: a person may decline new definitions and keep a
 	// configuration file they trusted.
 	AgentsDecision string `json:"agents_decision,omitempty"`
+	// SkillsSHA256 is the hash of the workspace skills the decision covers,
+	// and SkillsDecision the decision about them where it differs from
+	// Decision. A record from before skills were covered decides nothing
+	// about them.
+	SkillsSHA256   string `json:"skills_sha256,omitempty"`
+	SkillsDecision string `json:"skills_decision,omitempty"`
 	// Users is the decision about accounts files inside the workspace, kept
 	// apart from the file's: accounts change as they are managed.
 	Users string    `json:"users,omitempty"`
@@ -45,11 +52,7 @@ type trustFile struct {
 
 // TrustStorePath is where decisions are kept.
 func TrustStorePath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".abhed", "trust.json"), nil
+	return home.PersonPath("trust.json")
 }
 
 func readTrust() (trustFile, string, error) {
@@ -172,30 +175,47 @@ func isParseError(err error) bool {
 // with this content. sha256 is the hash of what they reviewed, not a re-read.
 // It decides nothing about agent definitions; GrantReviewed covers both.
 func GrantTrust(workspace, sha256 string) error {
-	return RecordDecision(workspace, Reviewed{SHA256: sha256}, true, false)
+	return RecordDecision(workspace, Reviewed{SHA256: sha256}, Decisions{Config: true})
 }
 
 // DeclineTrust records that the person chose not to trust this content, so
 // they are not asked again until it changes.
 func DeclineTrust(workspace, sha256 string) error {
-	return RecordDecision(workspace, Reviewed{SHA256: sha256}, false, false)
+	return RecordDecision(workspace, Reviewed{SHA256: sha256}, Decisions{})
 }
 
-// GrantReviewed trusts the configuration file and the agent definitions with
-// exactly the content reviewed.
+// GrantReviewed trusts the configuration file, the agent definitions and the
+// skills with exactly the content reviewed.
 func GrantReviewed(workspace string, r Reviewed) error {
-	return RecordDecision(workspace, r, true, true)
+	return RecordDecision(workspace, r, Decisions{Config: true, Agents: true, Skills: true})
+}
+
+// Decisions are one answer about each part of the reviewed content.
+type Decisions struct {
+	Config, Agents, Skills bool
 }
 
 // RecordDecision records one answer about the reviewed content: whether the
-// configuration file is trusted, and whether the agent definitions are.
-func RecordDecision(workspace string, r Reviewed, configTrusted, agentsTrusted bool) error {
-	if r.SHA256 == "" && r.AgentsSHA256 == "" {
-		return fmt.Errorf("no configuration file or agent definitions to decide on in %s", workspace)
+// configuration file is trusted, whether the agent definitions are, and
+// whether the skills are. A part with no hash keeps what was decided before.
+func RecordDecision(workspace string, r Reviewed, d Decisions) error {
+	if r.SHA256 == "" && r.AgentsSHA256 == "" && r.SkillsSHA256 == "" {
+		return fmt.Errorf("no configuration file, agent definitions or skills to decide on in %s", workspace)
 	}
+	configTrusted, agentsTrusted := d.Config, d.Agents
 	key := canonical(workspace)
 	return updateTrust(func(m map[string]TrustRecord) {
 		rec := TrustRecord{SHA256: r.SHA256, Decision: decisionOf(configTrusted), At: time.Now().UTC()}
+		skillsSum, skillsDecision := r.SkillsSHA256, decisionOf(d.Skills)
+		if old, ok := m[key]; ok && skillsSum == "" && old.SkillsSHA256 != "" {
+			skillsSum, skillsDecision = old.SkillsSHA256, orDecision(old.SkillsDecision, old.Decision)
+		}
+		if skillsSum != "" {
+			rec.SkillsSHA256 = skillsSum
+			if skillsDecision != rec.Decision {
+				rec.SkillsDecision = skillsDecision
+			}
+		}
 		if old, ok := m[key]; ok {
 			rec.Users = old.Users
 		}
@@ -253,9 +273,40 @@ func InitWorkspace(workspace string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return path, err
 	}
-	// A config can carry keys. Owner-only, like every other file that can.
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	// A config can carry keys. Owner-only, like every other file that can. A
+	// fresh file renamed into place: a config.json a repository made a link
+	// is replaced, never written through.
+	f, err := os.CreateTemp(filepath.Dir(path), ".config.json.*")
+	if err != nil {
 		return path, err
 	}
+	_, werr := f.Write(data)
+	if werr == nil {
+		werr = f.Sync() // durable before it takes the name
+	}
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Rename(f.Name(), path)
+	}
+	if werr != nil {
+		_ = os.Remove(f.Name())
+		return path, werr
+	}
+	ignoreLocalConfig(filepath.Dir(path))
+	// Only what init wrote is trusted: a local layer already there, which a
+	// repository could have shipped, is shown and asked about on the next run.
 	return path, GrantTrust(workspace, hashOf(data))
+}
+
+// ignoreLocalConfig starts .abhed/.gitignore with the local layer, which is
+// the person's own and not for the repository. One that exists is left as is.
+func ignoreLocalConfig(dir string) {
+	f, err := os.OpenFile(filepath.Join(dir, ".gitignore"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- the workspace's own .abhed, which init just made
+	if err != nil {
+		return
+	}
+	_, _ = f.WriteString(LocalConfigName + "\n")
+	_ = f.Close()
 }

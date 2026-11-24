@@ -3,7 +3,7 @@ package model
 import "net/http"
 
 // SendOnce makes a sends each request once, with no retry, and has every
-// redirect its client meets pass redirect when that is set. It reports false
+// redirect its client meets pass redirect too when that is set. It reports false
 // for an adapter whose client it cannot reach, so a caller can refuse it.
 func SendOnce(a Adapter, redirect func(*http.Request, []*http.Request) error) bool {
 	confine := func(c *http.Client) *http.Client {
@@ -13,7 +13,16 @@ func SendOnce(a Adapter, redirect func(*http.Request, []*http.Request) error) bo
 			cc = &copied
 		}
 		if redirect != nil {
-			cc.CheckRedirect = redirect
+			// Added to the client's own check (same host only), never in its place.
+			own := cc.CheckRedirect
+			cc.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+				if own != nil {
+					if err := own(req, via); err != nil {
+						return err
+					}
+				}
+				return redirect(req, via)
+			}
 		}
 		return cc
 	}

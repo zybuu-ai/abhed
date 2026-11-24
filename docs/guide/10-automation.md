@@ -5,7 +5,7 @@ Three ways to run Abhed without a person at the prompt.
 ## Headless
 
 ```bash
-abhed -p "fix the failing tests" -mode auto -allow 'bash(go test*)'
+abhed -p "fix the failing tests" -mode auto -allow 'bash(go test*)' -verify strict
 abhed -p "explain what pkg/auth does" -mode plan
 cat build.log | abhed -p "why did this fail?"
 abhed -p "add a test for Valid" -output-format stream-json > events.jsonl
@@ -15,9 +15,24 @@ abhed -p "add a test for Valid" -output-format stream-json > events.jsonl
 `-p`, stdin, or both: with both, stdin is added below the task as its
 input, so `cat build.log | abhed -p "summarise"` sends the log with the
 question. Stdin is read to its end, up to 10 MiB; after three seconds with
-the pipe still open Abhed says it is waiting, so a caller that leaves stdin
-open by mistake should redirect it from `/dev/null`. Flags may come before
-or after the task.
+the pipe still open Abhed says it is waiting. Flags may come before or after
+the task.
+
+With a task given, Abhed waits for piped input to start for
+`-stdin-wait` (1.5 s by default). Input that starts, or a pipe that ends,
+in that time is handled as above, however long the input then takes. A
+pipe left open with nothing written to it, as some CI steps and drivers
+leave stdin, is ignored after the wait, with one note on stderr: "stdin
+left open with no input; ignored. Pass - to wait for it, or -no-stdin to
+silence this". Input is never left out silently: if it starts after the
+wait, while the run is going or by its end, the run stops with exit code
+`9`, and its result line carries no answer or structured result (in text
+output, what had already streamed stays printed): "input arrived on stdin after 1.5s; rerun with - to wait
+for it, or -stdin-wait <dur>". A producer slow to start, such as `go test
+./... 2>&1 | abhed -p "why does it fail"` on a cold build, wants `-` or a
+longer `-stdin-wait`. A lone `-` reads stdin to its end however late its input
+starts (`slow-producer | abhed -p "summarise" -`); after `--`, `-` is a word
+of the task. `-stdin-wait 0` never waits.
 
 A command the agent starts with `bash` and `run_in_background` is allowed
 under `-p` wherever `bash` is: the same rules and approver decide. `-p` waits
@@ -35,8 +50,8 @@ stdin, or the first run takes the rest of the list:
 while read f; do abhed -p "fix the lint errors in $f" < /dev/null; done < files.txt
 ```
 
-`-no-stdin` does the same as `< /dev/null`. It cannot be combined with
-`-input-format stream-json`, which reads stdin by design.
+`-no-stdin` does the same as `< /dev/null`. It cannot be combined with `-`,
+or with `-input-format stream-json`, which reads stdin by design.
 
 ### Output
 
@@ -53,8 +68,12 @@ The last line of `json` and `stream-json` is the result:
 ```json
 {"type":"result","subtype":"completed","is_error":false,"result":"…final reply…",
  "session_id":"s-…","num_turns":3,"duration_ms":8123,"exit_code":0,
- "usage":{"input_tokens":5120,"output_tokens":210,"cached_tokens":4096}}
+ "usage":{"input_tokens":5120,"output_tokens":210,"cached_tokens":4096,"cost_usd":0.0149}}
 ```
+
+`cost_usd` is what the run's priced calls cost; `unpriced` is true when a
+call went to a model with no price, whose cost is left out and never
+guessed. Each call's cost is in its `model.call` event.
 
 `subtype` is the terminal reason (`completed`, `max_turns`, `max_budget`,
 `retry_exhausted`, …); `error` is present when the run failed.
@@ -70,7 +89,11 @@ decisions are events like any other, so a script sees each refusal and its
 reason. A message that held a stored secret's value is recorded with
 `[secret:NAME]` in its place, and its `user.message` event carries
 `secrets_withheld`, the names comma-separated; the same note the terminal
-prints goes to stderr, so stdout stays events alone.
+prints goes to stderr, so stdout stays events alone. A message that asks for
+work in parallel carries `harness_note`, the note Abhed sent after it, which is
+either one: the note to start subagents or the note to ask first. A `-p` run
+never gets the second; see
+[Parallel subagents](14-parallel-subagents.md#asking-for-parallel-work).
 
 `-verbose` shows reasoning in full and writes each model call's token counts
 to stderr.
@@ -104,13 +127,35 @@ With `-output-format text`, stdout is only that JSON; with `json` or
 
 ### Checked answers
 
-`-verify label` checks the answer's statements against what the run
-observed and prints the labels under it; `-verify strict` also gives the agent
+`-p` checks the answer's statements against what the run observed and
+prints the labels under it (`label`, the default unless `verify.mode` says
+otherwise); the exit code is the run's. `-verify strict` also gives the agent
 one revision turn when a statement about its work is not verified, then exits
-`8` if it still is not, so CI fails closed. Unset, `-p` checks nothing unless
-`verify.mode` says so. With `json` or `stream-json`, the check is the
-`answer.verdict` event and the result line's `verdict`. A managed
-`verify.mode` may only be made stricter. See [Verified answers](29-verified-answers.md).
+`8` if it still is not, so CI fails closed. Use it in CI:
+
+```bash
+abhed -p "fix the failing tests; run go test ./..." -mode auto \
+  -allow 'bash(go test*)' -verify strict -output-format json > run.jsonl
+```
+
+The [GitHub Action](38-github-action.md) runs it this way in a GitHub Actions job.
+
+With `json` or `stream-json`, the check is the `answer.verdict` event and
+the result line's `verdict`: `verdict.outcome` is `verified` or `unverified`,
+and `verdict.claims` lists each statement with its own `verdict` and
+`reason`, the unverified ones included. `verified` means nothing about the
+work was left unproven, not that every statement was checked: an answer of
+general knowledge ends `verified` with nothing verified, and
+`verdict.note` says so. In CI, run `-verify strict` (exit 8 on an
+unverified answer), or read `verdict.verified`, `verdict.unverified` and
+`verdict.note` as well as `outcome`. Under `label` the answer itself can
+change: a contradicted statement gets the agent's one revision, and the
+revised answer is the `result`. `-verify off`, or `verify.mode: off` in
+your own configuration, turns checking off; the flag also lowers a trusted
+workspace's `verify.mode`. A managed `verify.mode` may only be made
+stricter. The Go SDK checks nothing unless asked, through 1.x: set
+`Options.Verify`, or `Options.VerifyByDefault: true` to label as `-p` does.
+See [Verified answers](29-verified-answers.md).
 
 ### Runbooks
 
@@ -127,8 +172,11 @@ the hash ([Runbooks](28-runbooks.md)).
 
 - `-max-turns N` ends the run after N turns (exit `2`).
 - `-max-budget-tokens N` ends it once the run and its subagents have used N
-  tokens (exit `3`). Under a managed budget it may only lower it. There is no
-  budget in money: Abhed has no prices to count against.
+  tokens (exit `3`). Under a managed budget it may only lower it.
+- `-max-budget-usd D` ends it once the run and its subagents have cost D US
+  dollars (exit `3`), and refuses to start a model that has no price
+  ([Prices](02-configuration.md#prices)). The result's `error` says why.
+  Under a managed dollar cap it may only lower it.
 - `-append-system-prompt "…"` and `-append-system-prompt-file PATH` add
   instructions to the system prompt.
 - `-system-prompt` and `-system-prompt-file` replace it. Both are refused
@@ -174,9 +222,14 @@ which includes `-p` in a script; `-mode bypass` is the explicit spelling.
 | `0` | completed |
 | `1` | error: the model or a tool failed, or no structured answer was delivered; or the session's record could not take `session.started` or the `config.refused` and `config.narrowed` events; or, under the fence, closing it failed: a `.abhed` was found in the workspace or it could not be listed, or its cgroup or temp folder could not be removed |
 | `2` | bad invocation, or the turn limit |
-| `3` | token budget |
+| `3` | budget: tokens, dollars, or a budget already spent |
+| `4` | a hook ended the run (its reply's `continue` was false); a call policy refuses does not end the run |
 | `5` | model retries exhausted |
+| `6` | shut down: the process was told to stop working, as a server does when it drains |
+| `7` | the run's own time limit passed |
 | `8` | unverified: with `-verify strict` or a completion contract, the answer or the contract could not be verified after one revision turn ([Verified answers](29-verified-answers.md)) |
+| `9` | stdin input came after the wait (`-stdin-wait`, with a task given): the run stopped; the result line carries no answer or structured result, though text output may already hold part of an answer printed as it streamed; rerun with `-` to wait for it. A stop signal that came first keeps its own code |
+| `10` | sign-in required: the organisation requires a sign-in (or has turned guest off) and none is held on this machine; nothing ran, and with `-output-format json` the result line's `error` is `signin_required` ([Signing in](42-signing-in.md)) |
 | `130` | interrupted (SIGINT) |
 | `143` | terminated (SIGTERM); a hang-up is `129` |
 
@@ -200,11 +253,35 @@ There is no one to approve, so anything needing approval is refused, and
 the model is told why. Name what may run with `-allow`, and keep the list
 narrow.
 
+Each refused call says what would allow it, on stderr whatever the output
+format, and in the result line of `json` and `stream-json` as
+`permission_denials`:
+
+```text
+abhed: denied write: no approver: changing a file needs approval in default mode (rerun with -mode accept-edits to allow it)
+```
+
+```json
+"permission_denials":[{"tool":"bash","call_id":"c1","step":"default","source":"mode",
+  "reason":"no approver: running a command needs approval in default mode …",
+  "flag":"-allow 'bash(make deploy)'","hint":"rerun with -allow 'bash(make deploy)' to allow it"}]
+```
+
+`flag` is the exact flag, `-mode accept-edits` for a file change or
+`-allow` with the rule the approval prompt would offer (an MCP tool's name
+for an MCP tool), and is offered only when the configuration would accept
+it and the policy, given it, would allow the call. Otherwise `flag` is
+empty and `hint` says why: a deny rule from the org policy or the managed
+configuration (`denied by org policy; ask your admin`), your own deny rule
+and where it is set (no flag lifts a deny rule), an ask rule, a command that
+always asks, a hook or the supervisor, or a managed configuration that sets
+the permissions. It only explains; nothing is granted.
+
 ## RPC
 
 For a caller that is not Go, `abhed rpc` speaks line-delimited JSON on stdin and
 stdout — no server, no port, no auth for what is one process talking to its own
-child.
+child. The [TypeScript and Python SDKs](40-sdk-typescript-python.md) wrap it.
 
 ```python
 p = subprocess.Popen(["abhed", "rpc"], stdin=PIPE, stdout=PIPE, text=True, bufsize=1)
@@ -219,10 +296,11 @@ send(method="prompt", prompt="fix the failing tests")
 
 | Method | |
 |---|---|
-| `start` | open a session — `workspace`, `mode`, `allow`, `deny`, `verify` (`off`, `label` or `strict`), and `runbook` (`plan`, `runbook`, optional `sha256`), approved for the session as [Runbooks](28-runbooks.md#headless-runs) describes |
-| `prompt` | send a prompt, get the final answer — `prompt`; the answer carries `verdict` when answers are checked |
+| `start` | open a session — `workspace`, `mode`, `allow`, `deny`, `verify` (`off`, `label` or `strict`; unset is `verify.mode`, else `label`), `runbook` (`plan`, `runbook`, optional `sha256`), approved for the session as [Runbooks](28-runbooks.md#headless-runs) describes, and `approvals` (see [Approvals](#approvals)) |
+| `prompt` | send a prompt, get the final answer — `prompt`; the answer carries `verdict` (with `outcome`) unless checking is off |
 | `steer` | redirect a run in progress — the text in `prompt` |
-| `usage` | tokens, turns, compactions |
+| `approve` | answer an approval — `request_id`, `decision` (`allow` or `deny`), optional `remember` and `approver` |
+| `usage` | tokens, turns, compactions, and cost (`CostUSD`; `Unpriced` when a call had no price) |
 | `export` | the HTML transcript |
 | `providers` | what this build supports |
 | `tasks` | the session's background tasks |
@@ -258,8 +336,56 @@ order sent; up to 256 may wait, and one beyond that is answered with an error.
 trusted workspace's; an untrusted workspace can only lower it.
 
 The session has the CLI's tool set, subagents, MCP servers, skills and the
-other tools the configuration enables included. There is no approver, so a
-call that needs approval, a subagent's too, is refused.
+other tools the configuration enables included. Unless `start` sets
+`approvals`, there is no approver, so a call that needs approval, a
+subagent's too, is refused.
+
+### Approvals
+
+`{"method":"start","approvals":true}` puts each call that needs approval to
+the caller instead. The ask arrives as a line of its own, while the prompt
+runs:
+
+```json
+{"type":"approval","approval":{"request_id":"01H…","call_id":"c1","tool":"bash",
+ "args":{"command":"make deploy"},"reason":"running a command needs approval in default mode",
+ "step":"default","rule":"builtin:default","source":"mode","offer":"bash(make *)"}}
+```
+
+and is answered with
+
+```json
+{"id":"9","method":"approve","request_id":"01H…","decision":"allow","approver":"olga@example.com"}
+```
+
+which is answered at once with `{"id":"9","type":"answered"}`, or an error
+when no ask with that id is waiting. `approve` is read as it arrives, like
+`steer`, not queued behind the running prompt.
+
+- `request_id` is the id of the recorded `action.requested`, unique in the
+  session; `call_id` is the tool call's.
+- `args`, `reason` and `offer` are the copy the record holds, stored
+  secrets redacted. A request whose copy the record withheld is refused
+  without asking, since nobody can review input they cannot see.
+- `destructive` is true for a command with no undo; `args_hidden` is true
+  when the arguments hold characters that would not print as themselves, so
+  mark them before showing them to a person.
+- `subagent` and `task_id` name the subagent or background task that asked.
+- `remember: true` keeps `offer`, the scope policy offers to always allow,
+  for the rest of the session: later asks it covers are allowed without a
+  line and recorded as `by: session-scope`. It is ignored when there is no
+  `offer`, as for a deny or ask rule or a destructive command.
+- `approver` is recorded on the `action.approved` or `action.denied` as
+  your program asserts it; Abhed does not verify it. It is at most 256
+  characters, every one printing as itself, or the `approve` is refused and
+  the ask keeps waiting.
+- An ask still open when stdin ends is refused and recorded as settled by
+  the system. One open when its run is stopped (a signal, or `cancel_task`
+  for a background task's ask) ends as `interrupted`, and an answer that
+  arrives with the stop is never applied.
+
+An approval answers an ask; it cannot lift a deny rule, widen the sandbox, or
+change the mode.
 
 A tool call's arguments in the events are the model's, unescaped: a value
 can hold a right-to-left override, a terminal escape or a zero-width
@@ -276,7 +402,12 @@ that is running, and the command it was running with everything that command
 started, wait for it to record its end, then exit with 128 plus the signal's
 number (130, 143, 129), as a shell reports a process the signal ended. A
 second signal exits at once. Before, the signal ended the process outright and
-left the command running.
+left the command running. Once its standard input has ended, `abhed acp`
+closes its sessions, recording each one's end, before it exits on a signal,
+for up to 30 seconds or until a second signal; a signal that comes while
+stdin is still open waits up to 250 ms for it to end, as an editor that
+stops the engine ends stdin and signals at once, so a lone SIGTERM exits
+after about a quarter of a second.
 
 ## Resolving an issue
 
@@ -366,7 +497,9 @@ the branch stays. `abhed eval` stopped the same way prints no summary, writes
 no `-json` report, and exits the same way.
 
 Not here: the bot that reacts to labels and comments. That is a multi-user
-feature and lives with the server.
+feature and lives with the server. In a GitHub Actions job, the
+[GitHub Action](38-github-action.md) runs a task and
+[reviews pull requests](39-pr-review.md).
 
 ## Editors
 
@@ -573,11 +706,11 @@ A session's `state` in the list is `running`, `waiting_approval`, `idle` or
 recorded: `completed`, `user_interrupt`, `shutdown`, `deadline`, `stalled`,
 `error`, `max_turns`, `unverified` and the rest.
 
-`POST /v1/sessions` takes `verify` (`off`, `label` or `strict`). A session
-someone watches at the console or the IDE labels its answers unless the
-configuration says otherwise; an unattended one checks only when asked. A
-managed `verify.mode` may only be made stricter: a looser one is refused with
-400.
+`POST /v1/sessions` takes `verify` (`off`, `label` or `strict`). Every
+session labels its answers unless the request or the configuration says
+otherwise, an unattended one included; ask for `strict` where a run must not
+end completed on an unverified answer. A managed `verify.mode` may only be
+made stricter: a looser one is refused with 400.
 
 Sending a message to a session that is already working **steers** it rather than
 being refused.

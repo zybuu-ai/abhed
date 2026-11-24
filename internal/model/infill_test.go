@@ -3,10 +3,14 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -48,6 +52,7 @@ func TestInfillReportsAnEndpointError(t *testing.T) {
 // chatOnly answers every turn with a fixed text, as a chat model would.
 type chatOnly struct {
 	reply string
+	stop  string
 	seen  Request
 }
 
@@ -59,7 +64,7 @@ func (c *chatOnly) Complete(_ context.Context, req Request) (<-chan Chunk, error
 	ch := make(chan Chunk, 3)
 	ch <- Chunk{Type: ChunkReasoning, Text: "thinking about it"}
 	ch <- Chunk{Type: ChunkText, Text: c.reply}
-	ch <- Chunk{Type: ChunkDone, Usage: &Usage{InputTokens: 20, OutputTokens: 4}}
+	ch <- Chunk{Type: ChunkDone, Usage: &Usage{InputTokens: 20, OutputTokens: 4}, StopReason: c.stop}
 	close(ch)
 	return ch, nil
 }
@@ -138,4 +143,126 @@ func TestInfillByChatWithAReasoningModel(t *testing.T) {
 	if !strings.Contains(sys, "Output only the exact code") {
 		t.Fatalf("system %q", sys)
 	}
+}
+
+// commitServer is a streaming chat endpoint that keeps every request body;
+// answer writes the reply for the n-th request (from 0).
+func commitServer(t *testing.T, answer func(n int, body map[string]any, w http.ResponseWriter)) (*httptest.Server, func() []map[string]any) {
+	t.Helper()
+	var mu sync.Mutex
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		n := len(bodies)
+		bodies = append(bodies, body)
+		mu.Unlock()
+		answer(n, body, w)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() []map[string]any { mu.Lock(); defer mu.Unlock(); return slices.Clone(bodies) }
+}
+
+func streamText(w http.ResponseWriter, text string, out int) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":%q}}]}\n\n", text)
+	_, _ = fmt.Fprintf(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":%d}}\n\ndata: [DONE]\n\n", out)
+}
+
+func localCommitAdapter(url string) *OpenAICompatible {
+	a := NewOpenAICompatible(url, "", "gemma4:26b", Profile{Name: "local", Sampling: SamplingLocal()})
+	a.Retry = RetryPolicy{Attempts: 1}
+	return a
+}
+
+// Over an OpenAI-shaped local server a commit message is asked with "think":
+// false, so a thinking model cannot spend the budget and write nothing.
+func TestCommitMessageSendsThinkFalseOnTheWire(t *testing.T) {
+	srv, bodies := commitServer(t, func(_ int, _ map[string]any, w http.ResponseWriter) { streamText(w, "Add billing", 3) })
+	res, err := CommitMessageByChat(context.Background(), localCommitAdapter(srv.URL), "diff", 2048)
+	if err != nil || res.Text != "Add billing" || res.OutputTokens != 3 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if b := bodies(); len(b) != 1 || b[0]["think"] != false {
+		t.Fatalf("bodies %v", b)
+	}
+	// A model whose profile has no switch is not sent one.
+	plain := NewOpenAICompatible(srv.URL, "", "gpt", Profile{Name: "hosted", Sampling: SamplingOpenAI()})
+	if _, err := CommitMessageByChat(context.Background(), plain, "diff", 2048); err != nil {
+		t.Fatal(err)
+	}
+	if b := bodies(); len(b) != 2 || b[1]["think"] != nil {
+		t.Fatalf("think sent to a model without the switch: %v", b[1])
+	}
+}
+
+// A 400 or 422 to the switch, before anything streamed, is asked once more
+// without it.
+func TestCommitMessageRetriesARefusedSwitch(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusUnprocessableEntity} {
+		srv, bodies := commitServer(t, func(_ int, body map[string]any, w http.ResponseWriter) {
+			if _, ok := body["think"]; ok {
+				http.Error(w, `{"error":{"message":"unknown field think"}}`, status)
+				return
+			}
+			streamText(w, "Fix the rounding in Tip", 5)
+		})
+		res, err := CommitMessageByChat(context.Background(), localCommitAdapter(srv.URL), "diff", 2048)
+		b := bodies()
+		if err != nil || res.Text != "Fix the rounding in Tip" || len(b) != 2 || b[1]["think"] != nil {
+			t.Fatalf("%d: %+v %v %v", status, res, err, b)
+		}
+	}
+}
+
+// Anything else is not asked again: a server error, a refusal after output
+// began, and an adapter that never sends the switch.
+func TestCommitMessageDoesNotRetryOtherFailures(t *testing.T) {
+	srv, bodies := commitServer(t, func(_ int, _ map[string]any, w http.ResponseWriter) {
+		http.Error(w, "overloaded", http.StatusInternalServerError)
+	})
+	if _, err := CommitMessageByChat(context.Background(), localCommitAdapter(srv.URL), "diff", 2048); err == nil || len(bodies()) != 1 {
+		t.Fatalf("500: %v, %d requests", err, len(bodies()))
+	}
+
+	srv, bodies = commitServer(t, func(_ int, _ map[string]any, w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Add\"}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"error\":{\"type\":\"invalid_request_error\",\"message\":\"think\"}}\n\n")
+	})
+	if _, err := CommitMessageByChat(context.Background(), localCommitAdapter(srv.URL), "diff", 2048); err == nil || len(bodies()) != 1 {
+		t.Fatalf("mid-stream: %v, %d requests", err, len(bodies()))
+	}
+
+	srv, bodies = commitServer(t, func(_ int, _ map[string]any, w http.ResponseWriter) {
+		http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}`, http.StatusBadRequest)
+	})
+	an := NewAnthropic(srv.URL, "k", "claude", Profile{Name: "anthropic", Sampling: Sampling{Temperature: true, Think: true}})
+	an.Retry = RetryPolicy{Attempts: 1}
+	if _, err := CommitMessageByChat(context.Background(), an, "diff", 2048); err == nil || len(bodies()) != 1 {
+		t.Fatalf("anthropic: %v, %d requests", err, len(bodies()))
+	}
+	if b := bodies(); b[0]["thinking"] != nil || b[0]["think"] != nil {
+		t.Fatalf("anthropic body %v", b[0])
+	}
+}
+
+// A failed answer still reports the tokens it used.
+func TestCommitMessageKeepsUsageOfAFailedAnswer(t *testing.T) {
+	c := &failingAfterUsage{}
+	res, err := CommitMessageByChat(context.Background(), c, "diff", 2048)
+	if err == nil || res.InputTokens != 7 || res.OutputTokens != 9 {
+		t.Fatalf("%+v %v", res, err)
+	}
+}
+
+type failingAfterUsage struct{ chatOnly }
+
+func (c *failingAfterUsage) Complete(context.Context, Request) (<-chan Chunk, error) {
+	ch := make(chan Chunk, 2)
+	ch <- Chunk{Type: ChunkDone, Usage: &Usage{InputTokens: 7, OutputTokens: 9}}
+	ch <- Chunk{Type: ChunkError, Err: errors.New("cut off")}
+	close(ch)
+	return ch, nil
 }

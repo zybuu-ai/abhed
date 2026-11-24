@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -92,6 +94,10 @@ type Verifier struct {
 	Critic *Critic
 	// Contract is the operator's completion contract, or nil.
 	Contract *Contract
+	// Relevance notes in the verdict an answer that seems not to address the
+	// question the person typed. It is a note only: the outcome, the exit
+	// code and the revision turn are never changed by it.
+	Relevance bool
 
 	mu      sync.Mutex
 	pending *givenAnswer
@@ -129,19 +135,30 @@ type AnswerVerdict struct {
 	// Outcome is verified when every statement about the session's work was
 	// verified and any contract was met; otherwise unverified.
 	Outcome string `json:"outcome"`
-	Turn    int    `json:"turn"`
+	// Note says why an answer with nothing verified passes: nothing in it
+	// is about this session's work, so there was nothing to check.
+	Note string `json:"note,omitempty"`
+	// Relevance is addresses or off_topic when the answer was checked
+	// against the question typed; off_topic adds why to Note. It is a note,
+	// and changes nothing else.
+	Relevance string `json:"relevance,omitempty"`
+	Turn      int    `json:"turn"`
 }
 
 // Footer is the one-line summary a surface shows under the answer.
 func (v AnswerVerdict) Footer() string {
 	unv := fmt.Sprintf("%d unverified", v.Unverified)
 	var notes []string
-	k, e := v.Unchecked(), v.Explained()
+	k, e, x := v.Unchecked(), v.Explained(), v.ExternalCount()
+	k = max(k-x, 0)
 	switch {
-	case k > 0 && k == v.Unverified:
+	case k > 0 && k+x == v.Unverified:
 		notes = append(notes, "general knowledge")
 	case k > 0:
 		notes = append(notes, fmt.Sprintf("%d general knowledge", k))
+	}
+	if x > 0 {
+		notes = append(notes, fmt.Sprintf("%d not checked: about other software", x))
 	}
 	if e > 0 {
 		notes = append(notes, fmt.Sprintf("%d explanation", e))
@@ -157,7 +174,22 @@ func (v AnswerVerdict) Footer() string {
 			s += " · contract not met"
 		}
 	}
+	if v.Relevance == RelevanceOffTopic {
+		s += " · may not address the question"
+	}
 	return s
+}
+
+// ExternalCount counts the claims read as facts about other software,
+// which are never checked and never verified.
+func (v AnswerVerdict) ExternalCount() int {
+	n := 0
+	for _, c := range v.Claims {
+		if c.External {
+			n++
+		}
+	}
+	return n
 }
 
 // Unchecked counts the unverified claims that are not about the session's
@@ -185,7 +217,8 @@ func (v AnswerVerdict) Explained() int {
 	return n
 }
 
-// LastVerdict is the latest answer.verdict this loop recorded, or nil.
+// LastVerdict is the latest answer.verdict this loop recorded, or nil, with
+// stored secrets redacted as the record holds it.
 func (l *Loop) LastVerdict() *AnswerVerdict {
 	v := l.Verify
 	if v == nil {
@@ -286,7 +319,8 @@ func parseClaims(raw json.RawMessage) []Claim {
 		if strings.TrimSpace(c.Text) == "" {
 			continue
 		}
-		out = append(out, Claim{Text: c.Text, Kind: strings.ToLower(c.Kind), Evidence: evidenceRefs(c.Evidence), Quote: c.Quote})
+		refs, quote := evidenceRefs(c.Evidence)
+		out = append(out, Claim{Text: c.Text, Kind: strings.ToLower(c.Kind), Evidence: refs, Quote: c.Quote, hintQuote: quote})
 		if len(out) == 60 {
 			break
 		}
@@ -294,16 +328,20 @@ func parseClaims(raw json.RawMessage) []Claim {
 	return out
 }
 
-func evidenceRefs(raw json.RawMessage) []string {
+// evidenceRefs reads a claim's evidence: call ids or #seq as strings or
+// numbers, or objects naming a call_id (or seq) and a quote, which a model
+// often gives. The first quote that comes with a reference is returned.
+func evidenceRefs(raw json.RawMessage) ([]string, string) {
 	var list []any
 	if json.Unmarshal(raw, &list) != nil {
 		var one any
 		if json.Unmarshal(raw, &one) != nil || one == nil {
-			return nil
+			return nil, ""
 		}
 		list = []any{one}
 	}
 	var out []string
+	quote := ""
 	for _, x := range list {
 		switch v := x.(type) {
 		case string:
@@ -312,9 +350,29 @@ func evidenceRefs(raw json.RawMessage) []string {
 			}
 		case float64:
 			out = append(out, fmt.Sprintf("#%d", int64(v)))
+		case map[string]any:
+			ref := ""
+			for _, k := range []string{"call_id", "id", "seq"} {
+				switch r := v[k].(type) {
+				case string:
+					ref = strings.TrimSpace(r)
+				case float64:
+					ref = fmt.Sprintf("#%d", int64(r))
+				}
+				if ref != "" {
+					break
+				}
+			}
+			if ref == "" {
+				continue
+			}
+			out = append(out, ref)
+			if q, ok := v["quote"].(string); ok && quote == "" {
+				quote = strings.TrimSpace(q)
+			}
 		}
 	}
-	return out
+	return out, quote
 }
 
 // beginAnswer starts a run's checks: no answer given yet, its one revision
@@ -358,9 +416,10 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 			l.noteRecordErr(err)
 		}
 		l.messages = append(l.messages, model.Message{Role: model.RoleAssistant, Content: text})
-		if len(claims) == 0 {
-			claims = textClaims(text)
-		}
+		// The text the person reads is checked as well: a statement in it
+		// that no claim repeats ("The tests now pass") is a claim too, so an
+		// answer cannot pass by listing only general knowledge.
+		claims = append(claims, unclaimedText(text, claims)...)
 	} else if n := len(l.messages); n > 0 && l.messages[n-1].Role == model.RoleAssistant && len(l.messages[n-1].ToolCalls) == 0 {
 		source, text = "text", l.messages[n-1].Content
 		claims = textClaims(text)
@@ -385,7 +444,7 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	if err != nil {
 		events = nil // checked against nothing, everything stays unverified
 	}
-	env := checkEnv{events: events, mutates: l.recordedMutates, workDir: l.workDir()}
+	env := checkEnv{events: events, mutates: l.recordedMutates, workDir: l.workDir(), strict: v.Mode == VerifyStrict}
 	env.child = l.Recorder.store.Events
 	if l.Session != nil {
 		env.readFile = l.Session.ReadFile
@@ -406,7 +465,9 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 		default:
 			av.Unverified++
 		}
-		if c.LoadBearing && c.Verdict != ClaimVerified {
+		// An explanation of code the session read or changed is shown
+		// apart and not checked; it never fails the answer.
+		if c.LoadBearing && c.Verdict != ClaimVerified && !c.Explains {
 			bad++
 		}
 	}
@@ -415,19 +476,66 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	if bad > 0 || unmet {
 		av.Outcome = ClaimUnverified
 	}
+	// A revision that shows nothing in place of the claims it was asked to
+	// prove ("(end of script)") leaves them unproven.
+	v.mu.Lock()
+	prior := v.last
+	v.mu.Unlock()
+	if revised && prior != nil && prior.Outcome != ClaimVerified && av.Outcome == ClaimVerified && av.Verified == 0 && (claimedWork(prior) || saysNothing(av)) {
+		av.Outcome = ClaimUnverified
+		av.Note = "the revision shows none of the work the first answer claimed"
+	}
+	if av.Outcome == ClaimVerified && av.Verified == 0 {
+		av.Note = "no statement was read as a claim about this session's work"
+	}
+	// A statement read as a fact about other software is never passed over
+	// in silence.
+	if n := av.Explained(); n > 0 {
+		note := fmt.Sprintf("%d explanation(s) not checked", n)
+		if av.Note != "" {
+			note = av.Note + "; " + note
+		}
+		av.Note = note
+	}
+	if ext := av.ExternalCount(); ext > 0 {
+		n := fmt.Sprintf("%d statement(s) read as facts about other software were not checked", ext)
+		if av.Note != "" {
+			n = av.Note + "; " + n
+		}
+		av.Note = n
+	}
+	// Whether it answers the question is a note, never a gate.
+	if v.Relevance {
+		if q := typedFrom(ctx); q != "" {
+			av.Relevance = RelevanceAddresses
+			var names []string
+			if l.Tools != nil {
+				names = l.Tools.Names()
+			}
+			if why := offTopic(q, text, names...); why != "" {
+				av.Relevance = RelevanceOffTopic
+				n := "the answer may not address the question: " + why
+				if av.Note != "" {
+					n = av.Note + "; " + n
+				}
+				av.Note = n
+			}
+		}
+	}
 	gated := v.Mode == VerifyStrict || v.Contract != nil
 	// In label mode a contradicted claim also earns the one revision: it is
 	// the only case label mode spends a model call on.
 	revise := (gated && av.Outcome != ClaimVerified) || (v.Mode == VerifyLabel && av.Contradicted > 0)
 	if revise && !revised && l.turns < l.Config.MaxTurns && !l.Budget.Exhausted() {
-		av.Revision = revisionNote(av, v.AnswerTool)
+		av.Revision = revisionNote(av, v.AnswerTool, ix)
 		v.mu.Lock()
 		v.revised = true
 		v.mu.Unlock()
 	}
 	l.record(EvAnswerVerdict, ActorSystem, av)
+	shown := l.Recorder.redactedVerdict(av)
 	v.mu.Lock()
-	v.last = &av
+	v.last = &shown
 	v.mu.Unlock()
 	if av.Revision != "" {
 		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: av.Revision})
@@ -437,6 +545,51 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 		return false, TermUnverified
 	}
 	return false, TermCompleted
+}
+
+// claimedWork reports an answer with an unverified claim of work: a pass,
+// a command run, or a change that names a file or code.
+func claimedWork(av *AnswerVerdict) bool {
+	for _, c := range av.Claims {
+		if !c.LoadBearing || c.Verdict == ClaimVerified {
+			continue
+		}
+		f := extractFacts(c.Text)
+		if f.success || len(f.ran) > 0 || f.runCmd != "" || (f.changed || f.changeAct || f.event != "") && (len(f.paths) > 0 || len(f.tokens) > 0) {
+			return true
+		}
+	}
+	return false
+}
+
+// saysNothing reports a revision with no statement that could be checked
+// ("Understood.", "(end of script)"): it neither proves nor withdraws.
+func saysNothing(av AnswerVerdict) bool {
+	for _, c := range av.Claims {
+		if c.Kind != KindStatement || !nothingSaidRe.MatchString(normText(c.Text)) {
+			return false
+		}
+	}
+	return true
+}
+
+// nothingSaidRe is a reply that only acknowledges or ends.
+var nothingSaidRe = regexp.MustCompile(`^\W*(?:understood|ok|okay|alright|all right|noted|got it|sure|thanks|thank you|done|end of script|end|no further changes|nothing to add|nothing further)\W*$`)
+
+// unclaimedText are the statements of an answer's text that none of its
+// claims repeats, as claims with nothing cited.
+func unclaimedText(text string, claims []Claim) []Claim {
+	given := map[string]bool{}
+	for _, c := range claims {
+		given[normText(c.Text)] = true
+	}
+	var out []Claim
+	for _, c := range textClaims(text) {
+		if !given[normText(c.Text)] {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // textClaims are a plain reply's statements, as claims with nothing cited.
@@ -478,8 +631,10 @@ func (l *Loop) workDir() string {
 	return l.Session.WorkDir()
 }
 
-// revisionNote is what the agent is told for its one revision turn.
-func revisionNote(av AnswerVerdict, tool bool) string {
+// revisionNote is what the agent is told for its one revision turn: what
+// was not confirmed, and the results it may cite, by their real ids, so it
+// cites none it made up. A cited id not in the record still shows nothing.
+func revisionNote(av AnswerVerdict, tool bool, ix *recordIndex) string {
 	var b strings.Builder
 	b.WriteString("Abhed checked your answer against this session's record before showing it, and could not confirm all of it.\n")
 	n := 0
@@ -492,12 +647,12 @@ func revisionNote(av AnswerVerdict, tool bool) string {
 			b.WriteString("…and more.\n")
 			break
 		}
-		fmt.Fprintf(&b, "- %s: %q — %s\n", c.Verdict, clipRunes(c.Text, 200), c.Reason)
+		fmt.Fprintf(&b, "- %s: %s — %s\n", c.Verdict, noteData(c.Text, 200), noteData(c.Reason, 400))
 	}
 	if c := av.Contract; c != nil && !c.OK {
 		for _, r := range c.Require {
 			if !r.OK {
-				fmt.Fprintf(&b, "- the completion check `%s` did not pass: %s\n", clipRunes(r.Command, 120), r.Reason)
+				fmt.Fprintf(&b, "- the completion check %s did not pass: %s\n", noteData(r.Command, 120), noteData(r.Reason, 400))
 			}
 		}
 		if len(c.Protected) > 0 {
@@ -507,6 +662,7 @@ func revisionNote(av AnswerVerdict, tool bool) string {
 			b.WriteString("- the protected files are too many to check; this is the operator's to narrow, not yours to fix\n")
 		}
 	}
+	b.WriteString(citable(ix, tool))
 	b.WriteString("Check what you can with a tool, then give your answer again")
 	if tool {
 		b.WriteString(" through `answer`, citing the call_id of each result")
@@ -514,4 +670,91 @@ func revisionNote(av AnswerVerdict, tool bool) string {
 	b.WriteString(". Correct or remove anything the record contradicts, and say plainly what you could not verify. " +
 		"This is your one revision.")
 	return b.String()
+}
+
+// noteData is text for the revision note, quoted: clipped, every control
+// character escaped, and backticks written as \x60.
+func noteData(s string, n int) string {
+	return strings.ReplaceAll(strconv.Quote(clipRunes(s, n)), "`", `\x60`)
+}
+
+// toolNameRe is a tool name shown as it is.
+var toolNameRe = regexp.MustCompile(`^[A-Za-z0-9_.:\-]{1,64}$`)
+
+// maxCitable bounds the results a revision note lists.
+const maxCitable = 20
+
+// citable lists this session's own tool results, newest last, as the answer
+// cites them: by call_id through the answer tool, by #seq in a text reply.
+func citable(ix *recordIndex, tool bool) string {
+	if ix == nil {
+		return ""
+	}
+	var own []*obsRec
+	for _, o := range ix.obs {
+		if o.child == "" && o.usable() && o.callID != "" {
+			own = append(own, o)
+		}
+	}
+	if len(own) == 0 {
+		return "This session's record holds no tool result to cite.\n"
+	}
+	var b strings.Builder
+	if tool {
+		b.WriteString("The results you may cite, by call_id (only these exist; any other id shows nothing):\n")
+	} else {
+		b.WriteString("The results you may cite, as (#seq) (only these exist; any other shows nothing):\n")
+	}
+	if len(own) > maxCitable {
+		fmt.Fprintf(&b, "…%d earlier results not listed.\n", len(own)-maxCitable)
+		own = own[len(own)-maxCitable:]
+	}
+	for _, o := range own {
+		// The command and path are the model's own text, shown as quoted
+		// data: no newline or backtick of theirs starts a line or a code
+		// span in a message sent with the person's role.
+		what := o.tool
+		if !toolNameRe.MatchString(what) {
+			what = noteData(what, 40)
+		}
+		switch {
+		case o.command != "":
+			what += " " + noteData(o.command, 80)
+		case o.path != "":
+			what += " " + noteData(o.path, 80)
+		}
+		if o.exit != nil {
+			what += fmt.Sprintf(", exit %d", *o.exit)
+		}
+		if tool {
+			fmt.Fprintf(&b, "- %q (#%d): %s\n", o.callID, o.seq, what)
+		} else {
+			fmt.Fprintf(&b, "- #%d: %s\n", o.seq, what)
+		}
+	}
+	return b.String()
+}
+
+// redactedVerdict is av as the record holds it: a stored secret a statement
+// repeats is redacted, so a surface that prints the verdict (the -p result
+// line, rpc's answer, the SDK's Verdict) writes no more than the record does.
+// When redacting leaves no valid verdict, the statements and the note are
+// left out.
+func (r *Recorder) redactedVerdict(av AnswerVerdict) AnswerVerdict {
+	red := r.redactor()
+	if red == nil {
+		return av
+	}
+	raw, err := json.Marshal(av)
+	if err == nil {
+		var out AnswerVerdict
+		if raw = red.Redact(raw); json.Valid(raw) && json.Unmarshal(raw, &out) == nil {
+			return out
+		}
+	}
+	av.Claims, av.Revision = nil, ""
+	if av.Contract != nil {
+		av.Contract = &ContractResult{OK: av.Contract.OK}
+	}
+	return av
 }

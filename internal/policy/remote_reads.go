@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -46,6 +48,17 @@ func ParseRemoteRead(p string) (Rule, error) {
 	if program := strings.Fields(s)[0]; strings.ContainsAny(program, "*?$") || isAssignment(program) {
 		return Rule{}, fmt.Errorf("ssh.read_commands: %q must start with the program it runs, written out (such as \"df -h\")", p)
 	}
+	// A glob in a segment that starts with . can match .. in shells that do
+	// not skip it (bash before 5.2, dash), so the entry's own call could
+	// leave the folder it names.
+	for _, w := range strings.Fields(s)[1:] {
+		for _, seg := range strings.Split(w, "/") {
+			if strings.HasPrefix(seg, ".") && strings.ContainsAny(seg, "*?[") {
+				return Rule{}, fmt.Errorf("ssh.read_commands: %q has a wildcard in a path part that starts with . (%s), "+
+					"which some shells expand to ..; name the files instead", p, seg)
+			}
+		}
+	}
 	name := rawProgram(s)
 	spec, known := knownReads[name]
 	words, _, _ := shellWords(s)
@@ -56,9 +69,11 @@ func ParseRemoteRead(p string) (Rule, error) {
 	case wildcard && !known:
 		return Rule{}, fmt.Errorf("ssh.read_commands: %q has a wildcard, and %s is not on the list of programs a wildcard may name; declare the exact command instead", p, name)
 	case wildcard && !readCallOK(spec, words[1:], func(w string) bool { return strings.ContainsAny(w, "*?") }):
-		return Rule{}, fmt.Errorf("ssh.read_commands: %q is not a read form of %s (see docs/ops/infrastructure.md#ssh); declare the exact command instead", p, name)
+		return Rule{}, fmt.Errorf("ssh.read_commands: %q is not a read form of %s. %s; %s "+
+			"(see docs/ops/infrastructure.md#ssh); or declare the exact command instead", p, name, acceptedForms, readFormSummary(name, spec))
 	case !wildcard && known && !readCallOK(spec, words[1:], func(string) bool { return false }):
-		return Rule{}, fmt.Errorf("ssh.read_commands: %q is not a read form of %s: it uses a verb or option the list does not hold as a read (see docs/ops/infrastructure.md#ssh)", p, name)
+		return Rule{}, fmt.Errorf("ssh.read_commands: %q is not a read form of %s: it uses a verb or option the list does not hold as a read; %s "+
+			"(see docs/ops/infrastructure.md#ssh)", p, name, readFormSummary(name, spec))
 	case !wildcard && !known && runsCommandsIn(s):
 		return Rule{}, fmt.Errorf("ssh.read_commands: %q runs %s, which runs what it is given, so it is not a read", p, name)
 	}
@@ -75,6 +90,12 @@ func ParseRemoteRead(p string) (Rule, error) {
 	}
 	return Rule{raw: s, tool: "ssh", pattern: re, glob: s}, nil
 }
+
+// acceptedForms says what a wildcard entry may be, for an entry refused at load.
+const acceptedForms = "An entry is an exact command (\"df -h\"), or a pattern whose * or ? stands for " +
+	"a whole operand (\"df -h *\", \"tail -n 50 /var/log/*.log\") or for an option's value after = " +
+	"(\"df --output=*\"), never for part of an option (\"-h*\") or for an option itself; " +
+	"either stands within one argument, and a word that is ** alone stands for one or more whole arguments (\"systemctl status **\")"
 
 // remoteReadRule is the ssh.read_commands entry the call's command matches,
 // or "": only one simple command, whose words the text shows, that no
@@ -113,11 +134,295 @@ func (e *Engine) remoteReadRule(rr remoteRead) string {
 		if !r.pattern.MatchString(text) {
 			continue
 		}
-		if !strings.ContainsAny(r.glob, "*?") || plain && wildcardReadOK(text) {
+		if !strings.ContainsAny(r.glob, "*?") {
+			return r.raw
+		}
+		if plain && wildcardReadOK(text) && wordsMatch(r.glob, text) &&
+			(e.ReadCommandsContents || !DoubleStarReadsContents(r.glob, text) && !readsSecretDatabase(text)) {
 			return r.raw
 		}
 	}
 	return ""
+}
+
+// DoubleStarReadsContents reports an entry with a word that is ** alone
+// whose call, text, prints the contents of files; text "" asks of the
+// entry itself. Such an entry could name any file the account can read,
+// the reach of ssh.read_contents, so it matches such a call only where
+// that is set.
+func DoubleStarReadsContents(entry, text string) bool {
+	words := callWords(entry)
+	double := false
+	for _, w := range words {
+		double = double || w.raw == "**"
+	}
+	if !double {
+		return false
+	}
+	if text != "" {
+		words = callWords(text)
+	}
+	args := make([]string, 0, len(words))
+	for _, w := range words[1:] {
+		if w.raw != "**" {
+			args = append(args, w.val)
+		}
+	}
+	return printsContents(rawProgram(entry), args)
+}
+
+// readsSecretDatabase reports a getent call of a database that holds
+// password hashes, which a wildcard entry runs only under ssh.read_contents.
+func readsSecretDatabase(text string) bool {
+	words := callWords(text)
+	if len(words) == 0 || rawProgram(text) != "getent" {
+		return false
+	}
+	for _, w := range words[1:] {
+		if secretDatabase(w.val) {
+			return true
+		}
+	}
+	return false
+}
+
+// WildcardReadsContents reports an entry whose wildcard can name any file,
+// or a getent database, for a program that prints them: a word that is **
+// alone, or an operand wildcard with no folder written before it
+// ("cat -- *", "head -n 5 *", "getent *"), not one after a folder
+// ("/var/log/app/*") or one that stands for grep's pattern or an option's
+// value. Without ssh.read_contents such an entry is worth a warning.
+func WildcardReadsContents(entry string) bool {
+	if DoubleStarReadsContents(entry, "") {
+		return true
+	}
+	words := callWords(entry)
+	if len(words) < 2 {
+		return false
+	}
+	name := rawProgram(entry)
+	var literal []string
+	for _, w := range words[1:] {
+		if !strings.ContainsAny(w.val, "*?") {
+			literal = append(literal, w.val)
+		}
+	}
+	if !printsContents(name, literal) && name != "getent" {
+		return false
+	}
+	value := entryValueSlots(words)
+	patternFirst := (name == "grep" || name == "egrep" || name == "fgrep" || name == "rg") &&
+		!slices.ContainsFunc(literal, func(w string) bool { return w == "-e" || w == "--regexp" || w == "-f" || w == "--file" })
+	operands := 0
+	for i, w := range words[1:] {
+		i++
+		if strings.HasPrefix(w.val, "-") && w.val != "-" && !strings.ContainsAny(w.val, "*?") || value[i] {
+			continue
+		}
+		operands++
+		if patternFirst && operands == 1 {
+			continue
+		}
+		if k := strings.IndexAny(w.val, "*?"); k >= 0 && !strings.Contains(w.val[:k], "/") {
+			return true
+		}
+	}
+	return false
+}
+
+// callWord is one word of a command: as written, as the program gets it
+// once quotes are taken off, and whether the shell could expand it (an
+// unquoted *, ?, [, brace or ~, or a $ outside single quotes).
+type callWord struct {
+	raw, val string
+	expands  bool
+}
+
+// callWords splits s as a POSIX shell does, quotes and backslashes taken
+// off, saying of each word whether the shell could expand it.
+func callWords(s string) []callWord {
+	var out []callWord
+	var raw, val strings.Builder
+	in, expands := false, false
+	var quote byte
+	flush := func() {
+		if in {
+			out = append(out, callWord{raw: raw.String(), val: val.String(), expands: expands})
+		}
+		raw.Reset()
+		val.Reset()
+		in, expands = false, false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote == '\'':
+			raw.WriteByte(c)
+			if c == '\'' {
+				quote = 0
+			} else {
+				val.WriteByte(c)
+			}
+		case quote == '"':
+			raw.WriteByte(c)
+			switch {
+			case c == '"':
+				quote = 0
+			case c == '\\' && i+1 < len(s):
+				i++
+				raw.WriteByte(s[i])
+				val.WriteByte(s[i])
+			default:
+				expands = expands || c == '$' || c == '`'
+				val.WriteByte(c)
+			}
+		case c == ' ' || c == '\t':
+			flush()
+		case c == '\'' || c == '"':
+			raw.WriteByte(c)
+			quote, in = c, true
+		case c == '\\' && i+1 < len(s):
+			raw.WriteByte(c)
+			i++
+			raw.WriteByte(s[i])
+			val.WriteByte(s[i])
+			in = true
+		default:
+			if strings.IndexByte("*?[{}~$`", c) >= 0 {
+				expands = true
+			}
+			raw.WriteByte(c)
+			val.WriteByte(c)
+			in = true
+		}
+	}
+	flush()
+	return out
+}
+
+// wordsMatch reports a call whose words match a wildcard entry's in order.
+//
+// A * or ? stands within one argument, so "tail -n * /var/log/app/app.log"
+// cannot also name /etc/shadow, and a word that is ** alone stands for one
+// or more whole arguments, each still judged as a read form. A word a
+// wildcard matches is taken as the program gets it, so it may hold nothing
+// the remote shell would expand (a glob, a brace, ~ or $), unless it is
+// the entry's own word as written; and none may hold a .. segment the
+// entry does not write. Where a * stands for an operand, not an option's
+// value, it never matches an option (a word starting with -) before a --:
+// getopt would read one there as an option.
+func wordsMatch(glob, text string) bool {
+	want, got := callWords(glob), callWords(text)
+	if len(want) == 0 || len(got) == 0 {
+		return false
+	}
+	valueSlot := entryValueSlots(want)
+	ended := make([]bool, len(got)+1) // ended[j]: a -- comes before got[j]
+	for j, w := range got {
+		ended[j+1] = ended[j] || w.val == "--"
+	}
+	ok := func(w callWord) bool { return !w.expands && !dotDot(w.val) }
+	var match func(i, j int) bool
+	match = func(i, j int) bool {
+		if i == len(want) {
+			return j == len(got)
+		}
+		if want[i].val == "**" && want[i].raw == "**" {
+			for k := j + 1; k <= len(got); k++ {
+				if !ok(got[k-1]) {
+					return false
+				}
+				if match(i+1, k) {
+					return true
+				}
+			}
+			return false
+		}
+		if j >= len(got) {
+			return false
+		}
+		w, g := want[i], got[j]
+		if !strings.ContainsAny(w.val, "*?") {
+			return w.val == g.val && (!g.expands || g.raw == w.raw) && match(i+1, j+1)
+		}
+		if g.raw != w.raw {
+			if !ok(g) || !wordMatches(w.val, g.val) {
+				return false
+			}
+			if !valueSlot[i] && !ended[j] && strings.HasPrefix(g.val, "-") {
+				return false
+			}
+		}
+		return match(i+1, j+1)
+	}
+	return match(0, 0)
+}
+
+// entryValueSlots marks the words of an entry that are an option's value:
+// the word after an option of its program's read form that takes one.
+func entryValueSlots(words []callWord) map[int]bool {
+	out := map[int]bool{}
+	spec, known := knownReads[tools.CommandName(path.Base(words[0].val))]
+	if !known {
+		return out
+	}
+	op, from := spec.opts, 1
+	if spec.verbs != nil && len(words) > 1 {
+		if vo, ok := spec.verbs[words[1].val]; ok {
+			op, from = vo, 2
+		}
+	}
+	for i := from; i < len(words)-1; i++ {
+		w := words[i].val
+		if w == "--" {
+			break
+		}
+		if spec.oneDash && strings.HasPrefix(w, "--") {
+			w = w[1:]
+		}
+		if strings.HasPrefix(w, "-") && op.values[w] {
+			out[i+1] = true
+		}
+	}
+	return out
+}
+
+// wordMatches reports one argument matching one word of an entry.
+func wordMatches(w, arg string) bool {
+	if dotDot(arg) && !dotDot(w) {
+		return false
+	}
+	re, err := wordGlob(w)
+	return err == nil && re.MatchString(arg)
+}
+
+// dotDot reports a word with a .. path segment.
+func dotDot(w string) bool {
+	for _, seg := range strings.Split(w, "/") {
+		if seg == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// wordGlob is one word of an entry as a pattern for one argument: * is any
+// text and ? one character, within that argument.
+func wordGlob(w string) (*regexp.Regexp, error) {
+	var b strings.Builder
+	b.WriteString("(?s)^")
+	for _, c := range w {
+		switch c {
+		case '*':
+			b.WriteString(".*")
+		case '?':
+			b.WriteString(".")
+		default:
+			b.WriteString(regexp.QuoteMeta(string(c)))
+		}
+	}
+	b.WriteString("$")
+	return regexp.Compile(b.String())
 }
 
 // wildcardReadOK reports a call a wildcard entry may approve: its program
@@ -226,8 +531,9 @@ var commandRunners = map[string]bool{
 	"tini": true, "dumb-init": true, "catatonit": true, "s6-svscan": true, "virsh": true, "incus": true, "ctr": true, "nerdctl": true, "runc": true, "crun": true, "oc": true, "helm": true,
 }
 
-// RemoteReadOf is the ssh.read_commands entry an ssh call runs as a read, or
-// "" for a call that is not one.
+// RemoteReadOf is the ssh.read_commands entry an ssh call runs as a read,
+// ReadOnlyRule when the read-only classifier finds it one on a host the
+// operator declared, or "" for a call that is not a read.
 func (e *Engine) RemoteReadOf(tool string, args json.RawMessage) string {
 	host, command, ok := remoteCommand(tool, args)
 	if !ok {
@@ -235,5 +541,17 @@ func (e *Engine) RemoteReadOf(tool string, args json.RawMessage) string {
 	}
 	rr := readRemote(host, command)
 	rr.stdin = carriesStdinSecret(args)
-	return e.remoteReadRule(rr)
+	if rule := e.remoteReadRule(rr); rule != "" {
+		return rule
+	}
+	if e.remoteIsReadOnly(rr) {
+		return ReadOnlyRule
+	}
+	return ""
+}
+
+// remoteIsReadOnly reports an ssh call the read-only classifier approves.
+func (e *Engine) remoteIsReadOnly(rr remoteRead) bool {
+	_, why := e.remoteReadOnly(rr)
+	return why == ""
 }

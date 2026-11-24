@@ -92,7 +92,7 @@ type remoteInfo struct{ name, ns, what, where string }
 
 // remoteChanges groups the session's remote calls by host and cluster, in
 // the order each was first reached.
-func remoteChanges(calls []Call, remote map[string]remoteInfo) []RemoteTarget {
+func remoteChanges(calls []Call, remote map[int64]remoteInfo) []RemoteTarget {
 	var out []RemoteTarget
 	at := map[string]int{}
 	for _, c := range calls {
@@ -100,7 +100,7 @@ func remoteChanges(calls []Call, remote map[string]remoteInfo) []RemoteTarget {
 		if !ok || c.Actor == "user" {
 			continue
 		}
-		info := remote[c.CallID]
+		info := remote[c.Seq]
 		rc := RemoteChange{Seq: c.Seq, CallID: c.CallID, Tool: c.Tool, What: info.what, Namespace: info.ns, Where: info.where,
 			Decision: c.Decision, By: c.By, Ran: c.Ran, ExitCode: c.ExitCode, IsError: c.IsError, PlanHash: c.PlanHash, PlanStep: c.PlanStep}
 		name := info.name

@@ -78,7 +78,7 @@ func (sm *serveMetrics) run(ctx context.Context) (string, error) {
 	hs := &http.Server{Handler: sm.handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
 		WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 16 << 10}
 	go func() { _ = hs.Serve(ln) }()
-	go func() {
+	go func() { // #nosec G118 -- shuts the listener down once ctx ends; the shutdown needs its own deadline, not the ended ctx
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

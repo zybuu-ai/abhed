@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // The pieces of a claim that can be compared with what a tool returned:
@@ -14,18 +15,24 @@ import (
 
 // facts is what a claim asserts that a check can look for.
 type facts struct {
-	literals  []string    // must appear as written, normalised
-	paths     []string    // file paths named, also literals
-	hosts     []string    // host names and addresses, also literals
-	numbers   []string    // standalone numbers, normalised
-	counted   []countFact // numbers with the word that counts them
-	keyed     []countFact // a word and the number that follows it, as in "port 8080"
-	fileLines []fileLine  // path:line cites, checked against the file now
-	success   bool        // says a command, test or build succeeded
-	testish   string      // "test" or "build" when success names one
-	wholeRun  bool        // success said of the run, not only of a count in it
-	changed   bool        // says the agent changed the paths it names
-	negated   bool        // says something did not happen, or is not so
+	literals []string // must appear as written, normalised
+	paths    []string // file paths named, also literals
+	hosts    []string // host names and addresses, also literals
+	numbers  []string // standalone numbers, normalised
+	// changeTargets are the literals a change claim says it made ("changed
+	// X to `Y`"), which only what a change put in can show.
+	changeTargets map[string]bool
+	// workNounLead: it opens with a git or deploy verb before a work noun
+	// whose state is said to be new, a report only after such a call.
+	workNounLead bool
+	counted      []countFact // numbers with the word that counts them
+	keyed        []countFact // a word and the number that follows it, as in "port 8080"
+	fileLines    []fileLine  // path:line cites, checked against the file now
+	success      bool        // says a command, test or build succeeded
+	testish      string      // "test" or "build" when success names one
+	wholeRun     bool        // success said of the run, not only of a count in it
+	changed      bool        // says the agent changed the paths it names
+	negated      bool        // says something did not happen, or is not so
 	// deed: the agent says it did something (first person, past or
 	// perfect); proof: what it did is a check or a release (tested,
 	// verified, deployed), which no change shows. changeWord: a passive
@@ -73,6 +80,25 @@ type facts struct {
 	eventKinds                   []string // the kinds of call its events need
 	scope                        []string // packages or folders a test claim names, such as internal/auth
 	ran                          []string // commands the claim says were run
+	// runOutcome is what a named command's run is said to have resulted in
+	// ("Running `X` resulted in `OK`"): read from that run's own output.
+	runCmd, runOutcome string
+	// modules are the test modules and files a claim names without a folder
+	// (tests.test_text, test_tip.py), as files; theTests: it says "the
+	// tests" and names neither a scope nor every test, so it means the tests
+	// the task named.
+	modules  []string
+	theTests bool
+	// inclusive: it names a test as one among more ("including tests.test_new").
+	inclusive bool
+	// plain is the claim as compared: normalised, code spans as written.
+	plain string
+	// afterChange: it refers to the session's change as a time ("after the
+	// fix", "following the changes").
+	afterChange bool
+	// presentState: it says a piece of work is finished, in the present
+	// ("the issue is resolved", "the service is deployed").
+	presentState bool
 }
 
 type countFact struct {
@@ -102,7 +128,7 @@ var (
 	backtickRe = regexp.MustCompile("`([^`\n]{1,200})`")
 	dquoteRe   = regexp.MustCompile(`"([^"\n]{2,200})"`)
 	urlRe      = regexp.MustCompile(`https?://[^\s<>"'` + "`" + `)\]]+`)
-	fileLineRe = regexp.MustCompile(`((?:[\w.\-]+/)*[\w\-]+\.[A-Za-z][A-Za-z0-9]{0,5}):(\d+)(?::\d+)?\b`)
+	fileLineRe = regexp.MustCompile(`((?:[\w.\-]+/)*[\w\-]+\.[A-Za-z][A-Za-z0-9]{0,5}):(\d+)(?::\d+|[-–]\d+)?\b`)
 	pathRe     = regexp.MustCompile(`(?:~|\.{1,2})?/?(?:[\w.\-]+/)+[\w.\-]+|\b[\w\-]+\.(?:go|py|js|mjs|ts|tsx|jsx|json|ya?ml|md|toml|txt|sh|rs|java|kt|c|h|cc|cpp|hpp|rb|php|html|css|sql|lock|mod|sum|cfg|ini|conf|xml|env|log|csv|proto|tf|gradle)\b`)
 	versionRe  = regexp.MustCompile(`\bv?\d+\.\d+\.\d+(?:[-+][\w.]+)?\b`)
 	dateRe     = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?\b`)
@@ -155,7 +181,9 @@ var (
 	passiveRe = regexp.MustCompile(`\b(?:was|were|has been|have been|had been|has now been|have now been|got|gets|is being|are being)\s+(?:\w+ed|rewritten|written|reset|set|put|made|built|rebuilt|done|undone|redone|taken|split|cut)\b`)
 	// changeNounRe is the agent's change named as a thing.
 	changeNounRe = regexp.MustCompile(`\b(?:my|our)\s+(?:change|changes|edit|edits|commit|commits|patch|patches|fix|fixes|refactor|rewrite|update|updates|work|diff|pr|pull request)\b|\b(?:the|this|that)\s+(?:fix|patch|refactor|rewrite|hotfix)\b|\b(?:after|since|with|before)\s+(?:my|our)\s+(?:change|edit|commit|patch|fix|refactor|rewrite|update)\b`)
-	ranRe        = regexp.MustCompile(`\b(?:i|i've|i have|we|we've)\s+(?:also\s+|then\s+|just\s+)?(?:ran|run|executed)\b`)
+	// runResultRe is a named command's run and what it resulted in.
+	runResultRe = regexp.MustCompile("(?i)^\\s*(?:(?:running|executing|the run of|a run of|the command|the final run of|the last run of)\\s+)?`([^`]+)`\\s+(?:resulted|ended|finished|exited)\\s+(?:in|with)\\s+(.+?)\\s*[.!]?\\s*$")
+	ranRe       = regexp.MustCompile(`\b(?:i|i've|i have|we|we've)\s+(?:also\s+|then\s+|just\s+)?(?:ran|run|executed)\b`)
 )
 
 // Words that follow a number without counting anything.
@@ -227,7 +255,14 @@ func unitOf(w string) string {
 // extractFacts reads what a claim asserts that can be checked.
 func extractFacts(claim string) facts {
 	var f facts
-	text := ansiRe.ReplaceAllString(claim, "")
+	text, workLead := adjectiveLead(ansiRe.ReplaceAllString(claim, ""))
+	f.workNounLead = workLead
+	if m := changeToRe.FindStringSubmatchIndex(claim); m != nil && m[2] > 0 {
+		f.changeTargets = map[string]bool{}
+		for _, lit := range extractFacts(claim[m[2]:]).literals {
+			f.changeTargets[lit] = true
+		}
+	}
 	seen := map[string]bool{}
 	addLit := func(s string) {
 		s = normText(strings.Trim(s, ",;:!?()[]{}'\""))
@@ -279,17 +314,37 @@ func extractFacts(claim string) facts {
 			f.tokens = append(f.tokens, t)
 		}
 	}
-	f.negated = negationRe.MatchString(noFailRe.ReplaceAllString(lower, " "))
+	// A "not" inside a condition ("even if it doesn't match") negates the
+	// condition, not what the sentence says happened.
+	f.negated = negationRe.MatchString(noFailRe.ReplaceAllString(conditionRe.ReplaceAllString(lower, " "), " "))
 
 	if notChangedRe.MatchString(lower) {
 		f.changed, f.negated = true, true
 	}
 	for _, w := range strings.Fields(text) {
-		if w = rawPath(strings.Trim(w, "`")); strings.Contains(w, "/") && !strings.Contains(w, "://") && strings.IndexFunc(w, unicode.IsLetter) >= 0 {
+		if m := testModule(w); m != "" {
+			f.modules = append(f.modules, m)
+		}
+		// "pkg/x/..." keeps its dots: it names everything beneath.
+		if t := strings.TrimRight(strings.Trim(w, "`"), ",;:!?)]}'\""); strings.HasSuffix(t, "/...") {
+			w = strings.TrimLeft(t, "(['\"")
+		} else {
+			w = rawPath(strings.Trim(w, "`"))
+		}
+		if strings.Contains(w, "/") && !strings.Contains(w, "://") && strings.IndexFunc(w, unicode.IsLetter) >= 0 {
 			f.scope = append(f.scope, w)
 		}
 	}
+	f.inclusive = inclusiveRe.MatchString(nlow)
+	f.presentState = presentStateRe.MatchString(nlow)
+	f.plain = normText(claim)
+	f.afterChange = afterChangeRe.MatchString(normText(backtickRe.ReplaceAllString(claim, " ")))
+	f.theTests = len(f.scope) == 0 && len(f.modules) == 0 && theTestsRe.MatchString(nlow) && !wholeSuiteRe.MatchString(nlow)
 	ranCmd := ranRe.MatchString(lower)
+	if m := runResultRe.FindStringSubmatch(claim); m != nil {
+		f.runCmd = strings.TrimSpace(m[1])
+		f.runOutcome = strings.TrimSpace(strings.Trim(strings.TrimSpace(m[2]), "`.,;"))
+	}
 
 	cut(backtickRe, func(m []string) bool {
 		addLit(m[1])
@@ -331,6 +386,9 @@ func extractFacts(claim string) facts {
 		f.paths = append(f.paths, rawPath(p))
 		return true
 	})
+	// A word with a digit in it (python3, r2alice, v2) is a name, which a
+	// result must hold as written; its digit is no number.
+	cut(digitWordRe, func(m []string) bool { addLit(strings.TrimLeft(m[0], " \t\n([{'\"")); return true })
 	// What is left: host names, then numbers.
 	low := strings.ToLower(text)
 	for _, h := range hostRe.FindAllString(low, -1) {
@@ -385,9 +443,11 @@ func extractFacts(claim string) facts {
 		}
 	}
 	nums := map[string]bool{}
+	// A list's own numbering ("to: 1. Change …. 2. Replace …") says nothing.
+	low = listNumberRe.ReplaceAllStringFunc(low, func(m string) string { return strings.Repeat(" ", len(m)) })
 	for _, m := range numberRe.FindAllStringIndex(low, -1) {
 		// A digit inside a word, as in sha256 or utf8, is not a number said.
-		if m[0] > 0 && isWordRune(rune(low[m[0]-1])) {
+		if r, _ := utf8.DecodeLastRuneInString(low[:m[0]]); m[0] > 0 && isWordRune(r) {
 			continue
 		}
 		n := normNumber(low[m[0]:m[1]])
@@ -414,6 +474,13 @@ func extractFacts(claim string) facts {
 		}
 	}
 	plain := noFailRe.ReplaceAllString(full, " ")
+	// "passed to the synthesizer" hands a value on: no success, unless the
+	// claim is about tests.
+	if !testRe.MatchString(plain) && !checkWordRe.MatchString(plain) {
+		full = passedOnRe.ReplaceAllString(full, " ")
+		said = passedOnRe.ReplaceAllString(said, " ")
+		plain = noFailRe.ReplaceAllString(full, " ")
+	}
 	// Fail, error and broken words elsewhere do not undo a pass said of
 	// tests; not or never does.
 	testPass := successRe.MatchString(full) && testRe.MatchString(plain) && !negationRe.MatchString(plain)
@@ -479,7 +546,12 @@ func extractFacts(claim string) facts {
 	}
 	f.oldNamed, f.inNamed, f.toolNamed = map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, m := range oldNamedRe.FindAllStringSubmatch(claim, -1) {
-		f.oldNamed[normText(m[1]+m[2]+m[3])] = true
+		f.oldNamed[normText(m[1]+m[2]+m[4])] = true
+		// "Replaced the `for` loop (which used `range(…)`) with": code said
+		// of what was replaced is what was replaced too.
+		for _, sp := range backtickRe.FindAllStringSubmatch(m[3], -1) {
+			f.oldNamed[normText(strings.TrimSpace(sp[1]))] = true
+		}
 	}
 	f.anchorNamed = map[string]string{}
 	for _, m := range anchorNamedRe.FindAllStringSubmatch(claim, -1) {
@@ -523,7 +595,7 @@ var (
 	// repoWideRe says the whole workspace.
 	repoWideRe = regexp.MustCompile(`\b(whole|entire|full) (repo|repository|codebase|project|workspace|tree)\b|\beverywhere\b|\ball files\b|\bacross the (repo|repository|codebase|project|workspace)\b|\brepo-wide\b`)
 	// oldNamedRe is code named as what a change replaced.
-	oldNamedRe    = regexp.MustCompile("(?i)\\bfrom\\s+`([^`]+)`|\\b(?:replaced|swapped|renamed|changed|switched|converted|turned|moved)\\s+`([^`]+)`\\s+(?:to|with|for|into)\\b|\\binstead of\\s+`([^`]+)`")
+	oldNamedRe    = regexp.MustCompile("(?i)\\bfrom\\s+`([^`]+)`|\\b(?:replace[ds]?|swap(?:ped|s)?|rename[ds]?|change[ds]?|switch(?:ed|es)?|convert(?:ed|s)?|turn(?:ed|s)?|move[ds]?)\\s+(?:the\\s+)?`([^`]+)`(?:\\s+[a-z]+){0,2}(\\s*\\((?:[^()`]|`[^`]*`)*\\))?\\s+(?:to|with|for|into)\\b|\\binstead of\\s+`([^`]+)`")
 	anchorNamedRe = regexp.MustCompile("(?i)\\b(after|before|above|below|beneath|under|next to|beside|following)\\s+(?:the\\s+)?`([^`]+)`")
 	// inNamedRe is code named as where a change was made: "in `Sum`".
 	inNamedRe = regexp.MustCompile("(?i)\\b(?:in|inside|within|into|to)\\s+(?:the\\s+)?`([^`]+)`(?:\\s+(?:function|method|file|type|struct|package))?(?:[.,;:]|\\s+(?:so|to|with|because|and|for|which)\\b|$)")
@@ -532,6 +604,50 @@ var (
 	offRe       = regexp.MustCompile(`\b(disabl\w*|turn(?:ed|s|ing)? (?:it )?off|switch(?:ed|es|ing)? (?:it )?off|shut off)\b`)
 	onRe        = regexp.MustCompile(`\b(enabl\w*|turn(?:ed|s|ing)? (?:it )?on|switch(?:ed|es|ing)? (?:it )?on)\b`)
 )
+
+var (
+	// theTestsRe says "the tests", "the unit tests", "the new test".
+	theTestsRe = regexp.MustCompile(`\bthe\s+(?:[a-z][a-z_\-]*\s+){0,2}?tests?\b`)
+	// wholeSuiteRe says every test, or the suite as a whole.
+	wholeSuiteRe = regexp.MustCompile(`\b(?:all|every|each|whole|entire|full|complete|suites?|everything|everywhere|both|other|remaining|rest)\b`)
+	identRe      = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	// presentStateRe says work is finished, in the present.
+	presentStateRe = regexp.MustCompile(`\b(?:is|are|has been|have been)\s+(?:now\s+|all\s+|properly\s+|fully\s+|correctly\s+|successfully\s+)*(?:resolved|fixed|deployed|merged|done|complete|completed|installed|configured|populated|built|registered|enabled|disabled|applied|handled|processed|released|shipped|updated|rolled out|in place|live|working|set up|wired|mounted)\b`)
+	// checkWordRe names a check that "passed to/through" may be said of.
+	checkWordRe = regexp.MustCompile(`\b(?:ci|build|builds|check|checks|pipeline|pipelines|review|reviews|lint|linter|linting|qa|gate|gates)\b`)
+	// conditionRe is a condition clause, to the end of its sentence.
+	conditionRe = regexp.MustCompile(`\b(?:even if|even when|even though)\b[^.;]*`)
+	// listNumberRe is a numbered list's marker after a colon or a sentence.
+	listNumberRe = regexp.MustCompile(`(?:^|[:.]\s+)\d{1,2}[.)]\s`)
+	// passedOnRe is "passed" said of a value handed on, not of a check.
+	passedOnRe = regexp.MustCompile(`\bpass(?:es|ed|ing)?\s+(?:\w+ly\s+)?(?:the\s+(?:\w+\s+){0,3}?\w+\s+(?:to|into|from)\b|to|into|along|through|on to|down to|back to|in|as an? \w+|as (?:the|its|a) \w+|by reference|by value)\b`)
+	// inclusiveRe names a part as one among more.
+	inclusiveRe = regexp.MustCompile(`\b(?:including|incl|such as|as well as|along with|plus|besides|in addition to|among them|among others|e\.g)\b`)
+)
+
+// testModule is a test module or file a word names without a folder, as
+// its file in the workspace: tests.test_text as tests/test_text.py,
+// test_tip.py as it is; "" for any other word. A name with a folder is read
+// as a path, by the scope.
+func testModule(w string) string {
+	w = strings.Trim(w, "`'\"()[]{},;:!?.")
+	if strings.Contains(w, "/") || !insidePath(w) || !testName(w) {
+		return ""
+	}
+	if strings.HasSuffix(w, ".py") {
+		return w
+	}
+	parts := strings.Split(w, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	for _, p := range parts {
+		if !identRe.MatchString(p) {
+			return ""
+		}
+	}
+	return unittestPath(w)
+}
 
 // wholeRunCount reports a counted pass said of every test: "all 12 tests
 // passed", "12/12", "12 of 12". It is a claim the run passed, judged against
@@ -545,8 +661,85 @@ func wholeRunCount(m string) bool {
 var presentEed = map[string]bool{"need": true, "feed": true, "speed": true, "seed": true, "bleed": true,
 	"breed": true, "proceed": true, "succeed": true, "exceed": true, "embed": true, "shed": true, "bed": true, "red": true}
 
+// leadDeedRe is a report that opens with what was done, its subject left
+// out as answers often do: "Pulled, branched and pushed.", "Added a test."
+var leadDeedRe = regexp.MustCompile(`^\W*(?:(?:then|also|first|finally|next|and|just|successfully)\s+)*(?:pulled|pushed|committed|branched|merged|rebased|cloned|fetched|tagged|checked out|stashed|staged|amended|squashed|cherry-picked|reverted|created|added|removed|deleted|updated|changed|fixed|edited|modified|wrote|rewrote|ran|installed|uninstalled|deployed|restarted|renamed|moved|refactored|implemented|built|rebuilt|tested|applied|configured|upgraded|downgraded|bumped|released|published|replaced|patched|migrated|generated|formatted|scaled|rolled back|rolled out|opened a (?:pr|pull request))(?:[\s,.;!]|$)`)
+
+// digitWordRe is a word with a digit after its first letter: python3,
+// r2alice, v2, f_core_a_3, web1.
+var digitWordRe = regexp.MustCompile(`(?:^|[^\p{L}\d_\-.])\p{L}[\p{L}\d_\-]*\d[\p{L}\d_\-]*`)
+
+// leadVerbRe is a sentence's first word; mainVerbRe a verb that makes the
+// words before it a subject; leadLabelRe a short label ending in a colon.
+var (
+	leadVerbRe       = regexp.MustCompile(`^(\W*)([A-Za-z]+)(-?)`)
+	mainVerbRe       = regexp.MustCompile(`^(?:are|is|was|were|can|cannot|can't|could|need|needs|should|must|will|would|may|might|have|has|had|show|shows|live|lives|stay|stays|return|returns|makes|breaks|keeps|gets)$`)
+	workNounLeadRe   = regexp.MustCompile(`^(?:pushed|committed|merged|deployed|released|rolled out|applied|published|shipped|upgraded|migrated)\s+(?:changes|branch|branches|commit|commits|work|fix|fixes|service|services|pod|pods|code|config|configs|release|image|images)\b`)
+	newStateRe       = regexp.MustCompile(`\b(?:now|just|already)\b`)
+	leadNotVerbAfter = wordSet(`to the a an its this that these those my our your their his her`)
+	leadLabelRe      = regexp.MustCompile(`^\W*[A-Za-z]+(?:\s+[A-Za-z]+){0,2}\s*:\s*$`)
+)
+
+// adjectiveLead blanks a past form that opens a sentence as an adjective,
+// not a report of work: before a hyphen ("Built-in functions"), before a
+// main verb within three words ("Released versions are tagged", "Removed
+// APIs return 410"), or as a short heading ("Changed files:").
+func adjectiveLead(text string) (string, bool) {
+	m := leadVerbRe.FindStringSubmatchIndex(text)
+	if m == nil {
+		return text, false
+	}
+	w := strings.ToLower(text[m[4]:m[5]])
+	if !irregularPast[w] && !(len(w) > 3 && strings.HasSuffix(w, "ed") && !notPastEd[w]) {
+		return text, false
+	}
+	// A heading with nothing after its colon claims nothing.
+	if leadLabelRe.MatchString(text) {
+		return strings.Repeat(" ", len(text)), false
+	}
+	adj := m[6] != m[7]
+	if !adj {
+		// A word after "to" or a determiner is no main verb ("to use",
+		// "the return statement").
+		prev := ""
+		for i, x := range strings.Fields(strings.ToLower(text[m[5]:])) {
+			if i >= 3 {
+				break
+			}
+			x = strings.Trim(x, ",.;:!?")
+			if !leadNotVerbAfter[prev] && mainVerbRe.MatchString(x) {
+				adj = true
+				break
+			}
+			prev = x
+		}
+	}
+	if !adj {
+		return text, false
+	}
+	// A git or deploy verb before a work noun, with its state said to be new,
+	// may report the work ("Pushed branches are visible on origin now."); the
+	// caller keeps it only when the session made such a call.
+	if workNounLeadRe.MatchString(strings.ToLower(text[m[4]:])) && newStateRe.MatchString(strings.ToLower(text)) {
+		return text, true
+	}
+	return blankLead(text), false
+}
+
+// blankLead blanks a sentence's first word.
+func blankLead(text string) string {
+	m := leadVerbRe.FindStringSubmatchIndex(text)
+	if m == nil {
+		return text
+	}
+	return text[:m[4]] + strings.Repeat(" ", m[5]-m[4]) + text[m[5]:]
+}
+
 // saysDeed reports the agent saying it did something.
 func saysDeed(lower string) bool {
+	if leadDeedRe.MatchString(lower) {
+		return true
+	}
 	for _, m := range deedRe.FindAllString(lower, -1) {
 		f := strings.Fields(m)
 		if !presentEed[f[len(f)-1]] {
@@ -742,6 +935,9 @@ func readCount(s string, m []int) countFact {
 // clause ("2 of 5", "2 of all the 5", "2 out of a total of 5"). part is N,
 // normalised, or "" when it is not a number. "12 of 12" and "12/12" are
 // all of them, not a part.
+// ofLinkWords may stand between the "of" of "N of M" and M.
+var ofLinkWords = wordSet(`the a an all total of out these those its their our`)
+
 func partOf(s string, at int, head string) (part string, ok bool) {
 	i := at
 	for i > 0 && s[i-1] == ' ' {
@@ -765,6 +961,16 @@ func partOf(s string, at int, head string) (part string, ok bool) {
 	for k := len(f) - 1; k >= 0; k-- {
 		if f[k] != "of" {
 			continue
+		}
+		// The "of" of "N of M" is near M: "3 of the 12", "2 out of a total
+		// of 5"; one far before it ("the execution of `x` resulted in 5")
+		// is not.
+		near := len(f)-1-k <= 4
+		for _, w := range f[k+1:] {
+			near = near && ofLinkWords[w]
+		}
+		if !near {
+			break
 		}
 		j := k - 1
 		if j >= 0 && f[j] == "out" {
@@ -1344,3 +1550,6 @@ func headingLine(t string) bool {
 var titleParticiples = map[string]bool{"cited": true, "related": true, "suggested": true, "proposed": true, "recommended": true,
 	"expected": true, "affected": true, "referenced": true, "linked": true, "selected": true, "detailed": true, "supported": true,
 	"required": true, "attached": true, "known": true, "estimated": true}
+
+// unittestSumRe is unittest's summary: how many ran, then OK or FAILED (…).
+var unittestSumRe = regexp.MustCompile(`(?m)^Ran (\d+) tests? in [\d.]+s[ \t]*\n[ \t]*\n(.*)$`)

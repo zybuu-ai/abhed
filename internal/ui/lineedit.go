@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,8 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/term"
+
+	"github.com/zybuu-ai/abhed/internal/home"
 )
 
 // LineReader is the interactive terminal: the input dock, the keys, and the
@@ -145,10 +148,13 @@ func NewLineReader(prompt string) *LineReader {
 		_ = SetTheme("dark")
 	}
 	var in io.Reader = os.Stdin
+	pre := bytes.NewReader(typed)
 	if len(typed) > 0 {
-		in = io.MultiReader(bytes.NewReader(typed), os.Stdin)
+		in = io.MultiReader(pre, os.Stdin)
 	}
 	d := newDock(in, os.Stdout, NewStyle(LazyStdout{}))
+	d.preread = pre
+	d.wait, d.wake, d.stopWait, d.releaseWait = waitFunc(os.Stdin)
 	d.prompt = prompt
 	d.autoTheme = auto
 	d.scr.sync = syncMode == 1
@@ -187,6 +193,11 @@ func NewLineReaderOn(in io.Reader, out io.Writer, cols, rows int) *LineReader {
 		mu.Lock()
 		defer mu.Unlock()
 		return cols, rows
+	}
+	if f, ok := in.(*os.File); ok {
+		// Set before the reader starts, which reads them.
+		d.kr.ready = readyFunc(f)
+		d.wait, d.wake, d.stopWait, d.releaseWait = waitFunc(f)
 	}
 	l := &LineReader{d: d, raw: true, done: make(chan struct{})}
 	d.openKeys() // a test's keys are taken as they come
@@ -490,6 +501,9 @@ func (l *LineReader) Close() {
 	l.close.Do(func() {
 		activeReader.CompareAndSwap(l, nil)
 		close(l.done)
+		if l.d.stopWait != nil {
+			l.d.stopWait()
+		}
 		l.d.mu.Lock()
 		l.d.endDialogs()
 		if l.d.pager != nil {
@@ -555,11 +569,10 @@ const draftMax = 8 << 20
 // write, where a running task could read the draft, change it, or swap it
 // for a link to a file it cannot read.
 func draftDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return "", errors.New("no home folder for the draft")
+	dir, err := home.PersonPath("drafts")
+	if err != nil {
+		return "", errors.New("no folder for the draft")
 	}
-	dir := filepath.Join(home, ".abhed", "drafts")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
@@ -642,6 +655,10 @@ func (l *LineReader) Capture() func() {
 
 	origOut, origErr := os.Stdout, os.Stderr
 	os.Stdout, os.Stderr = outW, errW
+	// The log package, and slog's default through it, kept the stderr it had
+	// at start: a warning it wrote would land under the screen and tear it.
+	origLog := log.Writer()
+	log.SetOutput(errW)
 
 	var wg sync.WaitGroup
 	pump := func(r *os.File) {
@@ -664,6 +681,7 @@ func (l *LineReader) Capture() func() {
 
 	return func() {
 		os.Stdout, os.Stderr = origOut, origErr
+		log.SetOutput(origLog)
 		_ = outW.Close()
 		_ = errW.Close()
 		wg.Wait()
@@ -745,6 +763,8 @@ func (l *LineReader) captureLines() func() {
 		return func() {}
 	}
 	os.Stdout, os.Stderr = outW, errW
+	origLog := log.Writer()
+	log.SetOutput(errW)
 	keepSGR := NewStyle(LazyStdout{}).enabled
 	var wg sync.WaitGroup
 	pump := func(r *os.File, to *os.File) {
@@ -768,6 +788,7 @@ func (l *LineReader) captureLines() func() {
 	go pump(errR, origErr)
 	return func() {
 		os.Stdout, os.Stderr = origOut, origErr
+		log.SetOutput(origLog)
 		_ = outW.Close()
 		_ = errW.Close()
 		wg.Wait()

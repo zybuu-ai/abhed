@@ -5,8 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -14,9 +17,11 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/zybuu-ai/abhed/internal/nlink"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/regularfile"
 	"github.com/zybuu-ai/abhed/internal/visible"
 )
 
@@ -46,6 +51,9 @@ type LoadOptions struct {
 	// Warn, when set, takes each of this load's warnings instead of stderr,
 	// every time, for an embedder that shows or drops them itself.
 	Warn func(string)
+	// WarnFor, when set, limits the warnings about settings to those whose key
+	// it accepts; the org policy's own warnings are always given.
+	WarnFor func(key string) bool
 	// Settings is a file the person named for this run (-settings), merged
 	// over their own file as one of their own: managed-only keys are set
 	// aside, and the managed file still binds. SettingsName says where it came from.
@@ -57,6 +65,9 @@ type LoadOptions struct {
 type WorkspaceTrust struct {
 	Workspace string `json:"workspace"`
 	File      string `json:"file,omitempty"`
+	// LocalFile is the workspace's .abhed/config.local.json, when there is
+	// one; SHA256 then covers both files.
+	LocalFile string `json:"local_file,omitempty"`
 	SHA256    string `json:"sha256,omitempty"`
 	Trusted   bool   `json:"trusted"`
 	// Reason is none (no file), home (it is the user's own config), stored,
@@ -81,6 +92,20 @@ type WorkspaceTrust struct {
 	// decision: a link, a second name, too large. They never load.
 	AgentsProblems []string `json:"agents_problems,omitempty"`
 
+	// Skills are the workspace's skills (.abhed/skills/<name>/), each with
+	// its name, description and hash, that the decision below covers.
+	Skills []WorkspaceSkill `json:"skills,omitempty"`
+	// SkillsSHA256 is one hash over every skill's folder and content.
+	SkillsSHA256 string `json:"skills_sha256,omitempty"`
+	// SkillsTrusted is whether the skills load. It is decided apart from
+	// the configuration file and the definitions, against SkillsSHA256.
+	SkillsTrusted bool `json:"skills_trusted,omitempty"`
+	// SkillsReason is as Reason, for the skills; none when there are none,
+	// off when the configuration turns workspace skills off.
+	SkillsReason string `json:"skills_reason,omitempty"`
+	// SkillsProblems are skills refused before any decision. They never load.
+	SkillsProblems []string `json:"skills_problems,omitempty"`
+
 	// UsersFile is the workspace's .abhed/users.json, when there is one.
 	UsersFile string `json:"users_file,omitempty"`
 	// UsersTrusted is whether an accounts file inside the workspace is read,
@@ -89,6 +114,7 @@ type WorkspaceTrust struct {
 	UsersReason  string `json:"users_reason,omitempty"`
 
 	agentFiles []AgentFile
+	skillFiles []WorkspaceSkill
 }
 
 // IgnoredKey is one setting of an untrusted file, with its value as written
@@ -157,7 +183,7 @@ func deploymentReason(key string) string {
 // NeedsDecision reports whether the person should be asked: an untrusted file
 // that would change something, and no answer yet for this content.
 func (w WorkspaceTrust) NeedsDecision() bool {
-	return w.configNeedsDecision() || w.agentsNeedDecision()
+	return w.configNeedsDecision() || w.agentsNeedDecision() || w.skillsNeedDecision()
 }
 
 func (w WorkspaceTrust) configNeedsDecision() bool {
@@ -188,6 +214,12 @@ func (w WorkspaceTrust) Warning() string {
 		if tighten == "" {
 			what, reason = Printable(filepath.Join(w.Workspace, filepath.FromSlash(WorkspaceAgentsDir))), w.AgentsReason
 		}
+	}
+	if skills := w.IgnoredSkills(); len(skills) > 0 {
+		if len(ignored) == 0 {
+			what, reason = Printable(filepath.Join(w.Workspace, filepath.FromSlash(WorkspaceSkillsDir))), w.SkillsReason
+		}
+		ignored = append(ignored, skills...)
 	}
 	if len(ignored) == 0 {
 		return ""
@@ -256,37 +288,104 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 	} else {
 		st.AgentsTrusted, st.AgentsReason = decideAgents(st, o)
 	}
-	path := filepath.Join(workspace, ".abhed", "config.json")
-	if n, err := nlink.Linked(path); err != nil {
-		return st, fmt.Errorf("read %s: %w", path, err)
-	} else if n > 0 {
-		return st, fmt.Errorf("refusing to load the configuration: %w", nlink.Refusal(path, n))
+	readWorkspaceSkills(workspace, &st)
+	if isHome(workspace) {
+		st.SkillsTrusted, st.SkillsReason = len(st.Skills) > 0, "home"
+	} else {
+		st.SkillsTrusted, st.SkillsReason = decideSkills(st, o)
 	}
-	data, err := os.ReadFile(path) // #nosec G304 -- the workspace's config, read to be classified
-	if os.IsNotExist(err) {
+	path := filepath.Join(workspace, ".abhed", "config.json")
+	data, opened, err := readWorkspaceConfig(workspace, path)
+	hasMain := err == nil
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return st, err // it names the file and what to do
+	}
+	localPath := filepath.Join(workspace, ".abhed", LocalConfigName)
+	local, _, err := readWorkspaceConfig(workspace, localPath)
+	hasLocal := err == nil
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return st, err
+	}
+	if !hasMain && !hasLocal {
 		return st, nil
 	}
-	if err != nil {
-		return st, fmt.Errorf("read %s: %w", path, err)
+	var files []workspaceFile
+	if hasMain {
+		files = append(files, workspaceFile{path, data})
+		st.File = path
+		afterWorkspaceRead(path)
 	}
-	st.File, st.SHA256 = path, hashOf(data)
-	// The workspace is the home directory: this is the user's own file.
-	if userFile != "" && sameFile(path, userFile) {
+	if hasLocal {
+		files = append(files, workspaceFile{localPath, local})
+		st.LocalFile = localPath
+		if !hasMain {
+			st.File = localPath
+		}
+	}
+	st.SHA256 = workspaceHash(files)
+	// The workspace is the home folder and the file read is the user's own:
+	// decided on the file opened, never by looking the name up again, which a
+	// swapped folder could redirect. Elsewhere the bytes are judged by hash.
+	if hasMain && userFile != "" && isHome(workspace) && isUserFile(opened, userFile) {
 		st.Trusted, st.Reason = true, "home"
+		if hasLocal {
+			return st, mergeTrustedWorkspace(cfg, files[1:])
+		}
 		return st, nil
 	}
 	st.Trusted, st.Reason = decide(st, o)
 	if st.Trusted {
-		auto, depth, depthKey := cfg.Memory.Auto, cfg.Memory.ImportDepth, cfg.MemoryImportDepth()
-		ha, before, prior := cfg.ControlPlane.HA, slices.Clone(cfg.SetKeys), maps.Clone(cfg.origins)
-		servers, image := maps.Clone(cfg.Sandbox.LanguageServers), cfg.Sandbox.Image
-		listen, listenPorts := cfg.Sandbox.Listen, slices.Clone(cfg.Sandbox.ListenPorts)
-		network := cfg.Network.clone()
-		if _, err := mergeData(cfg, path, data); err != nil {
+		return st, mergeTrustedWorkspace(cfg, files)
+	}
+	for _, f := range files {
+		if err := tighten(cfg, f.path, f.data, &st); err != nil {
 			return st, err
 		}
-		// Trust does not reach these: a workspace never makes a managed-only
-		// setting, may only turn auto memory off, and may only import less deep.
+	}
+	return st, nil
+}
+
+// LocalConfigName is the workspace's own, uncommitted layer beside
+// .abhed/config.json, merged over it under the same trust.
+const LocalConfigName = "config.local.json"
+
+// workspaceFile is one of the workspace's configuration files as read.
+type workspaceFile struct {
+	path string
+	data []byte
+}
+
+// workspaceHash is what trust is keyed by: the one file's hash as before, or,
+// with a local layer, one hash over both, so neither changes unseen.
+func workspaceHash(files []workspaceFile) string {
+	if len(files) == 1 && filepath.Base(files[0].path) == "config.json" {
+		return hashOf(files[0].data)
+	}
+	var b []byte
+	for _, f := range files {
+		b = fmt.Appendf(b, "%s\x00%d\x00", filepath.Base(f.path), len(f.data))
+		b = append(b, f.data...)
+	}
+	return hashOf(b)
+}
+
+// mergeTrustedWorkspace merges trusted workspace files in order. Trust does
+// not reach these: a workspace never makes a managed-only setting, may only
+// turn auto memory off, and may only import less deep.
+func mergeTrustedWorkspace(cfg *Config, files []workspaceFile) error {
+	auto, depth, depthKey := cfg.Memory.Auto, cfg.Memory.ImportDepth, cfg.MemoryImportDepth()
+	ha, before, prior := cfg.ControlPlane.HA, slices.Clone(cfg.SetKeys), maps.Clone(cfg.origins)
+	servers, image := maps.Clone(cfg.Sandbox.LanguageServers), cfg.Sandbox.Image
+	listen, listenPorts := cfg.Sandbox.Listen, slices.Clone(cfg.Sandbox.ListenPorts)
+	diagnostics, diagMax, diagWait := cfg.Tools.Diagnostics, cfg.Tools.DiagnosticsMax, cfg.Tools.DiagnosticsWaitMS
+	network := cfg.Network.clone()
+	background := cfg.Server.Background
+	pricing := maps.Clone(cfg.Pricing)
+	for _, f := range files {
+		path, data := f.path, f.data
+		if _, err := mergeData(cfg, path, data); err != nil {
+			return err
+		}
 		setAside(cfg, path, LayerWorkspace, data)
 		noteOrigins(cfg, path, LayerWorkspace, data)
 		keepHA(cfg, path, data, ha, before, prior)
@@ -295,7 +394,23 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 			func() { cfg.Network = network })
 		keepOperatorOnly(cfg, path, data, before, prior, "sandbox.image", "a workspace never names the image its commands run in",
 			func() { cfg.Sandbox.Image = image })
+		keepOperatorOnly(cfg, path, data, before, prior, "server.background", "a workspace never turns on background jobs or names where their notices go",
+			func() { cfg.Server.Background = background })
 		keepListen(cfg, path, data, before, prior, listen, listenPorts)
+		keepOperatorOnly(cfg, path, data, before, prior, "pricing", "a workspace never sets what a model's calls cost, which a dollar budget is spent by",
+			func() { cfg.Pricing = pricing })
+		if orDefaultInt(cfg.Tools.DiagnosticsMax, 20) > orDefaultInt(diagMax, 20) {
+			keepOperatorOnly(cfg, path, data, before, prior, "tools.diagnostics_max", "a workspace may only lower the diagnostics bounds",
+				func() { cfg.Tools.DiagnosticsMax = diagMax })
+		}
+		if orDefaultInt(cfg.Tools.DiagnosticsWaitMS, 3000) > orDefaultInt(diagWait, 3000) {
+			keepOperatorOnly(cfg, path, data, before, prior, "tools.diagnostics_wait_ms", "a workspace may only lower the diagnostics bounds",
+				func() { cfg.Tools.DiagnosticsWaitMS = diagWait })
+		}
+		if diagnosticsRank[cfg.Tools.Diagnostics] < diagnosticsRank[diagnostics] {
+			keepOperatorOnly(cfg, path, data, before, prior, "tools.diagnostics", "a workspace may only turn diagnostics off",
+				func() { cfg.Tools.Diagnostics = diagnostics })
+		}
 		if cfg.Memory.Auto && !auto {
 			cfg.Memory.Auto = false
 			cfg.SetKeys = slices.DeleteFunc(cfg.SetKeys, func(k string) bool { return k == "memory.auto" })
@@ -308,9 +423,121 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 			cfg.SetAside = append(cfg.SetAside, SetAsideKey{File: path, Layer: LayerWorkspace, Key: "memory.import_depth",
 				Reason: "a workspace may only make imports shallower"})
 		}
-		return st, nil
 	}
-	return st, tighten(cfg, path, data, &st)
+	return nil
+}
+
+// WorkspaceFiles reads the workspace's configuration files again for a
+// person to review, and reports whether they still hold what was decided.
+func (st WorkspaceTrust) WorkspaceFiles() (paths []string, contents [][]byte, unchanged bool, err error) {
+	var files []workspaceFile
+	for _, p := range []string{st.File, st.LocalFile} {
+		if p == "" || (len(files) > 0 && p == files[0].path) {
+			continue
+		}
+		data, err := os.ReadFile(p) // #nosec G304 -- the workspace file loading found
+		if err != nil {
+			return nil, nil, false, err
+		}
+		files = append(files, workspaceFile{p, data})
+		paths, contents = append(paths, p), append(contents, data)
+	}
+	return paths, contents, len(files) > 0 && workspaceHash(files) == st.SHA256, nil
+}
+
+// MaxWorkspaceConfig bounds a workspace's .abhed/config.json, wherever it is read.
+const MaxWorkspaceConfig = 4 << 20
+
+// afterWorkspaceRead runs between reading the workspace config and deciding
+// whose it is; tests swap folders there.
+var afterWorkspaceRead = func(string) {}
+
+// readWorkspaceConfig reads the workspace's config and returns the opened
+// file's own FileInfo. A repository chooses what is at that path, so it is
+// opened inside the workspace's real root (os.Root): a link may lead
+// anywhere inside it (a config shared within a monorepo) but not out of it,
+// whichever folder on the way is a link or is swapped meanwhile. Only a plain
+// file of bounded size is read; a pipe or device is never waited on. In the
+// home folder the file is the person's own, and a link may point anywhere.
+func readWorkspaceConfig(workspace, path string) ([]byte, os.FileInfo, error) {
+	if isHome(workspace) {
+		return readHomeConfig(path)
+	}
+	root, err := os.OpenRoot(canonical(workspace))
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = root.Close() }()
+	rel := filepath.Join(".abhed", filepath.Base(path))
+	if fi, err := root.Lstat(rel); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		if _, err := root.Stat(rel); errors.Is(err, os.ErrNotExist) {
+			return nil, nil, fmt.Errorf("%s is a link that leads to no file; make it a plain JSON file, or remove it", path)
+		}
+	}
+	f, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil, nil, err
+	case errors.Is(err, os.ErrPermission):
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
+	case err != nil:
+		if _, lerr := os.Lstat(path); errors.Is(lerr, os.ErrNotExist) {
+			return nil, nil, lerr // nothing there, wherever .abhed leads
+		}
+		return nil, nil, fmt.Errorf("%s cannot be read inside the workspace (%w); make it a plain file, or a link to one inside the workspace", path, err)
+	}
+	defer func() { _ = f.Close() }()
+	return readOpened(f, path)
+}
+
+// readHomeConfig reads the person's own ~/.abhed/config.json, which may be a
+// link into their dotfiles: followed, then read as a bounded plain file.
+func readHomeConfig(path string) ([]byte, os.FileInfo, error) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	f, _, err := regularfile.Open(real)
+	switch {
+	case errors.Is(err, regularfile.ErrNotRegular):
+		return nil, nil, fmt.Errorf("%s is not a plain file (a pipe or a device, say); make it a plain JSON file", path)
+	case err != nil:
+		return nil, nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return readOpened(f, path)
+}
+
+// readOpened reads an opened config: a plain file of at most MaxWorkspaceConfig.
+func readOpened(f *os.File, path string) ([]byte, os.FileInfo, error) {
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("%s is not a plain file (a pipe or a device, say); make it a plain JSON file", path)
+	}
+	if fi.Size() > MaxWorkspaceConfig {
+		return nil, nil, fmt.Errorf("%s is larger than the %d MiB a workspace config may be", path, MaxWorkspaceConfig>>20)
+	}
+	// Counted on the opened file (its handle on Windows), not by name.
+	if n := nlink.OfFile(f); n > 1 {
+		return nil, nil, fmt.Errorf("refusing to load the configuration: %w", nlink.Refusal(path, n))
+	}
+	data, err := io.ReadAll(io.LimitReader(f, MaxWorkspaceConfig+1))
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(data) > MaxWorkspaceConfig {
+		return nil, nil, fmt.Errorf("%s is larger than the %d MiB a workspace config may be", path, MaxWorkspaceConfig>>20)
+	}
+	return data, fi, nil
+}
+
+// isUserFile reports whether the opened file is the person's own config.
+func isUserFile(opened os.FileInfo, userFile string) bool {
+	uf, err := os.Stat(userFile)
+	return err == nil && os.SameFile(opened, uf)
 }
 
 // keepHA restores control_plane.ha as it was before a trusted workspace's
@@ -393,15 +620,6 @@ func decide(st WorkspaceTrust, o LoadOptions) (bool, string) {
 	return false, "declined"
 }
 
-func sameFile(a, b string) bool {
-	ia, err := os.Stat(a)
-	if err != nil {
-		return false
-	}
-	ib, err := os.Stat(b)
-	return err == nil && os.SameFile(ia, ib)
-}
-
 // tighten applies the settings of an untrusted file that only make Abhed
 // stricter, and records every other one as ignored.
 func tighten(cfg *Config, path string, data []byte, st *WorkspaceTrust) error {
@@ -472,15 +690,16 @@ func tighten(cfg *Config, path string, data []byte, st *WorkspaceTrust) error {
 // field naming an environment variable, or a limit, is not.
 func secretKey(k string) bool {
 	k = strings.ToLower(k)
-	if strings.HasSuffix(k, "_env") || strings.HasPrefix(k, "max_") {
+	// api_key_secret names a stored key; the name is shown, so a person sees which key a file asks for.
+	if strings.HasSuffix(k, "_env") || strings.HasPrefix(k, "max_") || k == "api_key_secret" {
 		return false
 	}
-	for _, s := range []string{"api_key", "apikey", "secret", "password", "passwd", "token", "dsn", "header", "credential", "authorization"} {
+	for _, s := range []string{"api_key", "apikey", "secret", "password", "passwd", "token", "dsn", "header", "credential", "authorization", "signature"} {
 		if strings.Contains(k, s) {
 			return true
 		}
 	}
-	return k == "env" || k == "key"
+	return k == "env" || k == "key" || k == "sig"
 }
 
 // redact replaces credentials in a value about to be shown: the values of
@@ -578,8 +797,15 @@ func redactURL(s string) string {
 	if u.User != nil {
 		if _, has := u.User.Password(); has {
 			u.User = url.UserPassword(u.User.Username(), "redacted")
-			changed = true
+		} else {
+			// A user part alone is often a token (https://ghp_…@host).
+			u.User = url.User("redacted")
 		}
+		changed = true
+	}
+	if u.Fragment != "" || u.RawFragment != "" {
+		u.Fragment, u.RawFragment = "redacted", ""
+		changed = true
 	}
 	if u.RawQuery != "" {
 		q := u.Query()
@@ -639,6 +865,19 @@ func InspectWorkspace(workspace string) (WorkspaceTrust, error) {
 	}
 	if st.AgentsReason != "home" {
 		st.AgentsTrusted, st.AgentsReason = decideAgents(st, LoadOptions{})
+	}
+	if st.SkillsReason != "home" {
+		st.SkillsTrusted, st.SkillsReason = decideSkills(st, LoadOptions{})
+	}
+	// Turned off by the person's or the managed configuration, they are
+	// neither loaded nor asked about.
+	off := Default()
+	_ = mergeManaged(&off)
+	cfg.Workspace, off.Workspace = st, st
+	skillsOff(&cfg)
+	skillsOff(&off)
+	if cfg.Workspace.SkillsReason == "off" || off.Workspace.SkillsReason == "off" {
+		st.SkillsTrusted, st.SkillsReason = false, "off"
 	}
 	if st.File == "" || st.Reason == "home" {
 		noteUsers(&st, workspace, LoadOptions{})
@@ -739,6 +978,7 @@ var workspaceRules = map[string]fieldRule{
 	"sandbox.listen":                 {stricterListen, "only stricter: allow, then ask, then off"},
 	"sandbox.listen_ports":           {nil, "names the ports commands may listen on (an operator's setting: not from a workspace, trusted or not)"},
 	"sandbox.protect_git":            {nil, "turned off, commands can plant a hook or fsmonitor your next git command runs"},
+	"sandbox.host_git":               {hostGitOff, "only false"},
 	"sandbox.language_servers":       {nil, "a language server is a process"},
 	"sandbox.image":                  {nil, "chooses the image commands run in"},
 	"sandbox.tier":                   {nil, "chooses what confines commands, in place of the strongest available"},
@@ -750,11 +990,17 @@ var workspaceRules = map[string]fieldRule{
 	"limits.max_turns":                {lower(func(c *Config) *int { return &c.Limits.MaxTurns }, zeroIsZero), "only lower"},
 	"limits.max_tokens":               {lower(func(c *Config) *int { return &c.Limits.MaxTokens }, zeroUnlimited), "only lower"},
 	"limits.max_budget_tokens":        {lower(func(c *Config) *int { return &c.Limits.MaxBudgetTokens }, zeroUnlimited), "only lower"},
+	"limits.max_budget_usd":           {lowerFloat(func(c *Config) *float64 { return &c.Limits.MaxBudgetUSD }), "only lower"},
+	"limits.budget_spent":             {onlyTrue(func(c *Config) *bool { return &c.Limits.BudgetSpent }), "only true"},
+	"limits.reasoning_stall_tokens":   {lower(func(c *Config) *int { return &c.Limits.ReasoningStallTokens }, zeroIs(8000)), "only lower"},
+	"limits.reasoning_stall_seconds":  {lower(func(c *Config) *int { return &c.Limits.ReasoningStallSeconds }, zeroIs(300)), "only lower"},
+	"pricing":                         {nil, "sets what a model's calls cost, which a dollar budget is spent by (an operator's setting: not from a workspace, trusted or not)"},
 	"limits.max_subagents":            {lower(func(c *Config) *int { return &c.Limits.MaxSubagents }, zeroUnlimited), "only lower"},
 	"limits.max_parallel_subagents":   {lower(func(c *Config) *int { return &c.Limits.MaxParallelSubagents }, zeroIs(8)), "only lower"},
 	"limits.nested_subagents":         {onlyFalse(func(c *Config) *bool { return &c.Limits.NestedSubagents }), "only false"},
 	"limits.max_background_subagents": {lowerOrZero(func(c *Config) *int { return &c.Limits.MaxBackgroundSubagents }), "only lower; zero allows none"},
 	"limits.background_shells":        {lowerOrZero(func(c *Config) *int { return &c.Limits.BackgroundShells }), "only lower; zero allows none"},
+	"limits.max_continues":            {lowerOrZero(func(c *Config) *int { return &c.Limits.MaxContinues }), "only lower; zero allows none"},
 	"limits.background_max_minutes":   {lower(func(c *Config) *int { return &c.Limits.BackgroundMaxMinutes }, zeroIs(60)), "only lower"},
 	"subagents.wake":                  {tighterWake, "only tighter: off < notify < auto"},
 	"subagents.max_wakes_per_hour":    {lowerOrZero(func(c *Config) *int { return &c.Subagents.MaxWakesPerHour }), "only lower; zero never wakes"},
@@ -764,28 +1010,36 @@ var workspaceRules = map[string]fieldRule{
 	"tools.bash_checkpoints":      {onlyRequired, "only required"},
 	"tools.bash_checkpoint_mb":    {nil, "sets how much of the workspace is held in memory"},
 	"tools.bash_checkpoint_files": {nil, "sets how much of the workspace is held in memory"},
+	"tools.diagnostics":           {onlyDiagnosticsOff, "only off"},
+	"tools.diagnostics_max":       {lower(func(c *Config) *int { return &c.Tools.DiagnosticsMax }, zeroIs(20)), "only lower"},
+	"tools.diagnostics_wait_ms":   {lower(func(c *Config) *int { return &c.Tools.DiagnosticsWaitMS }, zeroIs(3000)), "only lower"},
 
-	"web_search.enabled":     {onlyFalse(func(c *Config) *bool { return &c.WebSearch.Enabled }), "only false"},
-	"web_search.max_results": {lower(func(c *Config) *int { return &c.WebSearch.MaxResults }, zeroIs(5)), "only lower"},
-	"web_search":             {nil, "a search provider, key and endpoint receive the agent's queries"},
-	"web_fetch.enabled":      {onlyFalse(func(c *Config) *bool { return &c.WebFetch.Enabled }), "only false"},
-	"web_fetch.max_chars":    {lower(func(c *Config) *int { return &c.WebFetch.MaxChars }, zeroIs(20000)), "only lower"},
-	"web_fetch":              {nil, "names the hosts the agent may fetch from"},
-	"k8s.enabled":            {onlyFalse(func(c *Config) *bool { return &c.K8s.Enabled }), "only false"},
-	"k8s.allow_writes":       {onlyFalse(func(c *Config) *bool { return &c.K8s.AllowWrites }), "only false"},
-	"k8s":                    {nil, "names which cluster and credentials the agent reaches"},
-	"ssh.enabled":            {onlyFalse(func(c *Config) *bool { return &c.SSH.Enabled }), "only false"},
-	"ssh.hosts":              {nil, "names machines and keys the agent reaches"},
-	"ssh.connect_hosts":      {nil, "names machines ssh_connect may reach"},
-	"ssh.read_commands":      {nil, "lets ssh commands run without asking"},
-	"ssh.transfers":          {onlyFalse(func(c *Config) *bool { return &c.SSH.Transfers }), "only false"},
-	"ssh.transfer_max_mb":    {lower(func(c *Config) *int { return &c.SSH.TransferMaxMB }, zeroIs(16)), "only lower"},
-	"skills.disabled":        {onlyTrue(func(c *Config) *bool { return &c.Skills.Disabled }), "only true"},
-	"skills.dirs":            {nil, "a skill is instructions to the agent"},
-	"agents.disabled":        {onlyTrue(func(c *Config) *bool { return &c.Agents.Disabled }), "only true"},
-	"agents.dirs":            {nil, "a definition is instructions and a model choice"},
-	"telemetry":              {nil, "sends the event stream to an endpoint; turning it off removes an audit feed"},
-	"network":                {nil, "routes Abhed's connections through a proxy, with credentials and trusted CAs"},
+	"web_search.enabled":       {onlyFalse(func(c *Config) *bool { return &c.WebSearch.Enabled }), "only false"},
+	"web_search.max_results":   {lower(func(c *Config) *int { return &c.WebSearch.MaxResults }, zeroIs(5)), "only lower"},
+	"web_search":               {nil, "a search provider, key and endpoint receive the agent's queries"},
+	"web_fetch.enabled":        {onlyFalse(func(c *Config) *bool { return &c.WebFetch.Enabled }), "only false"},
+	"web_fetch.max_chars":      {lower(func(c *Config) *int { return &c.WebFetch.MaxChars }, zeroIs(20000)), "only lower"},
+	"web_fetch":                {nil, "names the hosts the agent may fetch from"},
+	"k8s.enabled":              {onlyFalse(func(c *Config) *bool { return &c.K8s.Enabled }), "only false"},
+	"machine_setup":            {machineSetupOff, "only false"},
+	"k8s.allow_writes":         {onlyFalse(func(c *Config) *bool { return &c.K8s.AllowWrites }), "only false"},
+	"k8s":                      {nil, "names which cluster and credentials the agent reaches"},
+	"ssh.enabled":              {onlyFalse(func(c *Config) *bool { return &c.SSH.Enabled }), "only false"},
+	"ssh.hosts":                {nil, "names machines and keys the agent reaches"},
+	"ssh.connect_hosts":        {nil, "names machines ssh_connect may reach"},
+	"ssh.read_commands":        {nil, "lets ssh commands run without asking"},
+	"ssh.listed_reads_only":    {onlyTrue(func(c *Config) *bool { return &c.SSH.ListedReadsOnly }), "only true"},
+	"ssh.read_contents":        {nil, "lets a host's files be read without asking"},
+	"ssh.transfers":            {onlyFalse(func(c *Config) *bool { return &c.SSH.Transfers }), "only false"},
+	"ssh.transfer_max_mb":      {lower(func(c *Config) *int { return &c.SSH.TransferMaxMB }, zeroIs(16)), "only lower"},
+	"ssh.max_timeout_seconds":  {lower(func(c *Config) *int { return &c.SSH.MaxTimeoutSeconds }, zeroIs(120)), "only lower"},
+	"skills.disabled":          {onlyTrue(func(c *Config) *bool { return &c.Skills.Disabled }), "only true"},
+	"skills.dirs":              {nil, "a skill is instructions to the agent"},
+	"skills.disable_workspace": {onlyTrue(func(c *Config) *bool { return &c.Skills.DisableWorkspace }), "only true"},
+	"agents.disabled":          {onlyTrue(func(c *Config) *bool { return &c.Agents.Disabled }), "only true"},
+	"agents.dirs":              {nil, "a definition is instructions and a model choice"},
+	"telemetry":                {nil, "sends the event stream to an endpoint; turning it off removes an audit feed"},
+	"network":                  {nil, "routes Abhed's connections through a proxy, with credentials and trusted CAs"},
 
 	"commands.dirs":       {nil, "a command is instructions to the agent"},
 	"rules.dirs":          {nil, "a rule is instructions to the agent"},
@@ -795,7 +1049,9 @@ var workspaceRules = map[string]fieldRule{
 	"cli":                 {nil, "only the managed configuration sets it"},
 	"record":              {nil, "only the managed configuration sets it"},
 	"org_policy":          {nil, "only the managed configuration says where the org policy comes from"},
+	"hooks.run":           {nil, "a hook is a command or an endpoint that sees each event it takes"},
 	"hooks":               {nil, "only the managed configuration sets it"},
+	"plugins":             {nil, "only the managed configuration sets it"},
 	"studio":              {nil, "only the managed configuration sets it"},
 	"suggest.enabled":     {onlyFalse(func(c *Config) *bool { return &c.Suggest.Enabled }), "only false"},
 	"plan.runbooks":       {onlyFalse(func(c *Config) *bool { return &c.Plan.Runbooks }), "only false"},
@@ -890,6 +1146,19 @@ func lower(field func(*Config) *int, zero zeroMeans) func(dst, ws *Config) bool 
 	}
 }
 
+// lowerFloat takes a positive value lower than the current one, or any
+// positive value where none is set (zero is unlimited).
+func lowerFloat(field func(*Config) *float64) func(dst, ws *Config) bool {
+	return func(dst, ws *Config) bool {
+		d, v := field(dst), *field(ws)
+		if v <= 0 || math.IsNaN(v) || math.IsInf(v, 0) || *d > 0 && v > *d {
+			return false
+		}
+		*d = v
+		return true
+	}
+}
+
 // lowerOrZero takes a value no higher than the current one, zero included:
 // for these limits zero is the tightest setting, not "unset".
 func lowerOrZero(field func(*Config) *int) func(dst, ws *Config) bool {
@@ -928,6 +1197,27 @@ func onlyFalse(field func(*Config) *bool) func(dst, ws *Config) bool {
 	}
 }
 
+// machineSetupOff takes machine_setup only as false. Only the managed
+// configuration's or an org policy's turns anything off (MachineSetupOff).
+func machineSetupOff(dst, ws *Config) bool {
+	if m := ws.MachineSetup; m == nil || *m {
+		return false
+	}
+	off := false
+	dst.MachineSetup = &off
+	return true
+}
+
+// hostGitOff takes sandbox.host_git from a workspace only as false.
+func hostGitOff(dst, ws *Config) bool {
+	if h := ws.Sandbox.HostGit; h == nil || *h {
+		return false
+	}
+	off := false
+	dst.Sandbox.HostGit = &off
+	return true
+}
+
 func completionOff(dst, ws *Config) bool {
 	if e := ws.Completion.Enabled; e == nil || *e {
 		return false
@@ -959,6 +1249,27 @@ func onlyRegistriesOff(dst, ws *Config) bool {
 	dst.Sandbox.ToolchainsRegistries = "off"
 	return true
 }
+
+// onlyDiagnosticsOff applies a workspace's tools.diagnostics only when it
+// turns diagnostics off: a server is a process started after an edit.
+func onlyDiagnosticsOff(dst, ws *Config) bool {
+	if ws.Tools.Diagnostics != "off" {
+		return false
+	}
+	dst.Tools.Diagnostics = "off"
+	return true
+}
+
+// orDefaultInt is n, or def when n is zero.
+func orDefaultInt(n, def int) int {
+	if n == 0 {
+		return def
+	}
+	return n
+}
+
+// diagnosticsRank orders tools.diagnostics from loosest to strictest.
+var diagnosticsRank = map[string]int{"on": 0, "": 1, "auto": 1, "off": 2}
 
 // listenRank orders sandbox.listen from loosest to strictest.
 var listenRank = map[string]int{"allow": 0, "": 1, "ask": 1, "off": 2}

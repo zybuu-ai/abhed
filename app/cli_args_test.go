@@ -29,6 +29,25 @@ func TestUnknownModeIsRefused(t *testing.T) {
 	}
 }
 
+// -mode takes the camelCase spellings people bring from other tools as
+// aliases of Abhed's modes, and -permission-mode agrees with it either way.
+func TestModeAcceptsCamelCaseAliases(t *testing.T) {
+	for in, want := range map[string]string{"acceptEdits": "accept-edits", "bypassPermissions": "bypass", "accept-edits": "accept-edits",
+		"plan": "plan", "AcceptEdits": "accept-edits", "bypass_permissions": "bypass"} {
+		f := &cliFlags{mode: in}
+		if got, err := f.permission(); err != nil || got != want {
+			t.Errorf("-mode %s: %q %v, want %q", in, got, err, want)
+		}
+	}
+	f := &cliFlags{mode: "acceptEdits", permissionMode: "accept-edits"}
+	if got, err := f.permission(); err != nil || got != "accept-edits" {
+		t.Errorf("-mode acceptEdits with -permission-mode accept-edits: %q %v", got, err)
+	}
+	if _, err := (&cliFlags{mode: "acceptEverything"}).permission(); err == nil {
+		t.Error("an unknown camelCase mode was taken")
+	}
+}
+
 // A word that is not a command is an error, not a session opened as if it
 // had run; "version" is a command.
 func TestUnknownCommandIsRefused(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 // The known readers: the few programs that, in the forms allowed here, change
@@ -93,6 +94,8 @@ func pureReader(words []string) bool {
 		return gitReader(words)
 	case "go":
 		return goReader(words)
+	case "python", "python3":
+		return unittestReader(words)
 	case "find":
 		return findReader(words)
 	case "eslint", "mypy", "tsc", "staticcheck", "cargo":
@@ -274,4 +277,115 @@ func lintReader(prog string, words []string) bool {
 		}
 	}
 	return true
+}
+
+// unittestReader: `python -m unittest` given only test names (each last
+// part starting with "test"), discover's start and top folders inside the
+// workspace, a pattern starting with "test" and output flags, like `go
+// test`. Importing other code runs its body; pytest's config (addopts) can
+// turn on writing.
+func unittestReader(words []string) bool {
+	u, ok := parseUnittest(words)
+	if !ok {
+		return false
+	}
+	for _, d := range []string{u.start, u.top} {
+		if d != "" && !insidePath(d) {
+			return false
+		}
+	}
+	if u.pattern != "" && !strings.HasPrefix(u.pattern, "test") {
+		return false
+	}
+	for _, n := range u.names {
+		if !insidePath(n) || !testName(n) {
+			return false
+		}
+	}
+	return true
+}
+
+// unittestRun is a `python -m unittest` line read: discover's start folder,
+// pattern and top folder, and the test names it was given.
+type unittestRun struct {
+	discover            bool
+	start, pattern, top string
+	names               []string
+}
+
+func parseUnittest(words []string) (u unittestRun, ok bool) {
+	if len(words) < 3 || words[1] != "-m" || words[2] != "unittest" {
+		return u, false
+	}
+	var pos, flags []string
+	args := words[3:]
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case slices.Contains([]string{"-q", "-v", "--quiet", "--verbose", "-f", "--failfast"}, a):
+		case a == "discover" && i == 0:
+			u.discover = true
+		case (a == "-s" || a == "-p" || a == "-t") && i+1 < len(args):
+			i++
+			if slices.Contains(flags, a) {
+				return u, false // given twice: which one Python takes is not read
+			}
+			flags = append(flags, a)
+			switch a {
+			case "-s":
+				u.start = args[i]
+			case "-p":
+				u.pattern = args[i]
+			default:
+				u.top = args[i]
+			}
+		case strings.HasPrefix(a, "-"):
+			return u, false
+		default:
+			pos = append(pos, a)
+		}
+	}
+	if u.discover {
+		if len(pos) > 0 && len(flags) > 0 {
+			return u, false // positionals and -s/-p/-t mixed: Python's choice is not read
+		}
+		for i, p := range pos {
+			switch i {
+			case 0:
+				u.start = p
+			case 1:
+				u.pattern = p
+			case 2:
+				u.top = p
+			default:
+				return u, false
+			}
+		}
+		return u, true
+	}
+	if u.start != "" || u.pattern != "" || u.top != "" {
+		return u, false // -s, -p and -t belong to discover
+	}
+	u.names = pos
+	return u, true
+}
+
+// insidePath is a relative path with no "..": inside the folder it is run in.
+func insidePath(p string) bool {
+	return p != "" && !filepath.IsAbs(p) && !strings.ContainsAny(p, "$~") && !slices.Contains(strings.Split(filepath.ToSlash(p), "/"), "..")
+}
+
+// testName is a test module, file or folder: split on "/" and ".", every
+// lower-case part starts with "test" and every upper-case part has "Test"
+// or "TEST" in it (tests/test_tip.py, tests.test_tip.TipTest.test_a).
+func testName(n string) bool {
+	n = strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(filepath.ToSlash(n), "./"), "/"), ".py")
+	parts := strings.FieldsFunc(n, func(r rune) bool { return r == '/' || r == '.' })
+	for _, p := range parts {
+		low := strings.ToLower(p)
+		upper := unicode.IsUpper([]rune(p)[0])
+		if upper && !strings.Contains(p, "Test") && !strings.Contains(p, "TEST") || !upper && !strings.HasPrefix(low, "test") {
+			return false
+		}
+	}
+	return len(parts) > 0
 }

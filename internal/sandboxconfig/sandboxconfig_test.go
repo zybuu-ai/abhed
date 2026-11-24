@@ -3,6 +3,7 @@ package sandboxconfig
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -486,5 +487,62 @@ func TestToolchainCacheOnlyWhenReadOnly(t *testing.T) {
 	cfg.Sandbox.Toolchains = "off"
 	if got := ToolchainCache(cfg); got != "" {
 		t.Fatalf("toolchains off still names %q", got)
+	}
+}
+
+// The policy carries the person's git name and email, read on the host, for
+// the tiers whose commands do not see their configuration.
+func TestPolicyCarriesGitIdentity(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[user]\n\tname = Ana Person\n\temail = ana@example.test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Policy(config.Default(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(p.GitIdentity, "GIT_AUTHOR_NAME=Ana Person") || !slices.Contains(p.GitIdentity, "GIT_COMMITTER_EMAIL=ana@example.test") {
+		t.Fatalf("identity %v", p.GitIdentity)
+	}
+}
+
+// Git through the person's own credentials is off where sandbox.host_git
+// says so, or where the managed configuration holds the network off; an
+// allowlist it holds is applied to host git instead, and a person's own
+// network-off asks them.
+func TestHostGitOff(t *testing.T) {
+	no := false
+	for name, c := range map[string]struct {
+		edit func(*config.Config)
+		want string
+	}{
+		"default":                {func(*config.Config) {}, ""},
+		"person's network off":   {func(c *config.Config) { c.Sandbox.AllowNetwork = false }, ""},
+		"host_git false":         {func(c *config.Config) { c.Sandbox.HostGit = &no }, "sandbox.host_git is false"},
+		"managed host_git false": {func(c *config.Config) { c.Sandbox.HostGit = &no; c.ManagedKeys = []string{"sandbox.host_git"} }, "ask your administrator"},
+		"managed network off": {func(c *config.Config) {
+			c.Sandbox.AllowNetwork = false
+			c.ManagedKeys = []string{"sandbox.allow_network"}
+		}, "holds the network off"},
+		"managed network open": {func(c *config.Config) {
+			c.Sandbox.AllowNetwork = true
+			c.ManagedKeys = []string{"sandbox.allow_network"}
+		}, ""},
+		"managed allowlist applies": {func(c *config.Config) {
+			c.Sandbox.Network = config.NetworkAllowlist
+			c.ManagedKeys = []string{"sandbox.network", "egress"}
+		}, ""},
+	} {
+		cfg := config.Default()
+		c.edit(&cfg)
+		got := HostGitOff(cfg)
+		if c.want == "" && got != "" || c.want != "" && !strings.Contains(got, c.want) {
+			t.Errorf("%s: %q, want %q", name, got, c.want)
+		}
 	}
 }

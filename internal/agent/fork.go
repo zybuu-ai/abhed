@@ -57,7 +57,7 @@ func Fork(events []Event, throughSeq int64) ([]model.Message, error) {
 			if json.Unmarshal(ev.Payload, &m) != nil {
 				continue
 			}
-			msgs = append(msgs, model.Message{Role: model.RoleUser, Content: m.Text})
+			msgs = append(msgs, model.Message{Role: model.RoleUser, Content: m.ModelText()})
 			lastAssistant = nil
 
 		case EvAgentMessage:
@@ -112,6 +112,14 @@ func Fork(events []Event, throughSeq int64) ([]model.Message, error) {
 			var v AnswerVerdict
 			if json.Unmarshal(ev.Payload, &v) == nil && v.Revision != "" {
 				msgs = append(msgs, model.Message{Role: model.RoleUser, Content: v.Revision})
+				lastAssistant = nil
+			}
+
+		case EvHookContinued:
+			// So was a stop hook's instruction.
+			var c HookContinued
+			if json.Unmarshal(ev.Payload, &c) == nil && c.Text != "" {
+				msgs = append(msgs, model.Message{Role: model.RoleUser, Content: c.Text})
 				lastAssistant = nil
 			}
 

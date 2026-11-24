@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -32,8 +33,12 @@ func modelItems(st *cliState) []ui.PickItem {
 	for _, name := range toolset.OfferedModels(st.appCfg) {
 		p := st.appCfg.Model.Providers[name]
 		detail := []string{p.Model}
-		if p.ContextWindow > 0 {
-			detail = append(detail, fmt.Sprintf("%dk context", p.ContextWindow/1024))
+		if w, _, src := model.ResolveLimits(p.Spec()); w > 0 {
+			ctx := fmt.Sprintf("%dk context", w/1024)
+			if src == model.WindowFallback {
+				ctx += " (assumed)"
+			}
+			detail = append(detail, ctx)
 		}
 		detail = append(detail, hostedLabel(p.BaseURL))
 		if name == st.appCfg.Model.Default {
@@ -224,6 +229,7 @@ func buildAdapter(p config.ProviderConfig) model.Adapter {
 	a, err := newAdapter(p)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "model: %v\n", err)
+		endAtExit()
 		os.Exit(1)
 	}
 	return a
@@ -323,6 +329,9 @@ type fallbackAdapter struct {
 	built  []model.Adapter
 	build  func(name string) (model.Adapter, error)
 	record func(from, to, reason string)
+	gate   func(name string) error // the budget's: a model it refuses is not moved to
+	// limits are each model's configured max_tools, 0 for the default, built or not.
+	limits []int
 }
 
 func newFallbackAdapter(primaryName string, primary model.Adapter, chain []string, build func(string) (model.Adapter, error)) *fallbackAdapter {
@@ -336,6 +345,14 @@ func newFallbackAdapter(primaryName string, primary model.Adapter, chain []strin
 func (f *fallbackAdapter) SetRecord(r func(from, to, reason string)) {
 	f.mu.Lock()
 	f.record = r
+	f.mu.Unlock()
+}
+
+// SetGate binds the budget's gate: under a dollar cap, a fallback with no
+// price is never moved to, as no call to it may go out.
+func (f *fallbackAdapter) SetGate(g func(name string) error) {
+	f.mu.Lock()
+	f.gate = g
 	f.mu.Unlock()
 }
 
@@ -354,6 +371,32 @@ func (f *fallbackAdapter) Current() string {
 
 func (f *fallbackAdapter) Name() string           { return f.current().Name() }
 func (f *fallbackAdapter) Profile() model.Profile { return f.current().Profile() }
+
+// ToolLimit is the smallest of the model answering and every fallback after
+// it, built or not, so a move never meets a request it refuses.
+func (f *fallbackAdapter) ToolLimit() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := model.ToolLimitOf(f.built[f.cur])
+	for i := f.cur + 1; i < len(f.names); i++ {
+		switch {
+		case f.built[i] != nil:
+			n = min(n, model.ToolLimitOf(f.built[i]))
+		case i < len(f.limits):
+			n = min(n, model.ToolLimit(model.Profile{MaxTools: f.limits[i]}))
+		}
+	}
+	return n
+}
+
+// SamplingDefaults are the model now answering's, as its Profile is: the next
+// request goes to it, with its budget.
+func (f *fallbackAdapter) SamplingDefaults() model.Params {
+	return model.SamplingDefaultsOf(f.current())
+}
+
+// CallTimeout is the model now answering's.
+func (f *fallbackAdapter) CallTimeout() time.Duration { return model.CallTimeoutOf(f.current()) }
 func (f *fallbackAdapter) CountTokens(req model.Request) (int, error) {
 	return f.current().CountTokens(req)
 }
@@ -374,6 +417,14 @@ func (f *fallbackAdapter) Complete(ctx context.Context, req model.Request) (<-ch
 		next, berr := f.build(f.names[i+1])
 		if berr != nil {
 			return nil, fmt.Errorf("%w (and fallback %s could not be built: %w)", err, f.names[i+1], berr)
+		}
+		f.mu.Lock()
+		gate := f.gate
+		f.mu.Unlock()
+		if gate != nil {
+			if gerr := gate(next.Profile().Name); gerr != nil {
+				return nil, fmt.Errorf("%w (fallback %s not used: %w)", err, f.names[i+1], gerr)
+			}
 		}
 		f.mu.Lock()
 		if f.cur == i {
@@ -461,3 +512,72 @@ func recordModelRefused(st *cliState, source string, refused *config.ManagedErro
 		Value: config.Printable(refused.Value), Decision: "refused", Reason: refused.Reason,
 		Principal: toolset.LocalPrincipal(inAgentCommand())})
 }
+
+// enableModelDiscovery lets sessions and the doctor ask a model endpoint for
+// its context window. Off under a test (testenv.Marker), so no test reaches a
+// real server for it, and off with ABHED_NO_MODEL_DISCOVERY set.
+func enableModelDiscovery() {
+	if os.Getenv(testEnvMarker) != "" || os.Getenv("ABHED_NO_MODEL_DISCOVERY") != "" {
+		return
+	}
+	model.EnableDiscovery()
+}
+
+// windowLine says a provider's context window, its reply cap and where they
+// came from, and a warning when the window is assumed. discover asks the
+// endpoint first, as a session's first turn does.
+func windowLine(ctx context.Context, p config.ProviderConfig, discover bool) (line, warn string) {
+	prof := model.Profile{Name: p.Model}
+	if a, err := p.Adapter(); err == nil {
+		if discover {
+			model.Discover(ctx, a)
+		}
+		prof = a.Profile()
+	} else {
+		prof.ContextWindow, prof.OutputLimit, prof.WindowSource = model.ResolveLimits(p.Spec())
+	}
+	line = fmt.Sprintf("%s tokens", commaInt(prof.ContextWindow))
+	if prof.OutputLimit > 0 {
+		line += fmt.Sprintf(" · replies up to %s", commaInt(prof.OutputLimit))
+	}
+	line += " (" + windowSourceLabel(prof) + ")"
+	warn = model.WindowNote(prof)
+	if prof.WindowSource == model.WindowLearned && warn == "" {
+		warn = "a limit the provider named is kept for 30 days; `abhed models forget-window NAME` learns it again"
+	}
+	return line, warn
+}
+
+// windowSourceLabel says where a window came from, for a person.
+func windowSourceLabel(p model.Profile) string {
+	if p.WindowSource == model.WindowLearned && !p.LearnedAt.IsZero() {
+		return "named by the provider on " + p.LearnedAt.Local().Format("2006-01-02")
+	}
+	switch p.WindowSource {
+	case model.WindowConfig:
+		return "context_window in the configuration"
+	case model.WindowDiscovered:
+		return "reported by the endpoint"
+	case model.WindowBuiltIn:
+		return "Abhed's table of published limits"
+	case model.WindowLearned:
+		return "named by the provider"
+	}
+	return "assumed: not known"
+}
+
+func commaInt(n int) string {
+	d := fmt.Sprint(n)
+	var b strings.Builder
+	for i := range d {
+		if i > 0 && (len(d)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte(d[i])
+	}
+	return b.String()
+}
+
+// testEnvMarker is testenv.Marker, named here so the release binary does not
+// link the test environment package.
+const testEnvMarker = "ABHED_TESTENV"

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/nlink"
 )
 
@@ -41,11 +42,11 @@ type TrustStore struct {
 
 // DefaultTrustStore is the person's store under their home directory.
 func DefaultTrustStore() (TrustStore, error) {
-	home, err := os.UserHomeDir()
+	p, err := home.PersonPath("command-trust.json")
 	if err != nil {
 		return TrustStore{}, err
 	}
-	return TrustStore{Path: filepath.Join(home, ".abhed", "command-trust.json")}, nil
+	return TrustStore{Path: p}, nil
 }
 
 func (s TrustStore) read() (trustFile, error) {
@@ -104,6 +105,11 @@ func (s TrustStore) Record(workspace, sum string, trusted bool) error {
 		d = DecisionTrusted
 	}
 	f.Workspaces[canonical(workspace)] = TrustRecord{SHA256: sum, Decision: d, At: time.Now().UTC()}
+	return s.write(f)
+}
+
+// write replaces the store's file whole.
+func (s TrustStore) write(f trustFile) error {
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err
@@ -124,6 +130,21 @@ func (s TrustStore) Record(workspace, sum string, trusted bool) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), s.Path)
+}
+
+// Forget removes the decision about a workspace's commands, so they are
+// untrusted again; had is whether there was one.
+func (s TrustStore) Forget(workspace string) (had bool, err error) {
+	f, err := s.read()
+	if err != nil {
+		return false, err
+	}
+	key := canonical(workspace)
+	if _, had = f.Workspaces[key]; !had {
+		return false, nil
+	}
+	delete(f.Workspaces, key)
+	return true, s.write(f)
 }
 
 func canonical(dir string) string {

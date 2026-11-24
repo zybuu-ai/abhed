@@ -66,6 +66,7 @@ type Anthropic struct {
 	Notify func(string)
 
 	profile Profile
+	limits  *Limits
 }
 
 const defaultAnthropicVersion = "2023-06-01"
@@ -90,7 +91,10 @@ func NewAnthropic(baseURL, apiKey, model string, p Profile) *Anthropic {
 }
 
 func (c *Anthropic) Name() string     { return c.profile.Name }
-func (c *Anthropic) Profile() Profile { return c.profile }
+func (c *Anthropic) Profile() Profile { return c.limits.apply(c.profile) }
+
+// SetMaxTools sets the most tools one request may offer.
+func (c *Anthropic) SetMaxTools(n int) { c.profile.MaxTools = n }
 
 // ---------------------------------------------------------------- wire types
 
@@ -267,8 +271,9 @@ func (c *Anthropic) buildRequest(req Request) anthropicRequest {
 
 	maxTokens := sp.MaxTokens
 	if maxTokens <= 0 {
-		maxTokens = c.profile.MaxOutputTokens
+		maxTokens = c.Profile().MaxOutputTokens
 	}
+	maxTokens = clampOutput(maxTokens, c.Profile())
 	if maxTokens <= 0 {
 		maxTokens = 8192 // the API requires this field
 	}
@@ -290,6 +295,8 @@ func (c *Anthropic) buildRequest(req Request) anthropicRequest {
 	// configured: current models removed budget_tokens and reject it, while
 	// adaptive thinking takes no budget at all.
 	switch {
+	case sp.Think != nil && !*sp.Think:
+		// Asked with thinking off: none at all, whatever budget is configured.
 	case sp.ThinkingBudget != nil:
 		out.Thinking = &anthropicThinking{Type: "enabled", BudgetTokens: sp.ThinkingBudget}
 	case sp.Think != nil && *sp.Think, sp.Effort != EffortNone:
@@ -358,6 +365,10 @@ type anthropicUsage struct {
 }
 
 func (c *Anthropic) Complete(ctx context.Context, req Request) (<-chan Chunk, error) {
+	req, wire, err := toWire(req, ToolLimit(c.Profile()), c.Name())
+	if err != nil {
+		return nil, err
+	}
 	// Refuse an image the endpoint cannot read, rather than sending it and
 	// letting the provider 400 with its own wording — or silently ignore it.
 	if err := CheckVision(c.Profile(), req); err != nil {
@@ -416,7 +427,7 @@ func (c *Anthropic) Complete(ctx context.Context, req Request) (<-chan Chunk, er
 
 	out := make(chan Chunk, 32)
 	go c.stream(ctx, resp, out)
-	return out, nil
+	return fromWire(out, wire), nil
 }
 
 func (c *Anthropic) stream(ctx context.Context, resp *http.Response, out chan<- Chunk) {
@@ -455,6 +466,8 @@ func (c *Anthropic) stream(ctx context.Context, resp *http.Response, out chan<- 
 		case "message_start":
 			if ev.Message != nil && ev.Message.Usage != nil {
 				usage.InputTokens += ev.Message.Usage.InputTokens
+				usage.CacheWriteTokens += ev.Message.Usage.CacheCreationInputTokens
+				usage.CacheExcluded = true
 				if n := ev.Message.Usage.CacheReadInputTokens; n != nil {
 					usage.CachedInputTokens += *n
 					usage.CacheReported = true
@@ -615,3 +628,6 @@ func looksLikeSubscriptionRefusal(se *StatusError) bool {
 	}
 	return strings.Contains(se.Body, "rate_limit_error")
 }
+
+// Endpoint is the base URL the adapter calls.
+func (c *Anthropic) Endpoint() string { return c.BaseURL }

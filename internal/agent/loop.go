@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -239,6 +240,11 @@ func unanswered(ctx context.Context, held bool) string {
 }
 
 type Config struct {
+	// SessionNote is the loop's SessionNote for a top-level loop built
+	// with this configuration.
+	SessionNote func() string
+	// Plugins are the approved plugins in force, recorded once as EvPluginLoaded.
+	Plugins []PluginInForce
 	// Egress is the guard of the tool set the loop runs with, egress.Unguarded
 	// outside the allowlist; nil names none. Subagents keep it.
 	Egress *egress.Guard
@@ -249,8 +255,24 @@ type Config struct {
 	// MaxTurns is moved to the turns used plus it. Zero keeps MaxTurns for
 	// the whole conversation, as a managed limit must be.
 	TurnsPerMessage int
-	MaxTokens       int
-	CompactAt       float64 // fraction of the context window
+	// MaxContinues bounds how many times a run stopped at MaxTurns may be
+	// continued (ContinueAfterLimit) in one conversation; zero refuses it.
+	MaxContinues int
+	// ContinueTurns is the turns each continuation allows; zero uses
+	// TurnsPerMessage, else 25.
+	ContinueTurns int
+	MaxTokens     int
+	// ReasoningStallTokens cuts a reply that has only reasoned, with no text
+	// or tool call, past this many reasoning tokens, or past the request's
+	// thinking budget if larger; ReasoningStall past this long, a backstop
+	// that never cuts within that budget. Zero uses the defaults; values
+	// under the floors, 1000 tokens and 30 s, are raised to them.
+	ReasoningStallTokens int
+	ReasoningStall       time.Duration
+	CompactAt            float64 // fraction of the context window
+	// CompactAtTokens caps the conversation's size before compaction,
+	// whatever the window; zero is no cap. See Compactor.Ceiling.
+	CompactAtTokens int
 	// OffloadAt is the fraction of the window at which old tool results move
 	// out to the record. Zero turns offloading off.
 	OffloadAt    float64
@@ -259,14 +281,35 @@ type Config struct {
 	Effort       model.EffortLevel
 }
 
+// ContinueCutReply asks the model to finish a text reply cut part way; a
+// reader joins the cut part and the reply that follows it.
+const ContinueCutReply = "Your reply was cut off before it finished. Continue it from where it stopped."
+
+// The reasoning-only bounds: a runaway think otherwise holds the call to its
+// cap. The floors keep a lower layer from cutting every thinking reply.
+const (
+	DefaultReasoningStallTokens = 8000
+	DefaultReasoningStall       = 5 * time.Minute
+)
+
+// The floors of the reasoning bounds, vars so tests can lower them.
+var (
+	minReasoningStallTokens = 1000
+	minReasoningStall       = 30 * time.Second
+)
+
 func DefaultConfig() Config {
-	return Config{MaxTurns: 100, MaxTokens: 8192, CompactAt: 0.90, OffloadAt: 0.60}
+	return Config{MaxTurns: 100, MaxTokens: 8192, CompactAt: 0.90, OffloadAt: 0.60, CompactAtTokens: DefaultCompactAtTokens}
 }
 
 // Loop is the agent's execution loop: a turn-based cycle that terminates
 // normally on a response with no tool calls, and abnormally through roughly
 // ten other exits — each a distinct, logged terminal event (docs §02).
 type Loop struct {
+	// lastReason is how the last run ended; continues counts the
+	// continuations past MaxTurns this conversation has had.
+	lastReason TerminalReason
+	continues  int
 	// refused is why a hook refused the last RunMessage's own message, or "".
 	refusedMu sync.Mutex
 	refused   string
@@ -274,6 +317,8 @@ type Loop struct {
 	// loop, by path and hash, guarded by startupMu.
 	startupMu    sync.Mutex
 	startupNoted string
+	// pluginsNoted is set once EvPluginLoaded is recorded, under startupMu.
+	pluginsNoted bool
 	Adapter      model.Adapter
 	// Provider is the configured name Adapter came from, when the surface
 	// knows it. A subagent that runs on its parent's model records it.
@@ -292,6 +337,9 @@ type Loop struct {
 	// see: a message submitted, a call about to be asked, the end of a run.
 	// They may refuse or observe; nothing they say approves anything.
 	Hooks Hooks
+	// SubdirMemory, when set, adds a folder's own ABHED.md to the result of
+	// the first call that works in that folder. Nil loads none.
+	SubdirMemory *SubdirMemory
 	// Monitor, when set, judges each call policy would allow or ask about
 	// against the remit and the agent's reasoning, and may only tighten the
 	// decision. Nil consults nobody.
@@ -299,6 +347,9 @@ type Loop struct {
 	// Verify, when set, checks each completed run's answer against the
 	// record before the run ends; see Verifier. Nil checks nothing.
 	Verify *Verifier
+	// Diagnostics, when set, gives the agent a language server's diagnostics
+	// for each file its write or edit changed. Nil gives none.
+	Diagnostics Diagnoser
 	// OwnerActive, when set, is asked before a woken run calls the model
 	// and before a call made in one is approved; false ends the run as
 	// owner_inactive. Nil means the owner is always active.
@@ -318,6 +369,17 @@ type Loop struct {
 	// Budget caps total token spend across the parent and its subagents.
 	// Nil means no cap.
 	Budget *Budget
+	// Unattended is set for a run nobody can answer, such as -p or a
+	// script: a note asking the model to ask the person is left out there.
+	Unattended bool
+	// SessionNote, when set, states what this session can do (its tier,
+	// network, git, clusters, missing tools). It is the system prompt's
+	// last section from the first message on, read again each turn, so a
+	// change (the network opened) reaches the model; it is never part of a
+	// message, so no rewind, fork or compaction carries or loses it.
+	SessionNote func() string
+	// facts is the session note as the model is given it now.
+	facts string
 	// Suggest, when set, offers a next prompt after a completed run.
 	Suggest *Suggester
 	// sug is the suggestion call running after the last run ended; sugMu
@@ -385,8 +447,27 @@ type Loop struct {
 	// stuckDetail says which call a retry_exhausted end gave up on; lastDetail
 	// is the detail the last run's end recorded.
 	stuckDetail, lastDetail string
+	// streamFails counts failed replies in a row that produced nothing, within
+	// a run, whatever their message (a transport error's text varies with its
+	// port or stream id); lastStreamErr is the latest, for the end's detail.
+	// Three end the run rather than asking again to the turn limit, each billed.
+	streamFails   int
+	lastStreamErr string
+	// stallRetried is set once a reply cut for reasoning without output has
+	// been asked again, so a second one in a row ends the run; stallThinkOff
+	// asks that retry with thinking off where the provider takes it.
+	stallRetried, stallThinkOff bool
 	// justCompacted is set by a compaction and cleared by the next check.
 	justCompacted bool
+	// windowNoted is set once the session's first turn has asked for the
+	// model's window and said when it is assumed; overflowRetried once a
+	// request refused as too long has been compacted and asked again, so a
+	// second refusal ends the run; pendingRefit is a switch to a smaller
+	// window waiting for the next turn. See context_fit.go.
+	windowNoted, overflowRetried bool
+	pendingRefit                 *windowRefit
+	// stopContinues counts the times stop hooks sent this run back to work.
+	stopContinues int
 	// ignored holds, by call id, the argument keys a tool did not take, told to the model with its result.
 	ignored sync.Map
 
@@ -427,6 +508,8 @@ type Loop struct {
 	// prompt is the last message a person sent, which a skill's pipeline takes
 	// as its input; guarded by steerMu.
 	prompt string
+	// promptSent is prompt as the model got it, with any harness note.
+	promptSent string
 
 	// steer carries messages sent while the agent is working. Reading them at
 	// a turn boundary is what lets a user redirect a run instead of killing it.
@@ -450,10 +533,43 @@ type Hooks interface {
 
 // Events Hooks.Observe is told of.
 const (
-	HookTurnEnd      = "turn_end"
-	HookSubagentEnd  = "subagent_end"
-	HookNotification = "notification"
+	HookTurnEnd       = "turn_end"
+	HookSubagentStart = "subagent_start"
+	HookSubagentEnd   = "subagent_end"
+	HookNotification  = "notification"
+	HookPostCompact   = "post_compact"
+	HookToolFailure   = "tool_failure"
 )
+
+// StopHooks are Hooks that may send a completed run back to work: Stop
+// names the hook and returns what the agent is to do instead of finishing,
+// or "". The loop asks at most MaxStopContinues times a run; the calls it
+// then makes are judged by policy as any other.
+type StopHooks interface {
+	Stop(ctx context.Context, sessionID, answer string) (hook, instruction string)
+}
+
+// HaltHooks are Hooks that may end a run: Halted returns, once, why a hook
+// ended the run of the session tree rooted at sessionID, or "", and
+// HaltPending says so without taking it. The loop ends it as policy_denied.
+type HaltHooks interface {
+	Halted(rootID string) string
+	HaltPending(rootID string) string
+	// RunStarted and RunEnded bracket each run in the tree rooted at
+	// rootID, a background subagent's included; while any goes, the
+	// tree's halt is kept until it is taken.
+	RunStarted(rootID string)
+	RunEnded(rootID string)
+}
+
+// ResultHooks are Hooks that see a tool's result, already redacted, before
+// the model reads it, and may rewrite it.
+type ResultHooks interface {
+	ToolResult(ctx context.Context, sessionID, tool, content string, isErr bool) (string, bool)
+}
+
+// MaxStopContinues bounds how often stop hooks may send one run back to work.
+const MaxStopContinues = 3
 
 // childHooks are a parent's hooks as a subagent sees them: its calls are
 // screened and announced, but its task is not a person's message and its
@@ -462,11 +578,51 @@ type childHooks struct{ Hooks }
 
 func (childHooks) PromptSubmitted(context.Context, string, string) string { return "" }
 
+// Halted, HaltPending and ToolResult pass to the parent's hooks, when they take them.
+func (c childHooks) Halted(rootID string) string {
+	if h, ok := c.Hooks.(HaltHooks); ok {
+		return h.Halted(rootID)
+	}
+	return ""
+}
+
+func (c childHooks) HaltPending(rootID string) string {
+	if h, ok := c.Hooks.(HaltHooks); ok {
+		return h.HaltPending(rootID)
+	}
+	return ""
+}
+
+// A subagent's run counts for its root, so a background one keeps the
+// root's halt from eviction after the root's own run has ended.
+func (c childHooks) RunStarted(rootID string) {
+	if h, ok := c.Hooks.(HaltHooks); ok {
+		h.RunStarted(rootID)
+	}
+}
+
+func (c childHooks) RunEnded(rootID string) {
+	if h, ok := c.Hooks.(HaltHooks); ok {
+		h.RunEnded(rootID)
+	}
+}
+
+func (c childHooks) ToolResult(ctx context.Context, sessionID, tool, content string, isErr bool) (string, bool) {
+	if h, ok := c.Hooks.(ResultHooks); ok {
+		return h.ToolResult(ctx, sessionID, tool, content, isErr)
+	}
+	return content, isErr
+}
+
 func (c childHooks) Observe(ctx context.Context, event, sessionID, tool, detail string) {
-	if event == HookNotification {
+	if event == HookNotification || event == HookToolFailure {
 		c.Hooks.Observe(ctx, event, sessionID, tool, detail)
 	}
 }
+
+// maxStreamFailures is how many failed replies in a row, each producing
+// nothing, end the run retry_exhausted.
+const maxStreamFailures = 3
 
 // TermPromptRefused is a run that never started: a hook refused the message.
 const TermPromptRefused TerminalReason = "prompt_refused"
@@ -480,6 +636,8 @@ type QueuedMessage struct {
 	ClientID string    `json:"client_id,omitempty"`
 	At       time.Time `json:"queued_at"`
 	Steered  bool      `json:"steered,omitempty"`
+	// typed is the person's own words, for the parallel note.
+	typed string
 }
 
 // Steer delivers a message to a running agent, applied at the next turn
@@ -505,7 +663,7 @@ func (l *Loop) QueueMessage(m Message) string {
 	if strings.TrimSpace(m.Text) == "" {
 		return ""
 	}
-	q := QueuedMessage{ID: "q_" + newID(), Text: m.Text, ClientID: m.ClientID, At: time.Now().UTC(), Steered: m.Steered}
+	q := QueuedMessage{ID: "q_" + newID(), Text: m.Text, ClientID: m.ClientID, At: time.Now().UTC(), Steered: m.Steered, typed: m.Typed}
 	l.steerMu.Lock()
 	l.steer = append(l.steer, q)
 	l.steerMu.Unlock()
@@ -557,22 +715,25 @@ func (l *Loop) deliverQueuedCount() (int, error) {
 	n := 0
 	for _, q := range l.takeSteering() {
 		if why := l.promptRefused(context.Background(), q.Text); why != "" {
-			l.record(EvMessageDropped, ActorSystem, DroppedMessage{
-				QueueID: q.ID, ClientID: q.ClientID, Text: q.Text, QueuedAt: q.At, Reason: why,
-			})
+			l.record(EvMessageDropped, ActorSystem, l.dropped(DroppedMessage{
+				QueueID: q.ID, ClientID: q.ClientID, Text: q.Text, Steered: q.Steered, QueuedAt: q.At, Reason: why,
+			}))
 			continue
 		}
 		// A steer that cannot be recorded is not applied: the record is the
 		// session, and a message the model saw but the log did not would
 		// make a replay diverge from what happened.
 		text, withheld := l.withholdSecrets(q.Text)
-		if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: text, QueueID: q.ID, ClientID: q.ClientID, Steered: q.Steered, SecretsWithheld: withheld}); err != nil {
+		text, pasted, pastedNote := l.withholdPasted(text, q.Text, withheld)
+		said := Message{Text: text, QueueID: q.ID, ClientID: q.ClientID, Steered: q.Steered, SecretsWithheld: withheld,
+			Pasted: pasted, Note: joinNotes(l.parallelNote(q.typed), pastedNote)}
+		if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, said); err != nil {
 			return n, err
 		}
 		n++
-		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: text})
+		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: said.ModelText()})
 		l.noteSaid(text, true)
-		l.setPrompt(text)
+		l.setPrompt(text, said.ModelText())
 		// A wake run that takes a person's message is theirs from now on,
 		// with a prompted run's turns, not the wake's cap.
 		l.wakeCap = 0
@@ -587,7 +748,9 @@ var secretLabel = regexp.MustCompile(`\[secret:([A-Z][A-Z0-9_]*)\]`)
 // secret's value replaced by [secret:NAME] as in the record, and the names of
 // those replaced, comma-separated. A store that cannot be read withholds it all.
 func (l *Loop) withholdSecrets(text string) (string, string) {
-	red := l.Recorder.redactor()
+	// The store's values only: a held paste's is withheld after its shape is
+	// read, so a corrected re-paste is seen as one.
+	red := l.Recorder.storedRedactor()
 	if red == nil {
 		return text, ""
 	}
@@ -606,25 +769,49 @@ func (l *Loop) withholdSecrets(text string) (string, string) {
 
 // WithheldText is text with each stored secret's value red holds replaced
 // by [secret:NAME], as a person's message is before it is kept anywhere.
+// A pasted credential's shape is withheld too, as [pasted credential], so
+// a history file, a session row or an editor's request never holds one.
 func WithheldText(red Redactor, text string) string {
-	red = usableRedactor(red)
-	if red == nil {
-		return text
+	if red = usableRedactor(red); red != nil {
+		text = redactedText(red.Redact, text)
 	}
-	return redactedText(red.Redact, text)
+	return withholdShapes(text)
+}
+
+// WithheldFor is WithheldText with the credentials sess holds from a paste
+// withheld too, for what a surface keeps outside the record, such as the
+// terminal's prompt history.
+func WithheldFor(red Redactor, sess *tools.Session, text string) string {
+	if red = usableRedactor(red); red != nil {
+		text = redactedText(red.Redact, text)
+	}
+	for _, p := range tools.PastedHeld(sess) {
+		if len(p.Value) >= minHeld {
+			text = strings.ReplaceAll(text, p.Value, "[pasted:"+p.ID+"]")
+		}
+	}
+	return withholdShapes(text)
 }
 
 // Withheld is text as this loop keeps a person's message: its stored
-// secrets withheld.
+// secrets, the credentials the session holds and any pasted credential's
+// shape withheld.
 func (l *Loop) Withheld(text string) string {
 	out, _ := l.withholdSecrets(text)
-	return out
+	return withholdShapes(l.withholdHeld(out))
 }
 
-func (l *Loop) setPrompt(text string) {
+func (l *Loop) setPrompt(text, sent string) {
 	l.steerMu.Lock()
-	l.prompt = text
+	l.prompt, l.promptSent = text, sent
 	l.steerMu.Unlock()
+}
+
+// promptSentAs is the last prompt as the model got it, any note included.
+func (l *Loop) promptSentAs() string {
+	l.steerMu.Lock()
+	defer l.steerMu.Unlock()
+	return l.promptSent
 }
 
 // Prompt is the last message a person sent this loop, or a subagent's task.
@@ -663,6 +850,13 @@ type Usage struct {
 	// ColdPrefillTokens counts input tokens that missed the cache. This is the
 	// quantity the 17x prefix-cache claim is about, measured rather than assumed.
 	ColdPrefillTokens int
+	// CostUSD is what the priced calls cost; Unpriced marks a call to a
+	// model with no price, whose cost is in no total.
+	CostUSD  float64
+	Unpriced bool
+	// UnpricedCalls counts the calls to a model with no price, so a reader
+	// of two readings can tell whether the calls between them had one.
+	UnpricedCalls int
 }
 
 // CacheHitRate reports the fraction of input tokens served from the prefix
@@ -689,10 +883,23 @@ func NewLoop(a model.Adapter, reg *tools.Registry, pol *policy.Engine,
 	appr Approver, sess *tools.Session, rec *Recorder, cfg Config) *Loop {
 	l := &Loop{
 		Adapter: a, Tools: reg, Policy: pol, Approver: appr,
-		Session: sess, Recorder: rec, Config: cfg,
+		Session: sess, Recorder: rec, Config: cfg, SessionNote: cfg.SessionNote,
 	}
 	if cfg.OffloadAt > 0 {
 		l.Offloader = NewOffloader(cfg.OffloadAt)
+	}
+	// What the session holds from a paste is withheld by every redaction the
+	// record and the loop make, as a stored secret's value is.
+	if rec != nil && sess != nil && rec.held == nil {
+		rec.held = func() []heldValue {
+			var out []heldValue
+			for _, p := range tools.PastedHeld(sess) {
+				if len(p.Value) >= minHeld {
+					out = append(out, heldValue{p.Value, "[pasted:" + p.ID + "]"})
+				}
+			}
+			return out
+		}
 	}
 	// Start-up files are read from the HOME the session's bash gives a command.
 	if pol != nil && pol.Home == nil && reg != nil {
@@ -703,7 +910,7 @@ func NewLoop(a model.Adapter, reg *tools.Registry, pol *policy.Engine,
 	// every session the tool that reads the last one's record.
 	if reg != nil && rec != nil && rec.store != nil {
 		l.Tools = reg.Clone()
-		l.Tools.Add(Recall{Store: rec.store, SessionID: rec.sessionID})
+		l.Tools.Replace(Recall{Store: rec.store, SessionID: rec.sessionID})
 	}
 	return l
 }
@@ -749,13 +956,13 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	if why == "" && l.Hooks != nil && ctx.Err() != nil {
 		// Stopped while the hooks decided: not screened, so never sent, and
 		// recorded as dropped rather than kept for the next prompt.
-		l.record(EvMessageDropped, ActorSystem, DroppedMessage{ClientID: m.ClientID, Text: m.Text, QueuedAt: time.Now(),
-			Reason: "stopped before it was screened"})
+		l.record(EvMessageDropped, ActorSystem, l.dropped(DroppedMessage{ClientID: m.ClientID, Text: m.Text, Steered: m.Steered, QueuedAt: time.Now(),
+			Reason: "stopped before it was screened"}))
 		return l.finishStopped(ctx, terminalForCancel(ctx)), nil
 	}
 	if why != "" {
 		// Said in the session, where its surface shows it, as a steer refused is.
-		l.record(EvMessageDropped, ActorSystem, DroppedMessage{ClientID: m.ClientID, Text: m.Text, QueuedAt: time.Now(), Reason: why})
+		l.record(EvMessageDropped, ActorSystem, l.dropped(DroppedMessage{ClientID: m.ClientID, Text: m.Text, Steered: m.Steered, QueuedAt: time.Now(), Reason: why}))
 		l.setRefused(why)
 		// Those delivered are answered now, as RunQueued would, not left
 		// recorded and unanswered until a later message.
@@ -768,18 +975,31 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	if err := l.noteTrustedStartup(); err != nil {
 		return TermError, err
 	}
-	text, withheld := l.withholdSecrets(m.Text)
-	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: text, ClientID: m.ClientID, SecretsWithheld: withheld}); err != nil {
+	if err := l.notePlugins(); err != nil {
 		return TermError, err
 	}
-	um := model.Message{Role: model.RoleUser, Content: text}
+	// Stored values first, whole; a login whose token was one is read after
+	// as a login naming that secret (withholdPasted).
+	text, withheld := l.withholdSecrets(m.Text)
+	text, pasted, pastedNote := l.withholdPasted(text, m.Text, withheld)
+	typed := m.Typed
+	if typed == "" {
+		typed = typedFrom(ctx)
+	}
+	l.refreshFacts()
+	said := Message{Text: text, ClientID: m.ClientID, SecretsWithheld: withheld, Pasted: pasted,
+		Note: joinNotes(l.parallelNote(typed), pastedNote)}
+	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, said); err != nil {
+		return TermError, err
+	}
+	um := model.Message{Role: model.RoleUser, Content: said.ModelText()}
 	if len(imgs) > 0 {
 		// The images reach the model with this message only; the record keeps what the text says of them.
-		um.Blocks = append([]model.ContentBlock{{Kind: model.BlockText, Text: text}}, imgs...)
+		um.Blocks = append([]model.ContentBlock{{Kind: model.BlockText, Text: said.ModelText()}}, imgs...)
 	}
 	l.messages = append(l.messages, um)
 	l.noteSaid(text, false)
-	l.setPrompt(text)
+	l.setPrompt(text, said.ModelText())
 	l.startMessage()
 	return l.run(ctx)
 }
@@ -1025,10 +1245,24 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 		b.mu.Unlock()
 	}
 	l.beginAnswer()
+	l.stopContinues = 0
+	// A retry an earlier run left marked, ended by another error, is not this run's.
+	l.overflowRetried = false
+	l.fitCompactor()
+	l.hookHalted() // an end a hook asked of an earlier run is not this one's
+	if hh, ok := l.Hooks.(HaltHooks); ok {
+		hh.RunStarted(l.rootID())
+		defer hh.RunEnded(l.rootID())
+	}
+	l.streamFails = 0 // a failure streak is the run's own, not carried from the last
+	l.stallRetried, l.stallThinkOff = false, false
 turns:
 	for {
 		if ctx.Err() != nil {
 			return l.finishStopped(ctx, terminalForCancel(ctx)), nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
+		}
+		if why := l.hookHalted(); why != "" {
+			return l.finishHalted(why), nil
 		}
 		if err := l.recordFailure(); err != nil {
 			return TermError, err
@@ -1044,8 +1278,15 @@ turns:
 		}
 		// At the turn boundary, not mid-turn: cutting a turn short would leave
 		// a tool result the model never sees.
-		if l.Budget.Exhausted() {
+		if l.Budget.Exhausted() || l.unpricedUnderCap() {
+			l.recordBudgetStop()
 			return l.finish(TermMaxBudget), nil
+		}
+		if l.allowanceStop(ctx) {
+			return l.finish(TermMaxBudget), nil
+		}
+		if ctx.Err() != nil {
+			return l.finishStopped(ctx, terminalForCancel(ctx)), nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
 		}
 		// Background results first, then steering, each in arrival order,
 		// and never between a turn's calls and their results.
@@ -1071,6 +1312,10 @@ turns:
 			l.Monitor.BeginTurn()
 		}
 
+		// The window first: asked of the endpoint once, and re-fitted to
+		// after a switch to a model with less room.
+		l.noteWindow(ctx)
+		l.refitIfPending(ctx)
 		// Offload first: it is free and lossless, and often leaves compaction
 		// with nothing to do.
 		l.offloadIfNeeded()
@@ -1080,6 +1325,11 @@ turns:
 			l.record(EvCompactDone, ActorSystem, map[string]string{
 				"error": err.Error(),
 			})
+		}
+		// The summary is charged too, so the gate is asked again before the call.
+		if l.Budget.Exhausted() {
+			l.recordBudgetStop()
+			return l.finish(TermMaxBudget), nil
 		}
 
 		reason, done, err := l.turn(ctx)
@@ -1117,6 +1367,9 @@ turns:
 					continue
 				}
 			}
+			if why := l.hookHalted(); why != "" {
+				return l.finishHalted(why), nil
+			}
 			// The answer is checked before the run ends; a revision turn
 			// it asks for goes round again.
 			if reason == TermCompleted {
@@ -1125,6 +1378,14 @@ turns:
 					continue
 				}
 				reason = end
+			}
+			// A stop hook may send the run back to work, a bounded number of
+			// times, or end it.
+			if reason == TermCompleted && l.stopHookContinues(ctx) {
+				continue
+			}
+			if why := l.hookHalted(); why != "" {
+				return l.finishHalted(why), nil
 			}
 			// The turn ends first; a suggestion is made after it, off the run.
 			if reason == TermCompleted {
@@ -1150,6 +1411,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	if l.Compactor == nil {
 		return nil
 	}
+	l.fitCompactor()
 	check := l.Compactor.ShouldCompact
 	// Right after a compaction the history is as small as it gets: room for
 	// the next turn on top would compact again at once in a small window.
@@ -1158,7 +1420,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	}
 	l.justCompacted = false
 	// Counted as sent: a tool of another mode is not in the request.
-	should, used, err := check(l.Config.SystemPrompt, l.messages, l.offeredDefs())
+	should, used, err := check(l.system(), l.messages, l.offeredDefs())
 	if err != nil || !should {
 		return err
 	}
@@ -1166,7 +1428,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	// Started is recorded only once there is something to summarise; every
 	// return after it records a completion (the caller records errors).
 	begun := false
-	compacted, info, err := l.Compactor.CompactWith(l.withCaller(ctx), "auto", l.Config.SystemPrompt, l.messages, used, func() {
+	compacted, info, err := l.Compactor.CompactWith(l.metered(l.withCaller(ctx)), "auto", l.system(), l.messages, used, func() {
 		begun = true
 		l.record(EvCompactStarted, ActorSystem, Compaction{BeforeTokens: used, Trigger: "auto"})
 	})
@@ -1184,7 +1446,9 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	l.usage.Compactions++
 	l.justCompacted = true
 	l.forgetAnswers()
+	l.SubdirMemory.forget()
 	l.record(EvCompactDone, ActorSystem, info)
+	l.observe(ctx, HookPostCompact, "", "auto")
 	return nil
 }
 
@@ -1207,9 +1471,9 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 		return Compaction{}, fmt.Errorf("compaction is not configured")
 	}
 	used, _ := l.Adapter.CountTokens(model.Request{
-		System: l.Config.SystemPrompt, Messages: l.messages,
+		System: l.system(), Messages: l.messages,
 	})
-	compacted, info, err := l.Compactor.Compact(l.withCaller(ctx), "manual", l.Config.SystemPrompt, l.messages, used)
+	compacted, info, err := l.Compactor.Compact(l.metered(l.withCaller(ctx)), "manual", l.system(), l.messages, used)
 	if err != nil {
 		return Compaction{}, err
 	}
@@ -1220,7 +1484,9 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 	l.messages = compacted
 	l.usage.Compactions++
 	l.forgetAnswers()
+	l.SubdirMemory.forget()
 	l.record(EvCompactDone, ActorSystem, info)
+	l.observe(ctx, HookPostCompact, "", "manual")
 	return info, nil
 }
 
@@ -1241,10 +1507,19 @@ func (l *Loop) SetAdapter(a model.Adapter) {
 		was, now := l.Adapter.Profile(), a.Profile()
 		l.Config.SystemPrompt = strings.Replace(l.Config.SystemPrompt,
 			modelLine(was.Name, was.ContextWindow), modelLine(now.Name, now.ContextWindow), 1)
+		// Less room than before: the history is fitted to it before the
+		// next call, rather than refused by the new model.
+		if now.ContextWindow > 0 && (was.ContextWindow <= 0 || now.ContextWindow < was.ContextWindow) {
+			l.pendingRefit = &windowRefit{reason: "model_switch", from: was, hasFrom: true}
+		}
+		// The new model is asked for its window and, if assumed, says so.
+		l.windowNoted = false
 	}
 	l.Adapter = a
 	if l.Compactor != nil {
 		l.Compactor.Adapter = a
+		// Another model counts tokens its own way: learned again from its replies.
+		l.Compactor.SetScale(1)
 	}
 }
 
@@ -1289,13 +1564,19 @@ func (l *Loop) SetHistory(msgs []model.Message, turns int) {
 	l.usage.Turns = l.turns
 }
 
-// CarryUsage starts the token and compaction totals from a recorded end, so a
-// continued session's totals go on from it as its turn count does.
+// CarryUsage starts the token, compaction and cost totals from a recorded
+// end, so a continued session's totals go on from it as its turn count does.
 func (l *Loop) CarryUsage(end SessionEnded) {
 	l.usage.InputTokens = max(l.usage.InputTokens, end.TokensIn)
 	l.usage.OutputTokens = max(l.usage.OutputTokens, end.TokensOut)
 	l.usage.CachedTokens = max(l.usage.CachedTokens, end.TokensCached)
 	l.usage.Compactions = max(l.usage.Compactions, end.Compactions)
+	// The dollars go on too, or a resume would grant the cap again.
+	l.usage.CostUSD = max(l.usage.CostUSD, end.CostUSD)
+	if end.Unpriced && !l.usage.Unpriced {
+		l.usage.Unpriced = true
+		l.usage.UnpricedCalls = max(l.usage.UnpricedCalls, 1)
+	}
 }
 
 // LastEnd is the last session.ended in events, and whether there is one.
@@ -1311,17 +1592,93 @@ func LastEnd(events []Event) (SessionEnded, bool) {
 
 // turn runs one round trip: model output plus any tool executions.
 func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
+	l.promptFolderMemory()
+	l.refreshFacts()
 	req := model.Request{
-		System:      l.Config.SystemPrompt,
+		System:      l.system(),
 		Messages:    l.messages,
 		Tools:       l.offeredDefs(),
 		MaxTokens:   l.Config.MaxTokens,
 		Temperature: l.Config.Temperature,
 		Effort:      l.effort(),
 	}
+	// The retry after a reply cut for reasoning without output asks with
+	// thinking off, where the provider takes it.
+	// Thinking off: the effort cleared too, and no budget sent (the adapters
+	// send none when asked with thinking off).
+	if l.stallThinkOff {
+		req.Effort = model.EffortNone
+		if l.Adapter.Profile().Sampling.Think {
+			off := false
+			req.Params.Think = &off
+		}
+	}
+	l.stallThinkOff = false
+	stallAfter, stallTokens := l.Config.ReasoningStall, l.Config.ReasoningStallTokens
+	if stallAfter <= 0 {
+		stallAfter = DefaultReasoningStall
+	}
+	if stallTokens <= 0 {
+		stallTokens = DefaultReasoningStallTokens
+	}
+	// The backstop stays well under the call's own cap, half of it, or the
+	// cap ends a slow reasoning reply as an error before the backstop can
+	// cut and retry it; the floors still hold.
+	// Half the cap wins over the floor, so a short call timeout still leaves
+	// the backstop room to cut and retry.
+	stallAfter, stallTokens = max(stallAfter, minReasoningStall), max(stallTokens, minReasoningStallTokens)
+	stallAfter = min(stallAfter, model.CallTimeoutOf(l.Adapter)/2)
+	// Never cut within the thinking the request itself allows.
+	budget := model.ThinkingBudget(l.Adapter, req)
+	stallTokens = max(stallTokens, budget)
 
+	sent, _ := l.Adapter.CountTokens(req)
 	callStart := time.Now()
-	stream, err := l.Adapter.Complete(l.withCaller(ctx), req)
+	// A wait for a request slot is said, and kept out of the call's timings.
+	var queued atomic.Int64
+	callCtx := model.WithSlotWait(l.withCaller(ctx), func(w model.SlotWait, done bool) {
+		if done {
+			queued.Store(int64(w.Waited))
+			return
+		}
+		l.record(EvModelWaiting, ActorSystem, ModelWaiting{Model: l.Adapter.Profile().Name, Ahead: w.Ahead})
+	})
+	// A reply that only reasons for stallAfter is cut here, rather than held
+	// to the call's cap with nothing to show.
+	callCtx, cutCall := context.WithCancelCause(callCtx)
+	defer cutCall(nil)
+	var thought atomic.Int64 // reasoning characters so far, read by the backstop
+	var stallOff atomic.Bool // set once the reply answers or the turn ends
+	armed, answered := false, false
+	// The time backstop: it waits on while the reasoning is within the
+	// request's thinking budget, and is stopped when the reply answers or
+	// the turn ends.
+	var backstopMu sync.Mutex
+	var backstop *time.Timer
+	stopBackstop := func() {
+		stallOff.Store(true)
+		backstopMu.Lock()
+		if backstop != nil {
+			backstop.Stop()
+		}
+		backstopMu.Unlock()
+	}
+	defer stopBackstop()
+	var fire func()
+	fire = func() {
+		switch {
+		case stallOff.Load():
+		case budget > 0 && int(thought.Load()/4) <= budget:
+			backstopMu.Lock()
+			if !stallOff.Load() {
+				backstop = time.AfterFunc(stallAfter, fire)
+			}
+			backstopMu.Unlock()
+		default:
+			cutCall(&ReasoningStallError{After: stallAfter})
+		}
+	}
+	stream, err := l.Adapter.Complete(callCtx, req)
 	if err != nil {
 		// Stopped before the first reply: an interrupt or a shutdown, not a
 		// model failure, just as for a stream cut part way.
@@ -1333,6 +1690,10 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 			Turn: l.turns, Model: l.Adapter.Profile().Name, LatencyMS: time.Since(callStart).Milliseconds(), Error: err.Error(),
 			Retryable: timedOut(err),
 		})
+		// Refused as longer than the window: compacted and asked once more.
+		if over, limit := isOverflow(err); over {
+			return l.overflowRecovery(ctx, err, limit)
+		}
 		return TermError, true, fmt.Errorf("model call failed: %w", err)
 	}
 	var firstToken time.Duration
@@ -1367,7 +1728,22 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 
 	for chunk := range stream {
 		if firstToken == 0 && chunk.Type != model.ChunkDone {
-			firstToken = time.Since(callStart)
+			firstToken = time.Since(callStart) - time.Duration(queued.Load())
+		}
+		if !answered && (chunk.Type == model.ChunkText && chunk.Text != "" || chunk.Type == model.ChunkToolCall) {
+			answered = true
+			stopBackstop()
+		}
+		if !answered && chunk.Type == model.ChunkReasoning {
+			if n := thought.Add(int64(len(chunk.Text))); int(n/4) > stallTokens {
+				cutCall(&ReasoningStallError{Tokens: stallTokens})
+			}
+			if !armed {
+				armed = true
+				backstopMu.Lock()
+				backstop = time.AfterFunc(stallAfter, fire)
+				backstopMu.Unlock()
+			}
 		}
 		switch chunk.Type {
 		case model.ChunkText:
@@ -1407,7 +1783,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 				flushThinking(false)
 			}
 		case model.ChunkToolCall:
-			calls = append(calls, withCallID(*chunk.ToolCall, calls))
+			calls = append(calls, withCallID(l.realToolName(*chunk.ToolCall), calls))
 		case model.ChunkError:
 			streamErr = chunk.Err
 		case model.ChunkDone:
@@ -1429,33 +1805,45 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		l.record(EvAgentDelta, ActorAgent, Delta{Text: out, Seq: deltaN})
 	}
 	pending.Reset()
+	// Cut for reasoning without output: that is the reply's failure, whatever
+	// the stream said as it closed.
+	var stall *ReasoningStallError
+	// A reply that answered as the cut came keeps what arrived, as any cut call.
+	cutByStall := ctx.Err() == nil && errors.As(context.Cause(callCtx), &stall)
+	stalled := cutByStall && !answered
+	if stalled {
+		streamErr = stall
+	}
 
 	mc := ModelCall{
 		Turn: l.turns, Model: l.Adapter.Profile().Name, TokensIn: callUsage.InputTokens, TokensOut: callUsage.OutputTokens,
-		TokensCached: callUsage.CachedInputTokens, CacheReported: callUsage.CacheReported,
+		TokensCached: callUsage.CachedInputTokens, CacheReported: callUsage.CacheReported, TokensCacheWrite: callUsage.CacheWriteTokens,
 		ContextWindow: l.Adapter.Profile().ContextWindow,
-		FirstTokenMS:  firstToken.Milliseconds(), LatencyMS: time.Since(callStart).Milliseconds(),
+		FirstTokenMS:  firstToken.Milliseconds(), LatencyMS: (time.Since(callStart) - time.Duration(queued.Load())).Milliseconds(),
+		QueueMS:   time.Duration(queued.Load()).Milliseconds(),
 		ToolCalls: len(calls),
 		CutOff:    l.Config.MaxTokens > 0 && callUsage.OutputTokens >= l.Config.MaxTokens,
 	}
-	// A reply stopped before the provider reported usage still cost tokens:
-	// they are estimated, marked so, and spent from the budget.
-	if ctx.Err() != nil && callUsage.InputTokens == 0 && callUsage.OutputTokens == 0 {
-		mc.TokensIn, _ = l.Adapter.CountTokens(req)
-		produced := text.Len() + reasoning.Len()
-		for _, c := range calls {
-			produced += len(c.Name) + len(c.Args)
-		}
-		mc.TokensOut = (produced + 3) / 4
-		if mc.TokensIn > 0 || mc.TokensOut > 0 {
-			mc.Estimated = true
-			l.Budget.Spend(mc.TokensIn + mc.TokensOut)
-			// The session's totals count them too, as the record's call does.
-			l.usage.InputTokens += mc.TokensIn
-			l.usage.OutputTokens += mc.TokensOut
-			l.usage.ColdPrefillTokens += mc.TokensIn
-		}
+	// A call whose provider reported no usage, stopped or not, still cost
+	// tokens: they are estimated, marked so, and spent from the budget.
+	produced := text.Len() + reasoning.Len()
+	for _, c := range calls {
+		produced += len(c.Name) + len(c.Args)
 	}
+	end := CallEnd{Produced: produced, Cancelled: ctx.Err() != nil || stalled, Failed: streamErr != nil}
+	if est, ok := EstimateUsage(l.Adapter, req, callUsage, end, l.Budget.CutAtBound(l.Adapter)); ok {
+		dIn, dOut := est.InputTokens-callUsage.InputTokens, est.OutputTokens-callUsage.OutputTokens
+		mc.Estimated, mc.TokensIn, mc.TokensOut = true, est.InputTokens, est.OutputTokens
+		l.Budget.Spend(dIn + dOut)
+		// The session's totals count them too, as the record's call does.
+		l.usageMu.Lock()
+		l.usage.InputTokens += dIn
+		l.usage.OutputTokens += dOut
+		l.usage.ColdPrefillTokens += dIn
+		l.usageMu.Unlock()
+		callUsage = est
+	}
+	mc.CostUSD, mc.Unpriced = l.chargeCall(mc.Model, callUsage)
 	// A stream cut by our own cancel is an interrupt, recorded as such at
 	// session end, not a model failure.
 	if streamErr != nil && ctx.Err() == nil {
@@ -1470,7 +1858,26 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	}
 
 	if ctx.Err() != nil {
+		l.streamFails = 0
 		return terminalForCancel(ctx), true, nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
+	}
+
+	// Refused as longer than the window part way, with nothing produced.
+	if streamErr != nil && len(calls) == 0 && text.Len() == 0 {
+		if over, limit := isOverflow(streamErr); over {
+			return l.overflowRecovery(ctx, streamErr, limit)
+		}
+	}
+	if streamErr == nil {
+		l.overflowRetried = false
+		l.calibrate(sent, callUsage)
+		l.noteTruncation(ctx, sent, callUsage)
+		// A local server reports the window of the model it has now loaded;
+		// one smaller than assumed is fitted to before the next call.
+		was := l.Adapter.Profile()
+		if model.Rediscover(ctx, l.Adapter) && l.Adapter.Profile().ContextWindow < was.ContextWindow {
+			l.pendingRefit = &windowRefit{reason: "window_learned", from: was, hasFrom: true}
+		}
 	}
 
 	// A timed-out call is not a malformed reply: asking again unseen would
@@ -1481,6 +1888,34 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 
 	// A malformed tool call is recoverable: tell the model what was wrong and
 	// let it retry rather than aborting the session.
+	if streamErr != nil && len(calls) == 0 && text.Len() == 0 {
+		l.streamFails++
+		l.lastStreamErr = streamErr.Error()
+		if l.streamFails >= maxStreamFailures {
+			l.stuckDetail = fmt.Sprintf("the model's reply failed %d times in a row; the last: %s", l.streamFails, truncate(l.lastStreamErr, 300))
+			l.streamFails = 0
+			return TermRetryExhausted, true, nil
+		}
+	} else {
+		l.streamFails = 0
+		// A text answer cut part way is no full reply: it counts as a cut.
+		if !(cutByStall && answered && len(calls) == 0) {
+			l.stallRetried = false
+		}
+	}
+	// A reply cut for reasoning without output is asked once more, with
+	// thinking off and a nudge; a second in a row ends the run, its reasoning
+	// kept in the record.
+	if stalled {
+		if l.stallRetried {
+			l.stuckDetail = "the model " + stall.Reason() + ", a second time before it answered; its reasoning is in the record"
+			return TermStalled, true, nil
+		}
+		l.stallRetried, l.stallThinkOff = true, true
+		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: "Your previous reply " + stall.Reason() +
+			", so it was stopped. Do not deliberate at length: reply now with the one tool call you need, or with the answer."})
+		return "", false, nil
+	}
 	if streamErr != nil && len(calls) == 0 {
 		if text.Len() == 0 {
 			// No empty assistant turn: an endpoint that rejects null content
@@ -1492,6 +1927,22 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		}
 	}
 
+	// Text-only, cut as it arrived: the rest never came, so it is not the
+	// final answer. It is kept, and the model asked to finish it.
+	// A second cut before a full reply ends the run, as a second stall does.
+	if cutByStall && answered && len(calls) == 0 && text.Len() > 0 {
+		if _, err := l.Recorder.Record(EvAgentMessage, ActorAgent, Trusted, Message{Text: text.String()}); err != nil {
+			return TermError, true, err
+		}
+		l.messages = append(l.messages, model.Message{Role: model.RoleAssistant, Content: text.String()})
+		if l.stallRetried {
+			l.stuckDetail = "the model " + stall.Reason() + " and its reply was cut, a second time before a full reply; what it wrote is in the record"
+			return TermStalled, true, nil
+		}
+		l.stallRetried = true
+		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: ContinueCutReply})
+		return "", false, nil
+	}
 	if body := text.String(); body != "" {
 		if _, err := l.Recorder.Record(EvAgentMessage, ActorAgent, Trusted, Message{Text: body}); err != nil {
 			return TermError, true, err
@@ -1634,6 +2085,10 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 
 func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tools.Result, TerminalReason) {
 	call := *c
+	// A hook ended the run: the rest of the turn's calls do not go ahead.
+	if why := l.haltPending(); why != "" {
+		return l.refuseHalted(ctx, call, why)
+	}
 	tool, found := l.Tools.Get(call.Name)
 	if found && !l.offered(tool) {
 		// A tool of another mode is not there for the model, whatever it recalls.
@@ -1707,7 +2162,8 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 	if call.Name == "bash" {
 		_ = l.noteTrustedStartup() // best effort: the decision itself is recorded
 	}
-	decision := l.Policy.Evaluate(call.Name, tools.MutatesCall(tool, call.Args), call.Args)
+	// Hooks are told whose call it is, and where it runs.
+	decision := l.Policy.EvaluateContext(l.hookCtx(context.Background()), call.Name, tools.MutatesCall(tool, call.Args), call.Args)
 	// A command that asks for secrets is judged on each name first: a secret
 	// needs an allow rule of its own, in every mode, or the call is refused.
 	if refused := l.secretsRefused(tool, call); refused != "" {
@@ -1720,6 +2176,7 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 			Reason: "this call may already have run on a process that stopped before recording its result"}
 	}
 	decision = l.filesJudged(tool, call, decision)
+	decision, firstUse := l.firstUseAsk(tool, call, decision)
 	// A person previewing writes sees each edit and write before it lands:
 	// any decision but a deny becomes the preview ask, which offers no scope,
 	// so no "always" grant can answer it. An earlier ask's reason is kept.
@@ -1728,7 +2185,7 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 		if decision.Decision == policy.Ask && decision.Reason != "" {
 			why += "; " + decision.Reason
 		}
-		decision = policy.Result{Decision: policy.Ask, Step: "preview", Reason: why, Rule: decision.Rule, Layer: decision.Layer}
+		decision = policy.Result{Decision: policy.Ask, Step: "preview", Reason: why, Rule: decision.Rule, Layer: decision.Layer, Source: decision.Source}
 	}
 
 	// An Ask, or an Allow, is short-circuited: a deny is still recorded as a
@@ -1737,6 +2194,29 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 	var doomed error
 	if decision.Decision != policy.Deny {
 		doomed = tools.Precheck(ctx, tool, l.Session, call.Args)
+	} else if pp, ok := tool.(tools.PlanPrechecker); ok && decision.Step == "mode" {
+		// Plan mode refuses the call anyway; the tool's own answer says what
+		// to do instead, such as ssh_connect's "this host is ready".
+		doomed = pp.Precheck(l.Session, call.Args)
+	}
+	// A command run through host git as the person (a brokered git fetch)
+	// may need their approval where policy alone would allow it.
+	if hs, ok := tool.(tools.HostAsker); ok && doomed == nil && decision.Decision != policy.Deny {
+		why, step, bind, err := hs.AskHost(l.Session, l.launchKey(call.ID), call.Args)
+		switch {
+		case err != nil:
+			doomed = err
+		case why != "":
+			decision = hostAsked(decision, why, step, bind)
+		}
+	}
+	// What the call runs as, once the repository's configuration is applied
+	// (a git push its settings make a force or a mirror), is judged too: its
+	// deny and ask rules and the destructive confirmation only tighten.
+	if hi, ok := tool.(tools.HostImplier); ok && doomed == nil && decision.Decision != policy.Deny && l.Policy != nil {
+		if implied := hi.ImpliedHost(l.Session, call.Args); implied != "" {
+			decision = impliedJudged(decision, implied, l.Policy.Evaluate(tool.Name(), true, impliedArgs(implied)))
+		}
 	}
 	if doomed == nil && decision.Decision == policy.Ask {
 		if why := l.readFirst(ctx, tool, call); why != "" {
@@ -1760,11 +2240,27 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 			decision.Reason = strings.TrimPrefix(decision.Reason+"; "+target, "; ")
 		}
 	}
+	pin := ""
+	if pc, ok := tool.(tools.CertificatePinner); ok && doomed == nil {
+		if sum, subject, pins := pc.PinnedCertificate(l.Session, call.Args); pins {
+			pin = sum
+			decision.PinSHA256, decision.PinSubject = sum, subject
+		}
+	}
 	// An approved runbook answers the ask of the call that is its next step,
 	// and makes any other change ask.
 	var planned *planHit
 	if doomed == nil {
 		decision, planned = l.planBind(ctx, tool, call, decision)
+	}
+	// Pinning a certificate no CA vouches for is trusting what answered now:
+	// only a person who saw the fingerprint can say yes. No mode, rule,
+	// runbook or remembered scope answers it.
+	if pin != "" && decision.Decision != policy.Deny {
+		planned = nil
+		decision = policy.Result{Decision: policy.Ask, Step: "pin", Reason: decision.Reason,
+			Rule: decision.Rule, Layer: decision.Layer, Source: decision.Source,
+			PinSHA256: decision.PinSHA256, PinSubject: decision.PinSubject}
 	}
 
 	asked, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
@@ -1806,10 +2302,7 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 				return false, tools.Result{Content: "Denied. " + fix, IsError: true}, ""
 			}
 		}
-		return false, tools.Result{
-			Content: fmt.Sprintf("Denied: %s. Choose a different approach.", decision.Reason),
-			IsError: true,
-		}, ""
+		return false, tools.Result{Content: deniedBy(decision), IsError: true}, ""
 
 	case policy.Ask:
 		if requestedFrom(asked).Withheld {
@@ -1919,6 +2412,16 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 		if approvedBy["by"] == ByReviewer {
 			l.noteReviewed(call.ID)
 		}
+		if pin != "" && approvedBy["by"] != ByReviewer && approvedBy["by"] != ByUser {
+			why := "approving it pins a server certificate, which only a person who saw its fingerprint may approve; " +
+				"no one was asked (" + approvedBy["by"] + ")"
+			l.record(EvActionDenied, ActorSystem, map[string]string{"call_id": call.ID, "reason": why, "step": "pin", "by": BySystem})
+			return false, tools.Result{Content: "Not run: " + why + ". Ask the user to store the token with `abhed secret set NAME` " +
+				"and give the cluster's CA file in k8s.clusters, or to approve the login where they can be asked.", IsError: true}, ""
+		}
+		if firstUse != nil {
+			l.firstUseApproved(tool, *firstUse, firstUse.Scope != "" && answer.Granted == firstUse.Scope, approvedBy)
+		}
 	}
 	if ok, res := l.planClaim(call, planned, approvedBy); !ok {
 		return false, res, ""
@@ -1931,6 +2434,19 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 	}
 	l.recordPlanStep(call, planned, approvedBy["by"])
 	return true, tools.Result{}, ""
+}
+
+// hostAsked is d for a call run on the host as the person that needs their
+// approval: an allow, or the policy's default ask, becomes the ask of step,
+// which a grant for a rule or a mode cannot answer, with bind, what a grant
+// for the repository must match, as its scope; any other ask keeps its own
+// step, so nothing answers it that could not before, with why added.
+func hostAsked(d policy.Result, why, step, bind string) policy.Result {
+	if d.Decision == policy.Allow || d.Decision == policy.Ask && d.Step == "default" {
+		return policy.Result{Decision: policy.Ask, Step: step, Reason: why, Scope: bind}
+	}
+	d.Reason = strings.TrimPrefix(d.Reason+"; "+why, "; ")
+	return d
 }
 
 // notRecorded answers a call left unrun because the record could not be written.
@@ -1959,6 +2475,16 @@ func (l *Loop) deniedOwnerGone(callID string) (bool, tools.Result, TerminalReaso
 	return false, tools.Result{Content: "Denied: " + ownerGoneReason + ".", IsError: true}, TermOwnerInactive
 }
 
+// readWithheld reports whether a read rule keeps a file out of the results
+// of a tool that shows files' contents, such as grep or search: a deny rule,
+// or an ask rule no one can be asked through a search. Nil without a policy.
+func (l *Loop) readWithheld() func(string) bool {
+	if l.Policy == nil {
+		return nil
+	}
+	return l.Policy.ReadWithheldFunc()
+}
+
 // withRule adds the rule that decided, when one did, and the policy layer
 // it came from, so an approval or denial names what made it.
 func withRule(p map[string]string, d policy.Result) map[string]string {
@@ -1968,7 +2494,21 @@ func withRule(p map[string]string, d policy.Result) map[string]string {
 	if d.Layer != "" {
 		p["layer"] = d.Layer
 	}
+	if d.Source != "" {
+		p["source"] = d.Source
+	}
 	return p
+}
+
+// deniedBy is what the model is told of a refusal: the reason, which for a
+// rule names the layer it came from, and that a rule refused it, so the
+// model does not tell the person a capability is missing.
+func deniedBy(d policy.Result) string {
+	msg := "Denied: " + d.Reason + "."
+	if d.Rule != "" {
+		msg += " This is a permission rule, not a missing capability: tell the person which rule refused it and where it is set."
+	}
+	return msg + " Choose a different approach."
 }
 
 // WithheldLookalikeArgs stands in for the arguments of an unknown call
@@ -2073,6 +2613,19 @@ func (l *Loop) refuseUnresolvable(ctx context.Context, call model.ToolCall, why 
 	return false, tools.Result{Content: fmt.Sprintf("Refused: %s. Nothing was run.", why), IsError: true}, ""
 }
 
+// refuseHalted records a call made after a hook ended the run, and refuses it.
+func (l *Loop) refuseHalted(ctx context.Context, call model.ToolCall, why string) (bool, tools.Result, TerminalReason) {
+	if _, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
+		CallID: call.ID, Tool: call.Name, Args: objectOr(call.Args), Reason: why, Via: viaOf(ctx),
+	}); err != nil {
+		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
+	}
+	l.record(EvActionDenied, ActorSystem, map[string]string{
+		"call_id": call.ID, "reason": why, "step": "hook", "by": BySystem,
+	})
+	return false, tools.Result{Content: "Refused: a hook ended the run (" + why + "). Nothing was run.", IsError: true}, ""
+}
+
 // invoke runs an already-authorized tool and records its observation.
 func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, TerminalReason) {
 	tool, found := l.Tools.Get(call.Name)
@@ -2087,16 +2640,42 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	if call.Name == "bash" && l.Session != nil {
 		cwd = l.Session.WorkDir()
 	}
+	_, isTask := tool.(Task)
+	if isTask {
+		l.observe(ctx, HookSubagentStart, call.Name, string(call.Args))
+	}
 	runCtx, forget := l.withDetach(l.withShellHost(l.withLaunch(l.asParent(ctx), call.ID), call.ID))
+	runCtx = tools.WithReadCheck(runCtx, l.readWithheld())
 	result := tool.Run(runCtx, l.Session, call.Args)
 	forget()
-	if _, isTask := tool.(Task); isTask {
+	l.diagnose(ctx, call, &result)
+	// A secret's value is stripped from the result before the model, the
+	// record or a hook sees it, so none holds a value it could echo elsewhere.
+	red := l.Recorder.redactor()
+	if red != nil {
+		result.Content = redactedText(red.Redact, result.Content)
+	}
+	result.Content = l.withholdHeld(result.Content)
+	if isTask {
 		l.observe(ctx, HookSubagentEnd, call.Name, result.Content)
 	}
-	// A secret's value is stripped from the result before the model and the
-	// record see it, so the model never holds a value it could echo elsewhere.
-	if red := l.Recorder.redactor(); red != nil {
-		result.Content = redactedText(red.Redact, result.Content)
+	if result.IsError {
+		l.observe(ctx, HookToolFailure, call.Name, result.Content)
+	}
+	if rh, ok := l.Hooks.(ResultHooks); ok {
+		result.Content, result.IsError = rh.ToolResult(l.hookCtx(ctx), l.sessionID(), call.Name, result.Content, result.IsError)
+		if red != nil {
+			// What a hook wrote in its place is held to the same rule.
+			result.Content = redactedText(red.Redact, result.Content)
+		}
+		result.Content = l.withholdHeld(result.Content)
+	}
+	// A folder's own memory comes with the first result that used the
+	// folder, before the observation is recorded, so a resume replays it.
+	// No tool output may pass for that fence, in any session, subagents' too.
+	result.Content = escapeFolderFence(result.Content)
+	if l.SubdirMemory != nil && !result.IsError {
+		result.Content += l.folderMemory(call)
 	}
 	elapsed := time.Since(start)
 	// Without this the model reads "path is required" and never learns its file_path was not taken.
@@ -2175,6 +2754,7 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 		DurationMS:  elapsed.Milliseconds(),
 		Sandbox:     result.Tier,
 		SandboxNote: result.SandboxNote,
+		NetworkOff:  result.NetworkOff,
 		Cwd:         cwd,
 	}); err != nil {
 		return result, TermError
@@ -2206,22 +2786,23 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 	// but not yet delivered is recorded as dropped rather than lost unseen.
 	if reason == TermShutdown {
 		for _, q := range l.takeSteering() {
-			l.record(EvMessageDropped, ActorSystem, DroppedMessage{
-				QueueID: q.ID, ClientID: q.ClientID, Text: q.Text, QueuedAt: q.At,
+			l.record(EvMessageDropped, ActorSystem, l.dropped(DroppedMessage{
+				QueueID: q.ID, ClientID: q.ClientID, Text: q.Text, Steered: q.Steered, QueuedAt: q.At,
 				Reason: "server shut down before it was delivered",
-			})
+			}))
 		}
 	}
 	// Children the end takes with it are stopped before it is recorded, so
 	// the end says how many live on.
 	l.Background.onRunEnd(reason)
-	if reason == TermRetryExhausted && l.stuckDetail != "" && l.endDetail == "" {
+	if (reason == TermRetryExhausted || reason == TermStalled) && l.stuckDetail != "" && l.endDetail == "" {
 		l.endDetail = l.stuckDetail
 		defer func() { l.endDetail = "" }()
 	}
 	l.stuckDetail = ""
 	end := l.endPayload(reason)
 	l.lastDetail = end.Detail
+	l.lastReason = reason
 	l.record(EvSessionEnded, ActorSystem, end)
 	l.Background.noteEnd(end)
 	l.observe(context.Background(), HookTurnEnd, "", string(reason))
@@ -2239,6 +2820,8 @@ func (l *Loop) endPayload(reason TerminalReason) SessionEnded {
 		TokensOut:     l.usage.OutputTokens,
 		TokensCached:  l.usage.CachedTokens,
 		Compactions:   l.usage.Compactions,
+		CostUSD:       l.usage.CostUSD,
+		Unpriced:      l.usage.Unpriced,
 		ContextTokens: ctxTokens,
 		ContextWindow: window,
 		Background:    l.Background.Owed(),
@@ -2253,7 +2836,7 @@ func (l *Loop) promptRefused(ctx context.Context, text string) string {
 	if l.Hooks == nil {
 		return ""
 	}
-	return l.Hooks.PromptSubmitted(ctx, l.sessionID(), text)
+	return l.Hooks.PromptSubmitted(l.hookCtx(ctx), l.sessionID(), text)
 }
 
 // permissionRefused asks the hooks about a call about to be put to the
@@ -2262,17 +2845,92 @@ func (l *Loop) permissionRefused(ctx context.Context, call model.ToolCall, decis
 	if l.Hooks == nil {
 		return ""
 	}
-	if why := l.Hooks.PermissionRequested(ctx, l.Policy, l.sessionID(), call.Name, call.Args, decision.Reason); why != "" {
+	if why := l.Hooks.PermissionRequested(l.hookCtx(ctx), l.Policy, l.sessionID(), call.Name, call.Args, decision.Reason); why != "" {
 		return why
 	}
-	l.Hooks.Observe(ctx, HookNotification, l.sessionID(), call.Name, "approval needed: "+decision.Reason)
+	l.Hooks.Observe(l.hookCtx(ctx), HookNotification, l.sessionID(), call.Name, "approval needed: "+decision.Reason)
 	return ""
+}
+
+// stopHookContinues asks the stop hooks whether the run may end, and when
+// one asks it to go on, gives the model that instruction and reports true.
+func (l *Loop) stopHookContinues(ctx context.Context) bool {
+	sh, ok := l.Hooks.(StopHooks)
+	if !ok || l.depth > 0 || l.stopContinues >= MaxStopContinues ||
+		l.turns >= l.Config.MaxTurns || l.Budget.Exhausted() {
+		return false
+	}
+	answer := ""
+	for i := len(l.messages) - 1; i >= 0; i-- {
+		if l.messages[i].Role == model.RoleAssistant {
+			answer = l.messages[i].Content
+			break
+		}
+	}
+	hook, instruction := sh.Stop(l.hookCtx(ctx), l.sessionID(), answer)
+	if instruction == "" {
+		return false
+	}
+	// As a queued message is: withheld secrets, and recorded as the model
+	// reads it, so a resumed or forked session reads it too.
+	text, withheld := l.withholdSecrets(instruction)
+	if _, err := l.Recorder.Record(EvHookContinued, ActorSystem, Trusted, HookContinued{Hook: hook, Text: text, SecretsWithheld: withheld}); err != nil {
+		return false
+	}
+	l.stopContinues++
+	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: text})
+	return true
+}
+
+// hookHalted is why a hook ended this session tree's run, or "". The root
+// takes it; a subagent only reads it, so the parent ends too.
+func (l *Loop) hookHalted() string {
+	hh, ok := l.Hooks.(HaltHooks)
+	if !ok {
+		return ""
+	}
+	if l.depth > 0 {
+		return hh.HaltPending(l.rootID())
+	}
+	return hh.Halted(l.rootID())
+}
+
+// haltPending is why a hook ended this run, left in place, or "".
+func (l *Loop) haltPending() string {
+	if hh, ok := l.Hooks.(HaltHooks); ok {
+		return hh.HaltPending(l.rootID())
+	}
+	return ""
+}
+
+// rootID is the session at the root of this loop's tree.
+func (l *Loop) rootID() string {
+	if l.Recorder == nil {
+		return ""
+	}
+	return l.Recorder.Root()
+}
+
+// finishHalted ends the run a hook ended, saying why.
+func (l *Loop) finishHalted(why string) TerminalReason {
+	l.endDetail = why
+	defer func() { l.endDetail = "" }()
+	return l.finish(TermPolicyDenied)
+}
+
+// hookCtx is ctx saying which session, and which folder, hooks run for.
+func (l *Loop) hookCtx(ctx context.Context) context.Context {
+	dir := ""
+	if l.Session != nil {
+		dir = l.Session.WorkDir()
+	}
+	return extension.WithSession(ctx, l.sessionID(), dir, l.rootID())
 }
 
 // observe tells the hooks of something they may only watch.
 func (l *Loop) observe(ctx context.Context, event, tool, detail string) {
 	if l.Hooks != nil {
-		l.Hooks.Observe(ctx, event, l.sessionID(), tool, detail)
+		l.Hooks.Observe(l.hookCtx(ctx), event, l.sessionID(), tool, detail)
 	}
 }
 
@@ -2298,7 +2956,7 @@ func (l *Loop) contextSize() (used, window int) {
 	}
 	window = l.Adapter.Profile().ContextWindow
 	n, err := l.Adapter.CountTokens(model.Request{
-		System:   l.Config.SystemPrompt,
+		System:   l.system(),
 		Messages: l.messages,
 		Tools:    l.offeredDefs(),
 	})
@@ -2346,6 +3004,30 @@ func flushable(s string) bool {
 	return false
 }
 
+// wireName is model.WireName; a test puts in one that collides.
+var wireName = model.WireName
+
+// realToolName maps a call by a wire name the request did not carry (a
+// deferred tool's) to the one tool it names; an ambiguous one is left unknown.
+func (l *Loop) realToolName(c model.ToolCall) model.ToolCall {
+	if l.Tools == nil || !model.ValidWireName(c.Name) {
+		return c
+	}
+	if _, ok := l.Tools.Get(c.Name); ok {
+		return c
+	}
+	var match []string
+	for _, n := range l.Tools.Names() {
+		if n != c.Name && wireName(n) == c.Name {
+			match = append(match, n)
+		}
+	}
+	if len(match) == 1 {
+		c.Name = match[0]
+	}
+	return c
+}
+
 func toolDefs(r *tools.Registry) []model.ToolDef {
 	defs := r.Definitions()
 	out := make([]model.ToolDef, len(defs))
@@ -2367,18 +3049,29 @@ func toolDefs(r *tools.Registry) []model.ToolDef {
 // is and the tail usually carries the conclusion, while the middle of a long
 // listing is the least load-bearing part. The elision is explicit so the model
 // knows it is reading an excerpt and can ask for the rest by offset.
-func (l *Loop) fitResult(content string) string {
+func (l *Loop) fitResult(callID, content string) string {
 	limit := l.resultLimitChars()
 	if limit <= 0 || len(content) <= limit {
 		return content
 	}
 	half := limit / 2
-	dropped := len(content) - limit
-	return content[:half] +
-		fmt.Sprintf("\n\n[... %d characters elided to fit the context window. "+
-			"Re-read with an offset to see this part. ...]\n\n", dropped) +
-		content[len(content)-half:]
+	head, tail := clipRunes(content, half), content[len(content)-half:]
+	for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
+		tail = tail[1:]
+	}
+	head = strings.TrimSuffix(head, "…")
+	dropped := len(content) - len(head) - len(tail)
+	how := "Re-read with an offset to see this part."
+	if _, ok := l.Tools.Get("recall"); ok && callID != "" {
+		// The whole output is in the session record, and recall reads it.
+		how = fmt.Sprintf("The full output is in the session record: call recall with call_id %q and offset %d to read this part.", callID, len(head))
+	}
+	return head + fmt.Sprintf("\n\n[... %d characters elided to fit the context window. %s ...]\n\n", dropped, how) + tail
 }
+
+// minResultChars is the smallest per-result cap, so a tiny window still
+// caps rather than reading as "no cap".
+const minResultChars = 1024
 
 // resultLimitChars is the per-result cap, derived from the context window so a
 // small-window model is protected and a large-window one is not needlessly
@@ -2388,10 +3081,19 @@ func (l *Loop) resultLimitChars() int {
 	if window <= 0 {
 		return 0
 	}
+	if l.Compactor != nil {
+		window = l.Compactor.Effective(window)
+	}
 	// A quarter of the window, converted back to characters at the same
-	// ~3.6 chars/token the estimator uses. One result may occupy a quarter of
-	// the budget; four such results in one turn still leave room to compact.
-	return window / 4 * 36 / 10
+	// ~3.6 chars/token the estimator uses, and at the model's own count once
+	// it has reported one. One result may occupy a quarter of the budget;
+	// four such results in one turn still leave room to compact.
+	chars := float64(window/4) * 3.6
+	if l.Compactor != nil {
+		chars /= l.Compactor.Scale()
+	}
+	// Zero would mean no cap at all: a positive window always caps.
+	return max(int(chars), minResultChars)
 }
 
 // runCalls executes a turn's tool calls and appends their results.
@@ -2550,7 +3252,7 @@ func (l *Loop) appendResults(calls []model.ToolCall, results []callOutcome, n in
 		l.messages = append(l.messages, model.Message{
 			Role:       model.RoleTool,
 			ToolCallID: calls[i].ID,
-			Content:    l.fitResult(results[i].result.Content),
+			Content:    l.fitResult(calls[i].ID, results[i].result.Content),
 			IsError:    results[i].result.IsError,
 		})
 	}
@@ -2602,6 +3304,22 @@ func (l *Loop) secretsRefused(tool tools.Tool, call model.ToolCall) string {
 	}
 	_ = json.Unmarshal(call.Args, &a)
 	a.Secrets = append(a.Secrets, tools.SecretNames(tool, call.Args)...)
+	// A secret a call reads by a name it holds rather than names, such as a
+	// pasted login whose token was a stored value, needs its rule too.
+	if r, ok := tool.(tools.ReadSecrets); ok {
+		a.Secrets = append(a.Secrets, r.ReadSecrets(l.Session, call.Args)...)
+	}
+	// A secret a kept grant binds to the call's cluster was allowed when the
+	// person approved that grant; a deny rule still refuses it.
+	if b, ok := tool.(tools.BoundSecrets); ok {
+		for _, name := range b.BoundSecrets(l.Session, call.Args) {
+			for _, r := range l.Policy.DenyRules() {
+				if r.Matches("secret", name) {
+					return fmt.Sprintf("secret %s is denied by rule %s", name, r)
+				}
+			}
+		}
+	}
 	// Rules only, never the mode: bypass and auto approve calls, not secrets.
 	for _, name := range a.Secrets {
 		for _, r := range l.Policy.DenyRules() {
@@ -2774,17 +3492,24 @@ func (l *Loop) noteReasoning(text string) {
 // reviewed puts a call to the monitor and returns the decision after it,
 // which is never looser than before. What the judge said is in the record.
 func (l *Loop) reviewed(ctx context.Context, call model.ToolCall, mutates bool, before policy.Result) policy.Result {
-	out := l.Monitor.Review(ctx, l.supervisorCase(call, mutates, before))
+	d, _ := l.reviewCase(ctx, call, l.supervisorCase(call, mutates, before), before)
+	return d
+}
+
+// reviewCase is reviewed for a case already made; unavailable reports a
+// judge that could not answer.
+func (l *Loop) reviewCase(ctx context.Context, call model.ToolCall, c monitor.Case, before policy.Result) (_ policy.Result, unavailable bool) {
+	out := l.Monitor.Review(ctx, c)
 	if out.Skipped == monitor.SkippedBudget {
 		// Unreviewed, and said so: in the record and in the reason every
 		// approver, and a runbook step's label, shows.
 		l.record(EvMonitorVerdict, ActorSystem, MonitorVerdict{CallID: call.ID, Before: string(before.Decision),
 			After: string(before.Decision), Skipped: out.Skipped})
 		before.Reason = strings.TrimPrefix(before.Reason+"; supervisor: not reviewed ("+out.Skipped+")", "; ")
-		return before
+		return before, out.Unavailable
 	}
 	if out.Skipped != "" {
-		return before
+		return before, out.Unavailable
 	}
 	l.noteVerdict(call.ID, out.Verdict)
 	l.record(EvMonitorVerdict, ActorSystem, MonitorVerdict{
@@ -2796,13 +3521,13 @@ func (l *Loop) reviewed(ctx context.Context, call model.ToolCall, mutates bool, 
 	// session-wide "always allow" answers it without the person.
 	concern := out.Verdict.Decision != policy.Allow && out.Verdict.Code != monitor.CodeOK
 	if !out.Tightened && (!concern || before.Decision != policy.Ask) {
-		return before
+		return before, out.Unavailable
 	}
 	why := out.Verdict.Code
 	if out.Verdict.Rationale != "" {
 		why += " — " + out.Verdict.Rationale
 	}
-	return policy.Result{Decision: out.After, Reason: "supervisor: " + why, Scope: before.Scope, Step: "monitor"}
+	return policy.Result{Decision: out.After, Reason: "supervisor: " + why, Scope: before.Scope, Step: "monitor"}, out.Unavailable
 }
 
 // noteCall keeps the last few calls and outcomes for the monitor.
@@ -2914,4 +3639,27 @@ func (l *Loop) noteTrustedStartup() error {
 	}
 	_, err := l.Recorder.Record(EvStartupTrusted, ActorSystem, Trusted, map[string]any{"files": files})
 	return err
+}
+
+// impliedArgs are bash's arguments for the line a call runs as.
+func impliedArgs(line string) json.RawMessage {
+	b, _ := json.Marshal(map[string]string{"command": line})
+	return b
+}
+
+// impliedJudged tightens d with policy's judgement of what the call runs as
+// (implied): a deny refuses it; a deny or ask rule's ask, or the
+// destructive confirmation, asks under its own step, which no grant answers.
+func impliedJudged(d policy.Result, implied string, r policy.Result) policy.Result {
+	why := "its git configuration makes this " + implied
+	switch {
+	case r.Decision == policy.Deny:
+		r.Reason = why + ": " + r.Reason
+		return r
+	case r.Decision == policy.Ask && r.Step != "default" && r.Step != "mode":
+		r.Reason = strings.TrimSuffix(why+": "+r.Reason+"; "+d.Reason, "; ")
+		r.Scope = ""
+		return r
+	}
+	return d
 }

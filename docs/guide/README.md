@@ -17,6 +17,7 @@ model you point it at, and records everything it does.
 | [The microVM driver](24-microvm.md) | experimental: sandboxes as Firecracker microVMs on Linux with KVM, or Virtualization.framework VMs on macOS; what is and is not isolated |
 | [The command line](18-cli.md) | flags, `/model`, `/status`, `/config`, the status line, `/mcp` and the other panels |
 | [The terminal](20-terminal.md) | the interactive CLI: keys, pastes, approvals, the footer, themes |
+| [Signing in](42-signing-in.md) | who is working: accounts on this machine, a server's accounts, guest; what each keeps; runs that cannot ask and exit code 10; `auth.client` for organisations |
 | [TLS and command-line sign-in](26-tls-and-cli-login.md) | `serve` over HTTPS with reload and two certificates, client certificates, `abhed pki`, `abhed login` and profiles |
 | [Signed org policy](35-org-policy.md) | the managed layer an org server signs: `abhed login`, pinned keys and rotation, precedence under `/etc/abhed`, refresh, max age, the fail-closed fallback, `abhed policy` |
 | [Shipping the record](36-record-shipping.md) | `record.ship`: each session's chained record sent to the org server as it is written, resumable offline, `abhed record ship` |
@@ -35,7 +36,10 @@ model you point it at, and records everything it does.
 | Guide | For |
 |---|---|
 | [The SDK](09-sdk.md) | embedding Abhed in a Go program |
+| [TypeScript and Python SDKs](40-sdk-typescript-python.md) | driving Abhed from Node.js or Python over `abhed rpc`: sessions, events, approvals, verdicts |
 | [Automation](10-automation.md) | headless runs, `resolve` for issues on GitHub, GitLab and Gitea, RPC, and editors over ACP |
+| [The GitHub Action](38-github-action.md) | a pinned, checksum-verified Abhed run in a GitHub Actions job, failing on an unverified answer, with the record as an artifact |
+| [Pull request review](39-pr-review.md) | a read-only review of each pull request, posted as one review; forks, and the threat model |
 | [Sessions and audit](11-sessions.md) | replay, forking, export, what is recorded |
 | [Sessions and the local record](12-records.md) | `-c`, `-r`, rewind, checkpoints, `abhed record verify`, what tamper-evident means |
 | [OCSF events and logs](30-ocsf-and-logs.md) | the record as OCSF 1.8 (or 1.5, 1.3, 1.1) events: `abhed logs`, the `record.ocsf` file, the logs stream; what maps to which class |
@@ -44,6 +48,7 @@ model you point it at, and records everything it does.
 | [Debugging](31-debugging.md) | Studio's Run and Debug: Delve and debugpy in the session's sandbox, the debuggee judged and recorded as your call |
 | [Language servers](33-language-servers.md) | Studio's editor intelligence: gopls, basedpyright, typescript-language-server and rust-analyzer in the session's sandbox, filtered both ways |
 | [Inline completions](34-inline-completions.md) | Studio's ghost text from a completion model: fill in the middle on a local coding model, bounded context, `completion.local_only` |
+| [Background jobs](37-background-jobs.md) | `abhed bg`: agents that run on a server as you after you leave; answering what they ask; the protocol (the server side is a Team feature) |
 | [Sandboxes over the API](22-sandboxes.md) | `/v1/sandboxes`: create, run commands in, stop and restart sandboxes; templates; the `abhed sandbox` command; `serve -check`; `/v1/ready` |
 | [Container drivers](23-container-drivers.md) | the `docker` and `podman` sandbox drivers: flags, mounts, GPUs, the allowlist |
 | [Snapshots and forwarding](25-snapshots-and-forwarding.md) | sandbox snapshots and restore, port forwarding, exposed services |
@@ -52,6 +57,7 @@ model you point it at, and records everything it does.
 | [Parallel subagents](14-parallel-subagents.md) | several at once, each in its own git worktree |
 | [Running on Kubernetes](27-kubernetes.md) | the Helm chart: the restricted pod, probes, preflight, TLS, Postgres, ingress and OpenShift |
 | [Agent definitions](17-agent-definitions.md) | subagent roles of your own: instructions, tools, model |
+| [Plugins](41-plugins.md) | signed bundles of agents, skills, commands, hooks and MCP servers: install, approve, upgrade, remove; Sigstore or a pin; the managed plugin policy |
 | [Input, memory and commands](19-input-and-memory.md) | `@` files, `!` commands, `#` notes, `ABHED.md` memory, custom slash commands |
 
 Scheduled runs are a Team feature, and exporting the event log as

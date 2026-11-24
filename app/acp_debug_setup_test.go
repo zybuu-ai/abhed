@@ -71,7 +71,7 @@ func TestDebugContainerSetupProblem(t *testing.T) {
 	debugEngineProbe = func(context.Context) (string, string, string) { return "/opt/homebrew/bin/podman", "", "stopped" }
 	var st debugSetup
 	r.cl.ok("_abhed/debug/status-tier", map[string]any{"sessionId": id}, &st)
-	if st.Ready || len(st.Steps) != 2 || st.Steps[0].Command != "/opt/homebrew/bin/podman machine start" || st.Steps[1].ID != "use-container-tier" {
+	if st.Ready || !st.NodeReady || len(st.Steps) != 2 || st.Steps[0].Command != "/opt/homebrew/bin/podman machine start" || st.Steps[1].ID != "use-container-tier" {
 		t.Fatalf("status %+v", st)
 	}
 }
@@ -249,7 +249,7 @@ func TestDebugProcessTierUnderAllowlist(t *testing.T) {
 	tool, _ := s.parts.Loop.Tools.Get("bash")
 	b := tool.(tools.Bash)
 	b.Isolation.Allowlist = true
-	s.parts.Loop.Tools.Add(b)
+	s.parts.Loop.Tools.Replace(b)
 	if err := setDebugConsent(r.ws, true); err != nil {
 		t.Fatal(err)
 	}
@@ -323,6 +323,54 @@ func TestDebugOffersDelveBeforeJudging(t *testing.T) {
 	if !strings.Contains(string(data), `"install":{"debugger":true,"language":"go"}`) || !strings.Contains(string(data), "adapter-missing") ||
 		strings.Contains(string(data), "_abhed/") {
 		t.Fatalf("problem %s", data)
+	}
+	if reqs, _ := r.recorded(id, agent.EvActionRequested); len(reqs) != 0 {
+		t.Fatalf("judged: %v", reqs)
+	}
+}
+
+// Node missing where commands run: its install is offered the same way, on
+// the process tier too, as Node needs no other tier.
+func TestDebugOffersNodeBeforeJudging(t *testing.T) {
+	r, id, asked := setupRig(t, "")
+	debugTier = func(tools.Bash) string { return "process" }
+	old := lspProgramFinder
+	lspProgramFinder = func(*tools.Registry) func(string) bool { return func(p string) bool { return p != "node" } }
+	t.Cleanup(func() { lspProgramFinder = old })
+	r.write("app.js", "console.log(1)\n")
+	m := r.cl.call("_abhed/debug/launch", map[string]any{"sessionId": id, "language": "node", "program": "app.js"})
+	if m.Error == nil || len(*asked) != 0 {
+		t.Fatalf("launch %+v ran %v", m.Error, *asked)
+	}
+	data, _ := json.Marshal(m.Error.Data)
+	if !strings.Contains(string(data), `"install":{"language":"node"}`) || !strings.Contains(string(data), "adapter-missing") {
+		t.Fatalf("problem %s", data)
+	}
+	if reqs, _ := r.recorded(id, agent.EvActionRequested); len(reqs) != 0 {
+		t.Fatalf("judged: %v", reqs)
+	}
+}
+
+// A Node session needs a sandbox: under the none tier, or one not known,
+// the launch is refused before anything is judged or run, as nodeReady says.
+func TestDebugNodeRefusedWithoutASandbox(t *testing.T) {
+	r, id, asked := setupRig(t, "")
+	r.write("app.js", "console.log(1)\n")
+	for _, tier := range []string{"none", ""} {
+		debugTier = func(tools.Bash) string { return tier }
+		m := r.cl.call("_abhed/debug/launch", map[string]any{"sessionId": id, "language": "node", "program": "app.js"})
+		if m.Error == nil || len(*asked) != 0 || !strings.Contains(m.Error.Message, "needs a sandbox") {
+			t.Fatalf("tier %q: launch %+v ran %v", tier, m.Error, *asked)
+		}
+		// Its own kind, not the container wizard's.
+		if data, _ := json.Marshal(m.Error.Data); !strings.Contains(string(data), `"kind":"sandbox-required"`) || strings.Contains(string(data), `"setup"`) {
+			t.Fatalf("tier %q: problem %s", tier, data)
+		}
+		var st debugSetup
+		r.cl.ok("_abhed/debug/status-tier", map[string]any{"sessionId": id}, &st)
+		if st.NodeReady {
+			t.Fatalf("tier %q: nodeReady", tier)
+		}
 	}
 	if reqs, _ := r.recorded(id, agent.EvActionRequested); len(reqs) != 0 {
 		t.Fatalf("judged: %v", reqs)

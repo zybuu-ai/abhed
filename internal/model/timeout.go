@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -71,7 +72,21 @@ func (w *WatsonX) endpoints() []string          { return []string{w.BaseURL, w.I
 // request to a host other than endpoints is judged by the rules.
 func timeoutClient(t Timeouts, endpoints func() []string) *http.Client {
 	base := &egress.Transport{Kind: egress.KindModel, Model: endpoints}
-	return &http.Client{Transport: &timeoutTransport{base: base, t: t.orDefault()}}
+	return &http.Client{Transport: &timeoutTransport{base: base, t: t.orDefault()}, CheckRedirect: sameHostRedirect}
+}
+
+// sameHostRedirect follows a redirect only to the same scheme and host: Go
+// carries a header such as x-api-key across hosts, so a key bound to one
+// host would otherwise follow a redirect to another.
+func sameHostRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	first := via[0].URL
+	if !strings.EqualFold(req.URL.Host, first.Host) || req.URL.Scheme != first.Scheme {
+		return fmt.Errorf("a model endpoint redirected to another host (%s); Abhed does not follow it with the key", req.URL.Host)
+	}
+	return nil
 }
 
 // timeoutTransport ends a request that runs past its Timeouts with a
@@ -148,4 +163,28 @@ func (b *timeoutBody) Close() error {
 		b.end()
 	}
 	return err
+}
+
+// CallTimeout is the longest one request to the adapter may take.
+func (c *Anthropic) CallTimeout() time.Duration        { return clientCallTimeout(c.HTTP) }
+func (c *OpenAICompatible) CallTimeout() time.Duration { return clientCallTimeout(c.HTTP) }
+func (g *Gemini) CallTimeout() time.Duration           { return clientCallTimeout(g.HTTP) }
+func (w *WatsonX) CallTimeout() time.Duration          { return clientCallTimeout(w.client) }
+
+func clientCallTimeout(c *http.Client) time.Duration {
+	if c != nil {
+		if tr, ok := c.Transport.(*timeoutTransport); ok {
+			return tr.t.Call
+		}
+	}
+	return DefaultTimeouts().Call
+}
+
+// CallTimeoutOf is a's call timeout, through any wrapper that passes it on,
+// or the default for an adapter that does not say.
+func CallTimeoutOf(a Adapter) time.Duration {
+	if c, ok := a.(interface{ CallTimeout() time.Duration }); ok {
+		return c.CallTimeout()
+	}
+	return DefaultTimeouts().Call
 }

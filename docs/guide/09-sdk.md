@@ -2,7 +2,9 @@
 
 Abhed's internals live under `internal/`, which Go refuses to let another module
 import. The `sdk` package is the supported surface across that wall, kept small
-so the internals stay free to change.
+so the internals stay free to change. For a program in TypeScript or Python,
+see [TypeScript and Python SDKs](40-sdk-typescript-python.md), which drive
+`abhed rpc`.
 
 ```go
 import abhed "github.com/zybuu-ai/abhed/sdk"
@@ -83,6 +85,11 @@ A subagent's own events stay in the agent's store; `Events` and `OnEvent`
 carry the agent's own record, where `subagent.spawned`, `subagent.ask`,
 `subagent.action` and `subagent.returned` stand for them, as the CLI's JSON
 output does.
+
+`Options.Attended` says a person reads each answer and can reply, as in an
+editor. Off, the default, Abhed never adds its note asking the model to put a
+short question to the person about parallel work, since nobody would answer
+it; see [Parallel subagents](14-parallel-subagents.md#asking-for-parallel-work).
 
 ### Background tasks
 

@@ -24,7 +24,7 @@ jobs:
           POSTGRES_PASSWORD: abhed
           POSTGRES_DB: abhed_test
         ports:
-          - 5432:5432
+          - 55432:5432
         options: >-
           --health-cmd "pg_isready -U abhed"
           --health-interval 5s
@@ -89,7 +89,7 @@ jobs:
         env:
           PGPASSWORD: abhed
         run: |
-          psql -h localhost -U abhed -d abhed_test \
+          psql -h localhost -p 55432 -U abhed -d abhed_test \
             -c "CREATE ROLE abhed_app LOGIN PASSWORD 'abhed';" \
             -c "GRANT ALL ON SCHEMA public TO abhed_app;" \
             -c "ALTER SCHEMA public OWNER TO abhed_app;" \
@@ -97,11 +97,13 @@ jobs:
 
       - name: go test
         env:
-          ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:5432/abhed_test?sslmode=disable
-          ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:5432/abhed_test?sslmode=disable
+          ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:55432/abhed_test?sslmode=disable
+          ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:55432/abhed_test?sslmode=disable
           # The page tests need node and python3; here a missing one fails, not skips.
           ABHED_REQUIRE_PAGE_TESTS: "1"
-        run: go test ./... -skip '^(TestStudioDebugProblems|TestStudioRunsALanguageServer|TestStudioLanguageServerRestartsAndIsJudged|TestStudioLanguageServerKeepsOrder|TestStudioLanguageServerRestartWindowAndClose|TestServeCheckReportsSSHHostKey|TestTerminalVenvInUseAfterAbhedVenv|TestTUICtrlBMovesACommandToTheBackground|TestSplitIsBoundedAndFailsClosed)$' -count=1 -timeout 30m -coverprofile=coverage.out
+          # A throwaway runner: the tests that start and end real processes run.
+          ABHED_TEST_PROCESS_KILL: "1"
+        run: go test ./... -count=1 -timeout 40m -coverprofile=coverage.out
 
       # abhed_app owns the tables; abhed_runtime is what a server should run
       # as. These tests are the evidence that the audit record cannot be
@@ -111,10 +113,10 @@ jobs:
       # as a pass.
       - name: The audit record's privilege separation was actually tested
         env:
-          ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:5432/abhed_test?sslmode=disable
-          ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:5432/abhed_test?sslmode=disable
+          ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:55432/abhed_test?sslmode=disable
+          ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:55432/abhed_test?sslmode=disable
           # Recreates Postgres 13 and 14's default rights in a database of its own.
-          ABHED_TEST_SUPERUSER_DSN: postgres://abhed:abhed@localhost:5432/postgres?sslmode=disable
+          ABHED_TEST_SUPERUSER_DSN: postgres://abhed:abhed@localhost:55432/postgres?sslmode=disable
         run: |
           set -euo pipefail
           go test ./store/ -count=1 -v -run 'TestRuntimeRole|TestOpenRefusesARole|TestTruncateIsRefused|TestSandbox|TestOwnerTamper|TestPreChain|TestGoVerifier|TestAnUnchainedRow|TestARowAtATaken|TestNoSubagentSession|TestOCSFCommitPos|TestMigrateClosesCreateOnPublic|TestMigrateOnPostgres14DefaultRights|TestTemporaryTablesDoNotStandIn|TestCommitOrderSurvives' > record.log 2>&1 || { cat record.log; exit 1; }
@@ -164,12 +166,10 @@ jobs:
       # a race there loses a turn rather than crashing. The whole tree is
       # race-clean, so this gates the lot rather than a chosen few.
       - name: Race detector
-        # 1.2.9 only: non-blocking after three CI rounds; 1.3.0 restores the gate.
-        continue-on-error: true
         env:
-          ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:5432/abhed_test?sslmode=disable
-          ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:5432/abhed_test?sslmode=disable
-        run: go test ./... -skip '^(TestStudioDebugProblems|TestStudioRunsALanguageServer|TestStudioLanguageServerRestartsAndIsJudged|TestStudioLanguageServerKeepsOrder|TestStudioLanguageServerRestartWindowAndClose|TestServeCheckReportsSSHHostKey|TestTerminalVenvInUseAfterAbhedVenv|TestTUICtrlBMovesACommandToTheBackground|TestSplitIsBoundedAndFailsClosed)$' -race -count=1 -timeout 30m
+          ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:55432/abhed_test?sslmode=disable
+          ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:55432/abhed_test?sslmode=disable
+        run: go test ./... -race -count=1 -timeout 40m
 
       # The end-to-end CLI tests are evidence only if they ran. A test may
       # skip only as pending on an item listed here, each still being built:
@@ -201,15 +201,15 @@ jobs:
       # The real-engine relay tests run in the container-tier job, the fence's
       # spec as root in the sandbox job, and the TMPDIR test on macOS.
       - name: Sandbox boundary tests actually ran
-        # 1.2.9 only: five new skips need their reasons listed; 1.3.0 restores the gate.
-        continue-on-error: true
         env:
           CGO_ENABLED: "0" # the test binary is the egress relay; see the sandbox job
+          # A throwaway runner: the tests that end real process trees run (Linux only).
+          ABHED_TEST_PROCESS_KILL: "1"
         run: |
           set -euo pipefail
           go test ./internal/sandbox/ -count=1 -v > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
           skipped=$(grep -c -- "--- SKIP" sandbox.log || true)
-          expected=$(grep -cE "cannot unshare the network namespace|cannot create a sandbox.s namespaces here|set ABHED_REQUIRE_CONTAINER=1|set ABHED_REQUIRE_FENCE=1 in a delegated cgroup|set ABHED_TEST_RELAY_BINARY to a Linux build|fence_etc_test.go:[0-9]+: needs root|tmpdir_test.go:[0-9]+: TMPDIR handling is macOS-specific|bwrap cannot grant the relay the resolver.s port here" sandbox.log || true)
+          expected=$(grep -cE "cannot unshare the network namespace|cannot create a sandbox.s namespaces here|set ABHED_REQUIRE_CONTAINER=1|set ABHED_REQUIRE_FENCE=1 in a delegated cgroup|set ABHED_TEST_RELAY_BINARY to a Linux build|fence_etc_test.go:[0-9]+: needs root|tmpdir_test.go:[0-9]+: TMPDIR handling is macOS-specific|bwrap cannot grant the relay the resolver.s port here|shell_choice_test.go:[0-9]+: zsh terminals are the macOS process tier.s|temp_reap_test.go:[0-9]+: own caches are the macOS process tier.s|process_mcpfiles_test.go:[0-9]+: a case-insensitive disk|fence_dns_linux_test.go:[0-9]+: set ABHED_TEST_MUSL_RESOLVE to a static musl resolver helper" sandbox.log || true)
           if [ "$skipped" -ne "$expected" ]; then
             echo "A sandbox test skipped for an unexpected reason ($skipped skipped, $expected accounted for):"
             grep -B3 -- "--- SKIP" sandbox.log
@@ -224,8 +224,6 @@ jobs:
       # gate fails only on findings that are not in that baseline, so a new
       # one blocks the build and the known set does not keep the job red.
       - name: gosec
-        # 1.2.9 only: 50 new findings await triage; 1.3.0 restores the gate.
-        continue-on-error: true
         run: |
           go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 -quiet -fmt json -no-fail -out gosec.json ./... || true
           python3 scripts/ci/gosec-gate.py gosec.json
@@ -238,15 +236,121 @@ jobs:
           if go list -deps ./cmd/abhed | grep -q '/ee/'; then
             echo "cmd/abhed depends on an ee/ package"; exit 1
           fi
-          # The changelog and the scan record are history and may name the
-          # old tree; this workflow names the pattern it looks for. The open
-          # Helm chart, deploy/helm/, is not that tree.
-          if git grep -n -E '(^|[^a-z])deploy/' -- '*.go' '*.yml' '*.md' \
-               ':!CHANGELOG.md' ':!docs/trust/security-scans.md' ':!.github/workflows/ci.yml' \
-               ':!*_test.go' ':!internal/agent/verify_corpus.go' ':!internal/agent/verify_facts.go' ':!monitor/drift.go' \
-               | grep -E '(^|[^a-z])deploy/($|[^h]|h($|[^e])|he($|[^l])|hel($|[^m])|helm($|[^/]))'; then
-            echo "references to the private deployment tree"; exit 1
+          # Any path into the private deployment tree fails unless it is a
+          # named open form (the Helm chart, a test's fixture); the script
+          # lists them and checks itself against its probes first.
+          python3 scripts/ci/edition-boundary.py --self-test
+          python3 scripts/ci/edition-boundary.py
+
+  # The GitHub Action and the TypeScript and Python SDKs: their own tests,
+  # then each against the abhed this commit builds, on a scripted model served
+  # from 127.0.0.1. No workflow, release or model outside the runner is used,
+  # and nothing here may skip.
+  integrations:
+    name: GitHub Action and SDKs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.10"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Install bubblewrap and let it make its namespaces
+        run: |
+          set -euo pipefail
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
+          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = 1 ]; then
+            printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
+              "profile abhed-ci-bwrap $(command -v bwrap) flags=(unconfined) {" '  userns,' '}' |
+              sudo tee /etc/apparmor.d/abhed-ci-bwrap > /dev/null
+            sudo apparmor_parser -r /etc/apparmor.d/abhed-ci-bwrap
           fi
+      - name: Build abhed
+        run: go build -o "$RUNNER_TEMP/abhed" ./cmd/abhed
+      - name: The action's scripts, composite steps and real runs
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet --only-binary :all: --require-hashes -r scripts/ci/workflow-rules.requirements.txt
+          python scripts/ci/workflow-rules.py integrations/github-action/action.yml
+          cd integrations/github-action
+          # commonmark.js parses whole generated reviews: no HTML, no live mention, the note kept.
+          npm ci --prefix tests/markdown --ignore-scripts --no-audit --no-fund
+          ABHED_TEST_PROCESS_KILL=1 ABHED_BIN="$RUNNER_TEMP/abhed" python -m unittest discover -s tests -v 2>&1 | tee "$RUNNER_TEMP/action.log"
+          ! grep -E "skipped '" "$RUNNER_TEMP/action.log"
+      - name: Python SDK
+        working-directory: sdk/python
+        run: |
+          set -euo pipefail
+          ABHED_BIN="$RUNNER_TEMP/abhed" python -m unittest discover -s tests -v 2>&1 | tee "$RUNNER_TEMP/py.log"
+          ! grep -E "skipped '" "$RUNNER_TEMP/py.log"
+      - name: TypeScript SDK
+        working-directory: sdk/typescript
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          ABHED_BIN="$RUNNER_TEMP/abhed" npm test 2>&1 | tee "$RUNNER_TEMP/ts.log"
+          grep -q "^# skipped 0" "$RUNNER_TEMP/ts.log" || grep -qE "ℹ skipped 0" "$RUNNER_TEMP/ts.log"
+
+  # The action's real-engine runs on macOS, where the process tier is
+  # Seatbelt: a GitHub macOS runner gets it, and its temp folder rules
+  # differ from bubblewrap's. The tests force the process tier.
+  integrations-macos:
+    name: GitHub Action on macOS
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.10"
+      - name: Build abhed
+        run: go build -o "$RUNNER_TEMP/abhed" ./cmd/abhed
+      # What the Watch and the marker may signal is decided against fake
+      # process tables here; the tests that end real process trees build only
+      # on Linux and run in the Linux jobs.
+      - name: Only a command's proven processes are signalled (fake process tables)
+        run: |
+          set -euo pipefail
+          go test ./internal/sandbox -count=1 -v -run 'TestWatchSignalsOnlyTheCommandsOwnTree|TestAReparentedChildIsFollowedByItsOrigin|TestMarkerNarrowsNeverWidens|TestSessionProofIsTheSessionOnly|TestClosingSignalsNoMarkedProcessOfAnUnwatchedCommand|TestHostCommandsDoNotInheritAMarker|TestAReusedPidIsNeverSignalled|TestAChildOfAReusedParentPidIsNotFollowed|TestAStopThatLandsOnAReusedPidIsUndone|TestSessionProofWaitsForTheExitedRoot|TestEndedProcessesAreNamed|TestWaitAndEndRunTogether|TestTheMarkerSearchStartsAtTheRoot' 2>&1 | tee "$RUNNER_TEMP/watch.log"
+          ! grep -E -- "--- SKIP" "$RUNNER_TEMP/watch.log"
+          [ "$(grep -c -- "--- PASS" "$RUNNER_TEMP/watch.log")" -eq 13 ]
+      # A throwaway runner: the tests that end real process trees on macOS,
+      # skipped on a person's machine, run here, and none may skip.
+      - name: Real process trees are ended on macOS (throwaway runner)
+        env:
+          ABHED_TEST_PROCESS_KILL: "1"
+        run: |
+          set -euo pipefail
+          go test ./internal/sandbox ./internal/tools ./server -count=1 -timeout 40m -v -run 'TestCancelKillsOnlyAGroupTheCommandLeads|TestTreeStopsOnlyProcessesWhoseParentIsInIt|TestCancelSignalsOnlyTheCommandsOwnGroup|TestRunawayCommandEndsAtItsDeadline|TestNoneShellEndsItsBackgroundJobs|TestSweepNeedsTheShellItNamed|TestBashCancelEndsWhatTheCommandStarted|TestBashReturnsWhenABackgroundJobHoldsTheOutput|TestBashBackgroundNoteOnAFailingCommand|TestBashTimeoutEndsADetachedChild|TestBashTimeoutEndsADaemon|TestShellKillEndsBackgroundJobs' 2>&1 | tee "$RUNNER_TEMP/kill.log"
+          ! grep -E -- "--- SKIP: (TestNoneShell|TestBash|TestShellKill|TestCancel|TestTree|TestSweepNeeds)" "$RUNNER_TEMP/kill.log"
+      - name: The action's run script and real runs
+        working-directory: integrations/github-action
+        run: |
+          set -euo pipefail
+          ABHED_BIN="$RUNNER_TEMP/abhed" python3 -m unittest tests.test_action.RunTest tests.test_action.EndToEnd -v 2>&1 | tee "$RUNNER_TEMP/action.log"
+          # Only the test that ends real process trees may skip: it runs on Linux.
+          ! grep -E "skipped '" "$RUNNER_TEMP/action.log" | grep -v "ends real process trees: Linux only"
+
+  # Many MCP servers, skills and agent types in one session: routing, the
+  # provider's tool limit and the listing budgets. Stub servers only; trimmed
+  # to run in about a minute (make test-scale).
+  integration-scale:
+    name: Integration scale
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.10"
+
+      - name: Scale check
+        run: make test-scale
 
   # The process tier on Linux is bubblewrap, and denying network needs a
   # namespace the hosted runner will not grant. A privileged container can, so
@@ -278,6 +382,21 @@ jobs:
           grep -q -- "--- PASS: TestFenceSpecAsRootHidesShadow " sandbox.log || { echo "TestFenceSpecAsRootHidesShadow did not run and pass as root"; exit 1; }
           grep -q -- "--- PASS: TestEgressResolverInTheSandbox " sandbox.log || { echo "TestEgressResolverInTheSandbox did not run and pass as root"; exit 1; }
           echo "$(grep -c -- "--- PASS" sandbox.log) boundary tests ran under bubblewrap"
+      # What a command starts is ended with it on the process tier under
+      # bubblewrap as on the none tier: the real kill tests, whose process
+      # tier must run here (ABHED_REQUIRE_PROCESS_TIER fails a skip).
+      - name: Nothing a command starts outlives it, under bubblewrap
+        env:
+          CGO_ENABLED: "0"
+          ABHED_TEST_PROCESS_KILL: "1"
+          ABHED_REQUIRE_PROCESS_TIER: "1"
+        run: |
+          set -euo pipefail
+          go test ./internal/sandbox/ -run 'TestNothingACommandStartsOutlivesIt$|TestClosingTheSandboxEndsItsCommands$|TestAnEscapedProcessIsReportedNotEnded$' -count=1 -v > kill.log 2>&1 || { cat kill.log; exit 1; }
+          ! grep -- "--- SKIP" kill.log
+          for t in TestNothingACommandStartsOutlivesIt TestClosingTheSandboxEndsItsCommands TestAnEscapedProcessIsReportedNotEnded; do
+            grep -q -- "--- PASS: $t " kill.log || { echo "$t did not run and pass:"; cat kill.log; exit 1; }
+          done
       # The statusline's pinned script, end to end under bubblewrap: it runs,
       # and swapped for a link into ~/.abhed it neither runs nor reads.
       - name: The statusline script is pinned under bubblewrap
@@ -300,8 +419,9 @@ jobs:
       - name: rpc and acp stop their sandboxed command on SIGTERM
         run: |
           set -euo pipefail
-          go test ./app/ -run 'TestRPCExitsOnSIGTERMAndEndsItsCommand$|TestACPExitsOnSIGTERMAfterTheStopReason$' -count=1 -v > stop.log 2>&1 || { cat stop.log; exit 1; }
-          for t in TestRPCExitsOnSIGTERMAndEndsItsCommand TestACPExitsOnSIGTERMAfterTheStopReason; do
+          go test ./app/ -run 'TestRPCExitsOnSIGTERMAndEndsItsCommand$|TestACPExitsOnSIGTERMAfterTheStopReason$|TestACPSignalBeforeEOFStillClosesSessions$|TestACPLoneSignalExitsAfterTheGrace$' -count=1 -v > stop.log 2>&1 || { cat stop.log; exit 1; }
+          for t in TestRPCExitsOnSIGTERMAndEndsItsCommand TestACPExitsOnSIGTERMAfterTheStopReason \
+                   TestACPSignalBeforeEOFStillClosesSessions TestACPLoneSignalExitsAfterTheGrace; do
             grep -q -- "--- PASS: $t " stop.log || { echo "$t did not run and pass:"; grep -- "$t" stop.log || true; exit 1; }
           done
       # The kernel does not bound root's processes, and this job runs as root,
@@ -508,13 +628,17 @@ jobs:
       # or this runner, not in s390x, and each run natively in the test job:
       # qemu-user 8.2 drops stat's nanoseconds (the change-time tests, and the
       # microVM guest's sync, which finds changes by change time) and has
-      # no openat2 (TestBarred); timing budgets do not hold emulated; and
-      # bubblewrap is not installed here (the sandboxed-session tests).
+      # no openat2 (TestBarred); it writes its own /proc/self/stat, with a
+      # start time the host's /proc does not share (owner liveness by start
+      # time); timing budgets do not hold emulated; and bubblewrap is not
+      # installed here (the sandboxed-session tests, and the hello golden,
+      # whose prompt names the sandbox).
       - name: Unit tests under emulation
         run: |
           skip='^(TestReadableFileSameCatchesAChangeTimeAlone|TestFreshSeesEveryRewriteAndForgetsNothing|TestBrokenOperatorStoreRecovers'
           skip+='|TestSyncSendsOnlyChanges|TestExecCopiesChangesBack'
           skip+='|TestBarred|TestSplitIsBoundedAndFailsClosed|TestBudgets|TestBudgetDeltaLatency|TestBudgetStartupWithSlowPodman|TestBudgetStartupWithBrokenBwrap|TestIndexScales'
+          skip+='|TestServerOwnerGone|TestSweepRemovesEgressContainersAKilledAbhedLeft|TestGoldenHello'
           skip+='|TestSandboxedSessionRefusesALinkedStateFile|TestFirstRunEndpointNeverStoresAKey|TestFirstRunWithOllama)$'
           mapfile -t pkgs < <(go list ./... | grep -v '^github.com/zybuu-ai/abhed/app$')
           # Emulated, the server package alone is slower than go test's 10m default.
@@ -595,7 +719,9 @@ jobs:
       - name: Every process-sandbox boundary runs under Seatbelt
         run: |
           set -euo pipefail
-          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile|LaunchServices|ToolchainTempDir|DevServerListens|ContestedPort|ContestNotice|ContestTold|ForkedServer|ListeningReach|DebugLoopbackAndListen' -count=1 -v > seatbelt.log 2>&1 || { cat seatbelt.log; exit 1; }
+          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile|LaunchServices|ToolchainTempDir|DevServerListens|ContestedPort|ContestNotice|ContestTold|ContestRecord|ContestChurn|NoteContest|PendingJoins|CloseWaits|ForkedServer|ListeningReach|DebugLoopbackAndListen' -count=1 -v > seatbelt.log 2>&1 || { cat seatbelt.log; exit 1; }
+          # A session's held-back contest joins are recorded before its end.
+          go test ./app/ -run 'TestPendingContestJoinsAreRecordedBeforeTheEnd' -count=1 -v >> seatbelt.log 2>&1 || { cat seatbelt.log; exit 1; }
           if grep -q -- "--- SKIP" seatbelt.log; then
             echo "a boundary test skipped under Seatbelt:"; grep -B3 -- "--- SKIP" seatbelt.log; exit 1
           fi
@@ -604,9 +730,12 @@ jobs:
                    TestSeatbeltRefusesLaunchServices TestSeatbeltToolsWorkWithoutLaunchServices TestServerProfileDeniesLaunchServices \
                    TestSandboxAllowsToolchainTempDir \
                    TestDevServerListensOnLoopback TestContestedPortIsToldNotStopped TestListeningReachesNoSignal \
-                   TestContestNoticeReachesLateWatchersAndCoolsDown TestForkedServerIsNotAContest TestListeningReachCatchesTheRoutes \
+                   TestContestNoticeReachesLateWatchers TestForkedServerIsNotAContest TestListeningReachCatchesTheRoutes \
                    TestContestToldAgainWhenAProgramJoins TestContestToldAgainAfterListeningComesBack \
-                   TestContestToldWhenANewProgramJoinsAfterOneLeft TestContestToldAtOnceForANewProgramInsideTheCooldown \
+                   TestContestToldWhenANewProgramJoinsAfterOneLeft TestContestToldAtOnceForANewProgramAfterAClear \
+                   TestContestRecordBound TestContestChurnIsBoundedButThePersonIsToldAtOnce TestNoteContestByProgramAndProcess \
+                   TestPendingJoinsAreRecordedOnClose TestPendingContestJoinsAreRecordedBeforeTheEnd \
+                   TestPendingContestJoinsAreRecordedBeforeTheEndOfARunningTurn TestCloseWaitsForASweepInFlight \
                    TestDebugLoopbackAndListenCompose; do
             grep -q -- "--- PASS: $t " seatbelt.log || { echo "$t did not run and pass:"; grep -- "$t" seatbelt.log || true; exit 1; }
           done
@@ -631,9 +760,9 @@ jobs:
         run: go build ./... && go vet ./...
       - name: golangci-lint
         run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...
-      # NTFS keeps Unicode forms apart and its link count is not read, so
-      # those two tests may skip; these must run and pass. The push test's
-      # repository plants shell programs, so the macOS job requires it.
+      # NTFS keeps Unicode forms apart, so those tests may skip; these must
+      # run and pass. The push test's repository plants shell programs, so
+      # the macOS job requires it.
       - name: Path rules hold on a disk that folds case
         run: |
           set -euo pipefail
@@ -643,6 +772,17 @@ jobs:
           for t in TestDiskPathSpellsWhatTheDiskHolds TestDiskPathFollowsARenameToAnotherCase TestDiskPathFoldsAsTheDiskDoes \
                    TestPathRulesHoldForEveryCaseTheDiskOpens TestRelativeRulesHoldUnderARootNamedInAnotherCase; do
             jq -e --arg t "$t" 'select(.Test == $t and .Action == "pass")' case.json >/dev/null || { echo "$t did not run and pass"; exit 1; }
+          done
+
+      # The workspace config's second-name refusal reads the link count from
+      # the opened file's handle; it must hold on NTFS too.
+      - name: A workspace config with a second name is refused
+        run: |
+          set -euo pipefail
+          go test -count=1 -v -run '^TestConfigWithASecondNameIsRefused$' ./config/ > names.log 2>&1 || { cat names.log; exit 1; }
+          go test -count=1 -v -run '^TestOfFileCountsNames$' ./internal/nlink/ >> names.log 2>&1 || { cat names.log; exit 1; }
+          for t in TestConfigWithASecondNameIsRefused TestOfFileCountsNames; do
+            grep -q -- "--- PASS: $t " names.log || { echo "$t did not run and pass"; cat names.log; exit 1; }
           done
 
       # Holding a pinned statusline script open would lock it on Windows.

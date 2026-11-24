@@ -16,7 +16,7 @@ func TestHeadlessWithholdsATypedSecret(t *testing.T) {
 	const value = "tok-9f8e7d-cli"
 	h := piped(t, Opts{Args: []string{"-p", "log in with " + value}, Script: `text "done"`,
 		Setup: func(home, _ string) {
-			if err := os.WriteFile(filepath.Join(home, ".abhed", "secrets.json"), []byte(`{"API_TOKEN":"`+value+`"}`), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(PersonDir(home), "secrets.json"), []byte(`{"API_TOKEN":"`+value+`"}`), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}})

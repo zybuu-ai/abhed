@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -88,6 +89,13 @@ func (h *Host) Tools(ctx context.Context) ([]tools.Tool, []error) {
 					"extension %s: tool %q is refused: it is the name of a built-in tool, in any case", e.Name(), def.Name))
 				continue
 			}
+			if ReservedMCPName(def.Name) {
+				// mcp__ names are MCP's: a rule for a server's tool must not
+				// reach, or be taken by, a tool an extension names the same way.
+				errs = append(errs, fmt.Errorf(
+					"extension %s: tool %q is refused: names beginning mcp__ are reserved for MCP servers' tools", e.Name(), def.Name))
+				continue
+			}
 			if owner, dup := seen[def.Name]; dup {
 				// Two extensions claiming one name would make which runs
 				// depend on load order, and a policy rule naming it ambiguous.
@@ -109,4 +117,10 @@ func (h *Host) Tools(ctx context.Context) ([]tools.Tool, []error) {
 		}
 	}
 	return out, errs
+}
+
+// ReservedMCPName reports whether name is in MCP's namespace, mcp__ in any
+// case, which only an MCP server's tools may take.
+func ReservedMCPName(name string) bool {
+	return len(name) >= 5 && strings.EqualFold(name[:5], "mcp__")
 }

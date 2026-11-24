@@ -32,9 +32,9 @@ func TestPtyContinueAfterExit(t *testing.T) {
 		t.Fatal("the record did not verify")
 	}
 	// Each run has its own HOME: the second starts with the first's records.
-	records := filepath.Join(h.Home(), ".abhed", "records")
+	records := filepath.Join(clitest.PersonDir(h.Home()), "records")
 	h = clitest.Start(t, clitest.Opts{Script: "text \"again\"\n", Args: []string{"-C", ws, "-c"},
-		Setup: func(home, _ string) { copyRecords(t, records, filepath.Join(home, ".abhed", "records")) }})
+		Setup: func(home, _ string) { copyRecords(t, records, filepath.Join(clitest.PersonDir(home), "records")) }})
 	h.WaitText("resumed")
 	h.Type("And now?")
 	h.Key(clitest.Enter)

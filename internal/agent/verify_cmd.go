@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -87,7 +88,7 @@ func readLine(line, cwd string) lineFacts {
 		return lf
 	}
 	lf.parsed = true
-	r := &lineReader{cwd: cwd, lf: &lf, shape: len(file.Stmts) == 1}
+	r := &lineReader{cwd: cwd, start: cwd, lf: &lf, shape: len(file.Stmts) == 1}
 	r.stmts(file.Stmts, len(file.Stmts) == 1)
 	lf.inspect, lf.known = true, true
 	seenOutput := false
@@ -123,8 +124,10 @@ func readLine(line, cwd string) lineFacts {
 }
 
 type lineReader struct {
-	cwd string
-	lf  *lineFacts
+	cwd    string
+	start  string // the folder the line started in
+	envSet bool   // a variable set on its own (HOME=, PATH=), which a later command may see
+	lf     *lineFacts
 	// shape stays true while the line is one && chain of simple commands.
 	shape bool
 	// unresolved: a change of folder that could not be followed, so the
@@ -132,6 +135,12 @@ type lineReader struct {
 	unresolved bool
 	// top is set while the statement being read is at the top of the line.
 	top bool
+}
+
+// movedOut: a cd took the line out of the folder it started in, or to a
+// folder not followed, so a relative path no longer names the workspace.
+func (r *lineReader) movedOut() bool {
+	return r.unresolved || r.cwd != r.start && (r.start == "" || !strings.HasPrefix(r.cwd, r.start+"/"))
 }
 
 func (r *lineReader) stmts(list []*syntax.Stmt, follow bool) {
@@ -220,6 +229,7 @@ func (r *lineReader) add(c simpleCmd) {
 func (r *lineReader) call(st *syntax.Stmt, call *syntax.CallExpr, follow bool) {
 	redirected, redirectKnown, someRedirect := redirectTargets(st)
 	if len(call.Args) == 0 {
+		r.envSet = r.envSet || len(call.Assigns) > 0
 		r.redirectsOnly(st)
 		return // assignments alone
 	}
@@ -259,6 +269,13 @@ func (r *lineReader) call(st *syntax.Stmt, call *syntax.CallExpr, follow bool) {
 	// it does (UPDATE=1 go test rewrites goldens): never a reader then.
 	assigned := len(call.Assigns) > 0 || hasAssignment(words, unwrapped)
 	wrapped := assigned || len(unwrapped) != len(words)
+	// Variables that only colour output or point imports at the workspace
+	// (PYTHONPATH=.) leave a reader a reader.
+	if names := assignedNames(call, raw, unwrapped); readerEnv(names) {
+		// A relative PYTHONPATH names the workspace only from where it began.
+		pyPath := slices.ContainsFunc(names, func(n string) bool { return strings.HasPrefix(n, "PYTHONPATH") })
+		assigned = assigned && pyPath && r.movedOut()
+	}
 	words = unwrapped
 	if len(words) == 0 {
 		// A runner alone, as env, writes only where it is redirected.
@@ -281,7 +298,11 @@ func (r *lineReader) call(st *syntax.Stmt, call *syntax.CallExpr, follow bool) {
 		r.add(c)
 		return
 	}
-	if pureReader(words) {
+	// A unittest run after a cd out of the folder, or a test run after any
+	// variable set on its own (PATH=, GOFLAGS=), runs code from elsewhere.
+	unittest := len(words) > 2 && words[1] == "-m" && words[2] == "unittest"
+	away := unittest && r.movedOut() || r.envSet && (unittest || filepath.Base(words[0]) == "go")
+	if pureReader(words) && !away {
 		c.pure, c.writes = !someRedirect, someRedirect
 		c.known, c.targets = redirectKnown, redirected
 	} else {
@@ -540,13 +561,13 @@ func hasAssignment(before, after []string) bool {
 // words a runner such as env took off.
 func assignedNames(call *syntax.CallExpr, raw, words []string) []string {
 	var names []string
-	for _, a := range call.Assigns {
-		names = append(names, a.Name.Value)
+	for _, w := range raw[:len(call.Assigns)] {
+		names = append(names, envName(w))
 	}
 	args := raw[len(call.Assigns):]
 	for _, w := range args[:len(args)-len(words)] {
 		if name, _, ok := strings.Cut(w, "="); ok && name != "" && !strings.HasPrefix(w, "-") {
-			names = append(names, name)
+			names = append(names, envName(w))
 		}
 		// pipenv run loads the project's .env, and hatch run its environment's
 		// env-vars: variables with no word on the line to show them.
@@ -709,4 +730,25 @@ func equalWords(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// envName is the name of a NAME=value word. PYTHONPATH is marked by where
+// it points: "PYTHONPATH" for the folder itself (.), "PYTHONPATH~" for
+// folders inside it, "PYTHONPATH*" for anywhere else.
+func envName(w string) string {
+	name, v, _ := strings.Cut(w, "=")
+	if name != "PYTHONPATH" {
+		return name
+	}
+	here := true
+	for _, p := range strings.Split(v, ":") {
+		if !insidePath(p) {
+			return name + "*"
+		}
+		here = here && filepath.Clean(p) == "."
+	}
+	if !here {
+		return name + "~"
+	}
+	return name
 }

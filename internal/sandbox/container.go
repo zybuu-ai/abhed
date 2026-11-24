@@ -52,6 +52,7 @@ func SandboxImage() string {
 // Container runs commands in an OCI container. The kernel is shared, so an
 // exploit crosses it: untrusted work needs TierVM.
 type Container struct {
+	choice
 	policy  Policy
 	runtime string // docker | podman | nerdctl
 	extra   []string
@@ -66,6 +67,8 @@ type Container struct {
 	info []byte
 	// git is what the look for git folders keeps between commands.
 	git gitMemory
+	// gitg keeps a commondir a command plants from the person's git.
+	gitg gitGuard
 
 	// The egress proxy under sandbox.network allowlist, started once.
 	egOnce  sync.Once
@@ -283,6 +286,15 @@ func (c *Container) runArgsWith(ctx context.Context, cwd string, p Policy, netOp
 		return nil, err
 	}
 	args = append(args, mounts...)
+	if p.ProtectGit {
+		// The workspace is the host's, bind-mounted: a commondir made there is
+		// moved aside soon after it is made (a mitigation; see gitGuard), and
+		// one moved since the last command, or during this scan, refuses it.
+		c.gitg.watchFound(&c.git, p.Workspace)
+		if err := c.gitg.refuse(ctx, string(c.Tier()), p.Workspace, &c.git); err != nil {
+			return nil, err
+		}
+	}
 
 	workdir := cwd
 	if workdir == "" {
@@ -297,6 +309,10 @@ func (c *Container) runArgsWith(ctx context.Context, cwd string, p Policy, netOp
 	}
 
 	args = append(args, "-e", "ABHED_SANDBOX="+string(c.Tier()))
+	// HOME is the container's own, with no git configuration: the person's name is given instead.
+	for _, kv := range p.GitIdentity {
+		args = append(args, "-e", kv)
+	}
 	return args, nil
 }
 
@@ -363,6 +379,15 @@ func (m *ContainerMounts) Args(ctx context.Context, p Policy, backend string) ([
 }
 
 func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd {
+	cmd := c.command(ctx, cwd, command)
+	// What the command left in a git folder is taken out as it ends.
+	if c.policy.ProtectGit && cmd.Err == nil {
+		OnExit(cmd, func(error) { sweepGit(c.gitg.workspaces(), string(c.Tier()), &c.git) })
+	}
+	return cmd
+}
+
+func (c *Container) command(ctx context.Context, cwd, command string) *exec.Cmd {
 	if c.policy.Egress != nil {
 		cmd, _ := c.egressRun(ctx, cwd, egressPrefix, c.policy, nil, nil, []string{"/bin/sh", "-c", command})
 		return cmd
@@ -554,7 +579,15 @@ func caseSpellings(dir, name string) []string {
 }
 
 // Close stops the egress proxy commands under the allowlist reach.
-func (c *Container) Close() error { return c.closeEgress() }
+// Close ends the egress proxy, and takes out what commands left in the
+// workspace's git folders that git would follow, before the person's own git.
+func (c *Container) Close() error {
+	c.gitg.stop()
+	if c.policy.ProtectGit {
+		sweepGit(c.gitg.workspaces(), string(c.Tier()), &c.git)
+	}
+	return c.closeEgress()
+}
 
 // rmArgs removes the named containers; --time 0 stops Podman waiting ten
 // seconds on a process that ignores SIGTERM.

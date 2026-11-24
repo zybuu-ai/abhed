@@ -8,13 +8,15 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/home"
+	"github.com/zybuu-ai/abhed/internal/safeurl"
+	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/orgpolicy"
 	"github.com/zybuu-ai/abhed/profiles"
 	"github.com/zybuu-ai/abhed/recordship"
@@ -22,14 +24,9 @@ import (
 )
 
 // shipStatePath is where the shipper keeps how far each session reached the
-// org server: under ~/.abhed, which the agent cannot reach.
-var shipStatePath = func() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".abhed", "state", "record-ship.json"), nil
-}
+// org server: under the person's folder in ~/.abhed, which the agent cannot
+// reach.
+var shipStatePath = func() (string, error) { return home.PersonPath("state", "record-ship.json") }
 
 // shipTarget is the org server the record goes to: the enrolled one.
 type shipTarget struct {
@@ -53,7 +50,7 @@ func shipTargetFor(cfg config.Config) (shipTarget, error) {
 		return shipTarget{}, errors.New("record.ship is on, but this machine is not signed in to an org server; the record is kept here and shipped once it is (abhed login URL)")
 	}
 	if u := cfg.Org.URL; u != "" && strings.TrimRight(u, "/") != st.URL {
-		return shipTarget{}, fmt.Errorf("record.ship is on, but the org policy is taken only from %s and this machine is signed in to %s", u, st.URL)
+		return shipTarget{}, fmt.Errorf("record.ship is on, but the org policy is taken only from %s and this machine is signed in to %s", safeurl.Server(u), safeurl.Server(st.URL))
 	}
 	pf, err := profiles.DefaultPath()
 	if err != nil {
@@ -130,7 +127,8 @@ func withShipping(cfg config.Config, opts *local.Options) (start func(rec *local
 		if s := get(); s != nil {
 			<-done
 			last, stop := context.WithTimeout(context.Background(), shipCloseWait)
-			if err := s.Pass(last); err != nil && !errors.Is(err, recordship.ErrBusy) {
+			// A removed access was told already, at the start or when it happened.
+			if err := s.Pass(last); err != nil && !errors.Is(err, recordship.ErrBusy) && !errors.As(err, new(*recordship.AccessRemovedError)) {
 				fmt.Fprintf(os.Stderr, "abhed: record.ship: %v; the rest is shipped next time\n", err)
 			}
 			stop()
@@ -147,9 +145,17 @@ func withShipping(cfg config.Config, opts *local.Options) (start func(rec *local
 			s, err = recordship.New(recordship.Options{Store: rec, Do: t.doer(), URL: t.url, StatePath: path,
 				Redact: redact, MaxBacklog: cfg.Record.Ship.MaxBacklog(),
 				OnEvent: func(e recordship.Event) {
+					if e.Kind == recordship.KindAccessRemoved {
+						// Said as plainly as at a session's start, not as a shipping detail.
+						removed := recordship.State{URL: t.url, AccessRemoved: &recordship.Removal{Reason: e.Detail}}
+						shipBanner(os.Stderr, removed.Notices(0))
+						return
+					}
 					fmt.Fprintf(os.Stderr, "abhed: record.ship: %s%s: %s\n", e.Kind, sessionNote(e.Session), e.Detail)
 				}})
 			if err == nil {
+				// What the last run left: a removed access or a backlog over the limit.
+				shipBanner(os.Stderr, s.Status().Notices(cfg.Record.Ship.MaxBacklog()))
 				shMu.Lock()
 				sh = s
 				shMu.Unlock()
@@ -160,6 +166,14 @@ func withShipping(cfg config.Config, opts *local.Options) (start func(rec *local
 		}
 		close(done)
 		fmt.Fprintf(os.Stderr, "abhed: record.ship: %v\n", err)
+	}
+}
+
+// shipBanner writes each notice on its own marked line, so it stands out from the
+// session's other start-up lines.
+func shipBanner(w io.Writer, notices []string) {
+	for _, n := range notices {
+		fmt.Fprintf(w, "abhed: ⚠ %s\n", ui.VisibleLine(n))
 	}
 }
 
@@ -222,6 +236,7 @@ func (c recordCtx) ship(args []string) int {
 		fmt.Fprintln(c.out, "  nothing shipped yet")
 		return 0
 	}
+	shipBanner(c.out, st.Notices(c.cfg.Record.Ship.MaxBacklog()))
 	fmt.Fprintf(c.out, "  server:  %s\n  since:   %s (sessions started before are not shipped)\n  waiting: %d bytes\n",
 		st.URL, st.Since.Local().Format("2 Jan 2006 15:04"), st.Backlog)
 	if !st.LastOK.IsZero() {

@@ -19,6 +19,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/testdb"
 	"github.com/zybuu-ai/abhed/store"
 	"github.com/zybuu-ai/abhed/store/local"
 	"github.com/zybuu-ai/abhed/store/witness"
@@ -84,7 +85,7 @@ func TestWitnessCatchesARolledBackRecord(t *testing.T) {
 // In a Postgres deployment, record verify walks each session's chain and the
 // heads the witness holds; a head the database no longer has fails.
 func TestRecordVerifyPostgresChainAndWitness(t *testing.T) {
-	dsn := os.Getenv("ABHED_TEST_DSN")
+	dsn := testdb.DSN(t, "ABHED_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set ABHED_TEST_DSN to run against Postgres")
 	}
@@ -257,7 +258,7 @@ func TestWitnessAcceptsAPrunedSession(t *testing.T) {
 // With no session named, verify says when it walked only the most recent
 // sessions rather than all of them.
 func TestRecordVerifyPostgresSaysWhenCapped(t *testing.T) {
-	dsn := os.Getenv("ABHED_TEST_DSN")
+	dsn := testdb.DSN(t, "ABHED_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set ABHED_TEST_DSN to run against Postgres")
 	}
@@ -288,7 +289,7 @@ func TestRecordVerifyPostgresSaysWhenCapped(t *testing.T) {
 // With no session named, verify walks deleted and subagent sessions too, and
 // says which they are.
 func TestRecordVerifyPostgresWalksDeletedAndSubagents(t *testing.T) {
-	dsn := os.Getenv("ABHED_TEST_DSN")
+	dsn := testdb.DSN(t, "ABHED_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set ABHED_TEST_DSN to run against Postgres")
 	}
@@ -338,7 +339,7 @@ func TestRecordVerifyPostgresWalksDeletedAndSubagents(t *testing.T) {
 // A deleted Postgres session keeps its chained rows, erased by key, so the
 // witness's heads for it still verify.
 func TestRecordVerifyPostgresWitnessAfterDelete(t *testing.T) {
-	dsn := os.Getenv("ABHED_TEST_DSN")
+	dsn := testdb.DSN(t, "ABHED_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set ABHED_TEST_DSN to run against Postgres")
 	}

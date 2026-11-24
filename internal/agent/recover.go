@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 )
 
 // CarriedSpend is what a session's record says it has spent: the parent's
@@ -10,21 +11,24 @@ import (
 // started. A session continued elsewhere starts its budget from it. A
 // resumed subagent's return carries its tokens so far, so each subagent's
 // last return is what counts.
-func CarriedSpend(events []Event) (tokens int64, spawned int) {
+func CarriedSpend(events []Event) (tokens int64, spawned int, usd float64) {
 	events = Live(events)
 	if end, ok := LastEnd(events); ok {
 		tokens = int64(end.TokensIn + end.TokensOut)
+		usd = end.CostUSD
 	}
 	children := map[string]int64{}
+	childUSD := map[string]float64{}
 	for i, e := range events {
 		switch e.Type {
 		case EvSubagentSpawned:
 			spawned++
 		case EvSubagentReturn:
 			var r struct {
-				Session   string `json:"session"`
-				TokensIn  int    `json:"tokens_in"`
-				TokensOut int    `json:"tokens_out"`
+				Session   string  `json:"session"`
+				TokensIn  int     `json:"tokens_in"`
+				TokensOut int     `json:"tokens_out"`
+				CostUSD   float64 `json:"cost_usd"`
 			}
 			if json.Unmarshal(e.Payload, &r) != nil {
 				continue
@@ -34,12 +38,16 @@ func CarriedSpend(events []Event) (tokens int64, spawned int) {
 				key = fmt.Sprintf("#%d", i) // no session named: counted on its own
 			}
 			children[key] = int64(r.TokensIn + r.TokensOut)
+			childUSD[key] = r.CostUSD
 		}
 	}
 	for _, n := range children {
 		tokens += n
 	}
-	return tokens, spawned
+	for _, c := range childUSD {
+		usd += c
+	}
+	return tokens, spawned, usd
 }
 
 // Orphaned reports whether a record was left open by a process that went
@@ -134,17 +142,25 @@ func Reconcile(store Store, sessionID string, events []Event) error {
 		return err
 	}
 	// Every request keeps one outcome, so none is left open under the end.
+	settled := map[string]bool{}
 	if open, ok := InFlight(events); ok {
-		if err := settleOpenCalls(parent, append(open.Calls, open.Others...)); err != nil {
+		calls := slices.Concat(open.Calls, open.Others)
+		for _, c := range calls {
+			settled[c.Call.ID] = true
+		}
+		if err := settleOpenCalls(parent, calls); err != nil {
 			return err
 		}
 	}
+	if err := settleDiagnosticsStarts(parent, events, settled); err != nil {
+		return err
+	}
 	end, ok := LastEnd(events)
-	settled := end.Background > 0 || len(unreturned(events)) > 0
+	bgSettled := end.Background > 0 || len(unreturned(events)) > 0
 	if !ok || lastEndSeq(events) < lastRunSeq(events) {
 		end = SessionEnded{Reason: TermShutdown, Turns: end.Turns, TokensIn: end.TokensIn, TokensOut: end.TokensOut}
 	}
-	end.Background, end.Settled, end.Recovered, end.Suggesting = 0, settled, true, false
+	end.Background, end.Settled, end.Recovered, end.Suggesting = 0, bgSettled, true, false
 	_, err := parent.Record(EvSessionEnded, ActorSystem, Trusted, end)
 	return err
 }
@@ -206,4 +222,39 @@ func runEndSeq(evs []Event) int64 {
 		}
 	}
 	return end
+}
+
+// settleDiagnosticsStarts closes a diagnostics server's start that a crash
+// left with no outcome, in any turn: its process went with the engine's.
+func settleDiagnosticsStarts(rec *Recorder, events []Event, done map[string]bool) error {
+	var order []string
+	open := map[string]string{}
+	for _, e := range events {
+		switch e.Type {
+		case EvActionRequested:
+			var a ActionRequested
+			if json.Unmarshal(e.Payload, &a) == nil && a.Via == DiagnosticsVia && e.Actor == ActorSystem && !done[a.CallID] {
+				open[a.CallID] = a.Tool
+				order = append(order, a.CallID)
+			}
+		case EvObservation, EvActionDenied:
+			var p struct {
+				CallID string `json:"call_id"`
+			}
+			if json.Unmarshal(e.Payload, &p) == nil {
+				delete(open, p.CallID)
+			}
+		}
+	}
+	for _, id := range order {
+		tool, ok := open[id]
+		if !ok {
+			continue
+		}
+		if _, err := rec.Record(EvObservation, ActorSystem, Trusted, Observation{CallID: id, Tool: tool,
+			Content: "the language server was not started: the engine stopped before its start was recorded", IsError: true}); err != nil {
+			return err
+		}
+	}
+	return nil
 }

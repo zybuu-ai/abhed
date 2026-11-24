@@ -4,13 +4,17 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
+// readsEngine has ssh.read_contents on, so a ** entry is judged by its read
+// forms alone; TestSSHReadDoubleStarNeedsReadContents checks it off.
 func readsEngine(t *testing.T, mode policy.Mode, reads ...string) *policy.Engine {
 	t.Helper()
 	e := policy.New(mode)
+	e.ReadCommandsContents = true
 	if err := e.AllowRemoteReads(reads...); err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +24,7 @@ func readsEngine(t *testing.T, mode policy.Mode, reads ...string) *policy.Engine
 // A declared read runs in plan mode and asks in no mode; anything else on
 // the line, or any other command, is refused in plan mode as before.
 func TestSSHReadCommandsInPlanMode(t *testing.T) {
-	e := readsEngine(t, policy.ModePlan, "uptime", "systemctl status *", "openssl x509 -enddate -noout -in *")
+	e := readsEngine(t, policy.ModePlan, "uptime", "systemctl status **", "openssl x509 -enddate -noout -in **")
 	for _, cmd := range []string{"uptime", "systemctl status nginx", "openssl x509 -enddate -noout -in /etc/nginx/tls/site.crt"} {
 		if res := e.Evaluate("ssh", true, sshCall("web1", cmd)); res.Decision != policy.Allow || res.Step != "mode" || !strings.Contains(res.Reason, "ssh.read_commands") {
 			t.Errorf("%q: %+v", cmd, res)
@@ -63,7 +67,7 @@ func TestSSHReadCommandsAskInNoMode(t *testing.T) {
 
 // Deny and ask rules, the destructive check and a managed bypass still come first.
 func TestSSHReadCommandsNeverLoosenRules(t *testing.T) {
-	e := readsEngine(t, policy.ModePlan, "cat *", "dmesg *")
+	e := readsEngine(t, policy.ModePlan, "cat **", "dmesg **")
 	if err := e.AddDeny("ssh(db1/*)", "ssh(cat /etc/shadow)"); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +90,7 @@ func TestSSHReadCommandsNeverLoosenRules(t *testing.T) {
 			t.Errorf("%s %q: %+v", c.host, c.cmd, res)
 		}
 	}
-	if res := readsEngine(t, policy.ModeAuto, "cat *").Evaluate("ssh", true, sshCall("web1", "cat x && rm -rf /srv")); res.Step != "destructive" {
+	if res := readsEngine(t, policy.ModeAuto, "cat **").Evaluate("ssh", true, sshCall("web1", "cat x && rm -rf /srv")); res.Step != "destructive" {
 		t.Errorf("a destructive line matching a read pattern was approved: %+v", res)
 	}
 	m := readsEngine(t, policy.ModeBypass, "uptime")
@@ -151,7 +155,7 @@ func TestSSHReadCommandWildcardAfterARunnerRefused(t *testing.T) {
 // when a find action runs or writes something, or when it carries a secret
 // on stdin, whatever entry it matches.
 func TestSSHReadCommandsNeverRunAnother(t *testing.T) {
-	e := readsEngine(t, policy.ModePlan, "head *", "cat *", "uptime")
+	e := readsEngine(t, policy.ModePlan, "head **", "cat **", "uptime")
 	for _, c := range []struct{ cmd, stdin string }{
 		{"su -c 'systemctl stop nginx' root", ""},
 		{"find /var/log -name x -exec id {} +", ""},
@@ -173,5 +177,64 @@ func TestSSHReadCommandsNeverRunAnother(t *testing.T) {
 	}
 	if res := e.Evaluate("ssh", true, sshCall("web1", "uptime")); res.Decision != policy.Allow {
 		t.Errorf("an exact entry was not a read: %+v", res)
+	}
+}
+
+// The tool tells the model which commands run unasked on a declared host
+// only when the read-only classifier is on.
+func TestSSHDescriptionNamesReadOnlyClassifier(t *testing.T) {
+	if d := (Tool{}).Description(); strings.Contains(d, "read-only command") {
+		t.Errorf("classifier off, yet described: %s", d)
+	}
+	d := (Tool{ReadOnly: true}).Description()
+	if !strings.Contains(d, "read-only command also runs unasked") || !strings.Contains(d, "metadata") || strings.Contains(d, "cat,") {
+		t.Errorf("classifier on, not described: %s", d)
+	}
+	if d := (Tool{ReadOnly: true, ReadContents: true}).Description(); !strings.Contains(d, "cat, head") {
+		t.Errorf("read_contents on, not described: %s", d)
+	}
+}
+
+// The model chooses how long a call waits, never past the operator's
+// maximum, which is the default timeout unless ssh.max_timeout_seconds says.
+func TestSSHTimeoutIsCapped(t *testing.T) {
+	for _, c := range []struct {
+		max  time.Duration
+		ask  int
+		want time.Duration
+	}{
+		{0, 0, DefaultTimeout},
+		{0, 30, 30 * time.Second},
+		{0, 100000, DefaultTimeout},
+		{0, -5, DefaultTimeout},
+		{10 * time.Minute, 300, 300 * time.Second},
+		{10 * time.Minute, 100000, 10 * time.Minute},
+		{30 * time.Second, 0, 30 * time.Second},
+		{30 * time.Second, 60, 30 * time.Second},
+		{0, 1 << 62, DefaultTimeout},
+	} {
+		if got := (Tool{MaxTimeout: c.max}).timeout(c.ask); got != c.want {
+			t.Errorf("max %v, asked %ds: %v, want %v", c.max, c.ask, got, c.want)
+		}
+	}
+}
+
+// Without ssh.read_contents, a ** entry runs only calls that print no file:
+// cat ** would otherwise read any file the account can.
+func TestSSHReadDoubleStarNeedsReadContents(t *testing.T) {
+	e := readsEngine(t, policy.ModePlan, "cat **", "systemctl status **", "ls **")
+	e.ReadCommandsContents = false
+	for cmd, want := range map[string]policy.Decision{
+		"cat /etc/os-release":         policy.Deny,
+		"systemctl status nginx":      policy.Deny,
+		"systemctl status -n 0 nginx": policy.Allow,
+		"ls -la /var/log":             policy.Allow,
+	} {
+		if res := e.Evaluate("ssh", true, sshCall("web1", cmd)); res.Decision != want {
+			t.Errorf("%q: %+v, want %s", cmd, res, want)
+		}
+	}
+	if !policy.DoubleStarReadsContents("cat **", "") || policy.DoubleStarReadsContents("ls **", "") || policy.DoubleStarReadsContents("cat *", "") {
+		t.Error("DoubleStarReadsContents misjudges an entry")
 	}
 }

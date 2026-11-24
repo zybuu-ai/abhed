@@ -9,6 +9,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/testdb"
 	"github.com/zybuu-ai/abhed/ocsf"
 	"github.com/zybuu-ai/abhed/store"
 )
@@ -17,7 +18,7 @@ import (
 // when it stops the other goes on from the cursors they share. Between the
 // two files every event is written once, in order.
 func TestServeOCSFOnPostgresHasOneWriter(t *testing.T) {
-	dsn := os.Getenv("ABHED_TEST_DSN")
+	dsn := testdb.DSN(t, "ABHED_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set ABHED_TEST_DSN to run the Postgres OCSF test")
 	}
@@ -94,7 +95,7 @@ func TestServeOCSFOnPostgresHasOneWriter(t *testing.T) {
 // A saved place in commit order that cannot be read does not stop the feed:
 // it goes on from the end, saved, and the next poll reads on from there.
 func TestCommitFeedRecoversAnUnreadablePlace(t *testing.T) {
-	dsn := os.Getenv("ABHED_TEST_DSN")
+	dsn := testdb.DSN(t, "ABHED_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set ABHED_TEST_DSN to run the Postgres OCSF test")
 	}

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/model"
 )
 
@@ -55,6 +56,31 @@ func TestFallbackAdapterMovesOnceAndRecords(t *testing.T) {
 	g := newFallbackAdapter("a", bad, []string{"b"}, func(string) (model.Adapter, error) { return b, nil })
 	if _, err := g.Complete(context.Background(), model.Request{}); err == nil || g.Current() != "a" {
 		t.Fatalf("a 400 moved: %v %s", err, g.Current())
+	}
+}
+
+// Under a dollar cap, a fallback with no price is not moved to: no call to it
+// goes out, and the session stays on the model it had.
+func TestFallbackSkipsAnUnpricedModelUnderACap(t *testing.T) {
+	a := &fakeAdapter{name: "gpt-4o", err: &model.StatusError{Status: 503}}
+	b := &fakeAdapter{name: "no-price-model"}
+	f := newFallbackAdapter("a", a, []string{"b"}, func(string) (model.Adapter, error) { return b, nil })
+	budget := agent.NewBudget(0, 0, false)
+	budget.MaxUSD = 1
+	f.SetGate(budget.Refuse)
+	_, err := f.Complete(context.Background(), model.Request{})
+	if err == nil || !strings.Contains(err.Error(), "has no price") {
+		t.Fatalf("err %v", err)
+	}
+	if b.n != 0 || f.Current() != "a" {
+		t.Fatalf("moved: b %d current %s", b.n, f.Current())
+	}
+	// A priced fallback is moved to as before.
+	c := &fakeAdapter{name: "gpt-4o-mini"}
+	g := newFallbackAdapter("a", a, []string{"c"}, func(string) (model.Adapter, error) { return c, nil })
+	g.SetGate(budget.Refuse)
+	if _, err := g.Complete(context.Background(), model.Request{}); err != nil || c.n != 1 {
+		t.Fatalf("priced fallback: %v %d", err, c.n)
 	}
 }
 
@@ -228,5 +254,16 @@ func TestFailedTurnAfterModelSwitchNamesTheWayBack(t *testing.T) {
 	}
 	if got := switchBackHint(e.st, failed); got != "" {
 		t.Fatalf("after a good turn the hint stays: %q", got)
+	}
+}
+
+// The fallback's tool limit counts every fallback after the model answering,
+// one not yet built included, so a move never meets a request it refuses.
+func TestFallbackToolLimitCountsUnbuiltFallbacks(t *testing.T) {
+	a := model.NewOpenAICompatible("http://127.0.0.1:1/v1", "", "a", model.Profile{})
+	f := newFallbackAdapter("a", a, []string{"b", "c"}, func(string) (model.Adapter, error) { return a, nil })
+	f.limits = []int{0, 0, 40}
+	if n := model.ToolLimitOf(f); n != 40 {
+		t.Fatalf("limit %d, want the unbuilt fallback's 40", n)
 	}
 }

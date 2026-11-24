@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -52,7 +53,26 @@ type ServerConfig struct {
 	// HostFiles runs a stdio server with the host's files, not confined to
 	// its own home and the workspace on the process tier.
 	HostFiles bool `json:"host_files,omitempty"`
+	// ReadOnlyHints believes the server's readOnlyHint: a tool it marks
+	// read-only is not a mutating call, so it runs unasked in default mode and
+	// in plan mode, deny rules still applying. Only a server the managed
+	// file defines and opts in (trust_read_only_hint) sets it; a hint from a
+	// server a person or a workspace added is the server's own word about
+	// itself and is ignored.
+	ReadOnlyHints bool `json:"-"`
+	// StartupTimeout bounds the start, handshake and lists; zero is
+	// DefaultStartupTimeout. Past it the server fails and its tools are absent.
+	StartupTimeout time.Duration `json:"-"`
 }
+
+// Startup bounds: ConnectWorkers servers start at once, each within its
+// StartupTimeout. One still starting after SlotHold gives its slot to the
+// next, so hung servers delay the others' starts by SlotHold, not a deadline.
+const (
+	DefaultConnectWorkers = 8
+	DefaultStartupTimeout = 60 * time.Second
+	DefaultSlotHold       = 5 * time.Second
+)
 
 var errGatewayClosed = errors.New("the MCP gateway was closed while the server connected")
 
@@ -115,11 +135,24 @@ type Gateway struct {
 	// program Admit was shown, resolved once on its own PATH, rather than
 	// letting the launch look the command up again.
 	PinProgram bool
-	calls      serverCallers
+	// Authorize, when set, gives a URL server's OAuth login, or nil when it
+	// has none; hc reaches its token endpoint under this gateway's egress.
+	Authorize func(cfg ServerConfig, hc *http.Client) (Authorizer, error)
+	calls     serverCallers
+	// reads are the read_resource tools offered, by server; under mu.
+	reads map[string]*resourceTool
+	// ConnectWorkers is how many servers Connect starts at once; zero is
+	// DefaultConnectWorkers.
+	ConnectWorkers int
+	// SlotHold is how long a starting server keeps its slot; zero is
+	// DefaultSlotHold.
+	SlotHold time.Duration
 }
 
+// NewGateway makes a gateway; Close must be called when it is done with, or
+// the read_resource names it offered stay judged for the process's life.
 func NewGateway() *Gateway {
-	return &Gateway{clients: make(map[string]*Client), configs: make(map[string]ServerConfig), failed: map[string]error{}, overlaps: map[string]string{}, refused: map[string]refusal{}, pending: map[string]bool{}, policyRefused: map[string]bool{}}
+	return &Gateway{reads: map[string]*resourceTool{}, clients: make(map[string]*Client), configs: make(map[string]ServerConfig), failed: map[string]error{}, overlaps: map[string]string{}, refused: map[string]refusal{}, pending: map[string]bool{}, policyRefused: map[string]bool{}}
 }
 
 // ErrNotAdmitted wraps Admit's refusal of a server.
@@ -161,20 +194,23 @@ func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
 	}
 	life := g.life
 	g.mu.Unlock()
-	var errs []error
 	var enabled []string
 	for _, cfg := range configs {
 		if cfg.Enabled {
 			enabled = append(enabled, cfg.Name)
 		}
 	}
-	for _, cfg := range configs {
+	// Judged and reserved one by one, in order, so overlapping names are
+	// settled as before; then started together.
+	errs := make([][]error, len(configs))
+	var start []int
+	for i, cfg := range configs {
 		if !cfg.Enabled {
 			continue
 		}
 		if !validServerName.MatchString(cfg.Name) {
 			// Not kept even as failed: the name would reach /mcp and the panels unescaped.
-			errs = append(errs, fmt.Errorf("mcp server %+q: invalid server name (letters, digits, _ and - only, up to 64)", cfg.Name))
+			errs[i] = append(errs[i], fmt.Errorf("mcp server %+q: invalid server name (letters, digits, _ and - only, up to 64)", cfg.Name))
 			continue
 		}
 		if err := g.admit(cfg); err != nil {
@@ -184,7 +220,7 @@ func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
 				g.policyRefused[cfg.Name] = true
 			}
 			g.mu.Unlock()
-			errs = append(errs, fmt.Errorf("mcp server %q: %w", cfg.Name, err))
+			errs[i] = append(errs[i], fmt.Errorf("mcp server %q: %w", cfg.Name, err))
 			continue
 		}
 		g.mu.Lock()
@@ -193,22 +229,68 @@ func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
 		// Checked and reserved under one lock, so two servers added at once
 		// cannot both pass; the reservation ends when the connection does.
 		if err := g.reserve(cfg, enabled); err != nil {
-			errs = append(errs, err)
+			errs[i] = append(errs[i], err)
 			continue
 		}
-		err := g.connectOne(life, ctx, cfg)
-		g.mu.Lock()
-		delete(g.pending, cfg.Name)
-		if err != nil {
-			g.configs[cfg.Name], g.failed[cfg.Name] = cfg, err
-		}
-		g.mu.Unlock()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("mcp server %q: %w", cfg.Name, err))
-		}
+		start = append(start, i)
 	}
-	return errs
+	workers := g.ConnectWorkers
+	if workers <= 0 {
+		workers = DefaultConnectWorkers
+	}
+	hold := g.SlotHold
+	if hold <= 0 {
+		hold = DefaultSlotHold
+	}
+	slots := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for _, i := range start {
+		cfg := configs[i]
+		wg.Add(1)
+		slots <- struct{}{}
+		go func() {
+			defer wg.Done()
+			var once sync.Once
+			free := func() { once.Do(func() { <-slots }) }
+			defer free()
+			defer time.AfterFunc(hold, free).Stop()
+			err := g.startOne(life, ctx, cfg)
+			g.mu.Lock()
+			delete(g.pending, cfg.Name)
+			if err != nil {
+				g.configs[cfg.Name], g.failed[cfg.Name] = cfg, err
+			}
+			g.mu.Unlock()
+			if err != nil {
+				errs[i] = append(errs[i], fmt.Errorf("mcp server %q: %w", cfg.Name, err))
+			}
+		}()
+	}
+	wg.Wait()
+	var out []error
+	for _, e := range errs {
+		out = append(out, e...)
+	}
+	return out
 }
+
+// startOne connects one server within its startup deadline, saying so when
+// the deadline, not the caller, ended it.
+func (g *Gateway) startOne(life, ctx context.Context, cfg ServerConfig) error {
+	limit := cfg.StartupTimeout
+	if limit <= 0 {
+		limit = DefaultStartupTimeout
+	}
+	sctx, cancel := context.WithTimeoutCause(ctx, limit, errStartupDeadline)
+	defer cancel()
+	err := g.connectOne(life, sctx, cfg)
+	if err != nil && ctx.Err() == nil && errors.Is(context.Cause(sctx), errStartupDeadline) {
+		return fmt.Errorf("did not start within %s, so its tools are absent (startup_timeout_seconds sets the limit): %w", limit, err)
+	}
+	return err
+}
+
+var errStartupDeadline = errors.New("the server's startup deadline passed")
 
 // connectOne starts a server whose process (or connection) lives as long as
 // life, and initializes it within ctx.
@@ -250,6 +332,19 @@ func (g *Gateway) connectOne(life, ctx context.Context, cfg ServerConfig) error 
 		if g.Admit != nil {
 			hc.CheckRedirect = g.redirectCheck(cfg)
 		}
+		if g.Authorize != nil {
+			// The token endpoint is reached as the server is, and never by a redirect.
+			tc := &http.Client{Timeout: 30 * time.Second, Transport: &egress.Transport{Kind: egress.KindMCP, Guard: g.Egress},
+				CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+			auth, err := g.Authorize(cfg, tc)
+			if err != nil {
+				return err
+			}
+			if auth != nil && hasAuthorization(headers) {
+				return ErrBothAuth
+			}
+			hc.Auth = auth
+		}
 		transport, err = NewHTTPTransport(life, hc)
 	} else {
 		transport, err = g.startStdio(life, cfg)
@@ -260,6 +355,9 @@ func (g *Gateway) connectOne(life, ctx context.Context, cfg ServerConfig) error 
 	client := NewClient(cfg.Name, transport)
 	if err := client.Initialize(ctx); err != nil {
 		_ = client.Close()
+		if errors.Is(err, ErrUnauthorized) {
+			return fmt.Errorf("%w; if it signs in with OAuth, run abhed mcp login %s", err, cfg.Name)
+		}
 		return err
 	}
 
@@ -302,7 +400,7 @@ func (g *Gateway) Restart(ctx context.Context, name string) error {
 	if life == nil {
 		life = context.WithoutCancel(ctx)
 	}
-	if err := g.connectOne(life, ctx, cfg); err != nil {
+	if err := g.startOne(life, ctx, cfg); err != nil {
 		g.mu.Lock()
 		g.failed[name] = err
 		g.mu.Unlock()
@@ -318,6 +416,8 @@ type ServerStatus struct {
 	Connected bool
 	Err       error
 	Tools     []string // the tools it offers that are allowed, by remote name
+	// Resources is set for a connected server that offers resources.
+	Resources bool
 	// Refused are the tools it offers that were left out for their names, as
 	// it sent them: untrusted text, for showing escaped.
 	Refused []string
@@ -361,6 +461,7 @@ func (g *Gateway) Servers() []ServerStatus {
 		}
 		if c, ok := g.clients[name]; ok {
 			st.Connected = true
+			st.Resources = c.Resources()
 			st.Refused = slices.Clone(c.Refused())
 			for _, d := range c.Tools() {
 				if allowed(cfg, d.Name) {
@@ -467,8 +568,10 @@ func (g *Gateway) Tools() []tools.Tool {
 				remoteName:  def.Name,
 				description: sanitizeDescription(def.Description),
 				schema:      def.InputSchema,
+				readOnly:    cfg.ReadOnlyHints && def.Annotations.ReadOnlyHint != nil && *def.Annotations.ReadOnlyHint,
 			})
 		}
+		out = append(out, g.resourceTools(server, cfg, client)...)
 	}
 	return out
 }
@@ -493,6 +596,10 @@ func (g *Gateway) Close() {
 		_ = c.Close()
 	}
 	g.clients = map[string]*Client{}
+	for server, t := range g.reads {
+		delete(g.reads, server)
+		withdrawRead(t.Name(), g)
+	}
 }
 
 // Status reports connected servers and their tool counts, for `abhed doctor`.
@@ -619,6 +726,9 @@ type remoteTool struct {
 	remoteName  string
 	description string
 	schema      json.RawMessage
+	// readOnly is the server's readOnlyHint, believed only for a server the
+	// operator configured.
+	readOnly bool
 }
 
 // Name is namespaced: mcp__<server>__<tool>. Without this a server could
@@ -642,8 +752,10 @@ func (t *remoteTool) Schema() json.RawMessage {
 }
 
 // Mutates is conservatively true: Abhed cannot know what a third-party server
-// does, so every MCP call routes through the policy engine for approval.
-func (t *remoteTool) Mutates() bool { return true }
+// does, so every MCP call routes through the policy engine for approval. The
+// exception is a tool the server marks read-only when the operator, not the
+// person or the workspace, configured the server.
+func (t *remoteTool) Mutates() bool { return !t.readOnly }
 
 func (t *remoteTool) Run(ctx context.Context, _ *tools.Session, args json.RawMessage) tools.Result {
 	client := t.gw.client(t.server)
@@ -666,11 +778,15 @@ func (t *remoteTool) Run(ctx context.Context, _ *tools.Session, args json.RawMes
 	const maxContent = 30000
 	truncated := false
 	if len(content) > maxContent {
-		content = content[:maxContent] + "\n\n[truncated]"
+		content = CutUTF8(content, maxContent) + "\n\n[truncated]"
 		truncated = true
 	}
 	return tools.Result{Content: content, IsError: isErr, Truncated: truncated}
 }
+
+// MaxDescription bounds a remote tool's description, in bytes, cut at a
+// character boundary.
+const MaxDescription = 1024
 
 // sanitizeDescription defends against tool poisoning.
 //
@@ -702,9 +818,8 @@ func sanitizeDescription(s string) string {
 	}, s)
 	s = strings.Join(strings.Fields(s), " ")
 
-	const maxDesc = 1024
-	if len(s) > maxDesc {
-		s = s[:maxDesc] + "…"
+	if len(s) > MaxDescription {
+		s = CutUTF8(s, MaxDescription) + "…"
 	}
 	return s
 }

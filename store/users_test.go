@@ -5,13 +5,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/zybuu-ai/abhed/auth"
+	"github.com/zybuu-ai/abhed/internal/testdb"
 )
 
 // MigrateUsers is called defensively by every user operation, and one of those
@@ -19,7 +19,7 @@ import (
 // each password check ran a CREATE TABLE statement first, taking DDL locks
 // against a table that already existed.
 func TestMigrateUsersRunsOnce(t *testing.T) {
-	dsn := os.Getenv("ABHED_TEST_DSN")
+	dsn := testdb.DSN(t, "ABHED_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set ABHED_TEST_DSN to run store integration tests")
 	}
@@ -61,7 +61,7 @@ func TestMigrateUsersRunsOnce(t *testing.T) {
 // Accounts must round-trip through Postgres with the hash intact, or every
 // imported user is locked out.
 func TestUserRoundTrip(t *testing.T) {
-	dsn := os.Getenv("ABHED_TEST_DSN")
+	dsn := testdb.DSN(t, "ABHED_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set ABHED_TEST_DSN to run store integration tests")
 	}
@@ -224,7 +224,7 @@ func TestRemoveUserUnclaimsItsSessions(t *testing.T) {
 // Two processes creating the same account: exactly one wins and the other is
 // told why, for a duplicate username and for emails differing only in case.
 func TestConcurrentCreateOneWins(t *testing.T) {
-	dsn := os.Getenv("ABHED_TEST_DSN")
+	dsn := testdb.DSN(t, "ABHED_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set ABHED_TEST_DSN to run store integration tests")
 	}

@@ -34,10 +34,27 @@ var (
 	// notPastEd are words in -ed that are no past form.
 	notPastEd = wordSet(`need feed speed seed bleed breed proceed succeed exceed embed shed bed red hundred sacred
 		kindred naked wicked rugged ragged beloved indeed weed reed steed greed creed deed heed shred sled wed bred
-		fled led fed`)
+		fled led fed advanced detailed experienced sophisticated dedicated`)
 	// staticPhrases are participles that describe code as it stands, not an
 	// event: the short allowlist the guide names.
-	staticPhrases = regexp.MustCompile(`\b(?:is|are|be|being)\s+(?:defined|declared|called|named|used|based|typed|exported|embedded|ordered|sorted|keyed|scoped|bounded|nested|shared|required|expected|allowed|supported|meant|known)\b|\b(?:so-called|built-in|well-known|hard-coded|zero-based)\b`)
+	staticPhrases = regexp.MustCompile(`\b(?:is|are|am|be|being)\s+(?:signed in|logged in|defined|declared|called|named|used|based|typed|exported|embedded|ordered|sorted|keyed|scoped|bounded|nested|shared|required|expected|allowed|supported|meant|known)\b|\b(?:so-called|built-in|well-known|hard-coded|zero-based)\b`)
+	// describesCodeRe is what code does, said in the present: a present
+	// passive of a verb of data flow or wiring ("is initialized with", "are
+	// eventually passed to"), a participle that names what produced or
+	// receives a value ("the documents returned by"), or one that qualifies
+	// a noun ("the combined results", "Specialized Worker Role:"). None is a
+	// verb of change (added, removed, changed, updated, fixed, created …),
+	// and none is in the past: "was initialized" stays an event.
+	describesCodeRe = regexp.MustCompile(`\b(?:is|are|be|being)\s+(?:\w+ly\s+|then\s+|also\s+|first\s+|later\s+|only\s+)?` + dataFlowParticiples + `\b` +
+		`|\b(?:returned|produced|yielded|raised|emitted|provided|consumed|passed|retrieved|fetched)\s+(?:by|from)\b|\bpass(?:ed|ing)\s+(?:to|into|along|through|on to|down to|back to|in|as an? \w+|as (?:the|its|a) \w+)\b|\bpassing\s+the\s+(?:\w+\s+){0,3}?\w+\s+(?:to|into|from)\b` +
+		`|\b(?:the|a|an|its|their|each|every|this|that|these|those)\s+` + qualifyingParticiples + `\s`)
+	// dataFlowParticiples say how values move through code and how it is
+	// wired; none says a piece of work is finished (merged, processed,
+	// resolved, handled, built, deployed are left out).
+	dataFlowParticiples = `(?:initiali[sz]ed|instantiated|constructed|injected|passed|returned|stored|combined|wrapped|invoked|called|delegated|consumed|provided|produced|assigned|mapped|routed|forwarded|appended|accumulated|computed|derived|aggregated|filtered|ranked|retrieved|fetched|queried|serialized|serialised|parsed|dispatched|evaluated|annotated|composed|chained|connected|linked)`
+	// qualifyingParticiples qualify a noun; at the start of a sentence they
+	// count only in a label ("Specialized Worker Role:").
+	qualifyingParticiples = `(?:specialized|specialised|combined|cached|retrieved|derived|computed|aggregated|weighted|normalized|normalised|tokenized|tokenised|serialized|serialised|annotated|typed|nested|embedded|shared)`
 	// searchFoundRe is what a search turned up: its output, not a change.
 	searchFoundRe = regexp.MustCompile(`\b(?:search|grep|scan)\b[^.;]*?\bturned up\b`)
 
@@ -65,6 +82,42 @@ func wordSet(s string) map[string]bool {
 	return m
 }
 
+// resultedInRe is a run's outcome said with its count.
+var resultedInRe = regexp.MustCompile(`\b(?:resulted|ended|finished|exited)\s+(?:in|with)(?:\s+(?:\d|a\s|an\s|no\s|ok\b|success)|\s*[.,;!]?\s*$)`)
+
+// afterChangeRe refers to the session's change as a time: "following the
+// changes", "after the fix". It is judged apart: a change must have been
+// made.
+var afterChangeRe = regexp.MustCompile(`\b(?:after|following|with|since)\s+(?:the|my|these|those|our|this|that)\s+(?:changes?|fix(?:es)?|edits?|updates?)\b`)
+
+// setUpRe is "set up" said as a state.
+var setUpRe = regexp.MustCompile(`\b(?:is|are|was|were|been|being)\s+(?:\w+ly\s+|now\s+|all\s+)?set\s+up\b`)
+
+// labelRe is a short label that opens with a qualifying participle, alone
+// (a clause the label was split into): "specialized worker role".
+var labelRe = regexp.MustCompile(`^\s*` + qualifyingParticiples + `((?:\s+[a-z\-]+){1,4})\s*(:|$)`)
+
+// labelNotWords are words a label of nouns never holds; with one, the
+// participle is a verb ("combined the results").
+var labelNotWords = wordSet(`the a an it its them their all both my our your this that these those to into with`)
+
+// qualifyingLabel blanks a label made of a qualifying participle and nouns.
+func qualifyingLabel(t string) string {
+	m := labelRe.FindStringSubmatchIndex(t)
+	if m == nil {
+		return t
+	}
+	// A word of change or event in the label keeps it: "combined fixes
+	// applied" reports work.
+	for _, w := range strings.Fields(t[m[2]:m[3]]) {
+		if labelNotWords[w] || irregularPast[w] || len(w) > 3 && strings.HasSuffix(w, "ed") && !notPastEd[w] ||
+			eventWordRe.MatchString(w) || changeActRe.MatchString(w) {
+			return t
+		}
+	}
+	return t[:m[0]] + strings.Repeat(" ", m[1]-m[0]) + t[m[1]:]
+}
+
 // eventWord is the first word that makes a claim's text an event, or "".
 func eventWord(text string) string {
 	if ws := eventWords(text); len(ws) > 0 {
@@ -78,10 +131,18 @@ func eventWords(text string) []string {
 	t := normText(backtickRe.ReplaceAllString(text, " "))
 	t = countOutcomeRe.ReplaceAllString(t, " ")
 	t = staticPhrases.ReplaceAllString(t, " ")
+	t = describesCodeRe.ReplaceAllString(t, " ")
+	t = afterChangeRe.ReplaceAllString(t, " ")
+	// "the run resulted in 5 failures": what a run showed, which the count
+	// is compared with.
+	t = resultedInRe.ReplaceAllString(t, " ")
+	t = qualifyingLabel(t)
 	t = outputSaysRe.ReplaceAllString(t, " ")
 	t = searchFoundRe.ReplaceAllString(t, " ")
 	t = noFailRe.ReplaceAllString(t, " ")
 	out := eventWordRe.FindAllString(t, -1)
+	// "is set up" says work is in place: "set" alone is not read as past.
+	out = append(out, setUpRe.FindAllString(t, -1)...)
 	// "after moving `total := 0` up": a change said as what came before.
 	for _, m := range afterDoingRe.FindAllStringSubmatch(t, -1) {
 		if changeActRe.MatchString(m[1]) {
@@ -193,15 +254,15 @@ func (ix *recordIndex) changeTexts() []changeText {
 		}
 		switch m.tool {
 		case "edit":
-			out = append(out, changeText{seq: m.seq, pos: m.pos, path: a.Path, old: a.OldString, new: a.NewString})
+			out = append(out, changeText{seq: m.seq, pos: m.pos, path: m.path, old: a.OldString, new: a.NewString})
 		case "write":
-			before, known := ix.before(a.Path, m.pos, out)
+			before, known := ix.before(m.path, m.pos, out)
 			if !known {
-				out = append(out, changeText{seq: m.seq, pos: m.pos, path: a.Path, new: a.Content, fresh: true, full: a.Content, created: m.created})
+				out = append(out, changeText{seq: m.seq, pos: m.pos, path: m.path, new: a.Content, fresh: true, full: a.Content, created: m.created})
 				continue
 			}
 			oldL, newL := lineDiff(before, a.Content)
-			out = append(out, changeText{seq: m.seq, pos: m.pos, path: a.Path, old: oldL, new: newL, full: a.Content})
+			out = append(out, changeText{seq: m.seq, pos: m.pos, path: m.path, old: oldL, new: newL, full: a.Content})
 		case "bash", "ssh":
 			if o, n, file, ok := sedEdit(a.Command); ok && m.tool == "bash" {
 				out = append(out, changeText{seq: m.seq, pos: m.pos, path: m.sedPath(file, ix), old: o, new: n})
@@ -317,7 +378,7 @@ func mutatingCmd(cmd string) bool {
 func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText) {
 	var tokens []string
 	for _, t := range f.tokens {
-		if !f.toolNamed[normText(t)] {
+		if !f.toolNamed[normText(t)] && !nameNotCode(f, t) {
 			tokens = append(tokens, t)
 		}
 	}
@@ -349,7 +410,7 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 				before, _ := ix.before(ct.path, ct.pos, nil)
 				placeE = prepareEvidence(codeLines(enclosing(ix.fileAfter(ct), before, ct.new, ct.old), ct.path), false)
 			}
-			return placeE.hasLiteral(nt)
+			return codeHas(placeE, nt)
 		}
 		isFile := func(nt string) bool {
 			return ct.path != "" && (nt == normText(filepath.Base(ct.path)) || nt == normText(ct.path) || strings.HasSuffix(normText(ct.path), "/"+nt))
@@ -359,7 +420,7 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 		hit, added := "", false
 		for _, t := range tokens {
 			nt := normText(t)
-			inOld, inNew := oldE.hasLiteral(nt), newE.hasLiteral(nt)
+			inOld, inNew := codeHas(oldE, nt), codeHas(newE, nt)
 			switch {
 			case isFile(nt):
 				if hit == "" && path == "" {
@@ -375,7 +436,7 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 		// early"): every token on a line enclosing the changed lines.
 		if hit == "" && f.dir == "" {
 			for _, t := range tokens {
-				if nt := normText(t); ctxE.hasLiteral(nt) && after(nt) && !oldE.hasLiteral(nt) {
+				if nt := normText(t); codeHas(ctxE, nt) && after(nt) && !codeHas(oldE, nt) {
 					hit = t
 					break
 				}
@@ -387,7 +448,7 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 		ok := hit != ""
 		for _, t := range tokens {
 			nt := normText(t)
-			inOld, inNew := oldE.hasLiteral(nt), newE.hasLiteral(nt)
+			inOld, inNew := codeHas(oldE, nt), codeHas(newE, nt)
 			switch {
 			case t == hit || isFile(nt) || inNew:
 			case inOld && (f.oldNamed[nt] || f.dir == "remove"):
@@ -397,14 +458,31 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 				if !anchorSide(f.anchorNamed[nt], nt, ct.new, put) && !anchorSide(f.anchorNamed[nt], nt, ix.fileAfter(ct), put) {
 					ok = false
 				}
-			case (added || f.inNamed[nt]) && !inOld && after(nt):
-			case !inOld && ctxE.hasLiteral(nt) && after(nt):
+			// The code a change was made in, named beside what it put in ("I
+			// changed `Tip` to return `x`"): a line enclosing the change.
+			case (added || f.inNamed[nt] || f.dir == "") && !inOld && after(nt):
+			case !inOld && codeHas(ctxE, nt) && after(nt):
 			default:
 				ok = false
 			}
 		}
 		if ok && f.onOff != "" && !onOffShown(f.onOff, newE) {
 			ok = false
+		}
+		// What a change is said to have made, or put in, must still be there:
+		// a later change of the file that took it away leaves the claim behind.
+		for j := i + 1; ok && j < len(cts); j++ {
+			if !samePathAs(cts[j].path, ct.path) {
+				continue
+			}
+			g2, p2 := lineDiff(cts[j].old, cts[j].new)
+			o2, n2 := prepareEvidence(codeLines(g2, ct.path), false), prepareEvidence(codeLines(p2, ct.path), false)
+			for _, t := range tokens {
+				// Anything this change put in that a later one took away.
+				if nt := normText(t); (f.changeTargets[nt] || codeHas(newE, nt)) && codeHas(o2, nt) && !codeHas(n2, nt) {
+					ok = false
+				}
+			}
 		}
 		if ok {
 			return finding{out: matched, call: true, what: fmt.Sprintf("a change given %q at #%d", clipRunes(hit, 40), ct.seq), seq: ct.seq}, newE
@@ -651,16 +729,23 @@ func (ix *recordIndex) fileAfter(ct changeText) string {
 // gutterRe is the read tool's line number before each line.
 var gutterRe = regexp.MustCompile(`(?m)^ *\d+\t`)
 
+// readTrailerRe is the note a truncated read ends with.
+var readTrailerRe = regexp.MustCompile(`\n\[truncated: showing lines \d+-\d+ of \d+\.[^\n]*\]\s*$`)
+
 // stripGutter takes the read tool's line numbers off a read's text, when
-// every line has one.
+// every line has one; a truncated read's closing note is kept as it is.
 func stripGutter(s string) string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	body, trailer := s, ""
+	if m := readTrailerRe.FindStringIndex(s); m != nil {
+		body, trailer = s[:m[0]], s[m[0]:]
+	}
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
 	for _, l := range lines {
 		if l != "" && !gutterRe.MatchString(l) {
 			return s
 		}
 	}
-	return gutterRe.ReplaceAllString(s, "")
+	return gutterRe.ReplaceAllString(body, "") + trailer
 }
 
 // observed checks what the agent says it looked at against its reads,
@@ -675,6 +760,10 @@ func (ix *recordIndex) observed(f facts) finding {
 		if o.usable() && !o.isError && shownTools[o.tool] && o.child == "" {
 			cur = append(cur, o)
 		}
+	}
+	// Looking at something needs a read, listing or search that ran.
+	if len(cur) == 0 {
+		return finding{out: missing, why: "it says something was looked at, and no read, listing or search this session returned a result"}
 	}
 	isSearch := func(o *obsRec) bool { return o.tool == "grep" || o.tool == "glob" || o.tool == "web_search" }
 	pathNamed := func(o *obsRec, p string) bool {
@@ -893,4 +982,75 @@ var checkLeadRe = regexp.MustCompile(`^(?:(?:i|we|i've|we've) )?(?:\w+ly )?(?:te
 func lookOnly(s string) bool {
 	low := normText(backtickRe.ReplaceAllString(s, " "))
 	return observeRe.MatchString(low) && len(eventWords(observeRe.ReplaceAllString(low, " "))) == 0
+}
+
+// codeHas finds code in a change as hasLiteral does, and also with the
+// spacing around operators and brackets ignored: `a * b` is `a*b`.
+func codeHas(e *evidenceText, nt string) bool {
+	if e.hasLiteral(nt) {
+		return true
+	}
+	// Code with a quote or a comment in it is matched exactly: where its
+	// strings and comments end is not read.
+	if strings.ContainsAny(nt, "'\"`#") || strings.Contains(nt, "//") || strings.Contains(nt, "/*") {
+		return false
+	}
+	sq := squeezeCode(nt)
+	return sq != "" && (&evidenceText{norm: squeezeCode(e.norm)}).hasLiteral(sq)
+}
+
+// squeezeCode drops a space beside a word character or a bracket, outside
+// quoted strings; one between two word characters, or between two operator
+// or punctuation characters (`a < -b`, `a - -b`), stays.
+func squeezeCode(s string) string {
+	var b strings.Builder
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0:
+			b.WriteByte(c)
+			if c == '\\' && i+1 < len(s) {
+				i++
+				b.WriteByte(s[i])
+			} else if c == quote {
+				quote = 0
+			}
+			continue
+		case c == '"' || c == '\'' || c == '`':
+			quote = c
+		case c == ' ':
+			j := i
+			for j < len(s) && s[j] == ' ' {
+				j++
+			}
+			if i > 0 && j < len(s) {
+				l, r := s[i-1], s[j]
+				if isAlnum(l) && isAlnum(r) || isOperator(l) && isOperator(r) {
+					b.WriteByte(' ')
+				}
+			}
+			i = j - 1
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// isOperator is punctuation other than a bracket or a quote.
+func isOperator(c byte) bool {
+	return !isAlnum(c) && c != ' ' && !strings.ContainsRune("()[]{}\"'`", rune(c))
+}
+
+// nameNotCode reports a code span of a change claim that names no code put
+// in or taken out: the file itself, or a test module the tests ran from.
+func nameNotCode(f facts, t string) bool {
+	nt := normText(t)
+	for _, p := range f.paths {
+		if normText(p) == nt || normText(rawPath(p)) == nt {
+			return true
+		}
+	}
+	return testModule(t) != ""
 }

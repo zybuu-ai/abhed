@@ -138,6 +138,15 @@ func TestAccountsGetTheirOwnStoreByDefault(t *testing.T) {
 	if code := put("alice", "SHORT", `{"value":"abc"}`); code != http.StatusBadRequest {
 		t.Errorf("a short value: %d", code)
 	}
+	// Abhed's own names are refused, as asked, not as a failure to store.
+	if code := put("alice", "MCP_OAUTH_ABC", `{"value":"`+aliceToken+`"}`); code != http.StatusBadRequest {
+		t.Errorf("a held name stored: %d", code)
+	}
+	del := httptest.NewRequest("DELETE", "/v1/secrets/MCP_OAUTH_ABC_AT", nil)
+	del.Header.Set("X-Abhed-User", "alice")
+	if rec := httptest.NewRecorder(); func() int { h.ServeHTTP(rec, del); return rec.Code }() != http.StatusBadRequest {
+		t.Errorf("a held name removed piecemeal")
+	}
 	alice := run(t, h, events, "alice")
 	if !strings.Contains(alice, aliceToken[1:]) || strings.Contains(alice, operatorToken[1:]) {
 		t.Errorf("alice's command did not get her own value alone:\n%s", alice)

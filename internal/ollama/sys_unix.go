@@ -17,6 +17,7 @@ func diskFree(path string) (uint64, error) {
 	if err := unix.Statfs(p, &fs); err != nil {
 		return 0, err
 	}
+	// #nosec G115 -- statfs block counts and size are never negative
 	return uint64(fs.Bavail) * uint64(fs.Bsize), nil //nolint:unconvert // the field types differ by platform
 }
 

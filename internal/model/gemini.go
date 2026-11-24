@@ -40,6 +40,7 @@ type Gemini struct {
 	Notify func(string)
 
 	profile Profile
+	limits  *Limits
 }
 
 func NewGemini(baseURL, apiKey, model string, p Profile) *Gemini {
@@ -61,7 +62,10 @@ func NewGemini(baseURL, apiKey, model string, p Profile) *Gemini {
 }
 
 func (g *Gemini) Name() string     { return g.profile.Name }
-func (g *Gemini) Profile() Profile { return g.profile }
+func (g *Gemini) Profile() Profile { return g.limits.apply(g.profile) }
+
+// SetMaxTools sets the most tools one request may offer.
+func (g *Gemini) SetMaxTools(n int) { g.profile.MaxTools = n }
 
 type geminiPart struct {
 	Text             string          `json:"text,omitempty"`
@@ -225,15 +229,18 @@ func (g *Gemini) buildRequest(req Request) geminiRequest {
 		Temperature:     sp.Temperature,
 		TopP:            sp.TopP,
 		TopK:            sp.TopK,
-		MaxOutputTokens: sp.MaxTokens,
+		MaxOutputTokens: clampOutput(sp.MaxTokens, g.Profile()),
 		StopSequences:   sp.Stop,
 		Seed:            sp.Seed,
 	}
-	if sp.ThinkingBudget != nil {
+	switch {
+	case sp.Think != nil && !*sp.Think:
+		// Asked with thinking off: no budget sent, whatever is configured.
+	case sp.ThinkingBudget != nil:
 		cfg.ThinkingConfig = &geminiThinking{
 			ThinkingBudget: sp.ThinkingBudget, IncludeThoughts: true,
 		}
-	} else if sp.Think != nil && *sp.Think {
+	case sp.Think != nil && *sp.Think:
 		cfg.ThinkingConfig = &geminiThinking{IncludeThoughts: true}
 	}
 	out.GenerationConfig = &cfg
@@ -256,6 +263,10 @@ type geminiStreamChunk struct {
 }
 
 func (g *Gemini) Complete(ctx context.Context, req Request) (<-chan Chunk, error) {
+	req, wire, err := toWire(req, ToolLimit(g.Profile()), g.Name())
+	if err != nil {
+		return nil, err
+	}
 	// Refuse an image the endpoint cannot read, rather than sending it and
 	// letting the provider 400 with its own wording — or silently ignore it.
 	if err := CheckVision(g.Profile(), req); err != nil {
@@ -298,7 +309,7 @@ func (g *Gemini) Complete(ctx context.Context, req Request) (<-chan Chunk, error
 
 	out := make(chan Chunk, 32)
 	go g.stream(ctx, resp, out)
-	return out, nil
+	return fromWire(out, wire), nil
 }
 
 func (g *Gemini) stream(ctx context.Context, resp *http.Response, out chan<- Chunk) {
@@ -385,3 +396,6 @@ func (g *Gemini) CountTokens(req Request) (int, error) { return estimateTokens(r
 // fatalStatus: this adapter has no status it can recognise as hopeless, so
 // every retryable failure is retried.
 func (g *Gemini) fatalStatus(*StatusError) bool { return false }
+
+// Endpoint is the base URL the adapter calls.
+func (c *Gemini) Endpoint() string { return c.BaseURL }

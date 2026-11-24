@@ -119,3 +119,29 @@ func TestACPAlwaysNotOfferedIsRefused(t *testing.T) {
 }
 
 func hasKey(m map[string]string, k string) bool { _, ok := m[k]; return ok }
+
+// The first use of a cluster or host from the person's own setup is drawn as
+// such: its "always" names what is kept for the person, and the card says so.
+func TestACPFirstUseOffersAlwaysForThePerson(t *testing.T) {
+	var params json.RawMessage
+	c, _ := answeringConn(t, func(p json.RawMessage) any {
+		params = p
+		return chosen(p, "allow_always")
+	})
+	s := &acpSession{id: "s1", cancel: func() {}, always: map[string]string{}}
+	ctx, answer := agent.ExpectAnswer(context.Background())
+	d := abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "k8s_context(lab)", Keeps: "kubeconfig context lab at https://lab.example:6443",
+		Reason: "first use of kubeconfig context lab", PinSHA256: "AB:CD", PinSubject: "CN=kube-apiserver-lb-signer"}
+	if ok, err := c.askEditor(ctx, s, "k8s_get", json.RawMessage(`{"resource":"pods","context":"lab"}`), d); err != nil || !ok {
+		t.Fatalf("ok %v err %v", ok, err)
+	}
+	if answer.Granted != "k8s_context(lab)" {
+		t.Fatalf("answer %+v", answer)
+	}
+	text := string(params)
+	if !strings.Contains(text, "Always for kubeconfig context lab at https://lab.example:6443 (kept for you, not in the workspace)") ||
+		!strings.Contains(text, `"firstUse"`) ||
+		!strings.Contains(text, `"pinnedCertificate":{"sha256":"AB:CD","subject":"CN=kube-apiserver-lb-signer"}`) {
+		t.Fatalf("the request: %s", text)
+	}
+}

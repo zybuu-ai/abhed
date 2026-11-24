@@ -15,17 +15,19 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/testenv"
 	"github.com/zybuu-ai/abhed/store"
 )
 
-// The child half of the process tests: it writes to a session until it is
-// killed, or holds it, as ABHED_RECORD_CHILD says.
+// Isolated first, the child half of the process tests too: it writes to a
+// session until it is killed, or holds it, as ABHED_RECORD_CHILD says.
 func TestMain(m *testing.M) {
+	g := testenv.Isolate()
 	if role := os.Getenv("ABHED_RECORD_CHILD"); role != "" {
 		child(role, os.Getenv("ABHED_RECORD_DIR"))
-		os.Exit(1)
+		os.Exit(g.Close(1))
 	}
-	os.Exit(m.Run())
+	os.Exit(g.Close(m.Run()))
 }
 
 // child writes or holds until it is killed; it returns only on a failure.

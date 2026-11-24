@@ -6,8 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -15,6 +15,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/regularfile"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -224,13 +225,28 @@ func (c *Contract) snapshot(sess *tools.Session) (out map[string]string, partial
 	return out, partial
 }
 
+// maxHashBytes bounds the bytes hashed of one protected file; a var for the tests.
+var maxHashBytes int64 = 256 << 20
+
+// hashFile hashes the plain file at p. A link, pipe or device in its place is
+// "unreadable", never followed or waited on. A file larger than maxHashBytes
+// (a sparse file can be any size) is named by its size, modification and
+// change times and inode instead: the change time, which no user can set
+// back, still shows an in-place rewrite.
 func hashFile(p string) string {
-	data, err := os.ReadFile(p) //nolint:gosec // a path the walk found under the session's root
+	f, fi, err := regularfile.Open(p)
 	if err != nil {
 		return "unreadable"
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	defer func() { _ = f.Close() }()
+	if fi.Size() > maxHashBytes {
+		return fmt.Sprintf("large:%d:%d:%d:%d", fi.Size(), fi.ModTime().UnixNano(), regularfile.ChangeTime(fi), regularfile.ID(fi))
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, io.LimitReader(f, maxHashBytes)); err != nil {
+		return "unreadable"
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func changedFiles(before, after map[string]string) []string {

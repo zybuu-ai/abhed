@@ -332,12 +332,19 @@ func (s *acpSession) watchListening(c *acpConn) {
 	}
 	s.parts.Set.ListenWatch(still, func(e sandbox.PortContested) {
 		msg := fmt.Sprintf("more than one program now listens on port %d, one of this workspace's listen ports: a command in the sandbox may be taking connections meant for a program of yours there. Abhed does not stop it: stop the command yourself, or turn listening off.", e.Port)
-		warnf("%s", msg)
-		if _, err := s.parts.Loop.Recorder.Record(agent.EvSandboxPortContested, agent.ActorSystem, agent.Trusted,
-			agent.SandboxPortContested{Port: e.Port, Listeners: e.Listeners}); err != nil {
-			warnf("the record did not take %s: %v", agent.EvSandboxPortContested, err)
+		if e.Record {
+			// The record and the log are bounded per port; the person is told every time.
+			warnf("%s (%d joined)", msg, e.Joined)
+			if _, err := s.parts.Loop.Recorder.Record(agent.EvSandboxPortContested, agent.ActorSystem, agent.Trusted,
+				agent.SandboxPortContested{Port: e.Port, Listeners: e.Listeners, Joined: e.Joined}); err != nil {
+				warnf("the record did not take %s: %v", agent.EvSandboxPortContested, err)
+			}
 		}
-		c.notification("_abhed/sandbox/port_contested", map[string]any{"sessionId": s.id, "port": e.Port, "message": msg})
+		if e.Notify {
+			// One entry per session and port: Studio replaces the earlier one in place.
+			c.notification("_abhed/sandbox/port_contested", map[string]any{"sessionId": s.id, "port": e.Port, "message": msg,
+				"joined": e.Joined, "latestJoin": e.At.UTC().Format(time.RFC3339)})
+		}
 	}, func(why string) {
 		msg := "Abhed can no longer see a port of yours contested by a sandboxed command: " + why + "."
 		warnf("%s", msg)

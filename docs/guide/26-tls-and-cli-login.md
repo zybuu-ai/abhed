@@ -182,12 +182,20 @@ console, as the account the command line will act as.
 - **Browser** (the default on a desktop): a browser opens on the server's
   approval page; approving sends a one-minute code back to a listener on
   `127.0.0.1` on your machine, which the command line exchanges with a proof
-  only it holds (PKCE, S256). Use `-browser` to choose it.
+  only it holds (PKCE, S256). Use `-browser` to choose it. The browser is
+  the one `BROWSER` names when it is set (commands separated by `:`, each
+  given the address in place of `%s` or at the end, run without a shell),
+  else the system's; `-no-browser` only prints the address, to open in a
+  browser on this machine yourself.
 - **Device code** (the default over SSH or without a display, or with
   `-device`): the command line prints a code such as `BCDF-GHJK` and a link;
   open `/cli/login` on any device, enter the code, check where the request came
   from and approve. The command line polls until you approve or deny, or the
   code expires after ten minutes.
+
+`abhed login` then says who you are signed in as by the account's email,
+or its name when it has no email, and so does `abhed profile list`; the
+profile keeps the server's subject for the account as its key.
 
 The token it receives is saved in a profile. It lasts `auth.cli.token_hours`
 (168, a week, by default; at most 2,160). It ends early when you run
@@ -207,7 +215,13 @@ abhed logout                                       # ends the token on the serve
 abhed profile rm staging
 ```
 
-**Profiles** are kept in `~/.abhed/profiles.json`, or `$ABHED_PROFILES_FILE`:
+On a machine no one is signed in to, `abhed login` is how you sign in: the
+server's account becomes who works here, until `abhed account signout`
+([Signing in](42-signing-in.md)). Signed in to an account on this machine,
+`abhed login` adds the server to that account.
+
+**Profiles** are kept in the signed-in account's `profiles.json` under
+`~/.abhed/accounts/` (in `~/.abhed/profiles.json` before sign-in), or `$ABHED_PROFILES_FILE`:
 the server URL, the account, the token and its expiry, and the paths of any
 CA or client certificate. The file is written mode 600; it is refused if
 other users can read it or if it is a link, and refused inside the workspace

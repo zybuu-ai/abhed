@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/bgcli"
 )
 
 // The command line's own flags written after a built-in subcommand. They
@@ -24,11 +25,12 @@ var subOwnFlags = map[string][]string{
 	"user":     {"name"},
 	"pki":      {"name"},
 	"sandbox":  {"name", "c"},
+	"bg":       {"name", "mode"},
 }
 
 // noWorkspace are the subcommands that never read the workspace, so -C
 // means nothing to them.
-var noWorkspace = map[string]bool{"providers": true, "secret": true, "pki": true, "admin": true}
+var noWorkspace = map[string]bool{"providers": true, "provider": true, "models": true, "secret": true, "machine": true, "pki": true, "admin": true, "bg": true}
 
 // noArgs are the subcommands that take no arguments; doctor takes only
 // --json and -timeout, and version only --json.
@@ -53,8 +55,36 @@ func takesGlobal(sub, name string) bool {
 		}
 	case "settings":
 		return sub == "doctor"
+	case "guest", "account":
+		return personCommands[sub]
 	}
 	return false
+}
+
+// bgStartWorkspace reports whether flag is -C on abhed bg start, the one bg
+// command that reads the workspace: its snapshot is of that repository.
+// Only before the prompt; bgPromptAt passes the prompt on whole.
+func bgStartWorkspace(sub []string, flag string) bool {
+	return flag == "C" && len(sub) > 1 && sub[0] == "bg" && sub[1] == "start"
+}
+
+// bgPromptAt is where abhed bg start's prompt begins in sub: its first word
+// that is neither a flag nor a flag's value, or "--". Past the end for any
+// other command.
+func bgPromptAt(sub []string) int {
+	if len(sub) < 2 || sub[0] != "bg" || sub[1] != "start" {
+		return len(sub)
+	}
+	for i := 2; i < len(sub); i++ {
+		name, _, hasValue, isFlag := splitFlag(sub[i])
+		if !isFlag {
+			return i
+		}
+		if !hasValue && (name == "C" || bgcli.StartTakesValue(name)) {
+			i++
+		}
+	}
+	return len(sub)
 }
 
 // ignoredBefore names the top-level flags set on the command line that the
@@ -82,8 +112,14 @@ func hoistGlobalFlags(fs *flag.FlagSet, sub []string) ([]string, error) {
 	}
 	left := []string{name}
 	words := 1
+	prompt := bgPromptAt(sub)
 	for i := 1; i < len(sub); i++ {
 		arg := sub[i]
+		if i >= prompt {
+			// bg start's prompt, passed on whole: a "-C" in it is its text.
+			left = append(left, sub[i:]...)
+			break
+		}
 		if name == "doctor" && (arg == "-timeout" || arg == "--timeout") && i+1 < len(sub) {
 			left = append(left, arg, sub[i+1])
 			i++
@@ -108,7 +144,7 @@ func hoistGlobalFlags(fs *flag.FlagSet, sub []string) ([]string, error) {
 			left = append(left, arg)
 			continue
 		}
-		if !takesGlobal(name, flagName) {
+		if !takesGlobal(name, flagName) && !bgStartWorkspace(sub, flagName) {
 			return nil, fmt.Errorf("-%s does not apply to %s; see abhed %s -h", flagName, name, name)
 		}
 		if !hasValue {

@@ -65,7 +65,11 @@ func newFIMServer(t *testing.T, text string) *fimServer {
 		case r.URL.Path == "/v1/completions" && status != 0:
 			http.Error(w, body, status)
 		case r.URL.Path == "/v1/completions":
-			out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"text": text}}, "usage": map[string]any{"prompt_tokens": 30, "completion_tokens": 4}})
+			// The prompt's size as a server counts it, near four characters a token.
+			prompt, _ := m["prompt"].(string)
+			suffix, _ := m["suffix"].(string)
+			out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"text": text}},
+				"usage": map[string]any{"prompt_tokens": 30 + (len(prompt)+len(suffix))/4, "completion_tokens": 4}})
 			_, _ = w.Write(out)
 		case r.URL.Path == "/v1/chat/completions":
 			out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": text}, "finish_reason": "stop"}}})
@@ -162,7 +166,11 @@ func TestStudioCompletes(t *testing.T) {
 		t.Fatalf("completion.enabled %v", enabled)
 	}
 	sum, _ := r.recorded(id, agent.EvCompletionSummary)
-	if len(sum) != 1 || sum[0]["requests"] != float64(1) || sum[0]["served"] != float64(1) || sum[0]["refused"] != float64(2) || sum[0]["tokens_in"] != float64(30) {
+	// The tokens in are what the server reported for the request it saw.
+	suffix, _ := seen[0]["suffix"].(string)
+	reported := float64(30 + (len(prompt)+len(suffix))/4)
+	if len(sum) != 1 || sum[0]["requests"] != float64(1) || sum[0]["served"] != float64(1) || sum[0]["refused"] != float64(2) ||
+		sum[0]["tokens_in"] != reported || sum[0]["estimated"] != nil {
 		t.Fatalf("completion.summary %v", sum)
 	}
 }
@@ -682,7 +690,9 @@ func TestStudioCompletionsRedirectsUnderLocalOnly(t *testing.T) {
 		follows          bool
 	}{
 		{"openai-compatible local_only", "openai-compatible", `,"completion":{"local_only":true}`, false},
-		{"openai-compatible", "openai-compatible", "", true},
+		// Model endpoints never follow a redirect to another host, port or scheme,
+		// local_only or not: the key would follow it.
+		{"openai-compatible", "openai-compatible", "", false},
 		{"anthropic local_only", "anthropic", `,"completion":{"local_only":true}`, false},
 		{"gemini local_only", "gemini", `,"completion":{"local_only":true}`, false},
 	} {
@@ -758,7 +768,7 @@ func TestStudioCompletionsWithholdAcrossTheCursor(t *testing.T) {
 				t.Fatalf("request %d sent %q of a secret split at the cursor: %q | %q", i, frag, p, sfx)
 			}
 		}
-		if !strings.HasSuffix(sfx, "\"\nnext()") || !strings.Contains(p+sfx, "[secret") {
+		if !strings.HasSuffix(sfx, "\"\nnext()") || !strings.Contains(p+sfx, "[secret") && !strings.Contains(p+sfx, "[pasted credential]") {
 			t.Fatalf("request %d: %q | %q", i, p, sfx)
 		}
 	}

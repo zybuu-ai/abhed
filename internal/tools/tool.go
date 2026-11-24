@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -51,6 +52,14 @@ func MutatesCall(t Tool, args json.RawMessage) bool {
 // runs it before asking a person, so nobody approves a call that cannot succeed.
 type Prechecker interface {
 	Precheck(sess *Session, args json.RawMessage) error
+}
+
+// PlanPrechecker is a Prechecker whose answer is more use than plan mode's
+// refusal, so the loop runs it first there too. Its check connects nothing
+// and reaches nothing; it only says why the call is the wrong one.
+type PlanPrechecker interface {
+	Prechecker
+	PrecheckInPlanMode()
 }
 
 // ContextPrechecker is a Prechecker whose check reaches elsewhere, such as a
@@ -96,11 +105,34 @@ type ContextArgResolver interface {
 	ResolveArgsContext(ctx context.Context, sess *Session, args json.RawMessage) (out json.RawMessage, resolved []string, err error)
 }
 
+// HostAsker is a tool some of whose calls run on the host as the person,
+// such as bash's brokered git fetch: why one needs the person's approval,
+// the step it is asked under and what a grant for it is bound to, or why it
+// is refused before anyone is asked. key, the call's sandbox.Launch.Key,
+// ties what it judged to the call that runs.
+type HostAsker interface {
+	AskHost(sess *Session, key string, args json.RawMessage) (reason, step, bind string, err error)
+}
+
+// HostImplier says what a call runs as once the repository's own
+// configuration is applied (a plain git push its settings make a force
+// push), for policy to judge as well; "" when nothing differs.
+type HostImplier interface {
+	ImpliedHost(sess *Session, args json.RawMessage) string
+}
+
 // Targeter names where a call sends what it carries, such as the server a
 // credential goes to, when the arguments alone do not show it. The person
 // approving the call and the record both get it.
 type Targeter interface {
 	Target(sess *Session, args json.RawMessage) string
+}
+
+// CertificatePinner is a tool whose call, once approved, pins the
+// certificate a server presented: its SHA-256 and subject, for the person
+// approving it to check. ok is false when the call pins none.
+type CertificatePinner interface {
+	PinnedCertificate(sess *Session, args json.RawMessage) (sha256, subject string, ok bool)
 }
 
 // precheckPath is the shared check for tools whose target is a "path" argument.
@@ -157,6 +189,9 @@ type Result struct {
 	// SandboxNote is the kind of refusal bash put a sandbox note in Content
 	// for (see sandboxHint), "" when it put none; recorded with the result.
 	SandboxNote string
+	// NetworkOff is set when bash added its note that the command failed
+	// because the network is off: a surface may offer the person to open it.
+	NetworkOff bool
 	// Events are recorded after the result, as the system's, such as a
 	// toolchain install the call made.
 	Events []Event
@@ -192,14 +227,58 @@ func NewRegistry(ts ...Tool) *Registry {
 	return r
 }
 
-func (r *Registry) Add(t Tool) {
+// Add registers t and reports whether it did: a name already registered is
+// refused and the first tool keeps it; the caller warns. Replace swaps.
+func (r *Registry) Add(t Tool) bool {
+	if _, dup := r.tools[t.Name()]; dup {
+		return false
+	}
+	r.order = append(r.order, t.Name())
+	r.tools[t.Name()] = t
+	return true
+}
+
+// Replace puts t in place of the tool of its name, keeping its place, or
+// adds it: a deliberate swap, such as a session's bound bash.
+func (r *Registry) Replace(t Tool) {
 	if _, dup := r.tools[t.Name()]; !dup {
 		r.order = append(r.order, t.Name())
 	}
 	r.tools[t.Name()] = t
 }
 
+// Cloner is a tool with per-session state, such as a deferred tool's
+// loaded flag: each registry derived from another gets its own copy.
+type Cloner interface {
+	CloneTool() Tool
+}
+
+// Rebinder is a tool that refers to others of its registry, such as
+// tool_search to the tools it loads: a derived registry rebinds it to its own.
+type Rebinder interface {
+	Rebind(r *Registry) Tool
+}
+
+// own gives r its own copy of every Cloner, then rebinds every Rebinder to them.
+func (r *Registry) own() *Registry {
+	for _, n := range r.order {
+		if c, ok := r.tools[n].(Cloner); ok {
+			r.tools[n] = c.CloneTool()
+		}
+	}
+	for _, n := range r.order {
+		if b, ok := r.tools[n].(Rebinder); ok {
+			r.tools[n] = b.Rebind(r)
+		}
+	}
+	return r
+}
+
+// Get is the tool named; a nil registry has none.
 func (r *Registry) Get(name string) (Tool, bool) {
+	if r == nil {
+		return nil, false
+	}
 	t, found := r.tools[name]
 	return t, found
 }
@@ -209,6 +288,20 @@ func (r *Registry) Get(name string) (Tool, bool) {
 func (r *Registry) Names() []string {
 	out := make([]string, len(r.order))
 	copy(out, r.order)
+	return out
+}
+
+// OfferedNames are the names of the tools offered now, leaving out those
+// hidden for now (a deferred MCP tool, a cluster tool with nothing yet to
+// reach): what a prompt built now may tell the model it has.
+func (r *Registry) OfferedNames() []string {
+	out := make([]string, 0, len(r.order))
+	for _, n := range r.order {
+		if h, ok := r.tools[n].(Hidden); ok && h.Hidden() {
+			continue
+		}
+		out = append(out, n)
+	}
 	return out
 }
 
@@ -240,7 +333,7 @@ func (r *Registry) Clone() *Registry {
 		out.tools[k] = v
 	}
 	copy(out.order, r.order)
-	return out
+	return out.own()
 }
 
 // Remove drops a tool. Used when an MCP server is disconnected, whose tools
@@ -269,7 +362,7 @@ func (r *Registry) Subset(names ...string) *Registry {
 			sub.Add(t)
 		}
 	}
-	return sub
+	return sub.own()
 }
 
 // SubsetStrict returns a registry limited to the tools names match, in this
@@ -299,7 +392,7 @@ func (r *Registry) SubsetStrict(names []string) (*Registry, []string) {
 			sub.Add(r.tools[n])
 		}
 	}
-	return sub, missing
+	return sub.own(), missing
 }
 
 // Without returns a copy of the registry without the tools names match. A
@@ -321,7 +414,7 @@ func (r *Registry) Without(names []string) *Registry {
 			out.Add(r.tools[n])
 		}
 	}
-	return out
+	return out.own()
 }
 
 // match finds the tools one written name stands for.
@@ -377,6 +470,36 @@ type Definition struct {
 // tool search loads it.
 type Hidden interface {
 	Hidden() bool
+}
+
+// Unloadable is a hidden tool that was loaded on request and can be put back
+// out of the offered set: a deferred MCP tool tool_search loaded.
+type Unloadable interface {
+	Hidden
+	// LastUsed orders loaded tools by when they were last loaded or called.
+	LastUsed() int64
+	Unload()
+}
+
+// UnloadLeastUsed unloads up to n loaded Unloadable tools, least recently
+// used first, and says how many; a built-in is never one.
+func (r *Registry) UnloadLeastUsed(n int) int {
+	var loaded []Unloadable
+	for _, name := range r.order {
+		if u, ok := r.tools[name].(Unloadable); ok && !u.Hidden() {
+			loaded = append(loaded, u)
+		}
+	}
+	sort.SliceStable(loaded, func(i, j int) bool { return loaded[i].LastUsed() < loaded[j].LastUsed() })
+	done := 0
+	for _, u := range loaded {
+		if done == n {
+			break
+		}
+		u.Unload()
+		done++
+	}
+	return done
 }
 
 // Definitions are the tools offered to the model, in registration order,

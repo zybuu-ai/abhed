@@ -611,10 +611,13 @@ do, so a proxy that inspects TLS breaks neither.
 When a model call fails at the proxy (the proxy is not answering, it
 refuses the tunnel or asks for credentials, or the call comes back 502, 503
 or 504), the error names the proxy and the model host; an answer the model
-server gave itself is reported as the server's. A provider's default
-endpoint, with no `base_url`, is taken to go through the proxy. And
-`/doctor` says the endpoint answered only when a call through the proxy
-did.
+server gave itself is reported as the server's, except a 407 on an
+`http://` endpoint, whose calls the proxy forwards (on `https://` the
+proxy's 407 refuses the tunnel itself). With no `base_url`, a hosted provider's default endpoint is
+checked against `no_proxy` like any host, and a local server type's
+(`ollama`, `vllm`, `llamacpp`, `tgi`, `sglang`) loopback default is reached
+directly. And `/doctor` says the endpoint answered through the proxy only
+when a call through it did.
 
 **Not covered:** a PAC file or WPAD; SOCKS; a name under `.localhost`
 (`app.localhost`), which is always reached directly, though only `localhost`

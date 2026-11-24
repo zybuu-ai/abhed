@@ -29,6 +29,8 @@ func TestActivityLinesAreDrawn(t *testing.T) {
 			[]string{"◆ session allow rule added: bash(go test*) (until /clear)"}},
 		{"hook", event(t, agent.EvHookFired, agent.HookFired{Extension: "guard", Event: "pre_tool", Verdict: "block"}),
 			[]string{"◆ hook guard · pre_tool · block"}},
+		{"waiting", event(t, agent.EvModelWaiting, agent.ModelWaiting{Ahead: 2}),
+			[]string{"◆ waiting for the model · 2 ahead · its provider's request slots are in use"}},
 		{"auto", event(t, agent.EvActionApproved, map[string]string{"call_id": "1", "by": "policy", "step": "allow", "rule": "bash(go test*)"}),
 			[]string{"✓ auto: bash(go test*)"}},
 	}

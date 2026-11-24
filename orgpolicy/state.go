@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/safeurl"
 )
 
 // StateVersion is the state file format.
@@ -194,9 +195,9 @@ func Evaluate(st *State, m Machine, now time.Time) Effective {
 	e := Effective{URL: st.URL, Profile: st.Profile}
 	if m.URL != "" && st.URL != m.URL {
 		if m.Required {
-			return fallback(Effective{URL: m.URL}, fmt.Sprintf("the managed configuration takes the org policy only from %s, and this machine is signed in to %s", m.URL, st.URL))
+			return fallback(Effective{URL: m.URL}, fmt.Sprintf("the managed configuration takes the org policy only from %s, and this machine is signed in to %s", safeurl.Server(m.URL), safeurl.Server(st.URL)))
 		}
-		return Effective{Status: StatusNone, Reason: fmt.Sprintf("the org policy from %s is not taken: the managed configuration names %s", st.URL, m.URL)}
+		return Effective{Status: StatusNone, Reason: fmt.Sprintf("the org policy from %s is not taken: the managed configuration names %s", safeurl.Server(st.URL), safeurl.Server(m.URL))}
 	}
 	if st.Envelope == nil {
 		why := "no policy has been fetched yet"
@@ -243,7 +244,7 @@ func orURL(u string) string {
 	if u == "" {
 		return "an org server"
 	}
-	return u
+	return safeurl.Server(u)
 }
 
 // Accept verifies env against st's pins (and subject and check, when set) and

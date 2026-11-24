@@ -5,15 +5,19 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 func (wb *workbench) startPTY(command string) ptyStartResponse {
@@ -280,5 +284,34 @@ func TestLargeFileIsEditable(t *testing.T) {
 	}
 	if r := wb.send("acme", "PUT", "file", saveRequest{Path: "big.txt", Content: f.Content + "end\n", Base: f.Hash}); r.Code != http.StatusOK {
 		t.Fatalf("save of a 2 MB file: %d %s", r.Code, r.Body)
+	}
+}
+
+// A command typed on the terminal reports its end to what waits on it, as
+// a git fetch run through host git does to record its exit.
+func TestTerminalCommandReportsItsEnd(t *testing.T) {
+	ended := make(chan error, 1)
+	bash := tools.Bash{Sandbox: func(ctx context.Context, cwd, line string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, "bash", "-c", line)
+		cmd.Dir = cwd
+		sandbox.OnExit(cmd, func(err error) { ended <- err })
+		return cmd
+	}}
+	wb := manualBenchWith(t, nil, tools.NewRegistry(tools.Read{}, tools.Write{}, bash))
+	start := wb.startPTY("exit 3")
+	if start.Denied != "" || start.ID == "" {
+		t.Fatalf("start: %+v", start)
+	}
+	if _, exit := wb.ptyOutput(start.ID, ""); exit != "3" {
+		t.Fatalf("exit %q", exit)
+	}
+	select {
+	case err := <-ended:
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) || ee.ExitCode() != 3 {
+			t.Fatalf("reported %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the terminal command's end was not reported")
 	}
 }

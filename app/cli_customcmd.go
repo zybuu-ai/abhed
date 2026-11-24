@@ -12,6 +12,8 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/customcmd"
+	"github.com/zybuu-ai/abhed/internal/home"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
@@ -60,12 +62,12 @@ func ensureCustomCommands(st *cliState, r *ui.Renderer) {
 	}
 	if n := len(st.input.custom.untrusted); n > 0 {
 		sf.Append(ui.Block{Kind: ui.BlockNotice, Text: fmt.Sprintf(
-			"%d workspace command(s) in %s are not trusted (%s), so they do not run; /commands trust reviews them",
+			"%d workspace command(s) in %s are not trusted (%s), so they do not run; /commands trust, or `abhed trust` at a shell, reviews them",
 			n, customcmd.WorkspaceDir, st.input.custom.wsReason)})
 	}
 }
 
-// loadCustomCommands reads the managed, user and workspace commands and
+// loadCustomCommands reads the managed, user, plugin and workspace commands and
 // registers them, then the MCP servers' prompts, as run-time sources:
 // built-ins still win every name.
 func loadCustomCommands(st *cliState) {
@@ -86,7 +88,7 @@ func loadCustomCommands(st *cliState) {
 	}
 	// Earlier sources win a name the registry has not given a built-in.
 	st.dynamic = nil
-	for _, kind := range []string{customcmd.SourceManaged, customcmd.SourceUser, customcmd.SourceWorkspace} {
+	for _, kind := range []string{customcmd.SourceManaged, customcmd.SourceUser, customcmd.SourcePlugin, customcmd.SourceWorkspace} {
 		if len(bySource[kind]) > 0 {
 			st.dynamic = append(st.dynamic, customSource{kind: kind, cmds: bySource[kind]})
 		}
@@ -139,7 +141,7 @@ func customSlash(c *customcmd.Command, runnable bool) slashCmd {
 	if !runnable {
 		help = "not trusted: /commands trust reviews it"
 		run = func(context.Context, *cmdEnv, []string) (bool, error) {
-			return false, fmt.Errorf("%s came with the workspace and is not trusted; /commands trust reviews it", c.Name)
+			return false, fmt.Errorf("%s came with the workspace and is not trusted; /commands trust, or `abhed trust` at a shell, reviews it", c.Name)
 		}
 	}
 	return slashCmd{Name: c.Name, Args: c.ArgumentHint, Help: help, Group: "custom", Run: run}
@@ -221,6 +223,8 @@ func runCustom(ctx context.Context, e *cmdEnv, c *customcmd.Command, args []stri
 			undo[i]()
 		}
 	}
+	// The command's body is not the person's own words.
+	msg.Typed = ""
 	if err := st.sendTurn(msg, restore); err != nil {
 		restore()
 		return err
@@ -306,7 +310,7 @@ func trustCommands(ctx context.Context, st *cliState, sf ui.Surface) error {
 	}
 	rows := [][]string{{"file", "sha256", "first line"}}
 	for _, f := range cs.wsFiles {
-		first := strings.TrimSpace(strings.SplitN(strings.TrimSpace(string(f.Data)), "\n", 2)[0])
+		first := commandSummary(f)
 		rows = append(rows, []string{f.Key, shortSum(config.HashOf(f.Data)), first})
 	}
 	choice, err := sf.Dialog(ctx, ui.DialogSpec{
@@ -352,73 +356,159 @@ func readCustomCommands(cfg config.Config, ws string) *customState {
 		models = append(models, name)
 	}
 	sort.Strings(models)
-	home, _ := os.UserHomeDir()
+	userDirs, files, sum, problems := workspaceCommands(cfg, ws)
+	cs.problems = problems
+	cs.wsFiles, cs.wsSum = files, sum
+
+	var trusted []customcmd.File
+	if len(files) > 0 {
+		var ok bool
+		ok, cs.wsReason = decideCommands(cfg.Workspace, ws, sum)
+		if ok {
+			trusted = files
+		} else {
+			for _, f := range files {
+				if c, err := customcmd.Parse(f, customcmd.SourceWorkspace, models); err == nil {
+					cs.untrusted = append(cs.untrusted, c)
+				}
+			}
+		}
+	}
+	var fromPlugins []customcmd.File
+	for _, l := range cfg.LoadedPlugins() {
+		for _, f := range l.Commands {
+			fromPlugins = append(fromPlugins, customcmd.File{Rel: f.Rel, Path: f.Path, Data: f.Data})
+		}
+	}
+	cmds, errs := customcmd.Load(customcmd.Options{ManagedDir: managed.CommandsDir, UserDirs: userDirs, Workspace: trusted,
+		Plugins: fromPlugins, Models: models})
+	for _, e := range errs {
+		cs.problems = append(cs.problems, e.Error())
+	}
+	cs.cmds = cmds
+	return cs
+}
+
+// workspaceCommands splits the command directories into the person's own
+// and the workspace's, and reads the workspace's files with the hash a trust
+// decision covers. It is what a session and `abhed trust` both read.
+func workspaceCommands(cfg config.Config, ws string) (userDirs []string, files []customcmd.File, sum string, problems []string) {
+	osHome, _ := os.UserHomeDir()
 	// The workspace is the home directory or holds it: every path under home
 	// is in the workspace, so only a relative entry is taken as the workspace's.
-	atHome := home != "" && ws != "" && customcmd.Inside(ws, home)
-	var userDirs, relative []string
-	if home != "" {
-		userDirs = append(userDirs, filepath.Join(home, ".abhed", "commands"))
+	atHome := osHome != "" && ws != "" && customcmd.Inside(ws, osHome)
+	var relative []string
+	if dir, err := home.PersonPath("commands"); err == nil {
+		userDirs = append(userDirs, dir)
 	}
 	for _, d := range cfg.Commands.Dirs {
 		switch {
-		case strings.HasPrefix(d, "~/") && home != "":
-			d = filepath.Join(home, d[2:])
+		case strings.HasPrefix(d, "~/") && osHome != "":
+			d = filepath.Join(osHome, d[2:])
 		case !filepath.IsAbs(d):
 			relative = append(relative, filepath.Join(ws, d))
 			continue
 		}
 		userDirs = append(userDirs, d)
 	}
-
-	var trusted []customcmd.File
-	if ws != "" {
-		// A configured directory inside the workspace came with it, whoever
-		// named it: its commands need the same trust as .abhed/commands.
-		inside := relative
-		var outside []string
-		for _, d := range userDirs {
-			if !atHome && customcmd.Inside(ws, d) {
-				inside = append(inside, d)
-			} else {
-				outside = append(outside, d)
-			}
-		}
-		userDirs = outside
-		var files []customcmd.File
-		var errs []error
-		if !isHomeDir(ws, home) { // at home, .abhed/commands is the person's own
-			files, _, errs = customcmd.ReadWorkspace(ws)
-		}
-		more, moreErrs := customcmd.ReadWorkspaceDirs(ws, inside)
-		files = append(files, more...)
-		errs = append(errs, moreErrs...)
-		var sum string
-		if len(files) > 0 {
-			sum = customcmd.HashFiles(files)
-		}
-		for _, e := range errs {
-			cs.problems = append(cs.problems, e.Error())
-		}
-		cs.wsFiles, cs.wsSum = files, sum
-		if len(files) > 0 {
-			var ok bool
-			ok, cs.wsReason = decideCommands(cfg.Workspace, ws, sum)
-			if ok {
-				trusted = files
-			} else {
-				for _, f := range files {
-					if c, err := customcmd.Parse(f, customcmd.SourceWorkspace, models); err == nil {
-						cs.untrusted = append(cs.untrusted, c)
-					}
-				}
-			}
+	if ws == "" {
+		return userDirs, nil, "", nil
+	}
+	// A configured directory inside the workspace came with it, whoever
+	// named it: its commands need the same trust as .abhed/commands.
+	inside := relative
+	var outside []string
+	for _, d := range userDirs {
+		if !atHome && customcmd.Inside(ws, d) {
+			inside = append(inside, d)
+		} else {
+			outside = append(outside, d)
 		}
 	}
-	cmds, errs := customcmd.Load(customcmd.Options{ManagedDir: customcmd.ManagedDir, UserDirs: userDirs, Workspace: trusted, Models: models})
+	var errs []error
+	if !isHomeDir(ws, osHome) { // at osHome, .abhed/commands is the person's own
+		files, _, errs = customcmd.ReadWorkspace(ws)
+	}
+	more, moreErrs := customcmd.ReadWorkspaceDirs(ws, inside)
+	files = append(files, more...)
+	errs = append(errs, moreErrs...)
+	if len(files) > 0 {
+		sum = customcmd.HashFiles(files)
+	}
 	for _, e := range errs {
-		cs.problems = append(cs.problems, e.Error())
+		problems = append(problems, e.Error())
 	}
-	cs.cmds = cmds
-	return cs
+	return outside, files, sum, problems
+}
+
+// headlessCustom is the custom command a -p task names, with its arguments.
+// A workspace command not trusted is refused with the command that trusts
+// it; a task that names no custom command is sent as it is.
+func headlessCustom(cs *customState, ws, task string) (*customcmd.Command, string, error) {
+	if !strings.HasPrefix(task, "/") || cs == nil {
+		return nil, "", nil
+	}
+	name, args, _ := strings.Cut(task, " ")
+	if i := strings.IndexAny(name, "\n\t"); i >= 0 {
+		name, args = name[:i], name[i+1:]+" "+args
+	}
+	args = strings.TrimSpace(args)
+	for _, c := range cs.cmds {
+		if c.Name == name {
+			// A -p run cannot ask about a shell line, and its model is the run's.
+			switch {
+			case len(customcmd.InlineCommands(c.Body)) > 0:
+				return nil, "", fmt.Errorf("%s runs shell lines, which ask first; -p cannot ask, so run it in the terminal", c.Name)
+			case c.Model != "":
+				return nil, "", fmt.Errorf("%s picks the model %s; in -p choose it with -model and give the command's text as the task", c.Name, c.Model)
+			}
+			return c, args, nil
+		}
+	}
+	for _, c := range cs.untrusted {
+		if c.Name != name {
+			continue
+		}
+		if cs.wsReason == "refused" {
+			return nil, "", fmt.Errorf("workspace command %s was not run: the workspace was started untrusted, so its commands stay off", c.Name)
+		}
+		return nil, "", fmt.Errorf("workspace command %s is not trusted (%s), so it was not run; review the workspace's commands with `abhed trust %s`, "+
+			"then trust exactly those commands, and nothing else of the workspace, with: abhed trust grant -commands-sha256 %s %s",
+			c.Name, cs.wsReason, shellQuote(ws), cs.wsSum, shellQuote(ws))
+	}
+	return nil, "", nil
+}
+
+// commandSummary is what a review shows of a command file: its description,
+// or else the first line of its body, never the front matter's "---".
+func commandSummary(f customcmd.File) string {
+	if c, err := customcmd.Parse(f, customcmd.SourceWorkspace, nil); err == nil {
+		if d := strings.TrimSpace(c.Description); d != "" {
+			return d
+		}
+		for _, line := range strings.Split(c.Body, "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				return line
+			}
+		}
+		return ""
+	}
+	// A file that does not parse is shown by its first line past any front
+	// matter, or as it begins.
+	lines := strings.Split(string(f.Data), "\n")
+	start := 0
+	if len(lines) > 0 && strings.TrimSpace(lines[0]) == "---" {
+		for i := 1; i < len(lines); i++ {
+			if strings.TrimSpace(lines[i]) == "---" {
+				start = i + 1
+				break
+			}
+		}
+	}
+	for _, line := range lines[start:] {
+		if line = strings.TrimSpace(line); line != "" && line != "---" {
+			return line
+		}
+	}
+	return ""
 }

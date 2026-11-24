@@ -112,6 +112,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.Enabled, cfg.WebFetch.AllowedHosts)
 		pol.Roots = sess.PolicyRoots
 		pol.Cwd = sess.WorkDir
+		pol.RuleSource = cfg.RuleSource
 		must(pol.AddDeny(cfg.Permissions.Deny...))
 		// The operator's own allow rules apply, so an eval run is governed the
 		// same way a real session is. The build-tool defaults stay for corpora
@@ -138,7 +139,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		factory := &agent.SubagentFactory{Adapter: adapter, Policy: pol, Session: sess, Store: store,
 			Budget: budget, Config: loopCfg, Workspace: ws, Redact: red, Definitions: set.Agents}
 		registry := toolset.Subagents(set.Registry, factory, cfg.Limits.MaxParallelSubagents)
-		loopCfg.SystemPrompt = toolset.SystemPrompt(ws, adapter, set.SkillListing, registry.Names())
+		loopCfg.SystemPrompt = toolset.SystemPrompt(ws, adapter, set.SkillListing, registry.OfferedNames())
 
 		loop := agent.NewLoop(adapter, registry, pol, agent.AutoApprove{Yes: true}, sess, rec, loopCfg)
 		loop.Budget = budget

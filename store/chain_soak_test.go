@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/testdb"
 )
 
 // A soak of the chained append path as a server runs it: many sessions, each
@@ -29,7 +30,7 @@ func TestChainSoak(t *testing.T) {
 	sessions := envInt("ABHED_SOAK_SESSIONS", 32)
 	rate := envInt("ABHED_SOAK_RATE", 0)
 	cfg := singleRoleConfig(testDSN(t))
-	if rt := os.Getenv("ABHED_TEST_RUNTIME_DSN"); rt != "" {
+	if rt := testdb.DSN(t, "ABHED_TEST_RUNTIME_DSN"); rt != "" {
 		runtimeStore(t, "soak") // provisions the runtime role's grants
 		cfg = DefaultConfig(rt)
 	}

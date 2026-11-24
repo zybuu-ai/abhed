@@ -19,6 +19,7 @@ import (
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/controlplane"
+	"github.com/zybuu-ai/abhed/internal/bgcli"
 	"github.com/zybuu-ai/abhed/internal/docsite"
 	"github.com/zybuu-ai/abhed/internal/sandboxcli"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
@@ -72,7 +73,7 @@ func newApp(opts ...Option) *App {
 // WithVersion sets the version the binary reports. The linker sets it on
 // the main package, so the main package passes it here.
 func WithVersion(v string) Option {
-	return func(a *App) { a.version = v; productVersion.Store(v) }
+	return func(a *App) { a.version = v; productVersion.Store(v); config.SetVersion(v) }
 }
 
 // WithEdition names the edition, for the version line and for the message
@@ -204,19 +205,25 @@ var subcommands = []subcommand{
 	{name: "trust", about: "show, grant or revoke trust in the workspace's .abhed/config.json"},
 	{name: "doctor", about: "check the configuration, the model endpoint and the sandbox", trust: true},
 	{name: "providers", about: "list the model provider types this build supports"},
+	{name: "provider", about: "a hosted provider's API key, kept in the Keychain: login, logout, status"},
+	{name: "models", about: "the models in your own configuration: list (with context windows), add, default, remove, known, forget-window"},
 	{name: "toolchain", about: "language toolchains for the agent's commands: install, list, remove", trust: true},
 	{name: "ollama", about: "check a local Ollama model and offer what it lacks: check, status, models, forget", trust: true},
 	{name: "user", about: "manage local accounts: add, list, passwd, remove, import", trust: true},
 	{name: "secret", about: "manage stored secrets: set, list, rm"},
+	{name: "machine", about: "the kubeconfig contexts, ssh hosts and cluster logins kept for Abhed: list, forget"},
+	{name: "account", about: "accounts on this machine: create, signin, signout, whoami, list, passwd, reset, rm"},
 	{name: "login", about: "sign this command line in to an Abhed server and save it as a profile"},
 	{name: "logout", about: "sign the current profile (or -profile NAME) out"},
 	{name: "profile", about: "the servers this command line knows: list, use, rm"},
 	{name: "policy", about: "the signed org policy this machine takes: status, show, refresh, leave"},
 	{name: "sandbox", about: "a server's sandboxes: " + strings.Join(sandboxcli.Commands(), ", ")},
 	{name: "pki", about: "a private CA for serve's TLS: init, server, client"},
+	{name: "bg", about: "background jobs on a server, as your own account: " + strings.Join(bgcli.Commands(), ", "), trust: true},
 	{name: "egress-proxy", about: "serve the egress allowlist on its own, for a sandbox's egress pod (-listen, -config)"},
 	{name: "admin", about: "change the managed configuration, as root: web-search on|off"},
 	{name: "mcp", about: "MCP servers in your own configuration: add, list, remove", trust: true},
+	{name: "plugin", about: "signed plugin bundles of agents, skills, commands, hooks and MCP servers: install, approve, list, remove", trust: true},
 	{name: "record", about: "the local record: list, show, verify, export, prune", trust: true},
 	{name: "logs", about: "the record as a log: shorthand, OCSF or its own lines, -f to follow, -cursor to resume", trust: true},
 	{name: "sessions", about: "list recorded sessions, latest first: record list (-all, -n N, -json)", trust: true},
@@ -224,6 +231,7 @@ var subcommands = []subcommand{
 	{name: "migrate", about: "apply the database schema as the owning role", trust: true},
 	{name: "resolve", about: "work on a forge issue in its own branch and open a pull request", trust: true},
 	{name: "acp", about: "speak the Agent Client Protocol on stdio, for editors", trust: true},
+	{name: "ssh-acp", about: "run the engine's acp on an SSH host for an editor: strict host keys, a pinned engine, nothing forwarded"},
 	{name: "rpc", about: "take line-delimited JSON requests on stdin, answer on stdout", trust: true},
 	{name: "index", about: "embed the workspace ahead of a session and keep the embeddings; each session rebuilds the rest", trust: true},
 	{name: "eval", about: "run the evaluation corpus against the configured model", trust: true},
@@ -243,6 +251,7 @@ var builtinCommands = func() map[string]bool {
 var paidFeatures = map[string]string{
 	"oidc":         "Team",
 	"schedules":    "Team",
+	"background":   "Team",
 	"telemetry":    "Enterprise",
 	"ha":           "Enterprise",
 	"interceptors": "Enterprise",
@@ -300,6 +309,9 @@ func (a *App) checkEdition(cfg config.Config) error {
 	}
 	if len(cfg.Schedules) > 0 && !a.features["schedules"] {
 		return &EditionError{Key: "schedules", Feature: "schedules", Edition: a.edition}
+	}
+	if cfg.Server.Background.Enabled && !a.features["background"] {
+		return &EditionError{Key: "server.background.enabled", Feature: "background", Edition: a.edition}
 	}
 	if cfg.ControlPlane.HA.Enabled && !a.features["ha"] {
 		return &EditionError{Key: "control_plane.ha.enabled", Feature: "ha", Edition: a.edition}

@@ -13,17 +13,17 @@ import (
 // setupTerminal connects the renderer to the input dock, so replies stream
 // into it, and gives the dock what it keeps between sessions: the
 // workspace's prompt history.
-func setupTerminal(editor *ui.LineReader, r *ui.Renderer, workspace string) {
+func setupTerminal(editor *ui.LineReader, r *ui.Renderer, workspace string, sess *tools.Session) {
 	r.SetWorkspace(workspace)
 	if !editor.Raw() {
 		return
 	}
 	r.Attach(editor)
-	// A vault secret in a prompt is withheld from the history file as it is
-	// from the record.
+	// A vault secret, a pasted credential's shape, or a value the session
+	// holds from a paste is withheld from the history file as from the record.
 	h := ui.LoadHistory(ui.HistoryPath(workspace))
 	red := openVault().Session()
-	h.SetRedact(func(s string) string { return string(red.Redact([]byte(s))) })
+	h.SetRedact(func(s string) string { return agent.WithheldFor(red, sess, s) })
 	editor.SetHistory(h)
 }
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/testdb"
 	"github.com/zybuu-ai/abhed/store"
 	"github.com/zybuu-ai/abhed/store/witness"
 )
@@ -18,7 +19,7 @@ import (
 // no database configured, and every tamper with the file fails, a cut one
 // against the witness's heads as well as its trailer.
 func TestRecordExportPostgresChainVerifiesOffline(t *testing.T) {
-	dsn := os.Getenv("ABHED_TEST_DSN")
+	dsn := testdb.DSN(t, "ABHED_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set ABHED_TEST_DSN to run against Postgres")
 	}

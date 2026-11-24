@@ -22,6 +22,12 @@ type Spec struct {
 	Params          Params
 	// Timeouts bound each request; a zero field keeps its default.
 	Timeouts Timeouts
+	// MaxTools is the most tools one request offers; zero is DefaultMaxTools.
+	MaxTools int
+	// MaxConcurrent bounds the requests this provider has in flight; the
+	// rest wait here, before their timeouts start. Zero is one for Ollama,
+	// which queues the rest, and no bound for every other type.
+	MaxConcurrent int
 
 	// Region and Project scope a cloud-hosted deployment: an AWS region, a
 	// Google project, an Azure resource. Which of them a provider needs is the
@@ -51,6 +57,9 @@ type provider struct {
 	name    string
 	summary string
 	build   Factory
+	// openAI marks a type whose adapter speaks the OpenAI-compatible
+	// protocol, and so honours max_concurrent_requests.
+	openAI bool
 }
 
 var providers = map[string]provider{}
@@ -63,11 +72,22 @@ func Register(name, summary string, build Factory) {
 	providers[name] = provider{name: name, summary: summary, build: build}
 }
 
+// registerOpenAI registers a type whose adapter is OpenAICompatible.
+func registerOpenAI(name, summary string, build Factory) {
+	providers[name] = provider{name: name, summary: summary, build: build, openAI: true}
+}
+
 // New builds the adapter for a spec, validating its parameters against what the
 // provider actually honours.
 func New(s Spec) (Adapter, error) {
 	if s.Timeouts.Call < 0 || s.Timeouts.Stall < 0 {
 		return nil, fmt.Errorf("call_timeout_seconds and stall_timeout_seconds may not be negative")
+	}
+	if s.MaxConcurrent < 0 {
+		return nil, fmt.Errorf("max_concurrent_requests may not be negative")
+	}
+	if s.MaxTools < 0 {
+		return nil, fmt.Errorf("max_tools may not be negative")
 	}
 	p, ok := providers[s.Type]
 	if !ok {
@@ -78,11 +98,36 @@ func New(s Spec) (Adapter, error) {
 	if err != nil {
 		return nil, err
 	}
+	attachLimits(a, s)
 	if t, ok := a.(interface{ SetTimeouts(Timeouts) }); ok && s.Timeouts != (Timeouts{}) {
 		t.SetTimeouts(s.Timeouts)
 	}
+	if s.MaxTools > 0 {
+		t, ok := a.(interface{ SetMaxTools(int) })
+		if !ok {
+			return nil, fmt.Errorf("max_tools is not honoured by provider type %q", s.Type)
+		}
+		t.SetMaxTools(s.MaxTools)
+	}
 	if err := s.Params.Validate(s.Type, a.Profile().Sampling); err != nil {
 		return nil, err
+	}
+	c, ok := a.(*OpenAICompatible)
+	if !ok && s.MaxConcurrent > 0 {
+		return nil, fmt.Errorf("max_concurrent_requests is honoured only by OpenAI-compatible types, not %q", s.Type)
+	}
+	if ok {
+		n := s.MaxConcurrent
+		if n == 0 && s.Type == "ollama" {
+			// Ollama serves one request a model at a time unless told
+			// otherwise, and queues the rest: a queued request sends nothing
+			// for as long as the ones before it take, which the stall timeout
+			// read as a dead server. Parallel subagents failed that way.
+			n = 1
+		}
+		// Every adapter joins its server's pool, so one with no bound of its
+		// own still waits behind another provider's bound on that model.
+		c.slots = poolFor(c.BaseURL, c.Model, n)
 	}
 	return a, nil
 }
@@ -110,6 +155,15 @@ func Describe() []string {
 func Known(name string) bool {
 	_, ok := providers[name]
 	return ok
+}
+
+// Endpoint is the base URL an adapter calls, its type's default included,
+// or "" for one that does not say.
+func Endpoint(a Adapter) string {
+	if e, ok := a.(interface{ Endpoint() string }); ok {
+		return e.Endpoint()
+	}
+	return ""
 }
 
 // LocalByDefault reports a built-in type whose own endpoint, with no

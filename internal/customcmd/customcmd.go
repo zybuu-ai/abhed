@@ -35,6 +35,7 @@ const (
 	SourceManaged   = "managed"
 	SourceUser      = "user"
 	SourceWorkspace = "workspace"
+	SourcePlugin    = "plugin"
 )
 
 // WorkspaceDir is where a workspace keeps its commands.
@@ -46,9 +47,6 @@ const (
 	MaxFileBytes = 64 << 10
 	MaxDesc      = 300
 )
-
-// ManagedDir is the organisation's directory; a variable for tests.
-var ManagedDir = filepath.Join("/etc", "abhed", "commands")
 
 // Command is one custom command.
 type Command struct {
@@ -121,7 +119,7 @@ func ReadDir(dir string) ([]File, []error) {
 				continue
 			}
 			if len(out) == MaxFiles {
-				errs = append(errs, fmt.Errorf("more than %d custom commands in %s; the rest are not read", MaxFiles, dir))
+				errs = append(errs, fmt.Errorf("more than %d custom commands in %s; the rest are not read", MaxFiles, filepath.Clean(dir)))
 				return
 			}
 			data, err := readFile(p)
@@ -446,6 +444,9 @@ type Options struct {
 	// Workspace are the workspace's files when they are trusted; leave it
 	// nil when not.
 	Workspace []File
+	// Plugins are the approved plugins' command files, as hashed when they
+	// loaded.
+	Plugins []File
 	// Models are the provider names a command may choose.
 	Models []string
 }
@@ -482,6 +483,8 @@ func Load(o Options) ([]*Command, []error) {
 		errs = append(errs, e...)
 		add(files, SourceUser)
 	}
+	// A plugin cannot take a name the person or the organisation uses.
+	add(o.Plugins, SourcePlugin)
 	// Last: a repository cannot take a name the person or the organisation uses.
 	add(o.Workspace, SourceWorkspace)
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

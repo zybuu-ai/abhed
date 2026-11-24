@@ -48,7 +48,7 @@ type Suggester struct {
 	Hold func() bool
 }
 
-const suggestSystem = "You predict the next message a person will send to a coding agent. " +
+const suggestSystem = "You predict the next message a person will send to an agent. " +
 	"Reply with that message only: one short line of at most 80 characters, plain text, " +
 	"no quotes, no markdown, written as the person would type it, in the same language the person writes in. " +
 	"If no follow-up is natural, reply with NONE."
@@ -74,7 +74,7 @@ type suggestJob struct {
 func (l *Loop) planSuggestion(ctx context.Context) *suggestJob {
 	sg := l.Suggest
 	if sg == nil || l.depth > 0 || l.wakeCap > 0 || ctx.Err() != nil || l.hasWork() ||
-		l.Background.dueSoon() || l.Budget.Exhausted() || len(l.askQueue(context.Background())) > 0 {
+		l.Background.dueSoon() || len(l.askQueue(context.Background())) > 0 {
 		return nil
 	}
 	if sg.Hold != nil && sg.Hold() {
@@ -90,6 +90,11 @@ func (l *Loop) planSuggestion(ctx context.Context) *suggestJob {
 	a := sg.Adapter
 	if a == nil {
 		a = l.Adapter
+	}
+	// The gate every model call passes: a spent budget, or a dollar cap on a
+	// model with no price, offers no suggestion.
+	if l.Budget.Refuse(a.Profile().Name) != nil {
+		return nil
 	}
 	timeout := sg.Timeout
 	if timeout <= 0 {
@@ -207,18 +212,22 @@ func (l *Loop) makeSuggestion(ctx context.Context, p *pendingSuggestion, j *sugg
 	}()
 	cctx, cancel := context.WithTimeout(l.withCaller(ctx), j.timeout)
 	start := time.Now()
-	text, usage, err := suggestCall(cctx, j.adapter, j.req)
+	text, usage, estimated, err := suggestCall(cctx, j.adapter, j.req, l.Budget.CutAtBound(j.adapter))
 	// A model that refuses the reasoning settings, or spends the whole
 	// allowance thinking and writes nothing, is asked once more without them.
 	cutOff := err == nil && strings.TrimSpace(text) == "" && usage.OutputTokens >= j.req.MaxTokens
-	if (err != nil || cutOff) && cctx.Err() == nil && (j.req.Effort != model.EffortNone || j.req.Params.Think != nil) {
+	if (err != nil || cutOff) && cctx.Err() == nil && (j.req.Effort != model.EffortNone || j.req.Params.Think != nil) &&
+		l.Budget.Refuse(j.adapter.Profile().Name) == nil {
 		plain := j.req
 		plain.Effort, plain.Params.Think = model.EffortNone, nil
 		var more model.Usage
-		text, more, err = suggestCall(cctx, j.adapter, plain)
+		var guessed bool
+		text, more, guessed, err = suggestCall(cctx, j.adapter, plain, l.Budget.CutAtBound(j.adapter))
+		estimated = estimated || guessed
 		usage.InputTokens += more.InputTokens
 		usage.OutputTokens += more.OutputTokens
 		usage.CachedInputTokens += more.CachedInputTokens
+		usage.CacheWriteTokens += more.CacheWriteTokens
 	}
 	cancel()
 	took := time.Since(start)
@@ -231,19 +240,10 @@ func (l *Loop) makeSuggestion(ctx context.Context, p *pendingSuggestion, j *sugg
 		l.sug = nil
 	}
 	l.sugMu.Unlock()
-	mc := ModelCall{Turn: j.turn, Model: j.adapter.Profile().Name, Purpose: PurposeSuggestion,
-		TokensIn: usage.InputTokens, TokensOut: usage.OutputTokens, TokensCached: usage.CachedInputTokens,
-		CacheReported: usage.CacheReported, LatencyMS: took.Milliseconds()}
+	mc := l.chargeSide(PurposeSuggestion, j.adapter.Profile().Name, j.turn, usage, estimated, took)
 	if err != nil && ctx.Err() == nil {
 		mc.Error = err.Error()
 	}
-	l.usageMu.Lock()
-	l.usage.InputTokens += usage.InputTokens
-	l.usage.OutputTokens += usage.OutputTokens
-	l.usage.CachedTokens += usage.CachedInputTokens
-	l.usage.ColdPrefillTokens += usage.InputTokens - usage.CachedInputTokens
-	l.usageMu.Unlock()
-	l.Budget.Spend(usage.InputTokens + usage.OutputTokens)
 	// Closed: the call still went out, so its model.call is recorded; the suggestion is not.
 	stale := closed || err != nil || ctx.Err() != nil || l.hasWork() || l.Background.dueSoon() || l.suggestionHeld(sg)
 	if !stale {
@@ -279,33 +279,43 @@ func (l *Loop) suggestionText(sg *Suggester, text string) string {
 	return text
 }
 
-// suggestCall runs one request and returns its text and usage.
-func suggestCall(ctx context.Context, a model.Adapter, req model.Request) (string, model.Usage, error) {
+// suggestCall runs one request and returns its text and usage. A request
+// whose usage was not reported (cut, or a server that sends none) still cost
+// tokens: they are estimated by EstimateUsage, and estimated is true.
+func suggestCall(ctx context.Context, a model.Adapter, req model.Request, bounded bool) (text string, usage model.Usage, estimated bool, err error) {
 	stream, err := a.Complete(ctx, req)
 	if err != nil {
-		return "", model.Usage{}, err
+		return "", model.Usage{}, false, err
 	}
 	var out strings.Builder
-	var usage model.Usage
-	var streamErr error
+	var streamErr, failed error
+	produced := 0
 	for chunk := range stream {
 		switch chunk.Type {
 		case model.ChunkText:
 			out.WriteString(chunk.Text)
+			produced += len(chunk.Text)
+		case model.ChunkReasoning:
+			produced += len(chunk.Text)
 		case model.ChunkToolCall:
-			streamErr = errors.New("the suggestion call asked for a tool")
+			streamErr = errors.New("the model asked for a tool where none was offered")
+			if c := chunk.ToolCall; c != nil {
+				produced += len(c.Name) + len(c.Args)
+			}
 		case model.ChunkError:
-			streamErr = chunk.Err
+			streamErr, failed = chunk.Err, chunk.Err
 		case model.ChunkDone:
 			if chunk.Usage != nil {
 				usage = *chunk.Usage
 			}
 		}
 	}
+	end := CallEnd{Produced: produced, Cancelled: ctx.Err() != nil, Failed: failed != nil}
 	if streamErr == nil && ctx.Err() != nil {
 		streamErr = ctx.Err()
 	}
-	return out.String(), usage, streamErr
+	usage, estimated = EstimateUsage(a, req, usage, end, bounded)
+	return out.String(), usage, estimated, streamErr
 }
 
 // suggestInput is what the suggestion call reads: the person's last message,
@@ -317,7 +327,7 @@ func (l *Loop) suggestInput() string {
 	seen := map[string]bool{}
 	for i := len(l.messages) - 1; i >= 0; i-- {
 		m := l.messages[i]
-		if m.Role == model.RoleUser && (m.Content == prompt || prompt == "") {
+		if m.Role == model.RoleUser && (m.Content == prompt || m.Content == l.promptSentAs() || prompt == "") {
 			break
 		}
 		if m.Role != model.RoleAssistant {

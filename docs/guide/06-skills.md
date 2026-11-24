@@ -33,20 +33,46 @@ it will load here unchanged.
 
 ## Why only the description is in the prompt
 
-Abhed puts each skill's **name and description** in the system prompt, about
-fifteen tokens each, and loads the body only when the agent calls the `skill`
-tool. Twenty skills of a thousand tokens each would otherwise cost 20,000 tokens
-on every request of every session, whether or not any of them was relevant.
+Abhed puts each skill's **name and description** in the system prompt, and
+loads the body only when the agent calls the `skill` tool. A listing line
+costs its name and its description; a description is at most 300
+characters, and a longer one is cut there with a warning naming the file.
+Twenty skills of a thousand tokens each would otherwise cost 20,000 tokens on
+every request of every session, whether or not any of them was relevant.
+
+The listing is kept within 8 KB, about 2,300 tokens, and so is the list of
+names in the `skill` tool's description. Past that the rest are counted, not
+listed ("and 40 more"), and the model reaches them through the tool: it
+loads any skill by its exact name, listed or not, and a name it does not
+know returns the skills whose names or descriptions hold its words. With a
+few dozen skills everything is listed as before.
 
 The consequence is that **the description is the whole interface**. It decides
 whether a skill is ever used. Say when to use it, not what it is.
 
 ## Where skills come from
 
-Only directories the operator configured — never the workspace the agent is
-editing. A skill body *is* instructions by construction, so a repository that
-could carry its own skills could carry its own instructions to the agent reading
-it.
+From the directories the operator configured (`skills.dirs`, by default
+`~/.abhed/skills`), and from the workspace's own `.abhed/skills/<name>/`
+once you trust them. When two configured directories hold a skill of one
+name, the later directory's wins, and a warning names both. A workspace
+reads at most 64 skills, and says so when there are more. A skill body
+*is* instructions by construction, so a repository's skills load under the
+same hash-pinned trust as its agent definitions:
+
+- `abhed trust` and the trust prompt show each workspace skill's name,
+  description and hash. `abhed trust grant` trusts exactly that content
+  (`-skills-sha256 H` pins it).
+- The hash covers every file in the skill's folder, so a change to any of
+  them asks again. An untrusted workspace loads none.
+- Only `SKILL.md` and `pipeline.json` are used: the folder sits in `.abhed`,
+  which the agent cannot read, so a workspace skill cannot point it at
+  scripts beside it. Put such a skill in an installed directory.
+- A workspace skill never replaces or sits beside an installed one of the
+  same name, compared without case and in NFKC, and its name must be ASCII.
+  The prompt lists it as `(from this workspace)`.
+- `"skills": {"disable_workspace": true}`, in the managed configuration or
+  your own, keeps workspace skills off whatever the trust.
 
 ## Writing one that works
 

@@ -178,3 +178,10 @@ func (s *Steps) approver() Approver {
 	}
 	return oneAtATime{Approver: inner, asks: asks, who: who, via: s.via, asking: asking}
 }
+
+// Complete is a pipeline's model step: one call to a through the calling
+// loop's budget gate, refused before the request or charged and recorded after.
+func (s *Steps) Complete(ctx context.Context, a model.Adapter, req model.Request) (string, error) {
+	text, _, err := s.loop.sideCall(ctx, PurposePipeline, a, req)
+	return text, err
+}

@@ -75,6 +75,12 @@ type Options struct {
 	// tool is scoped to it.
 	Workspace string
 
+	// KeptNetwork is what the person opened to this workspace's commands
+	// before, and KeepNetwork keeps a new grant (Studio, /network); nil keeps
+	// none. Neither applies where the managed file holds the network.
+	KeptNetwork func() toolset.KeptNetwork
+	KeepNetwork func(all bool, host string) error
+
 	// ConfigDir loads .abhed/config.json from a directory, the same file the
 	// CLI reads, with the user's and the managed file. Provider overrides what
 	// it names. Without it only the managed file, if any, is read. That file
@@ -125,6 +131,9 @@ type Options struct {
 	// Approve decides tool calls that policy routes to a prompt. Nil refuses
 	// them, which is the safe default when there is nobody to ask.
 	Approve func(ctx context.Context, tool string, args json.RawMessage, d Decision) (bool, error)
+	// NobodyToAsk says Approve asks no one (it only answers from grants kept
+	// earlier), so the session records itself as headless as with no Approve.
+	NobodyToAsk bool
 
 	// OnEvent receives every event, in the order the store records them, from
 	// a goroutine of its own. The agent does not wait on it: events waiting for
@@ -171,6 +180,19 @@ type Options struct {
 	// trusted adds none of it.
 	ConfiguredTools bool
 
+	// MachineSetup, with ConfiguredTools, offers the person's own machine
+	// setup as the terminal does: their kubeconfig contexts and
+	// ~/.ssh/config hosts, each asked before its first use, and the cluster
+	// logins they kept. Set it only where the person running this process is
+	// the one whose machine it is, never for a service that runs other
+	// people's sessions.
+	MachineSetup bool
+
+	// Attended says a person reads each answer and can reply to it, as in an
+	// editor. Off, a note that asks the model to ask the person a question
+	// is left out, since nobody would answer it.
+	Attended bool
+
 	// Background is what background tasks do, with ConfiguredTools: "off"
 	// (the default) joins them, so Run returns when the work is done, as it
 	// always has; "notify" lets them outlive a Run, their results recorded
@@ -198,7 +220,11 @@ type Options struct {
 	// Reason is unverified. Verdict reports the last check.
 	Verify string
 	// VerifyByDefault labels answers when neither Verify nor verify.mode
-	// says otherwise, as the terminal does where a person reads the answer.
+	// says otherwise, as the terminal, abhed -p, abhed rpc and the server do.
+	// Unset, the SDK checks nothing unless asked: through 1.x an embedder's
+	// Run is not given a revision turn, or a changed answer, it did not ask
+	// for. Under label, a contradicted statement gets one revision turn (one
+	// more model call), and Run returns the revised answer.
 	VerifyByDefault bool
 
 	// Sandbox runs bash in the tier the configuration's sandbox section asks
@@ -388,6 +414,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	pol.Roots = sess.PolicyRoots
 	pol.Cwd = sess.WorkDir
 	pol.StartupBaseline = config.StartupBaseline()
+	pol.RuleSource = cfg.RuleSource
 	if err := pol.AddDeny(cfg.Permissions.Deny...); err != nil {
 		return nil, fmt.Errorf("abhed: deny rule: %w", err)
 	}
@@ -404,7 +431,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if err := pol.AllowGitExtensions(cfg.Permissions.GitExtensions...); err != nil {
 		return nil, fmt.Errorf("abhed: permissions.git_extensions: %w", err)
 	}
-	if err := pol.AllowRemoteReads(cfg.SSH.ReadCommands...); err != nil {
+	if err := toolset.RemoteReads(pol, cfg); err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
 
@@ -431,7 +458,13 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		}
 		sbox = sb
 		unconfine = hostgit.Register(opts.Workspace, sb)
-		bash.Sandbox = hostgit.Broker(opts.Workspace, sb.Tier, sandboxconfig.NetworkOpen(cfg), sb.Command)
+		gb := hostgit.NewBroker(opts.Workspace, sb.Tier, sandboxconfig.HostGitNetwork(cfg), sb.Command).
+			HoldsGit(func() bool { return sandbox.HoldsGit(sb) }, func() bool { return sandbox.HoldsNewGit(sb) }).
+			RemotesOff(sandboxconfig.HostGitOff(cfg))
+		bash.Sandbox = gb.Command
+		if sandbox.HoldsGit(sb) && gb.BrokersRemoteCommands() {
+			bash.HostAsk = gb.Ask
+		}
 		bash.Isolation = sandboxconfig.Isolation(cfg, string(sb.Tier()))
 		bash.Home = sandbox.HomeFunc(sb)
 		fence, _ = sb.(*sandbox.Fence)
@@ -450,8 +483,9 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		parts = toolset.All
 	}
 	set := toolset.Build(ctx, cfg, toolset.Options{
-		Workspace: opts.Workspace, Bash: bash, Parts: parts, Extensions: opts.Extensions,
-		Vault: secrets.Default(), Warn: opts.Warn, Sandbox: sbox,
+		Workspace: opts.Workspace, ReadWithheld: pol.ReadWithheldFunc(), Bash: bash, Parts: parts, Extensions: opts.Extensions,
+		Vault: secrets.Default(), Warn: opts.Warn, Sandbox: sbox, Machine: opts.ConfiguredTools && opts.MachineSetup,
+		KeptNetwork: opts.KeptNetwork, KeepNetwork: opts.KeepNetwork,
 	})
 	// What New made is released on every error from here: the tools, and
 	// the sandbox's cgroup and private temp.
@@ -526,7 +560,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	switch {
 	case system != "":
 	case opts.ConfiguredTools:
-		system = toolset.SystemPrompt(opts.Workspace, adapter, set.SkillListing, registry.Names())
+		system = toolset.SystemPrompt(opts.Workspace, adapter, set.SkillListing, registry.OfferedNames())
 	default:
 		// No ABHED.md: an embedder running on repositories it does not own
 		// takes the workspace's instructions only by opting in.
@@ -543,6 +577,10 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, loopCfg)
 	loop.Provider = cfg.Model.Default
+	loop.Unattended = !opts.Attended
+	if sbox != nil {
+		loop.SessionNote = func() string { return toolset.SessionNote(cfg, sbox, set.Network) }
+	}
 	if x.PlanExit {
 		loop.EnablePlanExit()
 	}
@@ -557,9 +595,18 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 			opts.Warn("%s", s)
 		}
 	})
+	if set.Extensions != nil && rec != nil {
+		// Each hook that fires is recorded, as the CLI and the server record it.
+		set.Extensions.SetOnFired(func(f extension.Fired) {
+			if err := toolset.RecordFired(rec, f); err != nil && opts.Warn != nil {
+				opts.Warn("could not record a hook: %v", err)
+			}
+		})
+	}
 	loop.Budget = budget
 	// With no approver nobody answers an ask, so the supervisor's are denials.
-	loop.Monitor = toolset.Supervisor(cfg, registry, opts.Approve == nil)
+	loop.Monitor = toolset.Supervisor(cfg, registry, opts.Approve == nil || opts.NobodyToAsk)
+	loop.Diagnostics = toolset.Diagnostics(cfg, registry)
 	if opts.Suggest {
 		loop.Suggest = toolset.Suggester(cfg)
 	}
@@ -576,11 +623,14 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	// The loop runs on its own copy of the registry, which RunJSON must add its tool to.
 	// A surface's new session says how it started, as the command line's does.
 	if x.Surface != "" && !x.Resume {
-		start := map[string]any{"surface": x.Surface, "headless": opts.Approve == nil, "provider": cfg.Model.Default,
+		start := map[string]any{"surface": x.Surface, "headless": opts.Approve == nil || opts.NobodyToAsk, "provider": cfg.Model.Default,
 			"model": adapter.Profile().Name, "mode": string(pol.Mode), "web": toolset.WebState(cfg),
 			"workspace_trust": toolset.TrustState(opts.WorkspaceTrust, cfg.Workspace)}
 		if org := toolset.OrgPolicyState(cfg); org != nil {
 			start["org_policy"] = org
+		}
+		if x.Principal != nil {
+			start["principal"] = x.Principal
 		}
 		if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, start); err != nil {
 			return fail(fmt.Errorf("abhed: recording the session start: %w", err))
@@ -588,6 +638,9 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		attempts := toolset.ConfigAttempts(cfg, toolset.LocalPrincipal(sandbox.InAgentCommand()))
 		if err := toolset.RecordConfigAttempts(rec, attempts); err != nil {
 			return fail(fmt.Errorf("abhed: recording the configuration attempts: %w", err))
+		}
+		if err := toolset.RecordConfigChanges(rec); err != nil {
+			return fail(fmt.Errorf("abhed: recording the configuration changes: %w", err))
 		}
 		for _, g := range toolset.StartupRegistries(cfg, x.Surface) {
 			if _, err := rec.Record(agent.EvToolchainRegistry, agent.ActorSystem, agent.Trusted, g); err != nil {
@@ -959,6 +1012,9 @@ func (a *Agent) Close() {
 	a.fwd.close()
 	a.set.Close()
 	a.loop.Session.CloseScoped()
+	if a.loop.Diagnostics != nil {
+		a.loop.Diagnostics.Close()
+	}
 	if a.unconfine != nil {
 		a.unconfine()
 	}

@@ -186,7 +186,9 @@ delivers a queued message carries the same id as `queue_id`, and a
 Posting with `"interrupt": true` is Send now. Under the Enterprise edition's
 high availability (`control_plane.ha.node_id` on each replica), the queue
 routes and `/interrupt` answer `421` with `Abhed-Session-Node` for a session
-running on another node; a single server never answers `421`. An `/approve` there is recorded on the
+running on another node; a single server answers `421` only to a request
+whose `Host` it does not answer to, and then without `Abhed-Session-Node`
+([Configuration](02-configuration.md#names-the-server-answers-to)). An `/approve` there is recorded on the
 stored approval when it names no request or names the one the stored row
 asks about; one naming another request also gets the `421`. Streamed reasoning is recorded as
 `agent.reasoning.delta` events; `agent.reasoning` still follows with the whole
@@ -526,10 +528,15 @@ configuration or follows elsewhere: `.git/config`, `.git/hooks`,
 that your next `git status` outside Abhed would run. Git itself works as
 usual: `add`, `commit`, `branch`, `checkout`, `fetch`, and on Linux
 `git worktree add`. A few commands cannot work inside the sandbox: `git
-worktree add`, `remove` and `prune` and `git submodule update`, given as the
-whole line, run through host git with Abhed's safety settings on the process
-tier and the fence (see [Permissions](04-permissions.md)); `git submodule
-add` still fails there, and the container and vm tiers run none of them on
+worktree add`, `remove` and `prune`, given as the whole line, run through
+host git with Abhed's safety settings on the process tier and the fence
+(see [Permissions](04-permissions.md)); `git submodule update` runs in the
+sandbox and may fail there. `git fetch`, `pull`, `push`, `clone` and
+`ls-remote` are not brokered either: here they run in the sandbox, as in 1.2.9, for every account and guest, as the server would
+otherwise reach a remote with its own account's keys. Studio and the CLI on
+your own machine broker them (see
+[Permissions](04-permissions.md#git-fetch-pull-push-and-clone-through-your-own-git)).
+`git submodule add` still fails there, and the container and vm tiers run none of them on
 the host, so run those outside Abhed. **Changes** and **Review** compare each
 file with what it held before its first edit, by the server rather than
 through a command, and are unaffected.
@@ -560,7 +567,12 @@ What a shell changes about the checks, stated plainly:
   after. Another program is told from the shell by the terminal's
   foreground process group: the shell runs with job control on, so each
   program it starts has a group of its own (where bash reports it has no job
-  control, the server logs it and treats every line as the shell's).
+  control, the server logs it and treats every line as the shell's). The
+  shell's own group is the one whose leader is `bash` or `zsh`, reading keys
+  at its prompt, and is the process the server started or reaches it through
+  bubblewrap and the egress relay alone, as the kernel reports it; a shell
+  under `sh -c` or another wrapper is not it. Until the server has seen that,
+  every line is treated as the shell's, whatever printed first.
   Such a line is not recorded while another program has the terminal,
   and is recorded without its text while the shell itself is busy (the
   terminal is then in the mode a password is read in). Nor does it see what
@@ -901,3 +913,82 @@ the server fetches goes through the sandbox's network policy like any
 command. What you type in a file is sent to the server as you type
 (opening and changing a file) and is not recorded until you save it; a
 save is a recorded write, and the server reads only from the sandbox.
+
+## The engine in a dev container (Abhed Studio)
+
+**Abhed: Reopen Folder in Dev Container…** runs the window's engine inside
+the image the folder's `.devcontainer/devcontainer.json` names; the editor
+stays on your computer. The folder must be trusted first: the image is code
+its author chose. Set `abhed.devContainer.enginePath` to a Linux build of the
+engine for the container's architecture and `abhed.devContainer.engineSha256`
+to its SHA-256, in your user settings (a workspace cannot set either). Studio
+asks first, in a modal whose default is Stay Local, then runs the image with
+`podman` (else `docker`) with the folder read-write at the same path,
+Studio's own read-only copy of the engine, and a fresh volume as the
+engine's home. The image's `~/.abhed` and ABHED_* variables are not used,
+and its `/etc/abhed` is hidden; no program of the image's is run for any of
+this. The sandbox inside uses the image's own bubblewrap, so it is only as
+strong as the image; Health and Trust names the tier "process
+(image-supplied bubblewrap)". No environment variable, SSH
+agent, home folder, secret store or container socket is passed. Set the
+engine's configuration and secrets inside (in an Abhed terminal, which runs
+there); the record stays on the volume. An image without bubblewrap has no
+process tier, so the engine refuses a session until the image has one or you
+lower `sandbox.min_tier` there.
+
+The image can change any file in the folder, including `.git`, and with the
+default network it reaches the internet and your computer's own services;
+`abhed.devContainer.network: none` gives it no network. Studio records the
+image the container was made from and, before every start, refuses a
+container whose image, engine, folder or home has changed.
+
+Only `image` is taken from `devcontainer.json`: a `build` or Compose file is
+refused, and lifecycle commands, mounts, `runArgs`, environments, ports and
+features are named as not applied. Adding an MCP server and signing in from
+Studio act on your computer's configuration, so they are not offered in a
+dev-container window; run `abhed mcp` in an Abhed terminal instead.
+**Reopen Folder Locally** goes back to the engine on your computer and keeps
+the container; **Remove Dev Container…** deletes it, its home volume and the
+record in it. The design and its threat model are in [Studio
+remote](../architecture/studio-remote.md).
+
+## A folder on an SSH host (Abhed Studio)
+
+**Abhed: Reopen Folder on SSH Host…** asks for `user@host[:port]` and the
+folder's absolute path there, then opens it with the engine running on the
+host: its policy, sandbox and record are the host's, and the editor's files,
+search and the SCM view's changes come from that engine, under its rules.
+Set in your user settings (a workspace cannot set them):
+
+- `abhed.ssh.engineSha256`, and either `abhed.ssh.enginePath` (the engine's
+  path on the host) or `abhed.ssh.uploadEngine` (a local build for the host,
+  copied to `~/.abhed/bin` there when it lacks one);
+- `abhed.ssh.identityFile` (only that key is offered; else your SSH agent
+  signs in, which offers the host every key it holds; it is never
+  forwarded) and `abhed.ssh.knownHostsFile` (else `~/.ssh/known_hosts`).
+
+The host's key must already be in known_hosts: an unknown or changed key is
+refused, and Studio never adds one. Nothing is forwarded: no agent, X11,
+ports or environment variable. The engine must have the pinned SHA-256,
+copied into `~/.abhed/bin` on the host and run from there; the home folder,
+every folder above it and that folder must be yours or root's and writable by
+no one else. Studio asks
+first, in a modal whose default is Don't Connect, and connects later only to
+a host and folder you chose this way. Paths the engine reports are shown as
+the host's files, never read from your computer, and a file on your
+computer is never attached to a prompt for the host. Saves
+are recorded on the host as yours, and Abhed's own state and paths the read
+rules withhold are not shown. Language servers, completions, debugging, the
+Run and Review views and Studio's git extension do not work on an SSH folder
+(the SCM view shows changes and diffs, read-only); the Abhed terminal runs
+on the host.
+
+The SCM view's git runs in the session's sandbox. With no sandbox (the
+`none` tier) it runs only in a repository whose git configuration, in any
+scope, defines no filter, diff or merge driver, so anyone with git-lfs set up
+(a global `filter.lfs`) gets no SCM view there. The check and the `git
+status` that follows are two steps: a process already running unsandboxed
+could add a driver between them, but such a process can already run code as
+you, so the check guards against a repository, not against it. **Reopen Folder Locally** leaves it. The command line's side is
+`abhed ssh-acp`. Design and threat model: [Studio
+remote](../architecture/studio-remote.md).

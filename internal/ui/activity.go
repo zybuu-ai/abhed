@@ -86,6 +86,20 @@ func (r *Renderer) activityRows(ev agent.Event) []string {
 		return []string{"  " + s.Dim("└ ") + s.Accent(field(who, 30)) + s.Dim(" returned · ") + status +
 			s.Dim(fmt.Sprintf(" · %s · %s tokens · %s", turns, formatCount(p.TokensIn+p.TokensOut), field(p.Description, 60)))}
 
+	case agent.EvModelWaiting:
+		var w agent.ModelWaiting
+		if json.Unmarshal(ev.Payload, &w) != nil {
+			return nil
+		}
+		who := "waiting for the model"
+		if w.Session != "" {
+			who = orStr(r.agentTypes[w.Session], "subagent") + " waiting for the model"
+		}
+		if w.Ahead > 0 {
+			who += fmt.Sprintf(" · %d ahead", w.Ahead)
+		}
+		return note(field(who, 80) + " · its provider's request slots are in use")
+
 	case agent.EvCompactStarted:
 		var c agent.Compaction
 		_ = json.Unmarshal(ev.Payload, &c)
@@ -107,6 +121,12 @@ func (r *Renderer) activityRows(ev agent.Event) []string {
 		}
 		return note(fmt.Sprintf("compacted · %s → %s tokens (%s)",
 			formatCount(c.BeforeTokens), formatCount(c.AfterTokens), field(orStr(c.Trigger, "auto"), 10)))
+
+	case agent.EvContextWindow, agent.EvContextOverflow, agent.EvContextRefit:
+		if text := agent.ContextNotice(ev); text != "" {
+			return note(field(text, 300))
+		}
+		return nil
 
 	case agent.EvModeChanged:
 		var m agent.ModeChanged
@@ -143,9 +163,13 @@ func (r *Renderer) activityRows(ev agent.Event) []string {
 		if json.Unmarshal(ev.Payload, &h) != nil {
 			return nil
 		}
+		// A simple hook that ran with no objection is in the record, not the activity.
+		if h.Verdict == "none" {
+			return nil
+		}
 		verdict := field(h.Verdict, 20)
 		switch h.Verdict {
-		case "block":
+		case "block", "error", "halt":
 			verdict = s.Red(verdict)
 		case "ask":
 			verdict = s.Yellow(verdict)

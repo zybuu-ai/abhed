@@ -20,6 +20,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/fence/mountns"
 	"github.com/zybuu-ai/abhed/internal/fence/probe"
 	"github.com/zybuu-ai/abhed/internal/fence/seccomp"
+	"github.com/zybuu-ai/abhed/internal/home"
 )
 
 // Fence is the fence tier, a preview on Linux: Abhed re-executes itself as a
@@ -28,6 +29,7 @@ import (
 // once Abhed has recorded the launch runs the command in its place.
 // Chosen only by sandbox.tier; it never falls back, it refuses naming why.
 type Fence struct {
+	choice
 	policy Policy
 
 	once sync.Once
@@ -64,6 +66,8 @@ type Fence struct {
 	seq  atomic.Uint64
 	// git is what the look for git folders keeps between commands.
 	git gitMemory
+	// gitg keeps a commondir a command plants from the person's git.
+	gitg gitGuard
 
 	closed    atomic.Bool
 	closeOnce sync.Once
@@ -118,6 +122,12 @@ func (f *Fence) Close() error {
 	f.once.Do(func() { f.why = "the session's fence was closed" })
 	f.closeOnce.Do(func() {
 		var errs []error
+		// What commands left in the workspace's git folders that git would
+		// follow is taken out before the person's own git.
+		f.gitg.stop()
+		if f.policy.ProtectGit {
+			sweepGit([]string{f.policy.Workspace}, string(TierFence), &f.git)
+		}
 		if f.host != nil {
 			errs = append(errs, f.host.close())
 			// Checked once nothing of the session's is left running.
@@ -277,7 +287,7 @@ func (f *Fence) Describe() string {
 		planted += ", git's config and hooks (not held read-only without a mount namespace: an \"always allow\" for a git command is asked again once they change; " +
 			"sandbox.protect_git: true refuses this mode instead)"
 	}
-	return fmt.Sprintf("fence (preview, Linux) · each command under Landlock ABI %d: reads and runs system folders, ~/.abhed/skills and skills.dirs, writes the workspace and a private temp folder, "+
+	return fmt.Sprintf("fence (preview, Linux) · each command under Landlock ABI %d: reads and runs system folders, ~/.abhed/skills, ~/.abhed/plugins and skills.dirs, writes the workspace and a private temp folder, "+
 		"no other terminal, Abhed's state, record and secrets unreachable · %s · seccomp %s: no ptrace, namespaces, mounts, bpf, keyrings, unix sockets "+
 		"or signals to Abhed's process id · %s · cgroup per call: %s · not covered: Abhed itself and its in-process tools (file, web, MCP), network filtering but the allowlist, "+
 		"%s, a hard link to state made before the session, %s",
@@ -306,7 +316,12 @@ func (f *Fence) limitsText() string {
 }
 
 func (f *Fence) Command(ctx context.Context, cwd, command string) *exec.Cmd {
-	return f.wrap(ctx, cwd, f.env(), "/bin/bash", "-c", command)
+	cmd := f.wrap(ctx, cwd, f.env(), "/bin/bash", "-c", command)
+	// What the command left in a git folder is taken out as it ends.
+	if f.policy.ProtectGit && cmd.Err == nil {
+		OnExit(cmd, func(error) { sweepGit([]string{f.policy.Workspace}, string(TierFence), &f.git) })
+	}
+	return cmd
 }
 
 // Shell starts an interactive bash under the same fence as Command.
@@ -444,17 +459,21 @@ func (f *Fence) ServerCommand(ctx context.Context, name string, argv, env []stri
 	return cmd, nil
 }
 
-// skillDirs are ~/.abhed/skills, as written and resolved, where it is a folder.
+// skillDirs are the person's skills and plugins folders (~/.abhed/skills
+// and ~/.abhed/plugins before sign-in), as written and resolved, where each
+// is a folder: a skill or an approved plugin can ship a script its hook or
+// server runs. Never another account's.
 func (f *Fence) skillDirs() []string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
 	var out []string
-	for _, st := range PathForms(filepath.Join(home, stateDir)) {
-		d := filepath.Join(st, "skills")
-		if info, err := os.Lstat(d); err == nil && info.IsDir() && !slices.Contains(out, d) {
-			out = append(out, d)
+	for _, sub := range []string{"skills", "plugins"} {
+		dir, err := home.PersonPath(sub)
+		if err != nil {
+			continue
+		}
+		for _, d := range PathForms(dir) {
+			if info, err := os.Lstat(d); err == nil && info.IsDir() && !slices.Contains(out, d) {
+				out = append(out, d)
+			}
 		}
 	}
 	return out
@@ -718,6 +737,13 @@ func (f *Fence) plan(ctx context.Context) (*mountns.Plan, error) {
 			return nil, errors.New(strings.TrimPrefix(err.Error(), "sandbox: the command was not run: "))
 		}
 		protected = append(protected, found...)
+		// A commondir made in a git folder is moved aside soon after it is
+		// made (a mitigation; see gitGuard); one moved since the last command,
+		// or during this scan, refuses this one.
+		f.gitg.watchFound(&f.git, ws)
+		if err := f.gitg.refuse(ctx, string(TierFence), ws, &f.git); err != nil {
+			return nil, errors.New(strings.TrimPrefix(err.Error(), "sandbox: the command was not run: "))
+		}
 	}
 	for _, h := range holders(forms, protected) {
 		r, ok := rel(h)
@@ -1083,7 +1109,8 @@ func (f *Fence) env() []string {
 		out = append(out, "TMPDIR="+f.tmp, "HOME="+filepath.Join(f.tmp, "home"),
 			"XDG_CACHE_HOME="+filepath.Join(f.tmp, "cache"), "npm_config_cache="+filepath.Join(f.tmp, "npm"))
 	}
-	return out
+	// The private home has no git configuration: the person's name is given instead.
+	return append(out, f.policy.GitIdentity...)
 }
 
 // leafName is a cgroup name for the call: its id where it is one, made

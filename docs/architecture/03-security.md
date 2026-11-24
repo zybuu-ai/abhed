@@ -29,7 +29,7 @@ Status: Draft · 2026-09-02
 | T7 | Resource exhaustion | Runaway loop, fork bomb | Denial of service |
 | T8 | Repository-supplied configuration | A `.abhed/config.json` shipped in a cloned repository | Mode, allow rules, model endpoint, processes and sandbox widened before any prompt; untrusted until the person trusts its contents ([Workspace trust](workspace-trust.md)) |
 
-**T2/T3 are the defining hazard of an agentic system.** A coding agent's entire job is to
+**T2/T3 are the defining hazard of an agentic system.** A deep agent's entire job is to
 read untrusted text and act on it. There is no known complete defense — which is exactly why
 the architecture assumes injection *sometimes succeeds* and constrains blast radius instead.
 
@@ -301,6 +301,24 @@ asserted. Current state:
 - [x] **Runaway commands** — a command is stopped at its timeout with everything it
       started, a `setsid` child included (`TestRunawayCommandEndsAtItsDeadline`,
       `TestBashTimeoutEndsADetachedChild`)
+- [ ] **Processes that outlive a command, macOS process tier** — a command's own
+      processes are ended when it ends and when its sandbox closes: its session's and
+      every descendant followed while it ran. Nothing is ended that is not proven the
+      command's: its marker only narrows that set, so an app that inherited or had planted
+      the marker is reported, never signalled (`TestWatchSignalsOnlyTheCommandsOwnTree`,
+      `TestMarkerNarrowsNeverWidens`, `TestSessionProofIsTheSessionOnly`,
+      `TestClosingSignalsNoMarkedProcessOfAnUnwatchedCommand`,
+      `TestAReusedPidIsNeverSignalled`, `TestAChildOfAReusedParentPidIsNotFollowed`,
+      `TestAStopThatLandsOnAReusedPidIsUndone` against fake process tables; `TestNothingACommandStartsOutlivesIt`, `TestAnEscapedProcessIsReportedNotEnded`,
+      `TestClosingTheSandboxEndsItsCommands` end real processes, so they build only on
+      Linux and run on throwaway runners with `ABHED_TEST_PROCESS_KILL=1`, the process tier
+      under bubblewrap in the privileged `sandbox` job; on macOS every test that ends a real
+      process tree is skipped unless that is set, as it is only on CI's throwaway runner). A child handed
+      to launchd before a read saw it is followed by its parent's unique id
+      (`TestAReparentedChildIsFollowedByItsOrigin`). Open: a process that takes a session
+      of its own and whose parent was born and gone within one 20 ms read escapes (on
+      Linux's `none` tier, one that loses its parent within one read), and is reported if
+      it kept the marker. Linux's bubblewrap ends every process with the command
 - [x] **Process exhaustion, process tier** — a command can start at most `max_procs`
       more processes than the user ran (`TestProcessLimitHoldsForTheCommand`); the
       kernel counts all the user's processes, so a fork bomb can still crowd out the

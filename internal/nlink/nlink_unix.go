@@ -17,3 +17,12 @@ func Of(info os.FileInfo) uint64 {
 
 // pathCount is Of for the file at path.
 func pathCount(_ string, info os.FileInfo) uint64 { return Of(info) }
+
+// OfFile returns how many names the open file has, from its own fstat.
+func OfFile(f *os.File) uint64 {
+	info, err := f.Stat()
+	if err != nil {
+		return 1
+	}
+	return Of(info)
+}

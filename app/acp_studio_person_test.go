@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -125,7 +127,8 @@ func TestStudioTerminalLinesShowOutputBeforeTheStatus(t *testing.T) {
 	if strings.Contains(got, "[no output]") {
 		t.Fatalf("the record's placeholder reached the terminal: %q", got)
 	}
-	if !strings.HasSuffix(got, "ms\x1b[0m\r\n\x1b[2m"+filepath.Join(filepath.Base(r.ws), "sub")+" $\x1b[0m ") {
+	// The status names the time in ms, or in s past a second, as on a loaded runner.
+	if !regexp.MustCompile(`exit 0 · [0-9.]+m?s\x1b\[0m\r\n\x1b\[2m` + regexp.QuoteMeta(filepath.Join(filepath.Base(r.ws), "sub")) + ` \$\x1b\[0m $`).MatchString(got) {
 		t.Fatalf("the prompt does not follow the cd: %q", got)
 	}
 	// A cd that is not followed has no output but a note: the note shows, the placeholder does not.
@@ -504,15 +507,30 @@ func TestStudioSteerAndQueue(t *testing.T) {
 	}
 	r.cl.refused(errParams, "_abhed/queue/cancel", map[string]any{"sessionId": id, "id": "q_x"})
 	// While a prompt runs, a steer waits in the queue and is delivered marked steered.
+	// The steer's reply waits for the message's seq; withdrawn, it says so.
 	s := r.cl.conn.session(id)
 	s.beginTurn(context.Background(), func() {})
-	r.cl.ok("_abhed/session/steer", map[string]any{"sessionId": id, "text": "faster"}, nil)
-	r.cl.ok("_abhed/queue/list", map[string]any{"sessionId": id}, &q)
-	if len(q.Items) != 1 {
-		t.Fatalf("queue while running: %v", q.Items)
+	replied := make(chan rpcMessage, 1)
+	go func() {
+		replied <- r.cl.call("_abhed/session/steer", map[string]any{"sessionId": id, "text": "faster"})
+	}()
+	for i := 0; ; i++ {
+		r.cl.ok("_abhed/queue/list", map[string]any{"sessionId": id}, &q)
+		if len(q.Items) == 1 {
+			break
+		}
+		if i > 200 {
+			t.Fatalf("queue while running: %v", q.Items)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	item := q.Items[0].(map[string]any)
 	r.cl.ok("_abhed/queue/cancel", map[string]any{"sessionId": id, "id": item["id"]}, nil)
+	m := <-replied
+	if m.Error != nil || !strings.Contains(string(m.Result), `"userMessageSeq":null`) || !strings.Contains(string(m.Result), "withdrawn") ||
+		!strings.Contains(string(m.Result), `"queueId":"`+item["id"].(string)+`"`) {
+		t.Fatalf("steer reply: %+v %s", m.Error, m.Result)
+	}
 	s.endTurn()
 }
 
@@ -907,4 +925,109 @@ func TestStudioInteractiveTerminalUnderManagedFiles(t *testing.T) {
 			r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "exit\r"}, nil)
 		})
 	}
+}
+
+// In a project with a venv the shell's start prints its notice before the
+// shell takes the terminal; a line typed at the prompt is still the shell's,
+// and is still put to the deny rules, not passed through as a program's input.
+func TestStudioInteractiveTerminalJudgesLinesInAVenvProject(t *testing.T) {
+	r := newStudioRig(t, `,"permissions":{"deny":["bash(curl *)"]}`)
+	r.write(".venv/pyvenv.cfg", "home = /usr/bin\n")
+	if err := os.MkdirAll(filepath.Join(r.ws, ".venv", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/usr/bin/python3", filepath.Join(r.ws, ".venv", "bin", "python")); err != nil {
+		t.Fatal(err)
+	}
+	id := r.open()
+	var term struct {
+		TerminalID string `json:"terminalId"`
+	}
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "interactive", "cols": 80, "rows": 24}, &term)
+	prompted := func(s string) bool {
+		p := strings.TrimRight(termline.PlainText([]byte(s)), " ")
+		return strings.HasSuffix(p, "$") || strings.HasSuffix(p, "#")
+	}
+	wait := func(from int, pred func(string) bool) {
+		t.Helper()
+		var got strings.Builder
+		r.cl.waitFor(from, "shell output", func(m rpcMessage) bool {
+			got.WriteString(terminalOutput([]rpcMessage{m}, term.TerminalID))
+			return pred(got.String())
+		})
+	}
+	// As soon as the shell is there, before or after its prompt, as a person types.
+	at := r.cl.mark()
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "echo first\r"}, nil)
+	wait(at, func(s string) bool { return strings.Contains(s, "first") && prompted(s) })
+	at = r.cl.mark()
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "curl example.com\r"}, nil)
+	wait(at, func(s string) bool { return strings.Contains(s, "Denied") && prompted(s) })
+}
+
+// What starts the shell may hold the terminal, and print, while the person
+// already types; the shell's lines after are still put to the deny rules.
+func TestStudioInteractiveTerminalJudgesLinesAfterAKeyAtTheStart(t *testing.T) {
+	for name, extra := range map[string]string{
+		"open network": "",
+		// The shell then starts under the egress relay.
+		"egress allowlist": `,"sandbox":{"network":"allowlist"},"egress":{"rules":[{"host":"example.com","decision":"allow"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newStudioRig(t, `,"permissions":{"deny":["bash(echo zzdenied*)"]}`+extra)
+			// The starter's group is in front until the shell is let take it.
+			const starter = 4242424
+			var starting atomic.Bool
+			starting.Store(true)
+			fakeTTY(t, func(f *os.File) (int, bool, bool) {
+				fg, canonical, ok := termline.TTYNow(f)
+				if ok && starting.Load() {
+					fg = starter
+				}
+				return fg, canonical, ok
+			})
+			id := r.open()
+			var term struct {
+				TerminalID string `json:"terminalId"`
+			}
+			at := r.cl.mark()
+			r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "interactive", "cols": 80, "rows": 24}, &term)
+			var got strings.Builder
+			wait := func(from int, pred func(string) bool) {
+				t.Helper()
+				got.Reset()
+				r.cl.waitFor(from, "shell output", func(m rpcMessage) bool {
+					got.WriteString(terminalOutput([]rpcMessage{m}, term.TerminalID))
+					return pred(termline.PlainText([]byte(got.String())))
+				})
+			}
+			prompted := func(s string) bool {
+				p := strings.TrimRight(s, " ")
+				return strings.HasSuffix(p, "$") || strings.HasSuffix(p, "#")
+			}
+			wait(at, prompted)
+			// A key while the starter has the terminal, then the shell takes it.
+			r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": " "}, nil)
+			starting.Store(false)
+			at = r.cl.mark()
+			r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "echo zzdenied$((6*7))\r"}, nil)
+			wait(at, func(s string) bool {
+				return (strings.Contains(s, "Denied") || strings.Contains(s, "zzdenied42")) && prompted(s)
+			})
+			if out := termline.PlainText([]byte(got.String())); strings.Contains(out, "zzdenied42") || !strings.Contains(out, "Denied") {
+				t.Fatalf("the denied line was not refused: %q", out)
+			}
+			// The shell's group is known now, so a program it starts is told apart.
+			r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "cat\r"}, nil)
+			waitForProgram(t, r, term.TerminalID)
+			r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "\x04exit\r"}, nil)
+		})
+	}
+}
+
+// fakeTTY stands in for asking the terminal until the test ends.
+func fakeTTY(t *testing.T, f func(*os.File) (int, bool, bool)) {
+	t.Helper()
+	testTTY.Store(&f)
+	t.Cleanup(func() { testTTY.Store(nil) })
 }

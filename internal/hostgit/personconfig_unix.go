@@ -1,0 +1,118 @@
+//go:build unix
+
+package hostgit
+
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"syscall"
+
+	"github.com/zybuu-ai/abhed/internal/sandbox"
+)
+
+// untrustedFile says why config file f, where it exists, is not the
+// person's alone: a hard link (another name may lie where commands write),
+// owned by someone but the person or root, or it or its folder writable by
+// others. "" when none, or when it is not there.
+func untrustedFile(f string) string {
+	real := sandbox.RealPath(f)
+	info, err := os.Stat(real)
+	if err != nil {
+		return ""
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return ""
+	}
+	me := uint32(os.Getuid()) // #nosec G115 -- a uid
+	switch {
+	case st.Nlink > 1:
+		return "has another name (a hard link), which could lie where commands can write"
+	case st.Uid != me && st.Uid != 0:
+		return "is owned by another user"
+	case othersWrite(info):
+		return "is writable by other users"
+	}
+	if d, err := os.Stat(filepath.Dir(real)); err == nil {
+		dst, _ := d.Sys().(*syscall.Stat_t)
+		switch {
+		case dst != nil && dst.Uid != me && dst.Uid != 0:
+			return "is in a folder owned by another user"
+		case othersWrite(d) && d.Mode()&os.ModeSticky == 0:
+			return "is in a folder other users can write"
+		}
+	}
+	return ""
+}
+
+// untrustedProgram says why program p is not the person's or root's alone:
+// owned by another user, or it or its folder writable by others. A hard
+// link is not refused here: system programs often have several names.
+func untrustedProgram(p string) string {
+	real := sandbox.RealPath(p)
+	info, err := os.Stat(real)
+	if err != nil {
+		return ""
+	}
+	me := uint32(os.Getuid()) // #nosec G115 -- a uid
+	if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Uid != me && st.Uid != 0 {
+		return "is owned by another user"
+	}
+	if othersWrite(info) {
+		return "is writable by other users"
+	}
+	if d, err := os.Stat(filepath.Dir(real)); err == nil {
+		if st, ok := d.Sys().(*syscall.Stat_t); ok && st.Uid != me && st.Uid != 0 {
+			return "is in a folder owned by another user"
+		}
+		if othersWrite(d) && d.Mode()&os.ModeSticky == 0 {
+			return "is in a folder other users can write"
+		}
+	}
+	return ""
+}
+
+// adminGID is macOS's admin group, which Homebrew's folders are writable by
+// (drwxrwxr-x person:admin): the machine's administrators, not other users
+// at large.
+const adminGID = 80
+
+// othersWrite reports whether info's file or folder is writable by others.
+func othersWrite(info os.FileInfo) bool {
+	st, _ := info.Sys().(*syscall.Stat_t)
+	gid := uint32(1<<32 - 1)
+	if st != nil {
+		gid = st.Gid
+	}
+	return writableByOthers(info.Mode().Perm(), gid, runtime.GOOS)
+}
+
+// writableByOthers is othersWrite's rule: writable by everyone, or by its
+// group, unless that group is macOS's admin group.
+func writableByOthers(perm os.FileMode, gid uint32, goos string) bool {
+	switch {
+	case perm&0o002 != 0:
+		return true
+	case perm&0o020 != 0:
+		return goos != "darwin" || gid != adminGID
+	}
+	return false
+}
+
+// folderUntrusted says why folder d (where it exists) is not the person's
+// alone: another user's, or writable by others.
+func folderUntrusted(d string) string {
+	info, err := os.Stat(sandbox.RealPath(d))
+	if err != nil {
+		return ""
+	}
+	me := uint32(os.Getuid()) // #nosec G115 -- a uid
+	if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Uid != me && st.Uid != 0 {
+		return "is in a folder owned by another user"
+	}
+	if othersWrite(info) && info.Mode()&os.ModeSticky == 0 {
+		return "is in a folder other users can write"
+	}
+	return ""
+}

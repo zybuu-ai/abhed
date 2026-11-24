@@ -7,6 +7,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,6 +54,9 @@ const (
 	// EvModelCall closes one round trip to the model. The session total says
 	// what a run cost; this says where it went.
 	EvModelCall EventType = "model.call"
+	// EvBudgetStopped marks a run stopped by its budget: the dollar or token
+	// cap reached, or a dollar cap set for a model with no price.
+	EvBudgetStopped EventType = "budget.stopped"
 	// EvModelSwitched marks the session moving to another configured model;
 	// see ModelSwitched.
 	EvModelSwitched EventType = "model.switched"
@@ -107,6 +111,10 @@ const (
 	// EvStartupTrusted names the shell start-up files left unjudged this run
 	// because they match the person's baseline (path and sha256).
 	EvStartupTrusted EventType = "policy.startup_trusted"
+	// EvModelWaiting is a model request held back because its provider's
+	// request slots are taken, as on a local server that serves one at a
+	// time; a subagent's is passed up to its parent with its session.
+	EvModelWaiting EventType = "model.waiting"
 )
 
 type Actor string
@@ -137,8 +145,9 @@ const (
 	TermCompleted TerminalReason = "completed"
 	TermMaxTurns  TerminalReason = "max_turns"
 	TermMaxBudget TerminalReason = "max_budget"
-	// Reserved, not emitted: a denial is fed back to the model as a recoverable
-	// error so it can choose another approach, rather than ending the session.
+	// TermPolicyDenied: a hook ended the run (its reply's continue was
+	// false). A policy denial is not one: it is fed back to the model as a
+	// recoverable error so it can choose another approach.
 	TermPolicyDenied   TerminalReason = "policy_denied"
 	TermUserInterrupt  TerminalReason = "user_interrupt"
 	TermError          TerminalReason = "error"
@@ -154,6 +163,9 @@ const (
 	// TermWakeLimit: a wake run used its turns. The session goes on, and so
 	// do its background children.
 	TermWakeLimit TerminalReason = "wake_limit"
+	// TermStdinLate: a headless run was stopped because input came on its
+	// stdin after the wait for it; an answer without that input is not given.
+	TermStdinLate TerminalReason = "stdin_late"
 )
 
 // RunsOnForQueued reports whether a run that ended this way goes on for a
@@ -185,6 +197,8 @@ func (r TerminalReason) ExitCode() int {
 		return 7
 	case TermUnverified:
 		return 8
+	case TermStdinLate:
+		return 9
 	default:
 		return 1
 	}
@@ -257,6 +271,9 @@ type Observation struct {
 	// SandboxNote is set when bash added a note that the sandbox refused part
 	// of the command: the credential folder named, or "denied" for none.
 	SandboxNote string `json:"sandbox_note,omitempty"`
+	// NetworkOff is set by bash, never by a command's output, when the
+	// command failed because the network is off.
+	NetworkOff bool `json:"network_off,omitempty"`
 	// NotRun marks the answer to a call the turn ended before running.
 	NotRun bool `json:"not_run,omitempty"`
 	// OutcomeUnknown marks the answer to a call that may have run on a
@@ -280,6 +297,27 @@ type Message struct {
 	// the message held: the model got [secret:NAME] in their place. A string
 	// keeps Message comparable.
 	SecretsWithheld string `json:"secrets_withheld,omitempty"`
+	// Pasted names, comma-separated as ID:kind, the credentials the person
+	// pasted that matched no stored secret: the model and the record got
+	// [pasted:ID] in their place, and the value is held in the session's
+	// memory only, for a login the person approves.
+	Pasted string `json:"pasted,omitempty"`
+	// Note is what Abhed added after the person's text for the model, such
+	// as what a request for parallel work means; recorded so a replay sends
+	// what the model was sent.
+	Note string `json:"harness_note,omitempty"`
+	// Typed is the person's own words, without what they attached: the only
+	// text the parallel note is judged on. Empty means none, so a message
+	// that is not the person's, or one that only attaches, gets no note.
+	Typed string `json:"-"`
+}
+
+// ModelText is the message as the model got it: the text, then any note.
+func (m Message) ModelText() string {
+	if m.Note == "" {
+		return m.Text
+	}
+	return m.Text + "\n\n" + m.Note
 }
 
 // DroppedMessage is a queued message the model never saw. It is not a
@@ -290,6 +328,13 @@ type DroppedMessage struct {
 	Text     string    `json:"text"`
 	QueuedAt time.Time `json:"queued_at"`
 	Reason   string    `json:"reason"`
+	// Steered marks a message sent while a run was working.
+	Steered bool `json:"steered,omitempty"`
+	// SecretsWithheld and Pasted are as on a user message: what the text,
+	// as recorded, has in place of a stored secret's value or a pasted
+	// credential. A dropped message holds none of them for use.
+	SecretsWithheld string `json:"secrets_withheld,omitempty"`
+	Pasted          string `json:"pasted,omitempty"`
 }
 
 // Delta is one streamed fragment of an agent message.
@@ -313,6 +358,14 @@ type ModelCall struct {
 	TokensIn     int    `json:"tokens_in"`
 	TokensOut    int    `json:"tokens_out"`
 	TokensCached int    `json:"tokens_cached"`
+	// TokensCacheWrite are prompt tokens written to the cache, billed apart.
+	TokensCacheWrite int `json:"tokens_cache_write,omitempty"`
+	// CostUSD is the call's cost in US dollars at the model's price; nil
+	// when the model has no price.
+	CostUSD *float64 `json:"cost_usd,omitempty"`
+	// Unpriced marks a call to a model with no price. A record from before
+	// costing has neither this nor cost_usd: its cost is not recorded.
+	Unpriced bool `json:"unpriced,omitempty"`
 	// CacheReported is false when the provider sent no cached-token figure,
 	// so a zero above means unknown rather than a cold cache.
 	CacheReported bool `json:"cache_reported,omitempty"`
@@ -323,7 +376,10 @@ type ModelCall struct {
 	// prefill — and prefill is what a cache miss costs.
 	FirstTokenMS int64 `json:"first_token_ms"`
 	LatencyMS    int64 `json:"latency_ms"`
-	ToolCalls    int   `json:"tool_calls"`
+	// QueueMS is how long the request waited for a slot before it was sent,
+	// left out of the two above.
+	QueueMS   int64 `json:"queue_ms,omitempty"`
+	ToolCalls int   `json:"tool_calls"`
 	// CutOff marks a turn that spent the whole output budget: the model was
 	// still writing when the limit ended it, so what it said is not an answer.
 	CutOff bool `json:"cut_off,omitempty"`
@@ -421,6 +477,10 @@ type SessionEnded struct {
 	TokensOut    int            `json:"tokens_out"`
 	TokensCached int            `json:"tokens_cached"`
 	Compactions  int            `json:"compactions"`
+	// CostUSD is what the session's priced calls cost, in US dollars;
+	// Unpriced marks a call to a model with no price, left out of it.
+	CostUSD  float64 `json:"cost_usd,omitempty"`
+	Unpriced bool    `json:"unpriced,omitempty"`
 
 	// ContextTokens is what the NEXT turn would send: the system prompt, the
 	// conversation as it now stands, and the tool definitions. TokensIn above
@@ -670,7 +730,14 @@ type Recorder struct {
 	Gate func() error
 	// endSealed drops any later session.ended: see SealEnd.
 	endSealed bool
+	// held, when set, are the credentials the session holds from a paste,
+	// each with its placeholder: withheld by every redaction this recorder
+	// makes, the record's included, as a stored secret's value is.
+	held func() []heldValue
 }
+
+// heldValue is one held credential and the placeholder it is withheld as.
+type heldValue struct{ value, placeholder string }
 
 // SealEnd makes every later session.ended a no-op. A CLI exiting on a second
 // Ctrl-C records the end itself, while the stopping turn may still record its own.
@@ -700,7 +767,72 @@ func (r *Recorder) redactor() Redactor {
 	if r == nil {
 		return nil
 	}
+	base := usableRedactor(r.Redact)
+	if r.held == nil {
+		return base
+	}
+	// Only while something is held: otherwise the store's redactor, as it is.
+	held := r.held()
+	if len(held) == 0 {
+		return base
+	}
+	return heldRedactor{base: base, held: func() []heldValue { return held }}
+}
+
+// storedRedactor is the secrets store's redactor alone, nil when none is set.
+func (r *Recorder) storedRedactor() Redactor {
+	if r == nil {
+		return nil
+	}
 	return usableRedactor(r.Redact)
+}
+
+// heldRedactor is the store's redactor, then the session's held values.
+type heldRedactor struct {
+	base Redactor
+	held func() []heldValue
+}
+
+func (h heldRedactor) Redact(raw []byte) []byte {
+	if h.base != nil {
+		raw = h.base.Redact(raw)
+	}
+	for _, v := range h.held() {
+		// Matched as JSON writes it inside a string.
+		val, err1 := json.Marshal(v.value)
+		ph, err2 := json.Marshal(v.placeholder)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		raw = bytes.ReplaceAll(raw, val[1:len(val)-1], ph[1:len(ph)-1])
+	}
+	return raw
+}
+
+// FindInPath and Names are the store redactor's, where it has them.
+func (h heldRedactor) FindInPath(p string) (string, bool) {
+	if f, ok := h.base.(interface{ FindInPath(string) (string, bool) }); ok {
+		return f.FindInPath(p)
+	}
+	return "", false
+}
+
+func (h heldRedactor) Names() []string {
+	if n, ok := h.base.(interface{ Names() []string }); ok {
+		return n.Names()
+	}
+	return nil
+}
+
+func (h heldRedactor) Span() int {
+	n := 0
+	if h.base != nil {
+		n = h.base.Span()
+	}
+	for _, v := range h.held() {
+		n = max(n, len(v.value))
+	}
+	return n
 }
 
 // usableRedactor is red, or nil when it is nil or holds a nil pointer, which
@@ -824,4 +956,13 @@ type MonitorVerdict struct {
 	// Skipped says why the judge was not asked, as when the turn's budget of
 	// judgements was spent; the decision stands as policy made it.
 	Skipped string `json:"skipped,omitempty"`
+}
+
+// ModelWaiting is a model.waiting payload.
+type ModelWaiting struct {
+	// Session is the subagent whose request waits, in a parent's record.
+	Session string `json:"session,omitempty"`
+	Model   string `json:"model,omitempty"`
+	// Ahead is how many requests to the same provider were waiting before it.
+	Ahead int `json:"ahead"`
 }

@@ -165,6 +165,10 @@ func (a *accountSecrets) mount(s *Server, mux *http.ServeMux) {
 			WriteError(w, http.StatusBadRequest, "secret names are upper-case identifiers such as GITHUB_TOKEN")
 			return
 		}
+		if secrets.Held(name) {
+			WriteError(w, http.StatusBadRequest, "names beginning "+secrets.HeldPrefix+" or "+secrets.ModelKeyPrefix+" are kept by Abhed itself")
+			return
+		}
 		var req struct {
 			Value string `json:"value"`
 		}
@@ -200,6 +204,10 @@ func (a *accountSecrets) mount(s *Server, mux *http.ServeMux) {
 			return
 		}
 		name := r.PathValue("name")
+		if secrets.Held(name) {
+			WriteError(w, http.StatusBadRequest, "names beginning "+secrets.HeldPrefix+" or "+secrets.ModelKeyPrefix+" are kept by Abhed itself; a login goes with abhed mcp logout or abhed provider logout")
+			return
+		}
 		if err := v.Remove(name); err != nil {
 			s.log.Error("secrets: remove", "user", UserOf(r.Context()), "name", name, "err", err)
 			WriteError(w, http.StatusInternalServerError, "the secret could not be removed")

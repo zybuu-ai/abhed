@@ -27,10 +27,30 @@ Ollama for this; it uses it only when it is configured and running. Any other
 provider, a hosted one included, is asked through a chat turn with the cursor
 marked, at a low temperature, and only the text of its reply is used.
 
+The request always carries a suffix, a newline at the end of a file:
+Ollama applies a coder model's fill-in-the-middle template only when there
+is one, and without it the model answers the code before the cursor as a
+chat ("It looks like you're working on…").
+
 A chat or reasoning model often answers in prose, so the reply is cleaned
 first: reasoning written into the text is removed, a fenced block gives its
-code, and code repeated from around the cursor is trimmed. A reply that still
-reads as an explanation is not offered; Studio is told why (`dropped`). For
+code, and code repeated from around the cursor is trimmed, including the
+rest of the cursor's line written again at the end of a one-line answer. A
+reply that still reads as an explanation, or opens as an English sentence
+where code is written (not in a comment, a docstring or a string, one that
+spans lines included, nor in
+Markdown, plain text or a configuration file), is not offered; Studio is
+told why (`dropped`). Code shaped like a sentence (`None if x is None else
+x`) is not taken for one: a sentence must also have a contraction, a pronoun
+or an article. Studio then parses the file with the suggestion in place, for
+the languages it has a grammar for (as for next edits, below), and does not
+show one whose own text fails to parse or that leaves more syntax errors
+than the file had. This fails closed: a one-line block opener or an
+unfinished line offered alone (`if err != nil {` in Go, `x := foo(`) adds
+an error until its body or its close is written, so it is not shown; the
+next keystroke asks again. The check is incremental (the file as it is is
+parsed once per version), and a file over 256 KB is not checked: the
+engine's prose filter stands. For
 dependable ghost text, use a coding model with fill-in-the-middle.
 
 | Setting | Default | |
@@ -92,11 +112,64 @@ the rules apply.
 The engine keeps the requests reasonable: one in flight per session (a newer
 one replaces it, and Studio's `seq` decides which is newer when requests
 cross), a short wait before asking so that a burst of keystrokes sends one
-request, at most five a second per session and ten a second over all of an
-editor's sessions. A provider whose completions endpoint answers 404, 405 or
+request, at most five requests sent a second per session and ten a second
+over all of an editor's sessions. A request replaced during the wait is not
+sent and does not count, so the last keystroke of a burst is the one asked
+about. A provider whose completions endpoint answers 404, 405 or
 501, or a 400 that says the endpoint or its `suffix` is not supported, is
 asked through chat from then on in that session; any other 400 is a failure.
 A closed session's requests are refused.
+
+## How fast it is
+
+Ghost text is only useful while you are still looking at the line, so
+Studio and the engine keep each suggestion short and the model busy only
+with the latest one:
+
+- **Warm-up.** When you open a file Studio may complete in a window whose
+  editor session is already open, or when that session opens with your
+  first keystroke, Studio asks the engine to load the completion model:
+  one fill-in-the-middle request with an empty prompt and one token, so no
+  code is sent. It goes at most once every two minutes per session and per
+  editor connection, and ends when the session closes or the editor's
+  connection does. A cold local model
+  takes seconds to load; this way it is loaded before you need it. Only a
+  model whose address is on this machine is warmed, decided by its URL as
+  `local_only` is: a loopback address, `localhost`, or a local server type
+  at its default endpoint. A proxy on this machine that forwards to a model
+  elsewhere counts as local, so its model is warmed through it (still with
+  no code). Once you have clicked or typed in the window, a workspace file
+  in front opens the editor session and warms the model before your first
+  keystroke, starting the engine first if it is not running; coming back
+  to the window warms it again (within the two-minute bound), so a model
+  unloaded meanwhile is loaded before you type. Editors restored at
+  start-up, untouched, warm nothing and start nothing.
+- **Completions first.** A local server often answers one request at a
+  time. A completion waiting for the server goes ahead of next-edit calls
+  and agent turns that wait for it, and while one is asked for, next-edit
+  calls to that server wait and one already sent is cancelled; a hosted
+  server serves them side by side, so nothing waits there. A rename
+  finished from the file needs no model and is shown at once; on the
+  renamed line, in the languages the engine finishes renames in by itself
+  (Python, Go, JavaScript, TypeScript, Java), Studio shows it instead of
+  asking for ghost text. In the editor, next-edit suggestions yield to ghost
+  text: while a completion is shown at the cursor the next-edit model is not
+  asked, so ghost text never waits for it.
+- **Debounce and cancel.** Studio waits briefly after a keystroke before
+  asking and sends its `seq`; a newer keystroke supersedes the older
+  request, and Studio cancels a request whose place in the file has gone,
+  so the model stops working on it. A request over the rate limit is asked
+  once more if its place still stands.
+- **One logical block.** A suggestion is the statement at the cursor and,
+  when it opens a block (a line ending in `:` or `{`, say), that block's
+  body and closing line: it ends at a blank line (outside a string such as
+  a docstring) or at a line back at the statement's own indentation, and is
+  at most 12 lines. The model's answer is streamed and ended as soon as the
+  block is whole, so it does not write a whole function you will not take;
+  the model's end-of-text and file markers are its stop sequences.
+- **Again after Tab or Enter.** Accepting a suggestion, or pressing Enter
+  (a new line, with its indentation), asks for the next one shortly after;
+  a paste or another program's change does not.
 
 ## What is recorded
 
@@ -109,8 +182,14 @@ recorded, nothing is sent.
 `completion.summary`, when the session closes, counts the requests sent and
 how many were answered, failed or cancelled after sending, and those refused
 or superseded (replaced by a newer one) before anything went, with the tokens
-used. The token totals are a lower bound: a request cancelled after it went
-may have cost tokens the provider never reported. The metrics count the same
+used, and how long answers took: the median, 90th percentile and longest
+time from a request reaching the engine to its answer (`latency_p50_ms`,
+`latency_p90_ms`, `latency_max_ms`, of requests sent to the model only),
+and the warm-ups with the longest (`warmups`, `warmup_ms`). Only counts and times are recorded, never code.
+`abhed hawkeye` shows them for the session. The token totals are a lower
+bound: a request cancelled after it went may have cost tokens the provider
+never reported, and a streamed answer cut at its block is counted a token
+a chunk when the provider reports no usage. The metrics count the same
 (`abhed_completions_total`, `abhed_completion_tokens_total`).
 
 ## Next-edit suggestions
@@ -128,10 +207,70 @@ cover it, a managed model pin binds it, the same files are never sent, and
 stored secrets and key-shaped text are withheld. A line that held a withheld
 secret is never edited, since the model did not see what is there; a
 suggestion that rewrites most of the window, carries a secret or reads as
-prose is dropped and Studio is told why. The record holds
+prose is dropped and Studio is told why. The answer is bounded by the window
+it rewrites (about half its bytes in tokens, at most 1,024); an answer cut at
+that bound is dropped rather than read as a window with lines missing.
+Studio cancels the request in flight on each keystroke. The record holds
 `next_edit.enabled` and `next_edit.summary` as it does for completions, and
 the metrics count them as `abhed_next_edits_total` and
 `abhed_next_edit_tokens_total`.
+
+A rename needs no model. When your edits on a line turned one identifier
+into another (`step` into `stride`, say), the other uses of the old name
+are the next edit, and the engine finds them in the lines Studio sent. They
+are offered as one edit, taken with Tab, and nothing is sent to any model
+for it:
+
+- When a language server is running for the file, its references of the
+  old name, asked at the use nearest the rename, are the uses.
+- Otherwise, in Python, Go, JavaScript, TypeScript and Java, the engine
+  scans the innermost function the rename is in (the window, at the top
+  level of a file), skipping strings and comments, members (`user.name`,
+  `p->name`, `A::name`), keyword arguments in a call (`f(name=1)`; a
+  parameter's default on the function's own line is renamed) and, in
+  JavaScript, TypeScript and Go, the keys of an object or composite literal
+  (`{name: 1}`, `T{name: 1}`). A ternary's `? name :`, a `case name:`, a
+  typed declaration and a Go map literal's key (`map[string]int{name: 1}`)
+  are uses, and so are a nested map literal's keys with its type left out.
+  A shorthand property (`{ name, age }`), a destructuring (`const { name }
+  = o`, `for (const { name } of xs)`, a parameter's `({ name })`) or an
+  object inside a JSX expression container (`style={{ name }}`) is both key
+  and variable, so it is written out (`{ name: title, age }`) and the
+  object keeps its key, whether the scan or a language server found it. A
+  name in a block or arrow body (`{ name }`), a template's `${name}` or a
+  JSX expression container (`<p>{name}</p>`, `<Item value = {name} />`) is
+  a use, renamed in place. Where Abhed cannot tell which a brace is (an
+  `= {` in JSX with no tag or declaration on its line, an object inside a
+  template's `${ }`), the rename is left to the next-edit model rather
+  than guessed. Where the old name is bound again in a nested
+  function, lambda, comprehension or inner block, nothing is offered: a
+  textual rename would change another variable, so it is left to you.
+  Rust, C, C++ and JSX files (`.jsx`, `.tsx`, where attribute names and
+  the text between tags read like names) take only a language server's
+  uses; other languages get no rename from the file. A `.js` file that
+  holds JSX (a tag where a value goes, a tag with an attribute anywhere,
+  `</`, `/>` or `<>` in its code, even with its closing tag past the lines
+  Studio sent) is treated like `.jsx`:
+  only a language server's uses, read with the JSX rules, else the model.
+- Not every one-word edit is a rename. A new name that is a reserved word
+  of the language (`class`, `null`, `int`) or already used in that
+  function, an old name with no other use (a typo fixed on its only use),
+  an edit at a use of a name declared elsewhere in the function, or one
+  outside any function the window shows, is not taken for a rename: the
+  next-edit model is asked as for any other edit.
+
+The summary counts these as `local`, and renames left to you as
+`local_dropped`; neither is in the answer times.
+`abhed_next_edits_total` counts them as the outcomes `local` and
+`local_dropped`, and `abhed hawkeye` shows them.
+
+Before Studio shows any next-edit suggestion, from a rename or a model, it
+parses the file with the suggestion applied (tree-sitter, for Python, Go,
+JavaScript, TypeScript, Rust, Java, C, C++, C#, Ruby, PHP and shell) and
+drops one that leaves more syntax errors than the file had. A parse that
+fails, or a file too large to check in full, drops the suggestion too. For
+languages with no grammar, a suggestion that adds unbalanced brackets is
+dropped.
 
 ## Commit messages
 

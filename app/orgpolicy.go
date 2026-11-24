@@ -18,6 +18,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/filelock"
+	"github.com/zybuu-ai/abhed/internal/safeurl"
 	"github.com/zybuu-ai/abhed/orgpolicy"
 	"github.com/zybuu-ai/abhed/profiles"
 )
@@ -78,6 +79,9 @@ func orgKeys(ctx context.Context, profilesFile, name string, p *profiles.Profile
 	case http.StatusNotFound, http.StatusNotImplemented:
 		return nil, errNoOrgPolicy
 	default:
+		if e := profiles.RemovedFrom(p.URL, status, body); e != nil {
+			return nil, e
+		}
 		return nil, fmt.Errorf("the server answered %d for its policy keys", status)
 	}
 	var out struct {
@@ -104,6 +108,10 @@ func orgFetch(ctx context.Context, profilesFile, name string, p *profiles.Profil
 	case http.StatusNotFound, http.StatusNotImplemented:
 		return env, errNoOrgPolicy
 	case http.StatusUnauthorized, http.StatusForbidden:
+		// Removed by the organisation, signing in again does not help.
+		if e := profiles.RemovedFrom(p.URL, status, body); e != nil {
+			return env, e
+		}
 		return env, fmt.Errorf("the org server refused the sign-in (%d); run abhed login %s", status, p.URL)
 	default:
 		return env, fmt.Errorf("the org server answered %d", status)
@@ -141,7 +149,7 @@ func enrollOrgPolicy(ctx context.Context, profilesFile, name string, p *profiles
 	machine := mc.Machine()
 	if machine.URL != "" && machine.URL != p.URL {
 		if len(given) > 0 {
-			return fmt.Errorf("the managed configuration takes the org policy only from %s", machine.URL)
+			return fmt.Errorf("the managed configuration takes the org policy only from %s", safeurl.Server(machine.URL))
 		}
 		return nil
 	}
@@ -159,7 +167,7 @@ func enrollOrgPolicy(ctx context.Context, profilesFile, name string, p *profiles
 		return err
 	}
 	if st != nil && st.URL != p.URL {
-		fmt.Fprintf(errOut, "abhed: the org policy stays with %s; run abhed policy leave first to take %s's\n", st.URL, p.URL)
+		fmt.Fprintf(errOut, "abhed: the org policy stays with %s; run abhed policy leave first to take %s's\n", safeurl.Server(st.URL), safeurl.Server(p.URL))
 		return nil
 	}
 	served, err := orgKeys(ctx, profilesFile, name, p)
@@ -304,7 +312,7 @@ func refreshOrgPolicy(ctx context.Context, force bool) (orgRefreshResult, error)
 		return res, err
 	}
 	if m := mc.Machine(); m.URL != "" && m.URL != st.URL {
-		return res, fmt.Errorf("the managed configuration takes the org policy only from %s, not %s", m.URL, st.URL)
+		return res, fmt.Errorf("the managed configuration takes the org policy only from %s, not %s", safeurl.Server(m.URL), safeurl.Server(st.URL))
 	}
 	before := ""
 	if st.Envelope != nil {
@@ -321,7 +329,7 @@ func refreshOrgPolicy(ctx context.Context, force bool) (orgRefreshResult, error)
 	}
 	p, ok := reg.Profiles[st.Profile]
 	if !ok || p.URL != st.URL || p.Token == "" {
-		st.LastError = fmt.Sprintf("the profile %s is not signed in to %s; run abhed login %s", st.Profile, st.URL, st.URL)
+		st.LastError = fmt.Sprintf("the profile %s is not signed in to %s; run abhed login %s", st.Profile, safeurl.Server(st.URL), safeurl.Server(st.URL))
 		return res, errors.Join(errors.New(st.LastError), orgpolicy.SaveState(path, st))
 	}
 	cctx, cancel := context.WithTimeout(ctx, orgFetchTimeout)
@@ -498,7 +506,7 @@ func policyStatus(out, errOut io.Writer) int {
 	s := cfg.OrgPolicy
 	fmt.Fprintf(out, "org policy: %s\n", s.OrgPolicyLine())
 	if s.URL != "" {
-		fmt.Fprintf(out, "  server:   %s (profile %s)\n", s.URL, orDefault(s.Profile, "none"))
+		fmt.Fprintf(out, "  server:   %s (profile %s)\n", config.Printable(safeurl.Redacted(s.URL)), orDefault(s.Profile, "none"))
 	}
 	if path, err := orgpolicy.Path(); err == nil {
 		if st, err := orgpolicy.LoadState(path); err == nil && st != nil {

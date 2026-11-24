@@ -20,9 +20,21 @@ var reportTmpl string
 // escapes by context, so a result containing markup or script renders as text;
 // the page also loads nothing from anywhere, so it opens on an air-gapped host.
 var page = template.Must(template.New("report").Funcs(template.FuncMap{
-	"n":             commas,
-	"ms":            dur,
-	"pct":           func(f float64) string { return fmt.Sprintf("%.0f%%", f*100) },
+	"n":   commas,
+	"ms":  dur,
+	"pct": func(f float64) string { return fmt.Sprintf("%.0f%%", f*100) },
+	"usd": func(v any) string {
+		switch f := v.(type) {
+		case *float64:
+			if f == nil {
+				return "—"
+			}
+			return fmt.Sprintf("$%.4f", *f)
+		case float64:
+			return fmt.Sprintf("$%.4f", f)
+		}
+		return "—"
+	},
 	"clock":         func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05 UTC") },
 	"chart":         chart,
 	"steps":         steps,
@@ -71,9 +83,24 @@ func Text(r Report) string {
 		cache = "cache not reported"
 	}
 	fmt.Fprintf(&b, "  tokens    %s in · %s out · %s\n", commas(t.TokensIn), commas(t.TokensOut), cache)
+	switch {
+	case t.Unpriced && t.CostUSD > 0:
+		fmt.Fprintf(&b, "  cost      $%.4f (some calls to a model with no price)\n", t.CostUSD)
+	case t.Unpriced:
+		fmt.Fprintf(&b, "  cost      unpriced (no price for the model)\n")
+	case t.CostNotRecorded && t.CostUSD > 0:
+		fmt.Fprintf(&b, "  cost      $%.4f (earlier calls not costed in the record)\n", t.CostUSD)
+	case t.CostNotRecorded:
+		fmt.Fprintf(&b, "  cost      not recorded (the record predates costing)\n")
+	case t.CostUSD > 0:
+		fmt.Fprintf(&b, "  cost      $%.4f\n", t.CostUSD)
+	}
 	if t.Window > 0 {
 		fmt.Fprintf(&b, "  context   peak %s of %s (%d%%)   compactions %d   offloads %d   recalls %d\n",
 			commas(t.PeakContext), commas(t.Window), t.PeakContext*100/t.Window, len(r.Compactions), len(r.Offloads), t.Recalls)
+	}
+	for _, c := range r.Context {
+		fmt.Fprintf(&b, "  context   #%d %s\n", c.Seq, contextLine(c))
 	}
 	fmt.Fprintf(&b, "  policy    %d allowed · %d denied · %d asked a reviewer   %s\n",
 		r.Policy.Allowed, r.Policy.Denied, r.Policy.Reviewer, steps(r.Policy.ByStep))
@@ -100,6 +127,22 @@ func Text(r Report) string {
 		}
 		if t.Error != "" {
 			fmt.Fprintf(&b, " — %s", clip(t.Error, 160))
+		}
+		b.WriteString("\n")
+	}
+	for _, e := range r.Editor {
+		fmt.Fprintf(&b, "  editor    #%d %s %s: %d sent, %d served", e.Seq, e.Feature, e.Model, e.Requests, e.Served)
+		if e.Local > 0 {
+			fmt.Fprintf(&b, ", %d of them from the file", e.Local)
+		}
+		if e.LocalDropped > 0 {
+			fmt.Fprintf(&b, ", %d rename(s) left to the person", e.LocalDropped)
+		}
+		if e.LatencyMaxMs > 0 {
+			fmt.Fprintf(&b, "; answered in %d ms median, %d ms p90, %d ms longest", e.LatencyP50Ms, e.LatencyP90Ms, e.LatencyMaxMs)
+		}
+		if e.Warmups > 0 {
+			fmt.Fprintf(&b, "; %d warm-up(s), longest %d ms", e.Warmups, e.WarmupMs)
 		}
 		b.WriteString("\n")
 	}
@@ -345,4 +388,20 @@ func planLabel(hash string, step int) string {
 		hash = hash[:12]
 	}
 	return fmt.Sprintf("   [plan %s step %d]", hash, step)
+}
+
+// contextLine says what one fitting of the conversation to the window did.
+func contextLine(c ContextFit) string {
+	switch c.Kind {
+	case "window":
+		return fmt.Sprintf("window of %s assumed at %s tokens (%s)", c.Model, commas(c.Window), c.Action)
+	case "overflow":
+		what := map[string]string{agent.OverflowRetried: "compacted and asked again",
+			agent.OverflowGaveUp: "still too long; the run ended", agent.OverflowTruncated: "the server cut the prompt; compacted"}[c.Action]
+		if what == "" {
+			what = c.Action
+		}
+		return fmt.Sprintf("too long for %s (%s tokens): %s, %s → %s", c.Model, commas(c.Window), what, commas(c.Before), commas(c.After))
+	}
+	return fmt.Sprintf("re-fitted to %s's %s tokens (%s): %s → %s", c.Model, commas(c.Window), c.Action, commas(c.Before), commas(c.After))
 }

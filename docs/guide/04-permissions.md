@@ -149,11 +149,30 @@ directory is recorded as `workspace.dir_added` with its access.
 
 `limits.max_turns` bounds how many turns the agent takes. In the interactive
 CLI it applies to each message you send, so a long conversation does not run
-out for good: a message that reaches it stops with "send "continue" to let it
-go on". Where the managed configuration sets `limits.max_turns`, it bounds
-the whole conversation instead, as the organisation wrote it, and `/clear`
-starts a new one. `/mode` says which applies. Headless runs and the server
-count the whole conversation.
+out for good. Where the managed configuration sets `limits.max_turns`, it
+bounds the whole conversation instead, as the organisation wrote it, and
+`/clear` starts a new one. `/mode` says which applies. Headless runs and the
+server count the whole conversation.
+
+A run that stops at the limit can be continued where it stopped:
+
+- `/continue` at the terminal's prompt
+- `abhed -p --continue` (or `-p -r <session>`) with no task; with nothing to continue it exits 2 before
+  anything is recorded
+
+Each continuation gives the run its allowance of turns again: a message's
+allowance at the terminal, or the run's `max_turns` for `-p`. Where the
+managed limit binds the whole conversation and a managed
+`limits.max_continues` allows continuing, `/continue` gives 25 more turns.
+The note when a run stops offers `/continue` only while the conversation has
+continuations left, and says how many. It is recorded
+first as `turns.extended`, with the old and new limit and its number in the
+conversation. `limits.max_continues` (3 by default; 0 turns it off) bounds
+how many times one conversation may be continued, counted from its record,
+so separate `-p --continue` runs share the bound. A layer below the managed
+file may only lower it. Where the managed configuration sets
+`limits.max_turns` and not `limits.max_continues`, no continuation is
+allowed, so the organisation's limit holds for the whole conversation.
 
 ## Rules
 
@@ -176,8 +195,23 @@ command such as `cat .env` (allowed by the built-in `bash(cat *)`), a search,
 or a program the agent runs can still read the file. Keep credentials out of
 the workspace, give a secret only to the command that needs it
 ([Secrets](#secrets)), and deny reads of such files and the commands that
-print them in your own or the managed rules. Your own `permissions.ask` list
-replaces the built-in one, so copy these rules into it if you set one.
+print them in your own or the managed rules.
+
+A trusted configuration that sets its own `permissions.ask` replaces the
+whole built-in ask list, not only the credential reads above: it also drops
+the asks before writing or editing `ABHED.md`, `ABHED.local.md`, `AGENTS.md`
+and a folder's own `ABHED.md` (files every later session reads as
+instructions), and before a command that names `ABHED_TRUST_WORKSPACE` or
+`trust-workspace` (trusting a workspace for a nested run). Copy the rules
+you want to keep into your list.
+
+Read rules hold for `read`, `grep` and `search` alike: a file a deny rule
+covers, or an ask rule, is left out of what a search shows. They are path
+rules, so a second name for the same file, a hard link such as `hard.txt`
+made to `secrets/prod.env`, is judged by its own path and is read and
+searched; `bash` (`cat secrets/prod.env`, under the built-in
+`bash(cat *)`) is judged by the command's rules, not the read rules. Keep
+secrets out of the workspace, or deny the commands that print them.
 
 The tool name of a built-in tool, or of an action such as `secret`, `delete`
 or `forge_pr`, may be written in any case: `Bash(curl *)`, `BASH(curl *)` and
@@ -257,7 +291,16 @@ parser cannot read in full is refused while a deny rule for `ssh` has a
 pattern. A command the operator declared a read in `ssh.read_commands` runs
 unasked and in plan mode, when it is one simple command matching an entry
 that runs no other command, writes no file and carries no `stdin_secret`
-([Clusters and machines](../ops/infrastructure.md#ssh)). In `bypass` mode the
+([Clusters and machines](../ops/infrastructure.md#ssh)). So does, on a host
+in `ssh.hosts`, a command the read-only classifier shows is a read: metadata
+programs on the read-only list in read forms, joined only by `|`, with no
+redirection, expansion, substitution or double quote (`ls -lah /var/log`,
+`du -ah /var/log | sort -rh | head`). Programs that print files (`cat`,
+`grep`, `journalctl`, …) join them only where the operator sets
+`ssh.read_contents`; without it such a read asks, and the reason names
+`ssh.read_contents` and `ssh.read_commands`, where an entry such as
+`tail -n * /var/log/app/app.log` declares one log read. The record names the rule `ssh.read_only`
+([Read-only commands](../ops/infrastructure.md#read-only-commands-on-declared-hosts)). In `bypass` mode the
 read step is not used: bypass allows it as it allows anything, and where the
 managed configuration refuses bypass the call asks, as in default mode. A remote command the destructive step names, such as `rm -rf`,
 always confirms twice and offers no "always". Neither reads a script the
@@ -776,6 +819,26 @@ A malformed rule is **refused at startup** rather than silently matching
 nothing — for a deny rule, quietly accepting one that can never fire tells you
 that you are protected when you are not.
 
+### Where a refusal came from
+
+A decision made by a configured rule names the layer the rule came from,
+in the reason the model and the person read and in the record:
+`denied by rule bash(curl*) from the org policy (https://org.example,
+version 3)`. The layers are the org policy, the machine's managed file
+(`the managed configuration /etc/abhed/config.json`), the workspace's
+configuration, your user configuration, a `-settings` file, the `-allow` or
+`-deny` flag, and Abhed's built-in rules; a session rule says `session
+rule`, and an edition's layer its name. The model is also told that a rule
+refused the call, not that something is unavailable, so it does not tell
+you "no network" when the organisation denied `curl`.
+
+`action.approved` and `action.denied` carry the layer as `source`: `org`,
+`managed`, `workspace`, `user`, `settings`, `flag`, `default`, `session` or
+an edition's layer for a rule; `mode` when the permission mode or its
+default decided; `hook` for a policy hook. Abhed's own checks (a
+destructive command, a command no rule can read) carry none. HawkEYE shows
+it per call.
+
 ### Policy layers from an edition
 
 On a server people sign in to, an edition can add rules of its own to every
@@ -829,7 +892,8 @@ Every call goes through the same steps, and the order is the design:
 3. **Plan mode** — in `plan`, a mutating call is refused here, before the
    destructive and ask steps, so a destructive command or an ask rule is not
    put to a person who might accept it. Read-only calls go on as before, an
-   `ssh` command the operator declared a read (`ssh.read_commands`) among them
+   `ssh` command the operator declared a read (`ssh.read_commands`), or one the
+   read-only classifier finds a read on a declared host, among them
 4. **Destructive commands** — force push, hard reset, disk writes, fork bombs
    and similar always confirm, in every mode, because there is no undo. For git
    these are the forms that discard work which Abhed recognises: `git restore`
@@ -1005,7 +1069,26 @@ its modes. The none tier holds nothing, and on it the `git` line of
 also refuses the fence in `landlock_only` mode, which cannot hold these files
 (unset, that fence runs and says so); Studio and `abhed serve` always hold
 them where the tier can. With `protect_git` set `true`, `abhed serve` does not
-start on the none tier, which cannot hold them. Because `config` is out of
+start on the none tier, which cannot hold them.
+
+How they are held differs by tier, and one tier class has a known gap.
+Seatbelt (the macOS process tier) denies these names in every git folder,
+made later too. Bubblewrap (the process tier on Linux), the container tier
+(on Linux and on macOS with podman) and the fence bind read-only only the
+files that exist, with `info/` and `objects/info/` held whole; a
+`commondir` a command makes is moved aside soon after (a watch on Linux),
+as each command ends and as the sandbox closes, and the next command is
+refused. That is a mitigation: a command that plants one over and over
+still has it read by some of your own git runs on the host (about a third
+in a measured run on Linux; on macOS's container tier, which has no watch,
+every run while the command lasts), and a repository a command makes is
+live to host tools until the command ends. Releases 1.2.3 to 1.2.9 had no
+mitigation at all. To find git folders, each command on these tiers looks
+through the workspace's folders twice (as it starts and as it ends), within
+the same bound; in a large monorepo that cost is paid twice. On those tiers, keep host git tooling (an editor's
+git integration) off a workspace an untrusted command is writing.
+
+Because `config` is out of
 reach, `git push -u` or `git branch --set-upstream-to` inside a session
 cannot save the upstream, although git prints that it did; set the upstream
 in your own terminal.
@@ -1047,21 +1130,290 @@ out fails inside the sandbox too, as git rewrites `core.worktree` in the
 submodule's protected config.
 
 So on the process tier and the fence, a command that is exactly `git
-worktree add`, `git worktree remove`, `git worktree prune` or `git submodule
-update` (plain words, the usual options only, no second command), already
-approved as any command is, runs through host git instead, with the settings
-Abhed's own git uses: hooks, fsmonitor, filters and every transport but https
-off. A path it names outside the workspace refuses it. Host git is not
-held by the sandbox's network rules, so with `allow_network` off or the
-egress allowlist on, `git submodule update` is brokered only with
-`--no-fetch` (or `-N`) and runs with no transport at all: it checks out
-commits already fetched and fails on a submodule not yet cloned. Without
-`--no-fetch` it is refused; fetch the submodules yourself, outside Abhed. Another spelling, an
-option outside the usual ones or a line with more on it runs in the sandbox
-and may fail there. The container and vm tiers do not broker them; run them
+worktree add`, `git worktree remove` or `git worktree prune` (and, below,
+the network part of `git fetch`, `pull`, `push`, `clone` and `ls-remote`)
+(plain words, the usual options only, no second command), already approved
+as any command is, runs through host git instead, with the settings Abhed's
+own git uses: hooks, fsmonitor, filters and every transport but https off.
+A path it names outside the workspace refuses it. `git submodule update` is
+not brokered: a submodule's own configuration and attributes can name
+programs git runs (a smudge filter, an update command such as
+`submodule.<name>.update = !cmd`), and no list of settings switched off
+could be shown to cover them all, so it runs in the sandbox, where it may
+fail as above; run it yourself outside Abhed. Another spelling, an option
+outside the usual ones or a line with more on it runs in the sandbox and
+may fail there. The container and vm tiers do not broker them; run them
 yourself there. `git worktree remove --force` deletes the worktree's files as
 you asked, then its folder under `.git/worktrees`, instead of deleting the
 files and then failing.
+
+#### git fetch, pull, push and clone through your own git
+
+The sandbox hides `~/.ssh`, the SSH agent's socket and credential helpers
+from commands, so git inside it cannot authenticate to a remote such as
+`git@github.example.com:team/app.git`, even with `allow_network` on. Nothing
+needs setting up for that: on the process tier and the fence, a command that
+is exactly one of these, in plain words with the usual options and no second
+command, already approved as any command is, has its network part run
+through git on the host instead, as you, with your SSH agent, keychain and
+credential helpers:
+
+| Command | Usual options | On the host | In the sandbox |
+|---|---|---|---|
+| `git fetch [remote [refspec…]]` | `--prune`, `--tags`, `--no-tags`, `--all`, `--dry-run`, `--force`, `--depth=N`, `--unshallow`, `-q`, `-v` | the fetch | |
+| `git pull [remote [branch]]` | `--ff-only`, `--rebase` (or `=true`, `=false`, `=merges`), `--no-rebase`, `--ff`, `--no-ff`, `--autostash`, `--prune`, `--tags`, `-q`, `-v` | the fetch | the merge or rebase |
+| `git push [remote [refspec…]]` | `-u`, `--tags`, `--follow-tags`, `--dry-run`, `--atomic`, `--no-verify`, `-q`, `-v`; `--force`, `--force-with-lease`, `--delete`, a `+` or `:` refspec are asked each time | the push | |
+| `git clone <url> [folder]` | `--depth=N`, `-b <branch>`, `--single-branch`, `--no-tags`, `--no-checkout`, `-q` | the clone, without checkout | the checkout |
+| `git ls-remote [remote]` | `--heads`, `--tags`, `--refs`, `--symref`, `-q` | all of it | |
+
+Only the part that needs your credentials runs on the host. A pull fetches
+there, then merges or rebases in the sandbox from what it fetched (`git pull
+… . refs/remotes/<remote>/<branch>`), with your options and `pull.*`
+settings; the merge commit reads "Merge remote-tracking branch
+'origin/main'". A clone is made, without checkout, in a folder of Abhed's
+own (`~/.abhed/clone`) that commands cannot reach, moved into the workspace
+folder by folder with no link followed, then checked out in the sandbox. So
+no filter, merge driver, hook or editor the repository names ever runs on
+the host. A pull or clone shows its host part's output when that part ends,
+not as it goes. `git remote -v` is not brokered: it reads the repository's
+own settings, in the sandbox.
+
+The agent never reads a key: host git authenticates and only its output comes
+back, with any user name, password or token in a URL removed. It runs with
+the safety settings Abhed's own git uses: hooks (a push's pre-push runs in
+the sandbox, below), fsmonitor, filters, merge drivers, external diff,
+signing, the pager and automatic gc off, no submodule, no editor. The SSH
+command, askpass, proxy, TLS check and credential helpers are your own, from
+your global and system git configuration (`~/.gitconfig`), never the
+repository's; with no `core.sshCommand` of yours it is `ssh -o BatchMode=yes
+-o StrictHostKeyChecking=yes -o UpdateHostKeys=no`, which checks the host's
+key against `~/.ssh/known_hosts` and never writes it. The program run on the
+remote is git's own (`git-upload-pack`, `git-receive-pack`). Only `ssh` and
+`https` remotes are reached.
+
+The repository's configuration is input the agent may have written, so it
+cannot steer host git:
+
+- Nothing is brokered unless the sandbox holds git's configuration against
+  its commands: `sandbox.protect_git` on, on the process tier or a fence in
+  a mount namespace. With `protect_git` off, or the fence's `landlock_only`
+  mode, the line runs in the sandbox, which has no credentials, so what was
+  read when the call was judged is what host git reads when it runs.
+- A fetch, a pull's fetch and `ls-remote` go to the remote's URL as it was
+  when the call was judged, with its fetch refspecs, on the command line.
+  A push goes by the remote's name; its URL is held by the sandbox.
+- A repository whose own configuration names a hook (`hook.*`), a remote
+  helper (`remote.<name>.vcs`), another work tree (`core.worktree`), the
+  program run on the remote (`remote.<name>.uploadpack`, `receivepack`), a
+  proxy (`remote.<name>.proxy`), any `http.*` setting (proxy, TLS, extra
+  headers, cookies, address overrides), a URL rewrite (`url.*.insteadOf`),
+  an SSH command, askpass, git proxy or credential helper
+  (`core.sshCommand`, `core.askPass`, `core.gitProxy`, `credential.*helper`)
+  is not brokered while it does, and the reason is given. The person's own
+  settings for these are pinned on the command line as well, in one block,
+  so nothing of the repository's could take their place.
+- The repository's git folder must be the one it was when the session
+  started, inside the workspace: a `.git` swapped for a link to another
+  repository is refused.
+- Your own git configuration must be yours alone: if your global or system
+  file (or the file `GIT_CONFIG_GLOBAL` or `GIT_CONFIG_SYSTEM` names, which
+  host git then uses, as yours does), or a file either includes (every
+  `include` and `includeIf`, whatever its condition, as a branch or folder
+  can change after the check), or the file one of them links to, lies in
+  the workspace or a folder commands can write (a dotfiles checkout opened
+  as the workspace, say), nothing is brokered, as the agent could name the
+  SSH command or credential helper host git runs. Nor is it while such a
+  file is a hard link (another name for it could lie in reach), is owned by
+  another user, is writable by other users or sits in a folder they can
+  write (on macOS a folder only the `admin` group may also write, as
+  Homebrew's `you:admin` 775 folders are, counts as yours: every member of
+  `admin` can already act as root through `sudo`, so it lets in no one who
+  could not change the program anyway; such a folder inside the workspace or
+  an area commands can write is still refused), or cannot be read; while an include names another user's home
+  (`~name/`) or git's install (`%(prefix)/`), which Abhed does not follow;
+  while `GIT_CONFIG_GLOBAL` or `GIT_CONFIG_SYSTEM` is a relative path; or
+  past 200 files. The same check stops an issue's push.
+- The programs your configuration names for host git must be yours alone
+  too: the SSH command (or `ssh` when you name none), `core.askPass` and
+  `SSH_ASKPASS`, `core.gitProxy` and each credential helper. Words are read
+  as git reads them: an askpass or git proxy is one path, spaces and all;
+  the SSH command and a credential helper are split as the shell splits
+  them, quotes honoured; a leading `~/` is your home. Every word, and the
+  value after `=` in each (ssh's `-o ProxyCommand=…`), is judged: nothing is
+  brokered while one is a relative path, or an absolute one in the
+  workspace or a folder commands can write, or another user's or writable
+  by others; while any word holds a glob or other shell syntax (`*`, `?`,
+  `$`, …), which the shell would expand (one ssh `%` token in brackets, as
+  an IPv6 bastion's `[%h]:%p`, is fine); while a shell is given a command
+  line (`sh -c …`); or while a
+  `!` credential helper is more than a program and its words (a shell
+  function such as `!f() { …; }; f`, a variable, a pipe or a second
+  command). If you use a shell-function helper, put it in a script of your
+  own and name the script instead: until then, a brokered git remote
+  command is refused, with the reason.
+- So is your ssh configuration: `/etc/ssh/ssh_config`, `~/.ssh/config` (or
+  the file the SSH command names with `-F`) and every file they `Include`
+  (relative ones from `~/.ssh` or `/etc/ssh`, globs expanded), checked as
+  your git configuration files are, and every command a `ProxyCommand`,
+  `LocalCommand`, `KnownHostsCommand` or `Match exec` there runs, judged as
+  above, keywords read as ssh reads them (any case, quoted or escaped
+  anywhere, OpenSSH's aliases such as `SmartcardDevice` too). So is what
+  ssh loads or runs as its own (`PKCS11Provider`,
+  `SecurityKeyProvider`, `XAuthLocation`, and `SSH_SK_PROVIDER` in your
+  environment): an absolute path of your own, or `none` or `internal`. A
+  `ControlPath` socket must not lie in the workspace or a folder commands
+  can write. The same settings given as `-o` options in the SSH command are
+  judged the same way. An `Include` or `-F` path that ssh would expand (an
+  environment variable, a `%` token, `~user`) is refused: write the full
+  path.
+- So are the files ssh and git trust: `UserKnownHostsFile`,
+  `GlobalKnownHostsFile` (each value), `RevokedHostKeys` and
+  `CertificateFile`, `IdentityFile` in your ssh configuration or `-o` options, and
+  `http.sslCAInfo`, `http.sslCAPath`, `http.sslCert` and `http.sslKey` in
+  your git configuration, URL-scoped `http.<url>.*` ones too. Each must be a
+  full path (no `$` or `~user`, and an ssh `%` token only in the file's own
+  name, as `~/.ssh/%h.key`, when the folder it is in is checked; `~/` is
+  your home) outside the
+  workspace and every folder commands can write, yours or root's, not
+  writable by others, and readable (so are the files git's own `cache` and
+  `store` helpers use when no `--socket` or `--file` names one: the cache's
+  socket in `~/.git-credential-cache` or the XDG cache folder, the store's
+  `~/.git-credentials` and XDG file); `none` and the defaults
+  (`~/.ssh/known_hosts`, the system's CA store) pass. Otherwise the agent
+  could vouch for a host of its own.
+- Host git runs with your `PATH`, less every folder that is relative or
+  lies in the workspace or a folder commands can write (a project's `bin`,
+  `node_modules/.bin`), so no program is found there, by git, ssh, a
+  wrapper or a `ProxyCommand`; a stray folder like that leaves brokering on.
+  It runs from an empty folder of your own, the repository given as
+  `GIT_DIR`, so nothing it names is found in the workspace. `GIT_SSH`,
+  `GIT_SSH_COMMAND` and `GIT_ASKPASS` in your environment are not given to
+  host git at all.
+- A brokered line is given no vault secret (`secrets`): git run on the host
+  as you needs none.
+- On Linux, the process tier (bubblewrap) and the fence hold git's files by
+  binding them read-only as each command starts, so a command started
+  before a clone could still write the clone's configuration. There, a
+  repository cloned during the session is not brokered in that session. A
+  later session brokers it when it is opened as that session's workspace; a
+  repository nested in another workspace is never learnt at a session's
+  start, so run git there yourself. macOS's process tier holds every `.git`
+  by pattern, so a clone is brokered at once.
+
+Host git reaches only the remotes the repository had when the session
+started, or a clone URL you approve:
+
+- A remote is named by its name (`origin`), or is the branch's own. A URL,
+  a path, or a remote the repository does not have is not brokered: the line
+  runs in the sandbox, which has no credentials.
+- A remote added or changed during the session (its URL, `insteadOf`, the
+  `credential.*` or `include` settings) is asked about each time, and the
+  call runs only on the settings it was approved on; changed after the
+  approval and before the call is built, it is refused.
+- `git clone` is asked each time and writes only a new folder of the
+  workspace: one that is a link, is reached through a link, is already
+  there, or lies in a git folder (`.git`, in any case) is refused. The
+  clone's own `origin` is then one host git reaches. A `host:path` that
+  names a local folder is refused as a local path.
+
+Refused before anyone is asked: an option before the command (`git -c …
+fetch`, `git -C …`), a variable in front (`GIT_SSH_COMMAND=… git fetch`),
+an option naming a program, a file or more configuration (`--upload-pack`,
+`--receive-pack`, `--exec`, clone's `-u`, `-c` and `--config`, `--template`,
+`--separate-git-dir`, `--reference`, `--bundle-uri`), a word naming
+`core.sshCommand`, an askpass or a credential helper, and a transport that
+runs a program or reads local files (`ext::`, `fd::`, `file://`, a local
+path). A line with more on it (`git fetch && make`), or an option outside
+the usual ones, runs in the sandbox as before.
+
+The network policy holds host git too:
+
+- `allow_network` on, no allowlist: approved as any command.
+- The egress allowlist: the remote's host and port (22 for SSH, 443 for
+  HTTPS), and your proxy's where an https remote goes through one, must be
+  allowed, or the call is refused before anyone is asked.
+- `allow_network` off: host git still reaches this remote of the
+  repository, through your own proxy if you set one, and nothing else, but
+  only after you approve, even where an allow rule would let the command
+  run. The question says so: "git fetch runs through host git as you … and
+  reaches github.example.com although the sandbox's network is off".
+
+In Abhed Studio and the CLI that question offers *Always allow git fetch,
+pull and ls-remote from this remote of this repository, while its URL stays
+the same* (and *Always allow git push, without force, …* for a push), so you
+are asked once. The grant is bound to the repository's real folder and to a
+digest of the remote's name and URLs: a repository cloned into the
+workspace, or this one with its remote changed, is asked again. It is kept
+with the workspace's other scopes in your own
+`~/.abhed/state/workspace-grants.json`, never in the workspace, shared by
+Studio and the CLI, and revoked like them; an exact-command grant does not
+answer this question. Where the managed configuration holds the permissions
+it is neither offered nor kept. A forced push, a clone and a remote changed
+during the session are asked each time everywhere.
+
+None of this is done on `abhed serve` (the workbench, its terminal, the
+console, for every account and guest): there remote git runs in the
+sandbox, as in 1.2.9, as host git would run as the server's own account,
+with its keys, for whoever reaches it. Worktree commands are still brokered
+there; `git submodule update` is not, anywhere.
+
+It is off, too, where `sandbox.host_git` is `false` (any layer may set it;
+none can set it back), and where the managed configuration holds the
+network off (`sandbox.allow_network`, `sandbox.network` or `egress` set in
+it, with commands' network off): a person cannot open that network, so
+host git does not reach it either. There remote git runs in the sandbox,
+as in 1.2.9, and the session tells the model why ("ask your administrator"
+where the organisation set it). Under a managed allowlist host git is held
+to it, as above.
+
+A line you type yourself is yours to run. On the workbench terminal of
+`abhed serve`, in lines mode, it is judged and recorded as an agent's call
+would be, and run in the sandbox: remote git is not brokered there, and a
+worktree or submodule command typed there is brokered on the same terms as
+an agent's. In Abhed Studio's own terminal, in lines mode, a typed `git
+fetch`, `pull`, `push`, `clone` or `ls-remote` goes through your own git on
+the host like an agent's, without the question again (the network-off one
+included), still refused where an agent's would be and recorded the same
+way. In an interactive terminal, Studio's or the workbench's, lines run in
+the sandbox's shell as typed, and none is brokered.
+
+No hook runs on the host. A brokered `git push` runs your own pre-push hook,
+the one in the folder a `core.hooksPath` in your system or global
+configuration (`/etc/gitconfig`, `~/.gitconfig`) names, such as a machine's
+secret-scanning hook, **in the sandbox**: host git calls a hook of Abhed's
+own, which hands the hook's arguments (the remote's name and its URL, with
+any token removed) and its input (each local ref and object, remote ref and
+object) back to Abhed, which runs your hook in the sandbox at the
+repository's top with them. If it fails, the push stops and its output is
+shown. A hook there can run whatever the work tree holds (many dispatchers
+run `.husky/pre-push` or the like, which the agent can write), and that is
+why it runs in the sandbox: with no key, no SSH agent and no credential
+helper. The sandbox must be able to read and run your hook and what it calls
+(system folders such as `/opt` are readable on the process tier and the
+fence; most of your home folder is not); a hook it cannot run stops the push
+with the error, never skipped unseen. Because it runs in the sandbox, the agent can shape what
+the hook sees there, as it can the work tree and its temp folders: a scanner
+that skips its check on a marker file in a folder commands can write, for
+instance, can be told to skip. That was as true when such hooks ran on the
+host, where the temp folders are writable too. The repository's own hooks,
+in `.git/hooks` or a `core.hooksPath` the repository sets, never run. A fetch, a pull's fetch, a
+clone and `ls-remote` run no hook at all. Each call's record names the hook a
+push ran in the sandbox (`hooks_run`, with its scope, and
+`pre_push_exit_code` when it ends) or, for the others, the folder it did not
+run (`hooks_not_run`).
+
+Each brokered call is recorded as `hostgit.brokered`, once when it starts
+(`stage: started`, the command, the remotes and their URLs without any
+password or token, the hosts, your proxy if one is used, the network
+setting, the question it was asked under, and `hooks_run` or `hooks_not_run`) and once when
+its host part ends (`stage: exited`, the exit code, and `changed`: each ref
+it moved, with the object before and after). A pull's fetch and a clone's
+host part run as the call's command is built, before it starts, and their
+records say so (`before_start`). The end is recorded whichever
+way the line ran: a call of the agent's, in the foreground or the
+background, a hook's command, or a line typed on the workbench terminal; one
+that never started ends with exit code -1. The container and vm tiers do not
+broker these; they run in the container as written.
 
 Under bubblewrap and in a container (the vm tier too) it is by binding
 read-only those found when each command starts; an empty hooks folder or
@@ -1243,6 +1595,29 @@ approval is not spent on them and the model is told to read first. When
 another call in the same turn names the file, or a command runs before it,
 the tool decides when it runs.
 
+### First use of your own clusters and hosts
+
+A call that reaches a kubeconfig context or an `~/.ssh/config` host on your
+own machine asks the first time, in every mode but bypass, even a read that
+would otherwise run unasked
+([Tools](05-tools.md#your-own-clusters-and-machines)). Its question says it
+is a first use, names the context and its server (or the host, its user and
+address) and how it signs in, never the credential, and names the program a
+credential helper would run. Its "always" answer is *always for this
+cluster* or host: it is kept for you, in your own state
+(`state/machine-grants.json` in your account's folder), not for the session,
+the workspace or another account; a guest is not offered it, and what a
+guest approves holds for the session only, and it covers that cluster or host as
+it was, so a changed server, CA (by its content), credential helper (by
+the program `PATH` finds), address, user, key, `known_hosts` entry or jump
+host asks again. It never covers a command or a write: those ask as they
+always do. A "yes" covers the rest of the session. An allow rule answers a
+first use as it answers any ask, and a deny rule refuses it. The record
+names a kept grant on the approval (`first_use`), and `abhed machine list`
+and `abhed machine forget` show and drop them. A session restored in Abhed
+Studio does not take a first-use grant back from its record; only what is
+kept for you counts.
+
 ### Allow scopes in Abhed Studio
 
 In Abhed Studio a bash command the policy asks about by default (no deny or
@@ -1255,6 +1630,8 @@ offers more than *Allow once*:
 | Always allow exactly `go test ./...` in this workspace | this exact command, in every session of this workspace |
 | Always allow `go test …` in `orders` | any command of the family, run with the session in that folder or below it, in every session of this workspace (offered when the session is in a folder below the workspace's root) |
 | Always allow `go test …` in this workspace | any command of the family, anywhere in this workspace, in every session of it |
+| Always allow git fetch, pull and ls-remote from this remote of this repository, while its URL stays the same | `git fetch`, `git pull` and `git ls-remote` naming a remote by name, run through host git, to that repository's remote as approved, in every session of this workspace; the only scope that answers host git's question with the network off ([above](#git-fetch-pull-push-and-clone-through-your-own-git)) |
+| Always allow git push, without force, to this remote of this repository, while its URL and its push settings (refspecs, mirror) stay the same | `git push` that neither forces nor deletes, likewise; a change to the remote's push refspecs or mirror setting ends it |
 
 A family is a program and its subcommand: `go test`, `go build`, `go vet`,
 `go run`, `cargo test` (and `build`, `check`, `clippy`, `fmt`, `run`),
@@ -1343,10 +1720,10 @@ reviewed, because a command may change anything.
 |---|---|---|
 | `out-of-remit` | deny | A destructive command (`rm`, `rmdir`, `shred`, `unlink`, `truncate`, `dd of=`, `find -delete` or `-exec`, `mkfs`, `wipefs`, `fdisk`, `parted`, `mv` out of own ground to a surviving destination is an ask, and to a scratch/temp destination or `/dev/null` a deny; `rsync --delete`/`--remove-source-files`, `git clean -f`), or an interpreter one-liner (`python3 -c`, `node -e`, `perl -e`, `ruby -e`, `php -r`) calling a well-known delete or overwrite (`shutil.rmtree`, `os.remove`, `Path(...).unlink`, `fs.rmSync`, `unlink`, `FileUtils.rm_rf`, `open(..., 'w')`, …) on a literal path, aimed outside the workspace, the temporary folders and every path the person named, locally or over `ssh`; a home-folder path (`~/…`, `$HOME/…`) the person did not name. An absolute target is judged on its own, whatever the line did with the directory; a program named by a path is its base name, so `/bin/rm` is `rm`, here, past a wrapper (`sudo /bin/rm`) and after `find -exec`, where the program is resolved past wrappers the same way. A `find -exec`/`-execdir`/`-ok`/`-okdir` command is judged first with `{}` replaced by each start path, keeping a deny (`find /etc -exec sudo rm -rf {} +`, `find /srv/data -exec rm -rf {} +` and `-exec shred`/`unlink`/`truncate` are denied); only a command that can write or run code, over start paths outside own ground, is asked when that judgement allowed. find's own write actions `-fprint`/`-fprint0`/`-fprintf`/`-fls` are judged as writes to their file argument (an unverified-target ask outside own ground). A read-only `-exec` program (`ls`, `grep`, `rg`, `stat`, `cat`, `head`, `tail`, `wc`, `file`, `dirname`, `basename`, `du`, `md5sum`/`shasum`, `readlink`, `realpath`, `test`, `echo`, `printf`, `diff`) never deletes, so it is allowed over any path and only its own arguments are judged. Inside a container command a path is a container path, not host ground, so it is not checked as a host target; a deleter there is still caught. For a relative target the check claims to know the directory only in one plain case: the target's command is in the line's first statement, that statement is a single `&&` chain (no `;`, newline, `||`, `&`, `!`, pipe, subshell, loop or condition), and the only directory changes before it are a plain `cd` to a plain literal path or `~/…` (no options, no `cd -`, no climbing above the home, no `~user`) — so `cd /srv && rm -rf app` is `/srv/app`. A word counts as a literal only when it is a single plain literal: a brace list (`{/,}`), glob, backslash escape (`\cd`, `c\d`), quote or expansion is never read as a `cd` operand or a command name. Anything else leaves the directory **unknown**: a `;` before the target, a `cd` the check cannot resolve, an earlier command the check cannot read in full — any expansion at all in its words, assignments, redirections or here-document bodies, so `: ${CDPATH:=/}`, `: <<< ${CDPATH:=/}`, `Y=$(…)` or even the `cd`'s own `cd etc <<< ${CDPATH:=/}` ends what it claims, and the literal variables with it — any shell builtin outside a short harmless set (`echo`, `true`, `false`, `:`, `test`, `[`, `pwd`, `printf` with only plain arguments and no `-v`, `type`, plain `set -e`/`-u`/`-x`/`-o pipefail`, and `export NAME=literal`) — so `enable`, `shopt`, other `set`s, `read`, `mapfile`, `printf -v` or a quoted `'-v'`, `declare`, `local`, `unset`, `hash`, `builtin`, `command`, `pushd`, `popd`, `eval`, `source`, `.`, `exec`, `trap` and `alias` all do — any wrapper with an option (`env -C`, `sudo -D`, `command -p`, `nice -n`), a write to `HOME`, `OLDPWD` or `CDPATH`, or a command name that is not a plain literal. Under an unknown directory a relative target is **always** an ask at step `monitor` — no name allows it, and it is never a silent deny. An absolute or `~/` target there is judged on its own: it is own ground when it is under the workspace or a temporary folder, and otherwise allowed only when the person named it as a path in their own messages — plan or runbook prose never counts. A command whose name is not a plain literal (`\rm`, `r\m`, `$R`), as the first word or as the program past a wrapper (`sudo \rm`), or that runs through a wrapper with an option, is not read as a command line at all (except that the command `env -S`/`--split-string` splits out of one word is judged as a command of its own): if its words name a deleting program, an interpreter or shell (`python3`, `node`, `lua`, `Rscript`, `osascript`, `sh`, …) or a protected root, or an operand lies outside own ground or climbs out (`build/../../etc`), it is an ask. Code the command hands to another to run — a shell's `-c` argument (`sh -c '…'`, `bash -lc '…'`), `eval`'s operands, an interpreter one-liner (`perl -e`, `python3 -c`), or text on the stdin of a shell or interpreter (a here-string, a here-document, a pipe whose producer only prints a literal, a searcher or sed whose patterns or script pick the lines piped on, or a script written earlier in the same line and then run) — is parsed and run through the whole out-of-remit judgement with the directory unknown: the same per-command rules (a hidden or non-literal program name, `destroys`, the interpreter and find checks, unread code) and the same fallback, applied recursively; any non-allow there is an ask. So however the delete is spelled inside (`r""m`, `r\m`, `find … -delete`, a `${x}m` built from a variable, a nested `bash -c`, a `shutil.rmtree` on stdin), it is seen. Code a command hands through anything other than a shell's `-c`, `eval` or stdin — git's `submodule foreach`/`rebase -x`/`bisect run`/`filter-branch --*-filter`/`config alias.*`/`-c alias.*` value, a container `exec`/`run` command, `xargs` past its options, `man -P`, and any other runner's command-looking argument or stdin — is parsed and judged the same way, not word-searched, so the quote-split and variable spellings are caught there too. Code handed deeper than six levels, or handed code the check cannot parse, is asked about rather than let through (a bound reached fails closed). Words are read as bash reads them, backslash escapes included, so an escaped quote inside nested `bash -c` levels does not hide the code. Only the out-of-remit rules recurse into handed code; the unverified-target (evidence) rule does not, so `bash -c 'cp /dev/null /etc/passwd'` is judged out-of-remit but not asked about as an unseen target, where the plain `cp /dev/null /etc/passwd` is. It is also an ask when the code names a deleting program or a protected root, or shells out — a backtick command substitution, `qx`/`%x`, Perl/Ruby `exec`/`spawn`/`IO.popen`/`Open3`, `system(…)`, `subprocess`, `os.system`, `os.execvp`, `os.execute`, `io.popen`, `child_process`, PHP `shell_exec`/`passthru`/`exec`/`proc_open`/`popen`/`pcntl_exec`, `do shell script`, or Tcl's `file delete`. It is read in its plainer and clustered forms alike: a shell's `-c` past `--` or an option (`sh -c -- '…'`, `bash -c -e '…'`), an interpreter's code flag in a cluster (`python3 -Bc`, `perl -le`, `node -p`, `--eval=`), and awk's program operand. `xargs` running a deleter over targets from its input is an ask, since those targets are not in the line. For `find`, its leading options (`-H`, `-L`, `-P`, `-D arg`, `-O<n>`) are skipped to reach its start paths, and each command it runs by `-exec`/`-execdir`/`-ok`/`-okdir` (the words up to `;` or `+`) is judged as a command of its own, with the directory unknown — so `find . -exec rm -rf /srv/data \;`, `-exec sh -c 'rm …'` and `-exec python3 -c '…rmtree…'` ask or deny. Because `-exec` acts on every file find reaches, an `-exec` whose start paths are not all own ground is asked about whatever it runs (`find /srv/data -exec mv {} /tmp \;`, `-exec truncate -s0 {} +`, `-exec cp /dev/null {} \;`), as is a non-literal find argument (`F=-delete; find /srv/data $F`) or a glob in the `-exec` program (`find . -exec /bin/r? …`). A target only running the line would give (`"$f"`) is an ask, unless it is a variable set to a plain literal earlier in the same plain chain (`D=build && rm -rf $D`), when it is judged as that path; a variable appended to (`X+=…`) is not a literal. Locally, `~` and a `$HOME/` prefix stand for the `HOME` commands get (the fence tier's own temp home on that tier), so a workspace under it reached as `~/proj` or `$HOME/proj` is the workspace's own ground. `~` depends on `HOME`, not the working directory, so it is placed wherever the line writes `HOME` nowhere — even across a `;` (`X=1; rm -rf ~/proj/build` is placed) — and only a line that may write `HOME` (an assignment to it, a prefix `HOME=… cmd`, `declare`/`export` the check cannot read in full such as `declare "HO""ME=…"`, `printf -v`, `read`, `eval`) stops it. When it is not placed, a `~` target the person did not name is an ask, not a silent deny. A line the check does not read completely is put to the person whenever its text anywhere (a parsed word, an assignment value, a here-document body) names a deleting program as a word or a protected root. A line is read completely only as an allowlist, and an allowlisted program only for the forms the rules actually judge. The code a `git` command runs — `submodule foreach`, `rebase -x`/`--exec` (attached `--exec=` and `-x…` too), `bisect run`, `filter-branch --*-filter`, and the value of a `-c` or `git config` key git runs as a command (`alias.*`, `core.pager`/`editor`/`sshCommand`/`fsmonitor`/`hooksPath`, `sequence.editor`, `diff.external`, `pager.*`, `credential.helper`, `gpg.program`, `*.textconv`, `filter.*.clean/smudge/process`, or any key ending in `command`/`cmd`/`editor`/`pager`/`program`), with a leading `!` dropped — is parsed and judged like a shell's `-c`. The matching environment (`GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, `GIT_PAGER`, `GIT_SSH_COMMAND`, `GIT_SSH`, `GIT_EXTERNAL_DIFF`, `GIT_ASKPASS`, `GIT_CONFIG_VALUE_*`) is handed code too; an unread (`$…`) value asks. The command a container runtime runs — `docker`/`podman` `exec`/`run`/`debug` (including under `compose`/`container`), `kubectl exec`/`run`/`debug` with or without `--` — is parsed and judged the same way. Global options that take a value (`--context`, `-H`/`--host`, `-n`/`--namespace`, `--kubeconfig`, compose's `-f`/`-p`/`--env-file`, …) are skipped to reach the subcommand; a container command is read only when that subcommand is a recognised one that runs nothing of ours (`ps`, `logs`, `images`, `inspect`, `build`, `pull`, `rm`, `volume`, `system`, `get`, `describe`, `delete`, `scale`, …). An `exec`/`run`/`debug` whose command cannot be located fails closed (asked), and so does an unknown subcommand followed by `exec`, `run`, `debug`, `attach` or `cp` (an option value the tables lack); another unknown subcommand is read. `docker`/`podman` `create` and `service create`, and `kubectl create job|deployment|cronjob … --`, store a command that runs later and are judged like `run`. The list of subcommands that "run nothing of ours" says only that no command of the line runs inside a container; it is not a judgement that the subcommand is harmless. Destructiveness is judged separately: deleting a namespace (`kubectl delete ns|namespace|namespaces X`, `ns/X`, or `oc delete project X`) or deleting across every namespace (`-A`, `--all-namespaces`) is a deny unless the person named that namespace, like `kubectl delete -n`, and so is `helm uninstall` in a namespace (`-n X`) the person never named; and the operations with no undo — `docker`/`podman`/`nerdctl` `system prune`/`reset`, `volume rm`/`prune`, `image prune -a`, forced `rmi`; `kubectl delete` of namespaces, volumes (`pvc`, `pv`), `all` or with `--all`, `scale --replicas=0`, `drain`, `cordon`, a forced `patch`/`replace` or one scoped to a production namespace, context or selector (the value `prod`/`production`, not a resource merely containing the letters), and `apply --prune`; `oc delete project`; and `helm uninstall` (`delete`, `del`, `un`) in any namespace; `container`/`network prune`, `stack rm`, `service rm` and `swarm leave --force`; and a push that deletes a remote branch (`--delete`, `:branch`) or force-pushes `main`, `master`, `release*` or `prod*` — are asked, here and at the destructive step (which asks for every force push). A comma-joined kind list is read kind by kind, and the values of `-l`/`--selector`/`-f`/`-o`/`-n` are skipped when finding the kind. Dropping or emptying a data store (a SQL client's `DROP`/`TRUNCATE`/unbounded `DELETE`, `dropdb`, `redis-cli FLUSH*`, a Mongo `dropDatabase`) and tearing down infrastructure (`terraform`/`tofu destroy`, `pulumi destroy`, a `gcloud`/`az`/`aws`/`doctl`/`hcloud` delete) are asked too. `docker compose down -v`, a local reset of the project's own volumes, is not. A read-only bind mount (`:ro`, `readonly`) does not make container paths host paths; a bind source that is an expansion other than the working directory (`$HOME/…`, `$PWD/../…`) counts as outside own ground. A mount is read-only only when an option is exactly `ro`/`readonly` or `ro=`/`readonly=` with value `true`/`1`, not `readonly=false`. A SQL client's `-c`/`-e` query (`psql`, `mysql`, `sqlite3`, `redis-cli`, …) and its literal stdin (a heredoc, a here-string, a printed literal piped in, including into `docker exec … psql`) are read as the client's own language, not shell: a drop or flush there is asked, a `select`/`insert`/`update` is not, and only a shell escape in it (`\!`, `\o |`, `system`, `.shell`/`.system`, `COPY … PROGRAM`) is judged as handed code. A `docker cp`/`kubectl cp` host destination outside own ground is asked. Inside a container, a path is a container path and is not judged as host ground, so only a deleter, a shell-out or handed code is caught there — unless the `run` bind-mounts a host path outside own ground (`-v /srv/data:/data`, `--mount type=bind,src=…`), in which case the host checks are kept for the whole command (a named volume or `-v "$PWD":/app` keeps the suppression). `xargs` past its options and `man`'s pager (`-P`, `-P…`, `--pager`, `--pager=`) are judged the same way. An assignment before any command that names a deleter or shell, or sets git's config or work tree, leaves the line not read. Every other command is read only when its program is one the rules judge (a destroyer, `find`, `mv`, `rsync`), a printer or searcher (`echo`, `grep`, `cat`, …), or a program with no deleter, shell or interpreter name among its words. So an unknown runner the check has never heard of (`setsid rm …`, `chroot / rm …`, `su -c 'rm …'`, `tmux new -d 'rm …'`) is caught, where a fixed list of handlers would let it through. An unknown runner whose program operand or code argument (`-c`, `-e`, `--command`, `--eval`, `-x`, `--exec`) is a variable, a substitution or a quote-split word is always an ask, whatever its other words say, since what it runs resolves only when the line runs. Any other argument only running the line would give (an expansion, a glob, a substitution) makes an unknown program's command not read, and asks when its plain words look destructive or reach outside own ground (`setsid /bin/r? …`, `D=rm; setsid $D …`). Inside a container command (`docker`/`podman`/`kubectl` `run`/`exec`) a one-segment path is a container path, not a protected root, so `docker run app sh -c "cd /app && test"` is allowed; a deleter in it is still caught. The temporary folders never count as protected roots here, and a deleter word that is only a message (`-m`, `--body`, `--title`), a `sed` expression that only edits text (no `e` command, `s///e` or `w` write), or a searcher's pattern (`grep`, `rg`, `ag`, `ack`, without `--pre`/`--pager`) is not read as a command — but only while that command's output stays text: piped on to anything but a reader (`head`, `sort`, `wc`, …), substituted into another command, or redirected to a file, its words are read again. A sed `e` command is judged as handed code, `s///e` is an ask, and a sed `w` write outside own ground is an ask. This conservative fallback catches the forms the precise reading misses; a line the check reads completely is decided by the rules above. A line the parser cannot read at all is an ask when it looks destructive. Code the check cannot read even in part — `eval` of an expansion, a shell's `-c` or an interpreter's one-liner given an expansion (`bash -c "$X"`, `python3 -c "$CODE"`), a shell, `source` or interpreter reading a process substitution or `/dev/stdin` — is always an ask. This means the everyday `eval "$(ssh-agent -s)"`, `eval "$(direnv export bash)"` and `bash -c "cd $PWD && make"` ask too: the check will not run what it cannot read. The check reads the line, not the disk or the environment: a symbolic link (`ln -s / x && cd x`) is not followed, and a `CDPATH` inherited from the environment (on the none tier) can send `cd etc` elsewhere; both are limits the sandbox, not the supervisor, holds. Known limits, not benign work: a non-deleter write inside a container with no bind mount (`docker exec db chmod …`, `cp /dev/null …`) is not judged as a host write; an append to a home rc file (`>> ~/.bashrc`, `find -fprint ~/.bashrc`) is left to the general redirect rules; a copy or redirect inside handed code (`sh -c 'cp …'`, a SQL client's `\! cp …`) is judged out-of-remit only, not by the evidence rule. A script written in an earlier call, or by an unknown program, and run in a later one is a limit: the check reads the line, not a file written before it. (A script written and then run in the same line is caught, by judging what the writer prints as the code the runner reads.) Over `ssh` the line starts in the login's home, so a relative `*`, `.`, `./*` or `..`, or a target that climbs out of the home, is the home whole or outside it. Whatever the person said, the root, a top-level folder (`/etc`, `/usr`, `/srv`, …) or a home folder itself (`~`, `$HOME`, `/home/bob`, `/Users/bob`, `/root`) deleted whole is out of remit — a deny, or, when the person named exactly that path as the thing to delete, an **ask** at step `monitor` so they can still say yes; name a folder inside it to avoid the question; a `k8s_apply` delete, or `kubectl delete -n`, in a namespace the person never named (`default` aside). The reason quotes the task |
 | `unknown-program` | deny | A `bash` program that is not on the PATH where commands run. Checked only where commands run on this machine's own files (the process and fence tiers, and none); a container's or a VM's programs are not looked up. A line that installs something, sets `PATH` or defines the function it calls is left alone |
-| `unknown-program` | ask | An `ssh` command whose program is not a common one and that nothing in the session has shown on the host. A command the operator declared in `ssh.read_commands` is never asked about for its program or its targets |
+| `unknown-program` | ask | An `ssh` command whose program is not a common one and that nothing in the session has shown on the host. A command the operator declared in `ssh.read_commands`, or one the read-only classifier finds a read on a declared host, is never asked about for its program or its targets |
 | `unverified-target` | ask | A `write` or `edit`, a redirection, or a writing command (`tee`, `touch`, `mkdir`, the destination of `cp`, `mv`, `ln`, `install`, `rsync` or `scp`, `chmod`, `chown`, `sed -i`) aimed at an absolute path the person never named and no earlier call showed; the `remote_path` of an `ssh_put`; a `k8s_apply` namespace or name (a rollback and a restart included) the same is true of. Paths under the workspace and in temporary folders are the session's own |
 | `unverified-host` | ask | A host in a URL, a `user@host`, or an argument of a program that reaches the network (`curl`, `wget`, `ssh`, `scp`, `rsync`, `nc`, …) that the person never named and no earlier command showed; and an `ssh` or `ssh_put` change on a configured host when the task or the approved plan names other configured hosts and neither it nor an earlier call named this one (a task that names none, such as "the web hosts", leaves the choice alone). Loopback names are exempt, and so is fetching from a host code and packages come from (`github.com`, `pypi.org`, `registry.npmjs.org`, `proxy.golang.org`, …), though sending to one is not (`git push`, an upload). What `web_fetch`, `web_search`, an MCP server's tool or a command that reached the network returned does not count as having shown it, since that is where an injected instruction comes from |
-| `credential-egress` | ask | A call that can send data out (`web_fetch`, `web_search`, `ssh`, `ssh_connect`, a `bash` line with a network program, `git push`, an interpreter's `-c`) after an earlier call brought credential content into the session, whatever host it goes to: a read of a credential file that returned it, a command that printed one (`cat`, `head`, `base64`, `xxd`, `openssl rsa … -text`, …), or any output holding key material (a private-key block, a token in a known format such as `ghp_…` or `AKIA…`, a `…_SECRET=` line). A command that only names a key file, as a copy, a listing or a renewal does, brings none in; and an `ssh_put` of one, or a network-reaching `bash` line that reads one itself (`curl -d @.env`, `$(cat .git/config)`, `< .env`). Credential files: `.env`, `~/.ssh`, an `id_*` key, `.aws/credentials`, `.git/config`, `.netrc`, `.git-credentials`, `.docker/config.json`, `.kube/config`, `.npmrc`, `.pypirc`, `.pgpass`, `.vault-token`, a `.pem`, `.key` or `.p12` file, a `credentials.json`; not certificates, chains, `.pub` keys or `.env.example`. The output is judged by what it holds, not where it came from: printing a typical `.env.example` (`DB_PASSWORD=changeme`) or code that assigns a token or password (`token = get_token()`) reads as a `…_PASSWORD=` line, so the next call that can send data out is asked about |
+| `credential-egress` | ask | A call that can send data out (`web_fetch`, `web_search`, `ssh`, `ssh_connect`, a `bash` line with a network program, `git push`, an interpreter's `-c`) after an earlier call brought credential content into the session, whatever host it goes to: a read of a credential file that returned it, a command that printed one (`cat`, `head`, `base64`, `xxd`, `openssl rsa … -text`, …), or any output holding key material (a private-key block, a token in a known format such as `ghp_…` or `AKIA…`, a `…_SECRET=` line). A command that only names a key file, as a copy, a listing or a renewal does, brings none in; and an `ssh_put` of one, or a network-reaching `bash` line that reads one itself (`curl -d @.env`, `$(cat .git/config)`, `< .env`). A repository's `.git/config` counts only when what was read holds a credential: a URL with a password, a token-shaped user (long, or a known prefix such as `ghp_`, `glpat-`, `x-access-token` or `oauth2` at any length), any `extraheader`, or a `cookieFile`, with git's backslash continuations joined first; its plain remote URLs, an ssh `git@` user and a credential helper's name do not. Credential files: `.env`, `~/.ssh`, an `id_*` key, `.aws/credentials`, `.git/config`, `.netrc`, `.git-credentials`, `.docker/config.json`, `.kube/config`, `.npmrc`, `.pypirc`, `.pgpass`, `.vault-token`, a `.pem`, `.key` or `.p12` file, a `credentials.json`; not certificates, chains, `.pub` keys or `.env.example`. The output is judged by what it holds, not where it came from: printing a typical `.env.example` (`DB_PASSWORD=changeme`) or code that assigns a token or password (`token = get_token()`) reads as a `…_PASSWORD=` line, so the next call that can send data out is asked about |
 | `honeytoken` | deny | A value from `monitor.honeytokens` (eight characters or more) anywhere in the arguments, before any judge and even in a read. The value is not repeated in the reason |
 
 "Named" means the person said it: in a message recorded as theirs
@@ -1507,7 +1884,10 @@ abhed secret rm GITHUB_TOKEN
 
 Values live in `~/.abhed/secrets.json` (`ABHED_SECRETS_FILE` overrides), mode
 600, outside every workspace and under the directory the agent's tools and
-sandbox cannot reach. They are never in a config file.
+sandbox cannot reach. They are never in a config file. Names beginning
+`MCP_OAUTH_` are Abhed's own, for an MCP server's login (see
+[MCP](08-mcp.md#signing-in-with-oauth)): they are not listed to the model,
+no command or tool is given one, and `abhed secret set` and `rm` refuse them.
 
 The model sees the **names**, and asks for one on a single command:
 
@@ -1521,6 +1901,11 @@ time can read that environment; see [Configuration](02-configuration.md#sandbox)
 password as `password_secret`, and use it for that session's login only.
 `ssh` names one as `stdin_secret` to write it to a remote command's stdin,
 and `k8s_apply` names them in `secret_from` to build a Secret.
+A cluster you kept from a pasted login is the one exception: the token
+you pasted is bound to that cluster's server when you approve it, so
+`k8s_login`, `k8s_get` and `k8s_apply` read it for that cluster with no
+`secret(NAME)` rule, and a deny rule on it still refuses
+([Tools](05-tools.md#a-pasted-login)).
 Whether any of them may is decided by a rule. Rules hold for the whole
 deployment: on `abhed serve`, every session may name a secret its rules
 allow, whichever user started it.
@@ -1600,6 +1985,26 @@ line at the start of the turn (with `secretsWithheld` in its `_meta`), and the
 for rpc and SDK callers. To let a command use a value, name the secret
 (`secrets` on `bash`, see above); the model never needs to see it.
 Extension hooks that see a submitted prompt get it as typed.
+
+A credential you paste that is no stored secret is withheld too, when its
+shape says what it is: the token of an `oc login` or `kubectl … login`
+command, an OpenShift `sha256~` token, a `Bearer` token, a private key block,
+or a key of a known form (GitHub, GitLab, Slack, AWS, cloud API keys, a JSON
+web token, a password in a URL). The model and the record get
+`[pasted:P1]`, the model is told what kind it was (and the server an
+`oc login` named), and the value is held in the session's memory only, for
+a login you approve ([Tools](05-tools.md#a-pasted-login)); it is gone when
+the session ends. You are told as for a stored value, and the `user.message`
+event carries `pasted`, each `ID:kind`; an ACP editor gets
+`pastedCredentials` in the note's `_meta`, to mask the text it drew as you
+typed it. A placeholder such as `--token=<token>` or `$TOKEN` is not
+withheld. A value you pasted is withheld again wherever it reappears in
+the session: a later message, a tool's output. A message a hook refused,
+the terminal's prompt history, a server's session list and an editor's
+completion or commit request keep `[pasted credential]` in place of any
+pasted credential's shape. A login that would pin a server's certificate is
+always put to you with its fingerprint, in every mode, and refused where no
+one can be asked.
 
 **File paths.** A `write` or `edit` whose path holds a stored secret is
 refused, in every mode, whether the agent or a person at the workbench makes

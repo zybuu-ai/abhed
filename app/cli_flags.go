@@ -11,20 +11,28 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandboxcli"
+	"golang.org/x/term"
 )
 
 // usage prints the synopsis, the subcommands and then the flags.
@@ -81,8 +89,10 @@ func wrapAbout(s string, width, indent int) string {
 
 // exitCodesHelp is the exit-code table, as docs/guide/10-automation.md has it.
 const exitCodesHelp = `
-Exit codes: 0 done, 1 error, 2 bad invocation or turn limit, 3 token budget,
-5 model retries exhausted, 130 interrupted (SIGINT), 143 terminated
+Exit codes: 0 done, 1 error, 2 bad invocation or turn limit, 3 budget,
+4 a hook ended the run, 5 model retries exhausted, 6 shut down, 7 the run's
+time limit passed, 8 unverified (-verify strict or a contract), 9 stdin
+input arrived after -stdin-wait, 130 interrupted (SIGINT), 143 terminated
 (SIGTERM). A call refused by policy does not end the run.
 `
 
@@ -115,6 +125,7 @@ type cliFlags struct {
 	addDirs         multiFlag
 	maxTurns        int
 	maxBudget       int
+	maxBudgetUSD    float64
 	format          string
 	inputFormat     string
 	partial         bool
@@ -132,6 +143,7 @@ type cliFlags struct {
 	runbook         string
 	runbookHash     string
 	noStdin         bool
+	stdinWait       time.Duration
 	skipPerms       bool
 	showVer         bool
 	listenAddr      string
@@ -141,11 +153,17 @@ type cliFlags struct {
 	strictMCP       bool
 	agentsJSON      string
 	agentName       string
+	toolsOnly       multiFlag
+	bare            bool
+	signIn          signInFlags
 
 	// words are the positional arguments that are not a subcommand; dashed
 	// is set when they came after "--".
 	words  []string
 	dashed bool
+	// stdinDash is a lone "-" among them: with -p, read stdin as the task's
+	// input even though the task is given.
+	stdinDash bool
 	// sub is the subcommand and its arguments, when there is one.
 	sub []string
 }
@@ -154,8 +172,9 @@ type cliFlags struct {
 func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs := flag.NewFlagSet("abhed", flag.ContinueOnError)
 	fs.Var(&f.print, "p", "run headless and exit; the task is the argument after it, stdin, or both")
+	fs.DurationVar(&f.stdinWait, "stdin-wait", defaultStdinWait, "with -p and a task, how long to wait for piped input to start before going on without it; - waits for it to end")
 	fs.Var(&f.print, "print", "same as -p")
-	fs.StringVar(&f.mode, "mode", "", "permission mode: default|accept-edits|plan|auto|bypass")
+	fs.StringVar(&f.mode, "mode", "", "permission mode: default|accept-edits|plan|auto|bypass (acceptEdits and bypassPermissions too)")
 	fs.StringVar(&f.permissionMode, "permission-mode", "", "same as -mode; also takes acceptEdits and bypassPermissions")
 	fs.StringVar(&f.modelID, "model", "", "provider name from config")
 	fs.StringVar(&f.fallbackModel, "fallback-model", "", "comma-separated configured providers to move to, in order, when the model is unreachable or refuses access")
@@ -163,6 +182,7 @@ func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs.Var(&f.addDirs, "add-dir", "comma-separated extra directories the agent may read and write; repeatable")
 	fs.IntVar(&f.maxTurns, "max-turns", 0, "override the turn limit")
 	fs.IntVar(&f.maxBudget, "max-budget-tokens", 0, "end the run once it has used this many tokens (exit 3)")
+	fs.Float64Var(&f.maxBudgetUSD, "max-budget-usd", 0, "end the run once it has cost this many US dollars, subagents included (exit 3); a model with no price is refused")
 	fs.StringVar(&f.format, "output-format", "text", "text|json|stream-json: json and stream-json write one event per line, then a result line")
 	fs.StringVar(&f.inputFormat, "input-format", "text", "text|stream-json: with -p, stream-json reads one user message per line on stdin")
 	fs.BoolVar(&f.noStdin, "no-stdin", false, "with -p, do not read stdin, as with < /dev/null; for a loop that reads a list on stdin")
@@ -190,6 +210,10 @@ func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs.BoolVar(&f.strictMCP, "strict-mcp-config", false, "use only the -mcp-config servers, none from the configuration")
 	fs.StringVar(&f.agentsJSON, "agents", "", "subagent definitions for this run, as JSON {name: {description, prompt, tools, ...}} or a file; checked as files are")
 	fs.StringVar(&f.agentName, "agent", "", "run the session as this agent type: its instructions, and its tools, mode, model and effort where they narrow")
+	fs.Var(&f.toolsOnly, "tools", "comma-separated tools this run may use, and no others; repeatable; only narrows")
+	fs.BoolVar(&f.signIn.guest, "guest", false, "work as guest: nothing is kept when the run ends (also "+EnvGuest+"=1)")
+	fs.StringVar(&f.signIn.account, "account", "", "work as this account on this machine, which must be signed in (also "+EnvAccount+")")
+	fs.BoolVar(&f.bare, "bare", false, "run without memory files, extensions or skills of your own or the workspace's; the organisation's stay")
 	fs.BoolVar(&f.trustWS, "trust-workspace", false, "trust the workspace's .abhed/config.json for this run (also "+config.TrustEnv+"=1)")
 	return fs
 }
@@ -221,7 +245,11 @@ func parseArgs(fs *flag.FlagSet, f *cliFlags, args []string, edition map[string]
 			f.words = fs.Args()
 			return nil
 		}
-		f.words = append(f.words, first)
+		if first == "-" {
+			f.stdinDash = true
+		} else {
+			f.words = append(f.words, first)
+		}
 		rest = fs.Args()[1:]
 	}
 }
@@ -238,10 +266,15 @@ func (f *cliFlags) task() string {
 // Main runs the command with the given arguments and options and returns
 // the exit code. It is what every edition's main calls.
 func Main(args []string, opts ...Option) int {
-	// No background shell outlives the process that started it.
+	// No background shell, nor an Ollama server it started itself, outlives the process.
 	defer endAtExit()
+	noteLocalModelUse()
 	a := newApp(opts...)
 	recordAnchors = a.anchors
+	enableModelDiscovery()
+	// No window memory until the sign-in gate says who is working
+	// (useWindowMemory); a machine command keeps none.
+	model.SetWindowMemory(nil)
 	var f cliFlags
 	fs := newFlagSet(&f)
 	// Sessions: the record keeps every one, so these pick which goes on.
@@ -343,11 +376,56 @@ func Main(args []string, opts ...Option) int {
 			}
 			return 1
 		}
+		if personCommands[rest[0]] && !(len(rest) > 1 && isHelpArg(rest[1])) {
+			if rest[0] == "login" {
+				// With no one signed in, abhed login is signing in, as the start's
+				// "sign in to a server" is, whether or not a sign-in is required.
+				code, err := resolvePrincipal(f.signIn, false, os.Stdin, os.Stderr)
+				if errors.Is(err, identity.ErrSignInRequired) || err == nil && code == 0 && guestByDefault() {
+					endGuest()
+					return loginAsPrincipal(rest[1:], os.Stdout, os.Stderr)
+				}
+				if err != nil {
+					return refusedSignIn(err, os.Stderr)
+				}
+				if code != 0 {
+					return code
+				}
+			} else {
+				enter := func() int { return enterPrincipal(f.signIn, false, os.Stdin, os.Stderr) }
+				if rest[0] == "rpc" || rest[0] == "acp" {
+					enter = func() int { return enterPrincipalForClient(f.signIn, os.Stderr) }
+				}
+				if code := enter(); code != 0 {
+					return code
+				}
+				if rest[0] == "doctor" {
+					// It reports the person's state, and probes the model
+					// without keeping what it learns of the model's window.
+					model.SetWindowMemory(nil)
+				}
+			}
+			if err := guestSubcommand(rest); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+				return 1
+			}
+		}
 		return a.subcommand(workspace, rest, &f)
 	}
 	if len(f.words) > 0 && !f.print.on && !f.dashed {
 		// An edition's own subcommand.
 		if cmd, ok := a.commands[f.words[0]]; ok {
+			// An edition's command that reads the person's state runs as
+			// whoever is working, as a built-in one does.
+			if personCommands[f.words[0]] && !(len(f.words) > 1 && isHelpArg(f.words[1])) {
+				if code := enterPrincipal(f.signIn, false, os.Stdin, os.Stderr); code != 0 {
+					return code
+				}
+				if err := guestSubcommand(f.words); err != nil {
+					fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+					return 1
+				}
+			}
 			return cmd(workspace, f.words[1:])
 		}
 		// A single bare word is far more often a mistyped command than a
@@ -360,7 +438,36 @@ func Main(args []string, opts ...Option) int {
 			return 2
 		}
 	}
+	interactive := !f.print.on && terminalBoth()
+	if code := enterPrincipal(f.signIn, interactive, os.Stdin, os.Stderr); code != 0 {
+		if code == identity.ExitSignInRequired && f.print.on && f.format != "text" {
+			// A caller reading the result line learns why nothing ran.
+			b, _ := json.Marshal(resultLine{Type: "result", Subtype: string(agent.TermError), IsError: true,
+				Error: "signin_required", ExitCode: code})
+			fmt.Println(string(b))
+		}
+		return code
+	}
+	if err := guestRefusal("resuming a session"); err != nil && (sf.Continue || sf.Resume != "" || sf.Pick) {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 2
+	}
 	return run(a, workspace, &f)
+}
+
+// initTrustNote says what abhed init trusted: the file it wrote, and, when a
+// local layer was already there, that it is not trusted and why.
+func initTrustNote(path string) string {
+	if currentPrincipal().Kind == identity.Guest {
+		// A guest's trust goes with its folder when the run ends.
+		return "As a guest, Abhed trusts it for this run only; nothing is kept. Sign in, then run `abhed trust` to trust it for later runs.\n"
+	}
+	local := filepath.Join(filepath.Dir(path), config.LocalConfigName)
+	if _, err := os.Lstat(local); err != nil {
+		return "Abhed trusts it as written; after an edit, run `abhed trust` to review and trust it again.\n"
+	}
+	return fmt.Sprintf("Abhed trusts that file as written, but not %s, which was already there and was not written by init: "+
+		"the next run shows both and asks, or run `abhed trust` to review them now.\n", config.Printable(local))
 }
 
 // subcommand runs a built-in subcommand; rest[0] is its name.
@@ -379,8 +486,8 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		if err != nil {
 			fail(err)
 		}
-		fmt.Printf("Wrote %s\nEdit it to point at your model endpoint, then run `abhed doctor`.\n"+
-			"Abhed trusts it as written; after an edit, run `abhed trust` to review and trust it again.\n", path)
+		fmt.Printf("Wrote %s\nEdit it to point at your model endpoint, then run `abhed doctor`.\n", path)
+		fmt.Print(initTrustNote(path))
 		return 0
 	case "trust":
 		return trustCmd(workspace, rest[1:], os.Stdout)
@@ -405,6 +512,10 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return a.doctor(workspace, set, timeout)
 	case "providers":
 		return providersCmd()
+	case "provider":
+		return providerCmd(rest[1:], stdProviderIO())
+	case "models":
+		return modelsCmd(rest[1:], modelsIO{in: os.Stdin, out: os.Stdout, err: os.Stderr, terminal: term.IsTerminal(int(os.Stdin.Fd()))})
 	case "ollama":
 		return ollamaCmd(workspace, rest[1:], a.trust, os.Stdin, os.Stdout, os.Stderr)
 	case "toolchain":
@@ -432,6 +543,10 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return userCmd(workspace, rest[1:], a.trust)
 	case "secret":
 		return secretCmd(rest[1:])
+	case "machine":
+		return machineCmd(rest[1:], os.Stdout, os.Stderr)
+	case "account":
+		return accountCmd(rest[1:], os.Stdin, os.Stdout, os.Stderr)
 	case "login":
 		return loginCmd(workspace, rest[1:], os.Stdout, os.Stderr)
 	case "logout":
@@ -442,6 +557,8 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return policyCmd(rest[1:], os.Stdout, os.Stderr)
 	case "sandbox":
 		return sandboxCmd(workspace, rest[1:], os.Stdin, os.Stdout, os.Stderr)
+	case "bg":
+		return bgCmd(workspace, rest[1:], a.trust, os.Stdin, os.Stdout, os.Stderr)
 	case "pki":
 		return pkiCmd(rest[1:], os.Stdout, os.Stderr)
 	case "egress-proxy":
@@ -450,6 +567,11 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return adminCmd(rest[1:], os.Stdout, os.Stderr)
 	case "mcp":
 		return mcpCmd(workspace, rest[1:], a.trust, stdMCPIO())
+	case "ssh-acp":
+		// An editor's engine on an SSH host, ACP carried on this stdio.
+		return sshACPCmd(rest[1:], os.Stdin, os.Stdout, os.Stderr)
+	case "plugin":
+		return pluginCmd(workspace, rest[1:], a.trust, stdPluginIO())
 	case "index":
 		return buildIndexCmd(workspace, a.trust)
 	case "eval":
@@ -486,6 +608,10 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 // sets no mode here: it takes effect only after its confirmation, in run.
 func (f *cliFlags) permission() (string, error) {
 	mode := f.mode
+	// -mode takes the familiar camelCase spellings too (acceptEdits, bypassPermissions).
+	if m, ok := permissionModes[mode]; ok {
+		mode = m
+	}
 	if f.permissionMode != "" {
 		m, ok := permissionModes[f.permissionMode]
 		if !ok {
@@ -509,12 +635,15 @@ func (f *cliFlags) permission() (string, error) {
 var permissionModes = map[string]string{
 	"default": "default", "acceptEdits": "accept-edits", "accept-edits": "accept-edits",
 	"plan": "plan", "auto": "auto", "bypassPermissions": "bypass", "bypass": "bypass",
+	"acceptedits": "accept-edits", "AcceptEdits": "accept-edits", "bypasspermissions": "bypass", "BypassPermissions": "bypass",
+	"accept_edits": "accept-edits", "bypass_permissions": "bypass",
 }
 
 // ownsHelp are the subcommands that print their own usage for -h.
 var ownsHelp = map[string]bool{
-	"sandbox": true, "secret": true, "mcp": true, "record": true, "logs": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
-	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true, "ollama": true,
+	"sandbox": true, "bg": true, "secret": true, "machine": true, "mcp": true, "record": true, "logs": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
+	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true, "ollama": true, "ssh-acp": true,
+	"provider": true, "models": true, "account": true,
 }
 
 func isHelpArg(s string) bool {
@@ -678,5 +807,22 @@ func budgetFlag(cfg config.Config, tokens int) (config.Config, error) {
 			Reason: fmt.Sprintf("the managed configuration sets it to %d, and a flag may only lower it", cfg.Limits.MaxBudgetTokens), File: managed.ConfigFile}
 	}
 	cfg.Limits.MaxBudgetTokens = tokens
+	return cfg, nil
+}
+
+// usdBudgetFlag applies -max-budget-usd. Under a managed or org dollar cap
+// it may only lower it.
+func usdBudgetFlag(cfg config.Config, usd float64) (config.Config, error) {
+	switch {
+	case usd == 0:
+		return cfg, nil
+	case usd < 0 || math.IsNaN(usd) || math.IsInf(usd, 0):
+		return cfg, fmt.Errorf("-max-budget-usd must be a positive number of US dollars, not %v", usd)
+	}
+	if cfg.ManagedSets("limits.max_budget_usd") && cfg.Limits.MaxBudgetUSD > 0 && usd > cfg.Limits.MaxBudgetUSD {
+		return cfg, &config.ManagedError{Key: "limits.max_budget_usd", Value: strconv.FormatFloat(usd, 'f', -1, 64),
+			Reason: fmt.Sprintf("the managed configuration sets it to %v, and a flag may only lower it", cfg.Limits.MaxBudgetUSD), File: managed.ConfigFile}
+	}
+	cfg.Limits.MaxBudgetUSD = usd
 	return cfg, nil
 }

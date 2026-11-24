@@ -20,7 +20,7 @@ func TestSSHReadVerbIsTheFirstWord(t *testing.T) {
 			t.Errorf("%q was accepted", e)
 		}
 	}
-	e := readsEngine(t, policy.ModePlan, "systemctl status *", "docker ps *", "apt list *", "timedatectl show *")
+	e := readsEngine(t, policy.ModePlan, "systemctl status **", "docker ps **", "apt list **", "timedatectl show **")
 	for _, cmd := range []string{
 		"systemctl status -p status stop nginx --now", "systemctl status nginx -H host", "systemctl status nginx --root=/x",
 		"docker ps --config x rm x", "docker ps -H tcp://x", "apt list -o APT::Update::Pre-Invoke::=sh", "apt list -c /tmp/x",
@@ -42,47 +42,47 @@ func TestSSHReadVerbIsTheFirstWord(t *testing.T) {
 // entry, written in full, abbreviated, glued or clustered.
 func TestSSHReadFormsRefuseWritersAndRunners(t *testing.T) {
 	forms := map[string][]string{
-		"journalctl *": {"--vacuum-size=1M", "--vacuum-size 1M", "--vacuum-time=1s", "--vacuum-files=1", "--vac=1",
+		"journalctl **": {"--vacuum-size=1M", "--vacuum-size 1M", "--vacuum-time=1s", "--vacuum-files=1", "--vac=1",
 			"--rotate", "--rot", "--flush", "--sync", "--relinquish-var", "--smart-relinquish-var", "--setup-keys",
 			"--setup-keys --force", "--interval=1", "--update-catalog", "--cursor-file=/tmp/x", "--cursor-file /tmp/x",
 			"--cursor-f=/tmp/x", "-n --vacuum-size=1"},
-		"openssl x509 *": {"-in a -out /tmp/x", "-in a --out /tmp/x", "-in a -keyout /tmp/k", "-in a -CAcreateserial",
+		"openssl x509 **": {"-in a -out /tmp/x", "-in a --out /tmp/x", "-in a -keyout /tmp/k", "-in a -CAcreateserial",
 			"-in a -CAserial /tmp/s", "-in a -CA ca.pem -CAkey k", "-in a -signkey k", "-in a -req", "-in a -set_serial 1",
 			"-in a -engine /tmp/e.so", "-in a -provider p", "-in a -provider-path /tmp", "-in a -config /tmp/c",
 			"-in a -writerand /tmp/r", "-in a -x509toreq", "-in a -extfile /tmp/e", "-in a -passin pass:x"},
-		"openssl s_client *": {"-connect h:443 -sess_out /tmp/s", "-connect h:443 -keylogfile /tmp/k",
+		"openssl s_client **": {"-connect h:443 -sess_out /tmp/s", "-connect h:443 -keylogfile /tmp/k",
 			"-connect h:443 -msgfile /tmp/m", "-connect h:443 -engine e", "-connect h:443 -provider p",
 			"-connect h:443 -writerand /tmp/r", "-connect h:443 -ssl_config c"},
-		"docker ps *":      {"-H tcp://x", "--host x", "--config /tmp", "--context x"},
-		"docker inspect *": {"x -H tcp://x", "x --host x"},
-		"docker logs *":    {"x --host x", "x -H y"},
-		"apt list *":       {"-o APT::Update::Pre-Invoke::=sh", "-c /tmp/conf", "--option x", "--config-file x"},
-		"apt-cache show *": {"x -o Dir::Etc=x", "x -c /tmp/c"},
-		"dpkg *": {"-i x.deb", "--install x.deb", "-r x", "--remove x", "-P x", "--purge x", "--configure x", "--unpack x",
+		"docker ps **":      {"-H tcp://x", "--host x", "--config /tmp", "--context x"},
+		"docker inspect **": {"x -H tcp://x", "x --host x"},
+		"docker logs **":    {"x --host x", "x -H y"},
+		"apt list **":       {"-o APT::Update::Pre-Invoke::=sh", "-c /tmp/conf", "--option x", "--config-file x"},
+		"apt-cache show **": {"x -o Dir::Etc=x", "x -c /tmp/c"},
+		"dpkg **": {"-i x.deb", "--install x.deb", "-r x", "--remove x", "-P x", "--purge x", "--configure x", "--unpack x",
 			"-a", "--set-selections", "--clear-selections", "--root /x", "--admindir /x", "--force-all -l", "--log /tmp/x -l",
 			"--instdir /x -l", "-li"},
-		"dpkg-query *": {"--admindir /x -l", "--load-avail -l"},
-		"rpm *": {"-i x.rpm", "-U x.rpm", "-F x.rpm", "-e x", "--erase x", "--import k", "--setperms x", "--setugids x",
+		"dpkg-query **": {"--admindir /x -l", "--load-avail -l"},
+		"rpm **": {"-i x.rpm", "-U x.rpm", "-F x.rpm", "-e x", "--erase x", "--import k", "--setperms x", "--setugids x",
 			"--restore x", "--rebuilddb", "--initdb", "--eval x", "-E x", "--define x", "-D x", "--dbpath /x -qa", "--root /x -qa",
 			"--pipe sh -qa", "--macros /x -qa", "--rcfile /x -qa", "-qe x", "-qap"},
-		"ip addr *": {"add 1.2.3.4/32 dev eth0", "del 1.2.3.4/32 dev eth0", "a 1.2.3.4 dev eth0", "flush dev eth0",
+		"ip addr **": {"add 1.2.3.4/32 dev eth0", "del 1.2.3.4/32 dev eth0", "a 1.2.3.4 dev eth0", "flush dev eth0",
 			"change 1.2.3.4 dev eth0", "replace 1.2.3.4 dev eth0", "show -ba x", "show vrf x"},
-		"ip link show *": {"-batch /tmp/x", "-b /tmp/x", "-ba /tmp/x", "-force", "-n ns", "-netns ns", "-net ns",
+		"ip link show **": {"-batch /tmp/x", "-b /tmp/x", "-ba /tmp/x", "-force", "-n ns", "-netns ns", "-net ns",
 			"netns exec x id", "vrf exec x id", "dev eth0 exec id"},
-		"date *": {"-s 2020-01-01", "--set 2020-01-01", "--set=2020", "--se x", "-us x", "010100002020", "-f /tmp/x"},
-		"dmesg *": {"-C", "-c", "--clear", "--read-clear", "-D", "--console-off", "-E", "--console-on", "-n 1",
+		"date **": {"-s 2020-01-01", "--set 2020-01-01", "--set=2020", "--se x", "-us x", "010100002020", "-f /tmp/x"},
+		"dmesg **": {"-C", "-c", "--clear", "--read-clear", "-D", "--console-off", "-E", "--console-on", "-n 1",
 			"--console-level 1", "-Tc", "--cl", "-s 1 -c"},
-		"file *": {"-C", "--compile", "-C -m /tmp/x", "-z x", "-Z x", "--uncompress x", "-p x", "--preserve-date x"},
-		"rg *":   {"--pre sh x", "--pre=sh x", "--pr=sh x", "--pre-glob '*' x", "-z x", "--search-zip x", "-zi x"},
-		"sort *": {"-o /tmp/x a", "--output=/tmp/x a", "--output /tmp/x a", "--out=/tmp/x a", "--compress-program=sh a",
+		"file **": {"-C", "--compile", "-C -m /tmp/x", "-z x", "-Z x", "--uncompress x", "-p x", "--preserve-date x"},
+		"rg **":   {"--pre sh x", "--pre=sh x", "--pr=sh x", "--pre-glob '*' x", "-z x", "--search-zip x", "-zi x"},
+		"sort **": {"-o /tmp/x a", "--output=/tmp/x a", "--output /tmp/x a", "--out=/tmp/x a", "--compress-program=sh a",
 			"--compress-prog=sh a", "-T /tmp a", "--temporary-directory=/tmp a", "--files0-from=/tmp/x", "-no /tmp/x a"},
-		"hostname -f":          {},
-		"timedatectl show *":   {"-M m", "--host x", "--adjust-system-clock"},
-		"hostnamectl status *": {"--host x", "-M m"},
+		"hostname -f":           {},
+		"timedatectl show **":   {"-M m", "--host x", "--adjust-system-clock"},
+		"hostnamectl status **": {"--host x", "-M m"},
 	}
 	for entry, bad := range forms {
 		e := readsEngine(t, policy.ModePlan, entry)
-		prefix := strings.TrimSuffix(entry, "*")
+		prefix := strings.TrimSuffix(entry, "**")
 		for _, opt := range bad {
 			cmd := prefix + opt
 			if res := e.Evaluate("ssh", true, sshCall("web1", cmd)); res.Decision != policy.Deny {

@@ -6,21 +6,27 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/agentdefs"
 	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/index"
 	"github.com/zybuu-ai/abhed/internal/k8s"
+	"github.com/zybuu-ai/abhed/internal/machinegrant"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/mcp"
+	"github.com/zybuu-ai/abhed/internal/mcpauth"
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/rag"
 	"github.com/zybuu-ai/abhed/internal/remote"
 	"github.com/zybuu-ai/abhed/internal/secrets"
@@ -28,6 +34,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/webfetch"
 	"github.com/zybuu-ai/abhed/internal/websearch"
+	"github.com/zybuu-ai/abhed/plugin"
 )
 
 // MCPConfigs is the configuration's MCP servers in the gateway's terms.
@@ -38,9 +45,40 @@ func MCPConfigs(cfg config.Config) []mcp.ServerConfig {
 			Name: s.Name, Command: s.Command, Args: s.Args, Env: s.Env,
 			URL: s.URL, Headers: s.Headers, HeadersEnv: s.HeadersEnv,
 			Enabled: s.Enabled, AllowTools: s.AllowTools, Digest: s.Digest, HostFiles: s.HostFiles,
+			ReadOnlyHints:  cfg.ReadOnlyHintTrusted(s),
+			StartupTimeout: time.Duration(s.StartupTimeoutSeconds) * time.Second,
 		})
 	}
 	return out
+}
+
+// MCPAuthorize gives each URL server the login abhed mcp login kept in
+// store, bound to the server's name and URL; nil for a server with none.
+func MCPAuthorize(store *secrets.Store) func(mcp.ServerConfig, *http.Client) (mcp.Authorizer, error) {
+	return func(cfg mcp.ServerConfig, hc *http.Client) (mcp.Authorizer, error) {
+		a, err := mcpauth.Load(store, cfg.Name, cfg.URL, hc)
+		if a == nil || err != nil {
+			return nil, err
+		}
+		return a, nil
+	}
+}
+
+// ErrMCPLoginsPerAccount is a server whose accounts each have their own
+// secrets: an MCP server's OAuth login is the operator's, and a gateway its
+// sessions share would have every account act as the operator.
+var ErrMCPLoginsPerAccount = errors.New("OAuth logins aren't available per account yet: on a server where accounts sign in, " +
+	"a login would let every account act as the operator, so it is not used")
+
+// MCPLoginsWithheld uses no login: a URL server that has one in store is
+// refused, with why, rather than reached without it or with the operator's.
+func MCPLoginsWithheld(store *secrets.Store, why error) func(mcp.ServerConfig, *http.Client) (mcp.Authorizer, error) {
+	return func(cfg mcp.ServerConfig, _ *http.Client) (mcp.Authorizer, error) {
+		if in, _, _, err := mcpauth.Status(store, cfg.Name, cfg.URL); in || err != nil {
+			return nil, fmt.Errorf("it has an OAuth login (abhed mcp login): %w", why)
+		}
+		return nil, nil
+	}
 }
 
 // MCPAdmit is the gateway's check of every server against the
@@ -120,8 +158,10 @@ func SkillRoots(cfg config.Config) []string {
 	return []string{"~/.abhed/skills"}
 }
 
-// LoadSkills loads the configured skill directories and returns the registry
-// plus its prompt listing. One malformed SKILL.md is reported, not fatal.
+// LoadSkills loads the configured skill directories, then the workspace's
+// own skills when the person trusted their exact content and nothing turned
+// them off, and returns the registry plus its prompt listing. One malformed
+// SKILL.md is reported, not fatal.
 func LoadSkills(cfg config.Config, warn func(string, ...any)) (*skills.Registry, string) {
 	if cfg.Skills.Disabled {
 		return skills.NewRegistry(), ""
@@ -130,7 +170,84 @@ func LoadSkills(cfg config.Config, warn func(string, ...any)) (*skills.Registry,
 	for _, err := range errs {
 		warn("%v", err)
 	}
+	// Plugins' skills rank right after the person's own, as everywhere: they
+	// never take an installed name, and a workspace's never takes theirs.
+	addPluginSkills(reg, cfg.LoadedPlugins(), warn)
+	// At home, .abhed/skills is ~/.abhed/skills, loaded above already.
+	if ws := cfg.Workspace; ws.SkillsTrusted && ws.SkillsReason != "home" && !cfg.Skills.DisableWorkspace {
+		for _, w := range ws.SkillFiles() {
+			var md, pipeline []byte
+			for _, f := range w.Files {
+				switch f.Rel {
+				case "SKILL.md":
+					md = f.Data
+				case "pipeline.json":
+					pipeline = f.Data
+				}
+			}
+			s, err := skills.FromContent(w.Path, md, pipeline)
+			if err != nil {
+				warn("skills: %s: %v", config.Printable(w.Dir), err)
+				continue
+			}
+			if s.Cut != "" {
+				warn("skills: %s: %s", config.Printable(w.Dir), s.Cut)
+			}
+			s.Source = filepath.Join(ws.Workspace, filepath.FromSlash(config.WorkspaceSkillsDir))
+			// Only SKILL.md and pipeline.json are used: the folder is in .abhed,
+			// which the agent can neither read nor run anything from.
+			s.Dir, s.Workspace = "", true
+			// A name is plain ASCII, so no look-alike letter can pass for an
+			// installed skill's.
+			if !asciiName(s.Name) {
+				warn("skills: the workspace skill %s is not loaded: a workspace skill's name is ASCII letters, digits, '-', '_' and '.'", config.Printable(s.Name))
+				continue
+			}
+			// An installed skill keeps its name: a repository's cannot stand in for it.
+			if !reg.AddNew(s) {
+				warn("skills: the workspace skill %s is not loaded: a skill the organisation, you or a plugin you approved installed has that name", config.Printable(s.Name))
+			}
+		}
+	}
 	return reg, reg.Listing()
+}
+
+// addPluginSkills adds the approved plugins' skills to reg, each capped and
+// never taking a name reg already holds.
+func addPluginSkills(reg *skills.Registry, loaded []plugin.Loaded, warn func(string, ...any)) {
+	for _, l := range loaded {
+		for _, ps := range l.Skills {
+			s, err := skills.FromContent(ps.Dir, ps.SkillMD, ps.Pipeline)
+			if err != nil {
+				warn("skills: the plugin %s's skill %s: %v", l.Name, ps.Name, err)
+				continue
+			}
+			if s.Cut != "" {
+				warn("skills: the plugin %s's skill %s: %s", l.Name, ps.Name, s.Cut)
+			}
+			s.Source, s.Plugin = l.Root, l.Name
+			if !asciiName(s.Name) {
+				warn("skills: the plugin %s's skill %s is not loaded: a plugin skill's name is ASCII letters, digits, '-', '_' and '.'", l.Name, config.Printable(s.Name))
+				continue
+			}
+			if !reg.AddNew(s) {
+				warn("skills: the plugin %s's skill %s is not loaded: a skill the organisation or you installed has that name", l.Name, config.Printable(s.Name))
+			}
+		}
+	}
+}
+
+// asciiName reports a skill name of ASCII letters, digits, '-', '_' and '.'.
+func asciiName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+			return false
+		}
+	}
+	return true
 }
 
 // AgentRoots are the operator's definition directories: agents.dirs, or
@@ -205,6 +322,11 @@ func LoadAgents(cfg config.Config, ws config.WorkspaceTrust, session []*agent.De
 	if ws.AgentsTrusted {
 		o.Workspace = ws.AgentFiles()
 	}
+	for _, l := range cfg.LoadedPlugins() {
+		for _, f := range l.Agents {
+			o.Plugins = append(o.Plugins, agentdefs.PluginFile{Plugin: l.Name, Path: f.Path, Data: f.Data})
+		}
+	}
 	defs, errs := agentdefs.Load(o)
 	for _, err := range errs {
 		warn("%v", err)
@@ -218,12 +340,109 @@ func LoadAgents(cfg config.Config, ws config.WorkspaceTrust, session []*agent.De
 // name and held by the session that obtained it, never by these tools; a nil
 // vault offers no stored secrets.
 func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...any)) []tools.Tool {
+	return InfraToolsFor(cfg, vault, warn, false)
+}
+
+// OrgK8s is what counts on the person's machine where the organisation
+// decides Kubernetes (config.MachineSetupOff): its own k8s.enabled, a lower
+// layer's true not taken, and why no kubeconfig is read ("" when it names
+// one). Where it decides nothing, or only tightens, it is cfg's own
+// k8s.enabled and "".
+func OrgK8s(cfg config.Config) (enabled bool, noKubeconfig string) {
+	off := cfg.MachineSetupOff("k8s")
+	if off == "" {
+		// No organisation decision, or one that only tightens (writes off):
+		// the person's own setting and kubeconfig, under it.
+		return cfg.K8s.Enabled, ""
+	}
+	orgSets := func(key string) bool { return cfg.ManagedSets(key) || cfg.FromOrg(key) }
+	switch {
+	case orgSets("k8s.enabled"):
+		enabled = cfg.K8s.Enabled // the organisation's own value; managed wins
+	default:
+		// Clusters or a kubeconfig the organisation declares turn Kubernetes
+		// on for them; a person's or workspace's own k8s.enabled is not taken.
+		enabled = orgSets("k8s.clusters") || orgSets("k8s.kubeconfig")
+	}
+	if !orgSets("k8s.kubeconfig") {
+		noKubeconfig = off
+	}
+	return enabled, noKubeconfig
+}
+
+// MachineK8s reports whether the Kubernetes tools are offered only because
+// this is the person's own machine and it has a kubeconfig, or kept
+// cluster logins: no configuration file says k8s.enabled either way, and
+// the managed configuration or org policy sets no k8s key and does not turn
+// machine_setup off; see config.MachineSetupOff.
+func MachineK8s(cfg config.Config, machine bool) bool {
+	if !machine || cfg.K8s.Enabled || cfg.Sets("k8s.enabled") || cfg.MachineSetupOff("k8s") != "" {
+		return false
+	}
+	if len(machinegrant.Logins()) > 0 {
+		return true
+	}
+	for _, p := range k8s.KubeconfigPaths(k8s.Config{Kubeconfig: cfg.K8s.Kubeconfig}) {
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+			return true
+		}
+	}
+	return false
+}
+
+// MachineSSH reports whether the SSH tools are offered only because this is
+// the person's own machine and its ~/.ssh/config names a host, as for
+// MachineK8s. It returns the config read.
+func MachineSSH(cfg config.Config, machine bool) (*remote.SSHConfig, bool) {
+	if !machine || cfg.MachineSetupOff("ssh") != "" || cfg.Sets("ssh.enabled") && !cfg.SSH.Enabled {
+		return nil, false
+	}
+	c, err := remote.LoadSSHConfig(remote.DefaultSSHConfigPath())
+	if err != nil || len(c.Aliases()) == 0 {
+		return nil, false
+	}
+	return c, true
+}
+
+// InfraToolsFor is InfraTools, with the person's own machine setup offered
+// as well when machine is set: their kubeconfig contexts and ~/.ssh/config
+// hosts, each first use asked once, and the cluster logins they kept. Only
+// a surface run by the person whose machine it is sets it, never a server
+// that runs other people's sessions.
+func InfraToolsFor(cfg config.Config, vault *secrets.Store, warn func(string, ...any), machine bool) []tools.Tool {
 	var out []tools.Tool
+	autoK8s := MachineK8s(cfg, machine)
+	// With nothing to reach yet, the person's own surface still offers
+	// k8s_login, so a pasted `oc login` works on any machine; the other
+	// cluster tools stay hidden from the model until a login exists.
+	k8sOff := cfg.MachineSetupOff("k8s")
+	// Where the organisation sets k8s on the person's machine, only what it
+	// configures is offered: its own k8s.enabled (a lower layer's true is
+	// ignored), its clusters, and a kubeconfig only where it names one.
+	noKubeconfig, pastedOff := "", ""
+	if machine && k8sOff != "" {
+		pastedOff = k8sOff
+		cfg.K8s.Enabled, noKubeconfig = OrgK8s(cfg)
+	}
+	loginOnly := machine && !autoK8s && !cfg.K8s.Enabled && !cfg.Sets("k8s.enabled") && k8sOff == ""
+	if autoK8s || loginOnly {
+		cfg.K8s.Enabled = true
+		// Writes are asked each time, with a dry run first; offered unless a file says otherwise.
+		if !cfg.Sets("k8s.allow_writes") {
+			cfg.K8s.AllowWrites = true
+		}
+	}
+	sshConfig, autoSSH := MachineSSH(cfg, machine)
+	if autoSSH && !cfg.SSH.Enabled {
+		cfg.SSH.Enabled = true
+	}
 	var secret func(string) (string, error)
 	var secretNames []string
 	if vault != nil {
 		secret = vault.Value
-		secretNames, _ = vault.Names() // unreadable lists nothing; a use reports why
+		// Only what may be offered: never a name Abhed keeps for itself (a
+		// model key, an MCP sign-in). Unreadable lists nothing; a use says why.
+		secretNames = vault.Offered()
 	}
 
 	if cfg.K8s.Enabled {
@@ -233,9 +452,23 @@ func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...an
 			Namespace:  cfg.K8s.Namespace,
 			// From the environment only: a token in a config file sits in a
 			// directory the agent itself can read.
-			Token:    os.Getenv("ABHED_K8S_TOKEN"),
-			Clusters: LoginClusters(cfg),
-			CAFile:   cfg.K8s.CAFile,
+			Token:        os.Getenv("ABHED_K8S_TOKEN"),
+			Clusters:     LoginClusters(cfg),
+			CAFile:       cfg.K8s.CAFile,
+			NoKubeconfig: noKubeconfig,
+			// Where the organisation sets k8s, only its clusters take a token.
+			PastedOff: pastedOff,
+			// A kubeconfig used because it is there asks before each context's
+			// first use; one the configuration turned on asks only before Abhed
+			// runs a context's credential helper.
+			FirstUseAll:      autoK8s,
+			HiddenUntilLogin: loginOnly,
+			// Under a managed configuration only the organisation's
+			// k8s.clusters take a token: no login is kept or offered.
+			KeptLogins: machine && k8sOff == "" && !machinegrant.Guest(),
+			// A guest may log in with a paste for the session; nothing is kept.
+			SessionLogins: machine && k8sOff == "" && machinegrant.Guest(),
+			Secret:        secret,
 		})
 		for _, c := range cfg.K8s.Clusters {
 			if c.InsecureSkipTLSVerify {
@@ -244,15 +477,23 @@ func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...an
 			}
 		}
 		// The kubeconfig's own setting, which doctor alone used to name.
-		if name, insecure := k8s.InsecureContext(k8s.Config{Kubeconfig: cfg.K8s.Kubeconfig, Context: cfg.K8s.Context}); insecure {
+		if name, insecure := k8s.InsecureContext(k8s.Config{Kubeconfig: cfg.K8s.Kubeconfig, Context: cfg.K8s.Context, NoKubeconfig: noKubeconfig}); insecure {
 			warn("the kubeconfig skips TLS verification for context %q — "+
 				"its credentials can be read by anyone in the path", name)
 		}
 		out = append(out, k8s.GetTool{M: mgr},
-			k8s.LoginTool{M: mgr, Secret: secret, SecretNames: secretNames})
+			k8s.LoginTool{M: mgr, Secret: secret, SecretNames: secretNames, Store: vault})
 		if cfg.K8s.AllowWrites {
 			out = append(out, k8s.ApplyTool{M: mgr, Secret: secret})
+		} else if machine && (cfg.ManagedSets("k8s.allow_writes") || cfg.FromOrg("k8s.allow_writes")) {
+			// Not offered, but a write the model tries anyway is told why.
+			out = append(out, k8s.ApplyTool{M: mgr, WritesOff: "your organisation's configuration turns cluster writes off " +
+				"(k8s.allow_writes false), so reads only; ask your administrator"})
 		}
+	} else if machine && k8sOff != "" {
+		// The organisation decides: a pasted login is still withheld, and the
+		// login it asks for is refused with the reason, never an unknown tool.
+		out = append(out, k8s.LoginTool{M: k8s.NewManager(k8s.Config{Off: k8sOff, HiddenUntilLogin: true})})
 	}
 
 	// No len(Hosts) > 0 condition: ssh_connect is how a host gets declared in
@@ -271,11 +512,23 @@ func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...an
 				warn("ssh host %q skips host key verification — it cannot detect a machine-in-the-middle", h.Name)
 			}
 		}
+		// Every name in ssh.hosts stays the operator's, loaded or not:
+		// ssh_connect may not put a machine of its own behind one.
+		declared := make([]string, 0, len(cfg.SSH.Hosts))
+		for _, h := range cfg.SSH.Hosts {
+			declared = append(declared, h.Name)
+		}
 		reg, errs := remote.NewRegistry(hosts)
 		for _, err := range errs {
 			warn("ssh: %v", err)
 		}
-		out = append(out, remote.Tool{R: reg, Reads: cfg.SSH.ReadCommands, Secret: secret}, remote.ConnectTool{R: reg, Secret: secret, Allowed: cfg.SSH.ConnectHosts})
+		if sshConfig != nil {
+			reg.UseSSHConfig(sshConfig, cfg.SSH.ConnectHosts)
+		}
+		out = append(out, remote.Tool{R: reg, Reads: cfg.SSH.ReadCommands, ReadOnly: cfg.SSHReadOnlyHosts() != nil,
+			ReadContents: cfg.SSHReadOnlyHosts() != nil && cfg.SSHReadContents(),
+			MaxTimeout:   time.Duration(cfg.SSH.MaxTimeoutSeconds) * time.Second, Secret: secret},
+			remote.ConnectTool{R: reg, Secret: secret, Allowed: cfg.SSH.ConnectHosts, Declared: declared})
 		if cfg.SSH.Transfers {
 			// Held in memory whole, so bounded at 1 GiB whatever is configured.
 			limit := int64(min(max(cfg.SSH.TransferMaxMB, 0), 1024)) << 20
@@ -338,20 +591,42 @@ func RAGTools(cfg config.Config, warn func(string, ...any)) []tools.Tool {
 
 // IndexOptions mirrors what OpenIndex uses, so a reindex triggered from the
 // settings surface rebuilds on the same terms as the startup build rather than
-// quietly dropping the vector tier.
-func IndexOptions(cfg config.Config) index.BuildOptions {
+// quietly dropping the vector tier, or the read rules.
+func IndexOptions(cfg config.Config, workspace string) index.BuildOptions {
 	opts := index.DefaultBuildOptions()
 	opts.Embed = cfg.Retrieval.Embed && cfg.Retrieval.EmbedBaseURL != ""
+	opts.Withheld = ReadWithheld(cfg, workspace)
 	return opts
+}
+
+// ReadWithheld is the configured read rules over a workspace: whether a deny
+// rule, or an ask rule such as the built-in ones for .env and keys, keeps a
+// file from the agent. The index is built with it, before any session.
+func ReadWithheld(cfg config.Config, workspace string) func(string) bool {
+	pol := policy.New(policy.ModeDefault)
+	pol.Roots = func() []string { return []string{workspace} }
+	_ = pol.AddDeny(cfg.Permissions.Deny...)
+	_ = pol.AddAsk(cfg.Permissions.Ask...)
+	return pol.ReadWithheldFunc()
 }
 
 // OpenIndex builds the retrieval index for a workspace.
 func OpenIndex(ctx context.Context, cfg config.Config, workspace string) (*index.Index, error) {
+	return OpenIndexWithheld(ctx, cfg, workspace, nil)
+}
+
+// OpenIndexWithheld is OpenIndex built to the read rules withheld gives, nil
+// for the configured ones.
+func OpenIndexWithheld(ctx context.Context, cfg config.Config, workspace string, withheld func(string) bool) (*index.Index, error) {
 	if workspace == "" {
 		return nil, fmt.Errorf("no workspace to index")
 	}
 	ix := index.New(workspace)
 	opts := index.DefaultBuildOptions()
+	opts.Withheld = withheld
+	if withheld == nil {
+		opts.Withheld = ReadWithheld(cfg, workspace)
+	}
 
 	var cache *index.FileVectorCache
 	if cfg.Retrieval.Embed && cfg.Retrieval.EmbedBaseURL != "" {
@@ -380,11 +655,11 @@ func OpenIndex(ctx context.Context, cfg config.Config, workspace string) (*index
 // builds: under ~/.abhed, which sandboxed commands cannot write, one file per
 // workspace and embedding model. "" when there is no home directory.
 func VectorCachePath(cfg config.Config, workspace string) string {
-	home, err := os.UserHomeDir()
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%d", tools.RealPath(workspace),
+		cfg.Retrieval.EmbedBaseURL, cfg.Retrieval.EmbedModel, cfg.Retrieval.EmbedDims)))
+	p, err := home.PersonPath("index", "vectors-"+hex.EncodeToString(sum[:8])+".gob")
 	if err != nil {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%d", tools.RealPath(workspace),
-		cfg.Retrieval.EmbedBaseURL, cfg.Retrieval.EmbedModel, cfg.Retrieval.EmbedDims)))
-	return filepath.Join(home, ".abhed", "index", "vectors-"+hex.EncodeToString(sum[:8])+".gob")
+	return p
 }

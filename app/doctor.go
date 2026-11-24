@@ -21,7 +21,6 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/agentdefs"
 	"github.com/zybuu-ai/abhed/internal/egress"
-	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -92,10 +91,24 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		ui.NewStyle(os.Stdout).Bold("abhed doctor"))
 	fmt.Printf("edition     %s\n", a.edition)
 	fmt.Printf("workspace   %s\n", workspace)
+	fmt.Printf("person      %s\n", doctorPerson(currentPrincipal()))
 	fmt.Printf("config      %s\n", configFilesLine(cfg))
 	fmt.Printf("provider    %s (%s)\n", cfg.Model.Default, provider.Type)
 	fmt.Printf("endpoint    %s\n", provider.BaseURL)
 	fmt.Printf("model       %s\n", provider.Model)
+	if line, warn := windowLine(context.Background(), provider, true); line != "" {
+		fmt.Printf("context     %s\n", line)
+		if warn != "" {
+			fmt.Printf("            ⚠ %s\n", config.Printable(warn))
+		}
+	}
+	if status, detail, ok := modelKeyCheck(provider); ok {
+		mark := ""
+		if status != "ok" {
+			mark = "⚠ "
+		}
+		fmt.Printf("key         %s%s\n", mark, detail)
+	}
 	fmt.Printf("mode        %s\n", modeLabel(cfg))
 	if line := managedLine(cfg); line != "" {
 		fmt.Printf("managed     %s\n", line)
@@ -105,6 +118,22 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	}
 	if cfg.Org.Required && len(cfg.Org.Keys) == 0 && cfg.ManagedSets("org_policy") {
 		fmt.Printf("            ⚠ %s\n", config.OrgUnpinnedWarning)
+	}
+	if w := tenantClaimWarning(cfg); w != "" {
+		fmt.Printf("tenant      ⚠ %s\n", config.Printable(w))
+	}
+	if status, detail, ok := shipCheck(cfg); ok {
+		mark := ""
+		if status != "ok" {
+			mark = "⚠ "
+		}
+		for i, line := range strings.Split(detail, "\n") {
+			label := "record ship "
+			if i > 0 {
+				label = "            "
+			}
+			fmt.Printf("%s%s%s\n", label, mark, config.Printable(line))
+		}
 	}
 	for _, line := range allowListLines(cfg) {
 		fmt.Println(line)
@@ -135,6 +164,9 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 			label += "  ⚠"
 		}
 		fmt.Printf("sandbox     %s — %s\n", label, sb.Describe())
+		for _, line := range tierChoiceLines(cfg, sb) {
+			fmt.Printf("            %s\n", line)
+		}
 		for _, w := range limitWarnings(cfg, sb.Tier()) {
 			fmt.Printf("            ⚠ %s\n", w)
 		}
@@ -227,30 +259,8 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		fmt.Printf("skills      %d loaded: %s\n", reg.Len(),
 			ui.VisibleLine(strings.Join(reg.Names(), ", ")))
 	}
-	if cfg.K8s.Enabled {
-		writes := "read-only"
-		if cfg.K8s.AllowWrites {
-			writes = "reads + writes (every write needs approval)"
-		}
-		fmt.Printf("kubernetes  %s\n", writes)
-		if c, err := k8s.Open(k8s.Config{Kubeconfig: cfg.K8s.Kubeconfig,
-			Context: cfg.K8s.Context, Namespace: cfg.K8s.Namespace,
-			Token: os.Getenv("ABHED_K8S_TOKEN")}); err != nil {
-			fmt.Printf("            UNAVAILABLE — %v\n", err)
-		} else {
-			fmt.Printf("            context %s\n            namespace %s · server %s\n",
-				c.Name, c.Namespace, c.Server)
-			if c.Insecure() {
-				fmt.Printf("            ⚠ the kubeconfig skips TLS verification for this cluster\n")
-			}
-		}
-		for _, lc := range toolset.LoginClusters(cfg) {
-			warn := ""
-			if lc.InsecureSkipTLSVerify {
-				warn = "  ⚠ TLS verification disabled"
-			}
-			fmt.Printf("k8s login   %s → %s%s\n", lc.Name, lc.Server, warn)
-		}
+	for _, line := range k8sDoctor(cfg) {
+		fmt.Println(line)
 	}
 	if cfg.SSH.Enabled && len(cfg.SSH.Hosts) > 0 {
 		for _, h := range cfg.SSH.Hosts {
@@ -260,6 +270,10 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 			}
 			fmt.Printf("ssh host    %s → %s@%s%s\n", h.Name, h.User, h.Addr, warn)
 		}
+	}
+	// The person's own setup, as the terminal and Studio offer it.
+	for _, line := range machineDoctor(cfg) {
+		fmt.Println(line)
 	}
 	for _, c := range cfg.RAG.Corpora {
 		if c.Enabled {
@@ -301,6 +315,7 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	if servers := cfg.MCP.Servers; len(servers) > 0 {
 		gw := mcp.NewGateway()
 		gw.Admit, gw.PinProgram = toolset.MCPAdmit(cfg), cfg.MCPListsMatchCommands()
+		gw.Authorize = toolset.MCPAuthorize(openVault())
 		// The servers are started as a session starts them: their files
 		// confined, and under the allowlist their network too.
 		if own := toolset.OwnEgress(cfg); own != nil {
@@ -331,6 +346,12 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		for _, w := range unconfined {
 			fmt.Printf("            ⚠ %s\n", w)
 		}
+		// abhed serve with accounts uses no login; say so where the operator looks.
+		if accountsSignIn(cfg) {
+			for _, name := range mcpLoginsHeld(cfg, openVault()) {
+				fmt.Printf("            ⚠ %s: abhed serve does not use its OAuth login: %v\n", name, toolset.ErrMCPLoginsPerAccount)
+			}
+		}
 	}
 	fmt.Println()
 
@@ -345,73 +366,20 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		fmt.Println("\nReview the workspace configuration with `abhed trust`, then run `abhed doctor` again.")
 		return 1
 	}
-	adapter := buildAdapter(provider)
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	fmt.Print("checking endpoint... ")
-	stream, err := adapter.Complete(ctx, model.Request{
-		Messages: []model.Message{{Role: model.RoleUser, Content: "Reply with the single word: ok"}},
-		// Generous for a one-word answer, because a hybrid-reasoning model
-		// spends this budget on its thinking phase FIRST. gemma4:26b returned
-		// empty content and finish_reason=length at 32 tokens — a healthy
-		// model reported as broken.
-		MaxTokens: 512,
-	})
-	if err != nil {
-		fmt.Printf("FAILED\n  %v\n", err)
-		fmt.Println("\nCheck that the endpoint is reachable and the model name is correct.")
+	if w := defaultModelWarning(cfg); w != "" {
+		fmt.Printf("model       ⚠ %s\n", w)
+	}
+	var probeErr error
+	if !doctorModelProbes(buildAdapter(provider), timeout, os.Stdout, func(err error) { probeErr = err }) {
+		// A retired or not-found model, a spent key or credit: what to do, with the
+		// configured models to use instead; a retired one is remembered for sessions.
+		if pp := explainProvider(cfg, cfg.Model.Default, probeErr); pp != nil {
+			noteProviderProblem(pp)
+			fmt.Printf("  next: %s\n", pp.Next)
+		}
 		return 1
 	}
-	var got strings.Builder
-	for c := range stream {
-		if c.Type == model.ChunkText {
-			got.WriteString(c.Text)
-		}
-		if c.Type == model.ChunkError {
-			fmt.Printf("FAILED\n  %v\n", c.Err)
-			return 1
-		}
-	}
-	answer := strings.TrimSpace(got.String())
-	if answer == "" {
-		// Distinguish "said nothing" from "said something unexpected": the
-		// first usually means the token budget went to reasoning, which is a
-		// configuration problem, not a broken endpoint.
-		fmt.Printf("ok\n  response was empty — if this model reasons before " +
-			"answering, raise context.max_tokens\n")
-	} else {
-		fmt.Printf("ok\n  response: %q\n", answer)
-	}
-
-	// Tool calling is the capability the agent actually depends on.
-	fmt.Print("checking tool calling... ")
-	stream, err = adapter.Complete(ctx, model.Request{
-		Messages: []model.Message{{Role: model.RoleUser, Content: "List files matching *.go using the glob tool."}},
-		Tools: []model.ToolDef{{
-			Name:        "glob",
-			Description: "Find files matching a glob pattern.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"]}`),
-		}},
-		MaxTokens: 256,
-	})
-	if err != nil {
-		fmt.Printf("FAILED\n  %v\n", err)
-		return 1
-	}
-	calls := 0
-	for c := range stream {
-		if c.Type == model.ChunkToolCall {
-			calls++
-			fmt.Printf("ok\n  called %s with %s\n", c.ToolCall.Name, c.ToolCall.Args)
-		}
-	}
-	if calls == 0 {
-		fmt.Println("FAILED")
-		fmt.Println("  The model did not emit a tool call. Abhed requires tool-calling support.")
-		fmt.Println("  Check that the serving stack has a tool-call parser enabled for this model.")
-		return 1
-	}
+	modelAnswered(cfg.Model.Default, provider.Model)
 
 	// The sandbox is checked by running something through it, not by asking
 	// whether it is configured. Inside a hardened container bubblewrap could
@@ -423,7 +391,7 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		fmt.Printf("FAILED\n  %v\n", err)
 		return 1
 	} else {
-		sctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		sctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		out, err := sb.Command(sctx, workspace, "echo abhed-sandbox-ok").CombinedOutput()
 		cancel()
 		if cerr := sandbox.Close(sb); cerr != nil {
@@ -818,9 +786,9 @@ func gitHeldLabel(cfg config.Config, tier sandbox.Tier) string {
 	case tier == sandbox.TierNone:
 		return "not held: the sandbox tier is none, so commands can write git's config and hooks; make a stronger tier available (sandbox.protect_git)"
 	case required:
-		return "held read-only from commands; a tier that cannot hold them is refused"
+		return "config and hooks protected: commands cannot change git's config or hooks, but can still commit; a tier that cannot protect them is refused (sandbox.protect_git)"
 	}
-	return "held read-only from commands on every tier but none (sandbox.protect_git)"
+	return "config and hooks protected: commands cannot change git's config or hooks, but can still commit, on every tier that can protect them (sandbox.protect_git)"
 }
 
 // confinedStdioServers reports whether an enabled stdio MCP server runs in
@@ -956,6 +924,138 @@ func allowListLines(cfg config.Config) []string {
 		case "model.fallback", "model.completion", "model.next_edit", "model.commit", "suggest.model", "verify.critic.model", "monitor.model":
 			out = append(out, fmt.Sprintf("            ⚠ %s %s is not used: %s", k.Key, config.Printable(k.Value), k.Reason))
 		}
+	}
+	return out
+}
+
+// doctorProbeRequests are the endpoint and tool-calling probes. A
+// hybrid-reasoning model spends its output budget on thinking first, so
+// thinking is off where the provider takes it, and the tool probe, whose call
+// is longer than a word, gets more room.
+func doctorProbeRequests(p model.Profile) (endpoint, toolCall model.Request) {
+	endpoint = model.Request{
+		Messages: []model.Message{{Role: model.RoleUser, Content: "Reply with the single word: ok"}},
+		// gemma4:26b returned empty content and finish_reason=length at 32
+		// tokens with thinking on: a healthy model reported as broken.
+		MaxTokens: 512,
+	}
+	toolCall = model.Request{
+		Messages: []model.Message{{Role: model.RoleUser, Content: "List files matching *.go using the glob tool."}},
+		Tools: []model.ToolDef{{
+			Name:        "glob",
+			Description: "Find files matching a glob pattern.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"]}`),
+		}},
+		MaxTokens: 1024,
+	}
+	if p.Sampling.Think {
+		off := false
+		endpoint.Params.Think, toolCall.Params.Think = &off, &off
+	}
+	return endpoint, toolCall
+}
+
+// doctorModelProbes asks the model for a word, then for a tool call, each
+// with a timeout of its own, and says how each went. It reports whether both
+// worked.
+func doctorModelProbes(adapter model.Adapter, timeout time.Duration, w io.Writer, onErr ...func(error)) bool {
+	endpointReq, toolReq := doctorProbeRequests(adapter.Profile())
+	failed := func(err error) {
+		for _, f := range onErr {
+			f(err)
+		}
+	}
+
+	fmt.Fprint(w, "checking endpoint... ")
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	stream, err := adapter.Complete(ctx, endpointReq)
+	if err != nil {
+		failed(err)
+		fmt.Fprintf(w, "FAILED\n  %v\n", err)
+		fmt.Fprintln(w, "\nCheck that the endpoint is reachable and the model name is correct.")
+		return false
+	}
+	var got strings.Builder
+	for c := range stream {
+		if c.Type == model.ChunkText {
+			got.WriteString(c.Text)
+		}
+		if c.Type == model.ChunkError {
+			failed(c.Err)
+			fmt.Fprintf(w, "FAILED\n  %v\n", c.Err)
+			return false
+		}
+	}
+	answer := strings.TrimSpace(got.String())
+	if answer == "" {
+		// Distinguish "said nothing" from "said something unexpected": the
+		// first usually means the token budget went to reasoning, which is a
+		// configuration problem, not a broken endpoint.
+		fmt.Fprintf(w, "ok\n  response was empty — if this model reasons before "+
+			"answering, raise context.max_tokens\n")
+	} else {
+		fmt.Fprintf(w, "ok\n  response: %q\n", answer)
+	}
+
+	// Tool calling is the capability the agent actually depends on. It gets
+	// a timeout of its own: a slow first answer must not eat into it.
+	fmt.Fprint(w, "checking tool calling... ")
+	tctx, tcancel := context.WithTimeout(context.Background(), timeout)
+	defer tcancel()
+	stream, err = adapter.Complete(tctx, toolReq)
+	if err != nil {
+		failed(err)
+		fmt.Fprintf(w, "FAILED\n  %v\n", err)
+		return false
+	}
+	calls := 0
+	var streamErr error
+	for c := range stream {
+		switch c.Type {
+		case model.ChunkToolCall:
+			calls++
+			fmt.Fprintf(w, "ok\n  called %s with %s\n", c.ToolCall.Name, c.ToolCall.Args)
+		case model.ChunkError:
+			streamErr = c.Err
+		}
+	}
+	if calls == 0 {
+		fmt.Fprintln(w, "FAILED")
+		if streamErr != nil {
+			fmt.Fprintf(w, "  %v\n", streamErr)
+			if errors.Is(streamErr, context.DeadlineExceeded) || errors.Is(tctx.Err(), context.DeadlineExceeded) {
+				fmt.Fprintf(w, "  No call within %s; a slow local model may need a longer -timeout.\n", timeout)
+			}
+			return false
+		}
+		fmt.Fprintln(w, "  The model did not emit a tool call. Abhed requires tool-calling support.")
+		fmt.Fprintln(w, "  Check that the serving stack has a tool-call parser enabled for this model.")
+		return false
+	}
+	return true
+}
+
+// tierChoiceLines say why the sandbox's tier was chosen, what its image lacks,
+// and how a person may choose another.
+func tierChoiceLines(cfg config.Config, sb sandbox.Sandbox) []string {
+	var out []string
+	if why := sandbox.ChoiceReason(sb); why != "" {
+		out = append(out, "chosen: "+why)
+	}
+	if missing, known := sandbox.MissingTools(sb); known && len(missing) > 0 {
+		out = append(out, fmt.Sprintf("the image %s has no %s; commands that need them fail here", sandbox.SandboxImage(), strings.Join(missing, ", ")))
+	}
+	switch {
+	case cfg.ManagedSets("sandbox.tier"):
+		out = append(out, "the tier is set by the managed configuration")
+	case cfg.Sandbox.Tier == "":
+		floor := orDefault(cfg.Sandbox.MinTier, "process")
+		from := ""
+		if cfg.ManagedSets("sandbox.min_tier") {
+			from = ", set by the managed configuration"
+		}
+		out = append(out, fmt.Sprintf("choose another with /config set sandbox.tier process|container|vm (no weaker than %s%s)", floor, from))
 	}
 	return out
 }

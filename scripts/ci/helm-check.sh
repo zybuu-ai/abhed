@@ -137,6 +137,7 @@ refuse "a Route terminates edge in front of TLS" "passthrough or reencrypt" \
   --set route.enabled=true --set tls.enabled=true --set tls.existingSecret=t
 refuse "both minAvailable and maxUnavailable" "not both" --set podDisruptionBudget.minAvailable=1
 refuse "a digest that is not sha256" "digest" --set image.digest=latest
+refuse "a Route with no host" "route.enabled needs route.host" --set route.enabled=true
 refuse "privilege escalation" "allowPrivilegeEscalation" --set securityContext.allowPrivilegeEscalation=true
 refuse "a writable root filesystem" "readOnlyRootFilesystem" --set securityContext.readOnlyRootFilesystem=false
 refuse "a capability added" "add" --set 'securityContext.capabilities.add[0]=NET_ADMIN'
@@ -175,6 +176,25 @@ for want in 'name: XDG_STATE_HOME' 'value: /home/abhed/.local/state' \
   'mountPath: /home/abhed/.local/state' 'subPath: local-state'; do
   if [ "$(grep -cF -- "$want" "$out/state-check.yaml")" -ne 2 ]; then
     echo "FAIL: the control plane's state: $want is not in both the server and preflight" >&2
+    failed=1
+  fi
+done
+
+# The host guard: every probe names loopback (the kubelet would name the pod
+# IP, which auth.mode none refuses), and the server answers to the Service's
+# names, the ingress and route hosts and allowedHosts.
+"$HELM" template abhed "$CHART" --namespace team-a --show-only templates/deployment.yaml >"$out/probes.yaml"
+if [ "$(grep -c 'httpGet:' "$out/probes.yaml")" -ne 3 ] || [ "$(grep -A2 -F -- '- name: Host' "$out/probes.yaml" | grep -cF 'value: localhost')" -ne 3 ]; then
+  echo "FAIL: the host guard: not every probe sends Host: localhost" >&2
+  failed=1
+fi
+"$HELM" template abhed "$CHART" --namespace team-a --set ingress.enabled=true \
+  --set route.enabled=true --set route.host=abhed.apps.example.com --set 'allowedHosts[0]=abhed.lan' \
+  --set clusterDomain=corp.local --show-only templates/configmap.yaml >"$out/hosts.yaml"
+for want in '"abhed"' '"abhed.team-a"' '"abhed.team-a.svc"' '"abhed.team-a.svc.corp.local"' \
+  '"abhed.example.internal"' '"abhed.apps.example.com"' '"abhed.lan"'; do
+  if ! grep -qF -- "$want" "$out/hosts.yaml"; then
+    echo "FAIL: the host guard: server.allowed_hosts has no $want" >&2
     failed=1
   fi
 done

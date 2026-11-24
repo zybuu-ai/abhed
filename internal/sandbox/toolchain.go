@@ -64,14 +64,25 @@ func (c *Container) missingPrograms(ctx context.Context, programs []string, engi
 	if err := engine(ctx, "image", "inspect", "--format", "{{.Id}}", img).Run(); err != nil {
 		return nil, ErrImageNotPresent
 	}
-	// The look runs the image's own shell, so it gets less than a command would.
+	// The look starts the image as a command does, through its own entry
+	// point with /bin/sh -c, and gets less than a command would. An image
+	// whose entry point runs no shell (alpine/git) runs no command either,
+	// so it lacks every program.
 	args := []string{"run", "--rm", "--pull=never", "--network=none", "--cap-drop=ALL",
 		"--security-opt", "no-new-privileges", "--read-only", "--user", "65534:65534",
-		"--entrypoint", "/bin/sh", "--name", containerName("abhed-look-"), img,
-		"-c", `for p; do command -v "$p" >/dev/null 2>&1 || echo "$p"; done`, "sh"}
+		"--name", containerName("abhed-look-"), img,
+		"/bin/sh", "-c", `echo abhed-look; for p; do command -v "$p" >/dev/null 2>&1 || echo "$p"; done`, "sh"}
 	out, err := engine(ctx, append(args, programs...)...).Output()
-	if err != nil {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	got := strings.Fields(string(out))
+	if len(got) == 0 || got[0] != "abhed-look" {
+		var ee *exec.ExitError
+		if err == nil || errors.As(err, &ee) {
+			return programs, nil // it ran, and no shell answered
+		}
 		return nil, err
 	}
-	return strings.Fields(string(out)), nil
+	return got[1:], nil
 }

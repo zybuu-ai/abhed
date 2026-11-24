@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -27,10 +28,11 @@ import (
 // with text to insert. No tools, no side effects; not recorded one by one.
 
 func init() {
-	liveFeatures = append(liveFeatures, "complete")
+	liveFeatures = append(liveFeatures, "complete", "completeWarm")
 	handle(map[string]func(*acpConn, rpcMessage){
 		"_abhed/complete":        (*acpConn).complete,
 		"_abhed/complete/cancel": (*acpConn).completeCancel,
+		"_abhed/complete/warm":   (*acpConn).completeWarm,
 	})
 }
 
@@ -44,6 +46,12 @@ const (
 	completeAllFiles  = 12 << 10
 	completeMaxTokens = 128
 	completeTimeout   = 10 * time.Second
+	// A warm-up loads a local model before the first completion needs it:
+	// at most one a session in warmEvery, each given warmTimeout.
+	warmEvery   = 2 * time.Minute
+	warmTimeout = 60 * time.Second
+	// latencySamples bounds the answer times a session keeps for its summary.
+	latencySamples = 512
 )
 
 // completeHold waits for a newer request to replace this one (ctx ends) or
@@ -112,6 +120,38 @@ type acpCompleter struct {
 	closed   bool               // the session has closed; nothing more is sent
 	events   [2]agent.EventType // the feature's enabled and summary events
 	sum      agent.CompletionSummary
+	noticed  bool // the budget's refusal was sent once as a notice
+	// lat are the answer times of requests sent, in milliseconds, for the summary.
+	lat        []int64
+	warmed     time.Time          // when the last warm-up was sent
+	warmCancel context.CancelFunc // ends a warm-up in flight when the session closes
+	// running are the requests sent and not yet counted; added to only
+	// while open, so the summary can wait for them. idle closes when they
+	// reach none, for a summary waiting.
+	running int
+	idle    chan struct{}
+}
+
+// finished says one request counted in running has been counted.
+func (k *acpCompleter) finished() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.running--
+	if k.running == 0 && k.idle != nil {
+		close(k.idle)
+		k.idle = nil
+	}
+}
+
+// took keeps one sent request's answer time.
+func (k *acpCompleter) took(d time.Duration) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if len(k.lat) == latencySamples {
+		copy(k.lat, k.lat[1:])
+		k.lat = k.lat[:latencySamples-1]
+	}
+	k.lat = append(k.lat, d.Milliseconds())
 }
 
 type completeRequest struct {
@@ -359,6 +399,7 @@ func (c *acpConn) completerFor(s *acpSession, feature string) *acpCompleter {
 }
 
 func (c *acpConn) complete(msg rpcMessage) {
+	arrived := time.Now()
 	var req completeRequest
 	if err := json.Unmarshal(msg.Params, &req); err != nil {
 		c.reply(msg.ID, nil, badParams("", err))
@@ -409,6 +450,10 @@ func (c *acpConn) complete(msg rpcMessage) {
 		c.admitRefused(msg, empty, why, field)
 		return
 	}
+	// From now to the answer, next-edit calls to this server wait, and one in flight is cancelled.
+	if key := editorServer(provider); key != "" {
+		defer c.pool.completing(key)()
+	}
 	k.mu.Lock()
 	_, canFIM := a.(model.Infiller)
 	fim := canFIM && fimTypes[provider.Type] && !k.chatOnly
@@ -418,6 +463,10 @@ func (c *acpConn) complete(msg rpcMessage) {
 	if completeHold(ctx) != nil {
 		k.count(func(s *agent.CompletionSummary) { s.Superseded++ })
 		empty("cancelled", "a newer completion replaced it")
+		return
+	}
+	if !c.spend(k) {
+		empty("limited", "too many requests; slow down")
 		return
 	}
 
@@ -464,15 +513,23 @@ func (c *acpConn) complete(msg rpcMessage) {
 	if fim {
 		mode = "fim"
 	}
+	if why := editorRefused(parts.Loop, a, "completions", "completion"); why != "" {
+		c.reply(msg.ID, k.priceNotice(map[string]any{"items": []any{}}, why), nil)
+		return
+	}
 	if why := c.completeEnabled(s, k, provider, mode); why != "" {
 		refuse(why)
 		return
 	}
-	in := model.InfillRequest{Prefix: sentPrefix, Suffix: sentSuffix, Language: req.Language, MaxTokens: completeMaxTokens, Stop: []string{"\n\n\n"}}
+	// One logical block: the stream is ended as soon as the block is whole,
+	// so the model stops writing, and the answer is cut to it after.
+	in := model.InfillRequest{Prefix: sentPrefix, Suffix: sentSuffix, Language: req.Language, MaxTokens: completeMaxTokens, Stop: []string{"\n\n\n"},
+		Enough: func(text string) bool { _, done := model.OneBlock(prefix, text); return done }}
 	var res model.InfillResult
 	var err error
 	if fim {
-		res, err = a.(model.Infiller).Infill(ctx, in)
+		in.Stop = model.FIMStops
+		res, err = completionCall(ctx, a, true, in)
 		if fimRefused(err) && ctx.Err() == nil {
 			// No fill in the middle here: chat from now on, recorded as such first.
 			k.mu.Lock()
@@ -483,21 +540,33 @@ func (c *acpConn) complete(msg rpcMessage) {
 				empty("refused", why)
 				return
 			}
-			res, err = model.InfillByChat(ctx, a, in)
+			in.Stop = []string{"\n\n\n"}
+			res, err = completionCall(ctx, a, false, in)
 		}
 	} else {
-		res, err = model.InfillByChat(ctx, a, in)
+		res, err = completionCall(ctx, a, false, in)
 	}
+	elapsed := time.Since(arrived)
 	// A reply that carries a secret is dropped, not edited into the code.
-	text := res.Text
+	text, _ := model.OneBlock(prefix, res.Text)
+	text = model.DropLineRest(text, prefix, suffix)
 	if clean(text) != text {
 		text = ""
 	}
 	cancelled := err != nil && ctx.Err() != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded)
+	tokIn, tokOut, usd, unpriced, estimated := editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, err, err != nil && ctx.Err() != nil,
+		len(sentPrefix)+len(sentSuffix), len(res.Text), completeMaxTokens)
+	if err == nil {
+		k.took(elapsed)
+	}
 	k.mu.Lock()
+	addCost(&k.sum, usd, unpriced)
 	k.sum.Requests++
-	k.sum.TokensIn += res.InputTokens
-	k.sum.TokensOut += res.OutputTokens
+	k.sum.TokensIn += tokIn
+	k.sum.TokensOut += tokOut
+	if estimated {
+		k.sum.Estimated++
+	}
 	switch {
 	case cancelled:
 		k.sum.Cancelled++
@@ -542,9 +611,10 @@ func (c *acpConn) completeEnabled(s *acpSession, k *acpCompleter, p config.Provi
 	return ""
 }
 
-// admit readies one request of an editor feature: the session's and the
-// connection's rate limits, its place by seq (an older one is dropped, a
-// newer one replaces what is in flight), and the provider's adapter. why and
+// admit readies one request of an editor feature: its place by seq (an
+// older one is dropped, a newer one replaces what is in flight), and the
+// provider's adapter. The rate limits are spent after the debounce, by
+// spend, so a burst of keystrokes spends one request's worth. why and
 // field say how a refusal is answered: field "" a closed session, "error" an
 // adapter that cannot be used, else the empty answer's field.
 func (c *acpConn) admit(k *acpCompleter, seq int64, name string, provider config.ProviderConfig, localOnly bool) (context.Context, context.CancelFunc, model.Adapter, string, string) {
@@ -552,12 +622,6 @@ func (c *acpConn) admit(k *acpCompleter, seq int64, name string, provider config
 	defer k.mu.Unlock()
 	if k.closed {
 		return nil, nil, nil, "the session has closed", ""
-	}
-	now := completeNow()
-	// The session's limit first, so a session over it spends none of the connection's.
-	if !k.rate.take(sessionRate, now) || !c.compRateTake(now, &k.rate) {
-		k.sum.Refused++
-		return nil, nil, nil, "too many requests; slow down", "limited"
 	}
 	if seq == 0 {
 		seq = k.latest + 1
@@ -580,7 +644,28 @@ func (c *acpConn) admit(k *acpCompleter, seq int64, name string, provider config
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), completeTimeout)
 	k.cancel = cancel
-	return ctx, cancel, k.adapter, "", ""
+	// The caller's cancel, deferred, runs once the request is counted.
+	k.running++
+	var once sync.Once
+	done := func() {
+		cancel()
+		once.Do(k.finished)
+	}
+	return ctx, done, k.adapter, "", ""
+}
+
+// spend takes one request from the session's and the connection's rate
+// limits, for a request about to be sent; false counts it refused.
+func (c *acpConn) spend(k *acpCompleter) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	now := completeNow()
+	// The session's limit first, so a session over it spends none of the connection's.
+	if !k.rate.take(sessionRate, now) || !c.compRateTake(now, &k.rate) {
+		k.sum.Refused++
+		return false
+	}
+	return true
 }
 
 // admitRefused answers a request admit refused.
@@ -613,15 +698,41 @@ func (k *acpCompleter) count(f func(*agent.CompletionSummary)) {
 	k.mu.Unlock()
 }
 
-func (c *acpConn) completeCancel(msg rpcMessage) {
+func (c *acpConn) completeCancel(msg rpcMessage) { c.featureCancel(msg, "complete") }
+
+// editorServer is the model server a provider's requests go to, for the
+// pool, or "" where completions need not go first: a hosted server, which
+// serves requests side by side and bills a cancelled one all the same. Only
+// a server on this machine, or one held to a bound of requests (ollama, or
+// max_concurrent_requests), queues them.
+func editorServer(p config.ProviderConfig) string {
+	base := p.BaseURL
+	if base == "" {
+		// A local server type left at its default: keyed by that endpoint, as its adapter and the slot pools resolve it.
+		base = model.LocalDefaultURL(p.Type)
+	}
+	if base == "" || !p.OnThisMachine() && p.Type != "ollama" && p.MaxConcurrentRequests <= 0 {
+		return ""
+	}
+	return model.ServerKey(base)
+}
+
+// featureCancel cancels an editor feature's request in flight: with seq,
+// only that one; without it, whatever is in flight.
+func (c *acpConn) featureCancel(msg rpcMessage, feature string) {
 	s, e := c.sessionFor(msg.Params)
 	if e != nil {
 		c.reply(msg.ID, nil, e)
 		return
 	}
-	if k := c.completer(s); k != nil {
+	// With seq, only that request is cancelled: a newer one already sent goes on.
+	var p struct {
+		Seq int64 `json:"seq"`
+	}
+	_ = json.Unmarshal(msg.Params, &p)
+	if k := c.completerFor(s, feature); k != nil {
 		k.mu.Lock()
-		if k.cancel != nil {
+		if k.cancel != nil && (p.Seq == 0 || p.Seq == k.latest) {
 			k.cancel()
 		}
 		k.mu.Unlock()
@@ -629,15 +740,160 @@ func (c *acpConn) completeCancel(msg rpcMessage) {
 	c.reply(msg.ID, map[string]any{}, nil)
 }
 
+// completeWarm loads a local completion model before the first completion
+// needs it (studio-acp-contract.md §7.10): an empty fill-in-the-middle
+// request of one token, with no code in it, at most once a session in
+// warmEvery. A model not on this machine is never warmed; nothing is sent.
+func (c *acpConn) completeWarm(msg rpcMessage) {
+	s, e := c.sessionFor(msg.Params)
+	if e != nil {
+		c.reply(msg.ID, nil, e)
+		return
+	}
+	parts, e := innerOf(s)
+	if e != nil {
+		c.reply(msg.ID, nil, e)
+		return
+	}
+	skip := func(why string) { c.reply(msg.ID, map[string]any{"warmed": false, "skipped": why}, nil) }
+	cfg := parts.Config
+	off, provider := completeOff(cfg)
+	switch {
+	case off != "":
+		skip(off)
+		return
+	case !provider.OnThisMachine():
+		skip("the completion model is not on this machine")
+		return
+	case !fimTypes[provider.Type]:
+		skip("the completion model is asked through chat, which is not warmed")
+		return
+	}
+	k := c.completer(s)
+	if k == nil {
+		c.reply(msg.ID, nil, refusal(errParams, "the session has closed"))
+		return
+	}
+	k.mu.Lock()
+	if k.closed {
+		k.mu.Unlock()
+		c.reply(msg.ID, nil, refusal(errParams, "the session has closed"))
+		return
+	}
+	now := completeNow()
+	if !k.warmed.IsZero() && now.Sub(k.warmed) < warmEvery {
+		k.mu.Unlock()
+		c.reply(msg.ID, map[string]any{"warmed": true, "recent": true}, nil)
+		return
+	}
+	if k.adapter == nil || k.provider != cfg.Model.Completion {
+		a, err := completionAdapter(provider, cfg.Completion.LocalOnly)
+		if err != nil {
+			k.mu.Unlock()
+			c.reply(msg.ID, nil, refusal(errRefused, "the model cannot be used: %v", err))
+			return
+		}
+		k.adapter, k.provider, k.chatOnly = a, cfg.Model.Completion, false
+		k.sum.Provider, k.sum.Model = k.provider, provider.Model
+	}
+	inf, ok := k.adapter.(model.Infiller)
+	if !ok || k.chatOnly {
+		k.mu.Unlock()
+		skip("the completion model is asked through chat, which is not warmed")
+		return
+	}
+	// The budget's gate, as for every model call: under a dollar cap a model
+	// with no price is not warmed either.
+	if why := editorRefused(parts.Loop, k.adapter, "completions", "completion"); why != "" {
+		k.mu.Unlock()
+		skip(why)
+		return
+	}
+	// Only a warm-up about to be sent is recorded, for the connection too;
+	// checked and taken at once, so sessions warming together load the model once.
+	c.compMu.Lock()
+	if t := c.warmed[cfg.Model.Completion]; !t.IsZero() && now.Sub(t) < warmEvery {
+		c.compMu.Unlock()
+		k.mu.Unlock()
+		c.reply(msg.ID, map[string]any{"warmed": true, "recent": true}, nil)
+		return
+	}
+	if c.warmed == nil {
+		c.warmed = map[string]time.Time{}
+	}
+	c.warmed[cfg.Model.Completion] = now
+	c.compMu.Unlock()
+	k.warmed = now
+	// Its own deadline, and not replaced by completions (a model that is
+	// loading is loading for them too), but ended with the session or the connection.
+	ctx, cancel := context.WithTimeout(c.root(), warmTimeout)
+	defer cancel()
+	k.warmCancel = cancel
+	k.running++
+	defer k.finished()
+	k.mu.Unlock()
+	// Ended too when the editor's input ends, so it never holds the drain at exit.
+	go func() {
+		select {
+		case <-c.goneCh():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	started := time.Now()
+	err := warmCall(ctx, inf)
+	took := time.Since(started)
+	k.mu.Lock()
+	k.sum.Warmups++
+	k.sum.WarmupMs = max(k.sum.WarmupMs, int(took.Milliseconds()))
+	k.mu.Unlock()
+	if err != nil {
+		c.reply(msg.ID, map[string]any{"warmed": false, "ms": took.Milliseconds(), "failed": redacted(err.Error())}, nil)
+		return
+	}
+	c.reply(msg.ID, map[string]any{"warmed": true, "ms": took.Milliseconds()}, nil)
+}
+
 // completionSummary records the session's completions, once, as it closes.
-func (c *acpConn) completionSummary(s *acpSession) {
-	for _, feature := range []string{"complete", "next_edit", "commit"} {
-		c.featureSummary(s, feature)
+func (c *acpConn) completionSummary(s *acpSession, counted time.Time) {
+	c.stopEditors(map[string]*acpSession{s.id: s})
+	for _, feature := range closedFeatures {
+		c.featureSummary(s, feature, counted)
+	}
+}
+
+// closedFeatures are the features whose calls a session's close ends, in
+// the order their summaries are recorded.
+var closedFeatures = []string{"complete", "next_edit", "commit"}
+
+// stopEditors closes the sessions' editor features to new calls and
+// cancels those in flight, which count themselves as they end.
+func (c *acpConn) stopEditors(sessions map[string]*acpSession) {
+	c.compMu.Lock()
+	var ks []*acpCompleter
+	for id := range sessions {
+		for _, feature := range closedFeatures {
+			if k := c.comps[id+"\x00"+feature]; k != nil {
+				ks = append(ks, k)
+			}
+		}
+	}
+	c.compMu.Unlock()
+	for _, k := range ks {
+		k.mu.Lock()
+		k.closed = true
+		if k.cancel != nil {
+			k.cancel()
+		}
+		if k.warmCancel != nil {
+			k.warmCancel()
+		}
+		k.mu.Unlock()
 	}
 }
 
 // featureSummary records one editor feature's summary for a closing session.
-func (c *acpConn) featureSummary(s *acpSession, feature string) {
+func (c *acpConn) featureSummary(s *acpSession, feature string, counted time.Time) {
 	c.compMu.Lock()
 	k := c.comps[s.id+"\x00"+feature]
 	delete(c.comps, s.id+"\x00"+feature)
@@ -645,14 +901,28 @@ func (c *acpConn) featureSummary(s *acpSession, feature string) {
 	if k == nil {
 		return
 	}
+	// Its calls were cancelled by stopEditors and are counted (and charged)
+	// by their handlers: waited for until counted, one deadline for the
+	// whole close, so the summary has what the budget has.
 	k.mu.Lock()
-	k.closed = true
-	if k.cancel != nil {
-		k.cancel()
+	if k.running > 0 {
+		if k.idle == nil {
+			k.idle = make(chan struct{})
+		}
+		idle := k.idle
+		k.mu.Unlock()
+		t := time.NewTimer(time.Until(counted))
+		select {
+		case <-idle:
+		case <-t.C:
+		}
+		t.Stop()
+		k.mu.Lock()
 	}
 	sum := k.sum
+	sum.LatencyP50Ms, sum.LatencyP90Ms, sum.LatencyMaxMs = latencies(k.lat)
 	k.mu.Unlock()
-	if sum.Requests+sum.Refused+sum.Cancelled+sum.Superseded == 0 {
+	if sum.Requests+sum.Refused+sum.Cancelled+sum.Superseded+sum.Warmups+sum.Local+sum.LocalDropped == 0 {
 		return
 	}
 	if s.inner {
@@ -660,4 +930,40 @@ func (c *acpConn) featureSummary(s *acpSession, feature string) {
 			warnf("the record did not take %s: %v", k.events[1], err)
 		}
 	}
+}
+
+// summaryWait bounds how long a closing session's summary waits for its
+// cancelled editor calls to be counted.
+const summaryWait = time.Second
+
+// latencies are the median, 90th percentile and longest of ms.
+func latencies(ms []int64) (int, int, int) {
+	if len(ms) == 0 {
+		return 0, 0, 0
+	}
+	sorted := slices.Clone(ms)
+	slices.Sort(sorted)
+	at := func(q float64) int { return int(sorted[int(q*float64(len(sorted)-1)+0.5)]) }
+	return at(0.5), at(0.9), int(sorted[len(sorted)-1])
+}
+
+// The model calls of inline completions, one function each, so what every
+// call to a completion model passes through (a gate, a charge) sits in one
+// place.
+
+// completionCall asks the completion model for one suggestion: by its
+// fill-in-the-middle endpoint when fim, else by a chat turn.
+func completionCall(ctx context.Context, a model.Adapter, fim bool, in model.InfillRequest) (model.InfillResult, error) {
+	// Ahead of next edits and agent turns waiting for the same server.
+	ctx = model.First(ctx)
+	if fim {
+		return a.(model.Infiller).Infill(ctx, in)
+	}
+	return model.InfillByChat(ctx, a, in)
+}
+
+// warmCall is a warm-up's one request: an empty prompt and one token.
+func warmCall(ctx context.Context, inf model.Infiller) error {
+	_, err := inf.Infill(ctx, model.InfillRequest{MaxTokens: 1})
+	return err
 }

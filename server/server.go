@@ -28,6 +28,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/zybuu-ai/abhed/auth"
+	"github.com/zybuu-ai/abhed/bgjob"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/hawkeye"
@@ -336,6 +337,12 @@ type Options struct {
 	// file tools work in that sandbox and its folder, never in Workspace.
 	// Nil keeps the one sandbox every session shares, exactly as before.
 	SessionSandboxes *sessionsandbox.Manager
+	// StartupLock, when set, is held while the server runs, around taking
+	// back its sessions and sweeping session sandboxes at start: a second
+	// server sharing this machine's state (on another address) cannot take
+	// it, and leaves what the first holds alone. An error means another
+	// holds it.
+	StartupLock func() (release func(), err error)
 	// TLS, when set, is served on Addr instead of plain HTTP. Its
 	// certificates are read per handshake, so a reload needs no restart.
 	TLS *tls.Config
@@ -376,6 +383,12 @@ type Options struct {
 	// a workspace's; nil for none. An error, or a layer that does not
 	// validate, refuses the session. See PolicyLayer.
 	SessionPolicy func(ctx context.Context, req SessionPolicyRequest) (*PolicyLayer, error)
+	// SessionAllowance, when set, says what a session's owner may still
+	// spend under limits the edition keeps, such as periodic budgets. It is
+	// asked before each turn of the session and its subagents, the first
+	// included; an error stops the run, since a limit that cannot be read is
+	// not taken as none. See Allowance.
+	SessionAllowance func(ctx context.Context, req AllowanceRequest) (Allowance, error)
 	// SandboxRouter, when set, relays each call that acts on a sandbox to the
 	// replica that owns it. Nil handles every call here.
 	SandboxRouter SandboxRouter
@@ -415,7 +428,9 @@ type Server struct {
 	holder string
 
 	// Throttles for the endpoints reachable before authentication succeeds.
-	signinLimiter  *limiter
+	signinLimiter *limiter
+	// guestLimiter bounds the console guests one address starts.
+	guestLimiter   *limiter
 	sessionLimiter *limiter
 	cliLimiter     *limiter
 	// Per-caller limits on the sandbox routes, from the settings registry.
@@ -455,14 +470,16 @@ type Server struct {
 }
 
 type liveSession struct {
-	ID      string
-	User    string
-	Tenant  string
-	Loop    *agent.Loop
-	Cancel  context.CancelFunc
-	Created time.Time // when the session began, on whichever node
-	Prompt  string
-	State   string // running | waiting_approval | background | idle | done
+	// onAskTimeout is StartSpec.OnAskTimeout.
+	onAskTimeout func(requestID, tool string)
+	ID           string
+	User         string
+	Tenant       string
+	Loop         *agent.Loop
+	Cancel       context.CancelFunc
+	Created      time.Time // when the session began, on whichever node
+	Prompt       string
+	State        string // running | waiting_approval | background | idle | done
 	// title is the name a person last gave the session; guarded by mu.
 	title string
 	// Reason is how the last run ended, which the session list shows for done.
@@ -788,6 +805,9 @@ func New(opts Options) *Server {
 		// A terminal polls every five seconds while it waits; this leaves room
 		// for a few at once behind one address and none for guessing codes.
 		cliLimiter: newLimiter(30, 30*time.Second),
+		// Each guest is a new owner whose limits start over, so one address
+		// starts few: five an hour, about forty over a guest's 8 hours.
+		guestLimiter: newLimiter(5, time.Hour),
 		state: &mutable{
 			registry: opts.Registry,
 			skills:   opts.SkillRegistry,
@@ -819,6 +839,7 @@ func New(opts Options) *Server {
 		opts.SessionSandboxes.SetScope(s.sessionSandboxScope)
 	}
 	srv = s
+	s.recordHooks()
 	s.reportConfigAttempts()
 	s.warnShellScreening()
 	if local := s.LocalAuth(); local != nil {
@@ -1143,7 +1164,10 @@ func (s *Server) bodyLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		own := strings.HasSuffix(r.URL.Path, "/upload") || r.URL.Path == "/v1/uploads" ||
 			(r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/file")) ||
-			strings.HasSuffix(r.URL.Path, "/accept")
+			strings.HasSuffix(r.URL.Path, "/accept") ||
+			// A background job's snapshot, which its edition's handler caps
+			// at bgjob.MaxSnapshotUpload.
+			(r.Method == http.MethodPost && r.URL.Path == bgjob.PathSnapshots)
 		if r.Body != nil && !own {
 			capBody(w, r)
 		}
@@ -1163,6 +1187,8 @@ func (s *Server) throttle(next http.Handler) http.Handler {
 		switch r.URL.Path {
 		case "/v1/signin", "/v1/signup", "/v1/password":
 			rateLimit(s.signinLimiter, trustProxy, next).ServeHTTP(w, r)
+		case auth.GuestPath:
+			rateLimit(s.guestLimiter, trustProxy, next).ServeHTTP(w, r)
 		case auth.CLIDevicePath, auth.CLITokenPath, auth.CLIApprovePath, auth.CLIAuthorizePath, TokenExchangePath:
 			rateLimit(s.cliLimiter, trustProxy, next).ServeHTTP(w, r)
 		case "/v1/sessions":
@@ -1524,6 +1550,17 @@ type StartSpec struct {
 	// OnEnd is called when the run finishes, however it finishes, with the
 	// terminal reason as the event stream records it.
 	OnEnd func(reason string, err error)
+	// OnAskTimeout, when set, is called as the system denies an ask nobody
+	// answered within ApprovalDeadline, with its request id and tool. It
+	// runs on the turn's goroutine and must not block.
+	OnAskTimeout func(requestID, tool string)
+	// Prepare, when set, fills the session's folder before anything else
+	// sees it, such as with files a person uploaded. It is given the folder
+	// of the session's own sandbox, which no other session shares, and runs
+	// before the folder's starting snapshot is taken, so what it writes is
+	// where the session starts, not a change. Without such a folder the
+	// session is refused with ErrNoOwnWorkspace.
+	Prepare func(ctx context.Context, root string) error
 	// admin is whether the person starting it is a server administrator,
 	// which an edition's SandboxCaller is told for the session's sandbox.
 	admin bool
@@ -1606,43 +1643,59 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	sessionID, err := start(r.Context(), spec)
 	if err != nil {
+		status, msg, retry := StartRefusal(err)
 		switch {
-		case errors.Is(err, errDraining):
-			w.Header().Set("Retry-After", "5")
-			WriteError(w, http.StatusServiceUnavailable, "server is shutting down; retry")
-		case errors.Is(err, errHoldFailed):
-			writeHoldFailed(w)
-		case errors.Is(err, errBadMode):
-			WriteError(w, http.StatusForbidden, err.Error())
-		case errors.Is(err, errBadClientID):
-			WriteError(w, http.StatusBadRequest, err.Error())
 		case errors.Is(err, errVerify):
 			s.log.Error("session refused: verify", "user", spec.User, "error", err)
-			WriteError(w, http.StatusServiceUnavailable, "the session was not started: "+err.Error())
-		case errors.Is(err, errNotSoleOwner):
-			WriteError(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, ErrPolicyLayer):
 			s.log.Error("session refused: its policy layer", "user", spec.User, "error", err)
-			w.Header().Set("Retry-After", "5")
-			WriteError(w, http.StatusServiceUnavailable, "the session was not started: "+err.Error())
-		case strings.HasPrefix(err.Error(), "provider:"):
-			WriteError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), "provider: "))
-		case errors.Is(err, controlplane.ErrForbidden):
-			WriteError(w, http.StatusForbidden, err.Error())
-		case errors.Is(err, controlplane.ErrUnavailable):
-			w.Header().Set("Retry-After", "5")
-			WriteError(w, http.StatusServiceUnavailable, err.Error())
-		case errors.Is(err, errSecretsUnreadable):
-			w.Header().Set("Retry-After", "5")
-			WriteError(w, http.StatusServiceUnavailable, "the session was not started: "+err.Error())
-		default:
+		case status == http.StatusInternalServerError:
 			// The cause can name store internals, so it goes to the log only.
 			s.log.Error("session not started", "user", spec.User, "error", err)
-			WriteError(w, http.StatusInternalServerError, "the session could not be started; the server log has the cause")
 		}
+		if retry {
+			w.Header().Set("Retry-After", "5")
+		}
+		WriteError(w, status, msg)
 		return
 	}
 	WriteJSON(w, http.StatusAccepted, createResponse{SessionID: sessionID})
+}
+
+// StartRefusal is how POST /v1/sessions answers a StartSession error: the
+// status, the message a caller may see, and whether to ask for a retry. An
+// edition that starts sessions on its own routes answers the same way. An
+// error it does not know is a 500 whose cause stays in the server's log.
+func StartRefusal(err error) (status int, msg string, retry bool) {
+	switch {
+	case errors.Is(err, errDraining):
+		return http.StatusServiceUnavailable, "server is shutting down; retry", true
+	case errors.Is(err, errHoldFailed):
+		return http.StatusServiceUnavailable, "could not hold the session; retry", true
+	case errors.Is(err, errBadMode):
+		return http.StatusForbidden, err.Error(), false
+	case errors.Is(err, errBadClientID):
+		return http.StatusBadRequest, err.Error(), false
+	case errors.Is(err, errVerify):
+		return http.StatusServiceUnavailable, "the session was not started: " + err.Error(), false
+	case errors.Is(err, errNotSoleOwner):
+		return http.StatusForbidden, err.Error(), false
+	case errors.Is(err, ErrPolicyLayer):
+		return http.StatusServiceUnavailable, "the session was not started: " + err.Error(), true
+	case strings.HasPrefix(err.Error(), "provider:"):
+		return http.StatusBadRequest, strings.TrimPrefix(err.Error(), "provider: "), false
+	case errors.Is(err, controlplane.ErrForbidden):
+		return http.StatusForbidden, err.Error(), false
+	case errors.Is(err, controlplane.ErrUnavailable):
+		return http.StatusServiceUnavailable, err.Error(), true
+	case errors.Is(err, ErrNoOwnWorkspace):
+		return http.StatusConflict, err.Error(), false
+	case errors.Is(err, errPrepare):
+		return http.StatusServiceUnavailable, "the session was not started: its folder could not be prepared", true
+	case errors.Is(err, errSecretsUnreadable):
+		return http.StatusServiceUnavailable, "the session was not started: " + err.Error(), true
+	}
+	return http.StatusInternalServerError, "the session could not be started; the server log has the cause", false
 }
 
 // StartSession persists, builds and starts a session, returning once the
@@ -1933,13 +1986,14 @@ func (s *Server) newPolicyIn(mode policy.Mode, workspace string) *policy.Engine 
 	}
 	// Path rules relative to the workspace; buildLive gives a session its own roots.
 	pol.Roots = func() []string { return []string{workspace} }
+	pol.RuleSource = s.opts.Config.RuleSource
 	_ = pol.AddDeny(s.opts.Config.Permissions.Deny...)
 	_ = pol.AddAsk(s.opts.Config.Permissions.Ask...)
 	pol.KeepAsk = toolset.KeepManagedAsks(s.opts.Config)
 	_ = pol.AddAllow(toolset.ToolchainAllows(s.opts.Config)...)
 	_ = pol.AddAllow(s.opts.Config.Permissions.Allow...)
 	_ = pol.AllowGitExtensions(s.opts.Config.Permissions.GitExtensions...)
-	_ = pol.AllowRemoteReads(s.opts.Config.SSH.ReadCommands...)
+	_ = toolset.RemoteReads(pol, s.opts.Config)
 	pol.AskReadOnly = webfetch.AskReadOnly(s.opts.Config.WebFetch.Enabled, s.opts.Config.WebFetch.AllowedHosts)
 	return pol
 }
@@ -1951,15 +2005,15 @@ func (s *Server) newPolicyIn(mode policy.Mode, workspace string) *policy.Engine 
 func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapter model.Adapter,
 	registry *tools.Registry, skillReg *skills.Registry, vault *secrets.Store, rec *agent.Recorder) (*liveSession, *agent.Loop, error) {
 
-	// A person reads the answer at the console or the IDE, so it is labelled
-	// unless configured otherwise; an unattended run checks only when asked.
-	// Answers that cannot be checked as configured refuse the session, as
-	// the command line and the SDK refuse to start, rather than run unchecked.
+	// Every session's answer is labelled unless configured otherwise, an
+	// unattended one's too. Answers that cannot be checked as configured
+	// refuse the session, as the command line and the SDK refuse to start,
+	// rather than run unchecked.
 	vcfg, err := toolset.VerifyFlag(s.opts.Config, spec.Verify)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: %w", errVerify, err)
 	}
-	verifier, err := toolset.Verifier(vcfg, !spec.Unattended)
+	verifier, err := toolset.Verifier(vcfg, true)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: %w", errVerify, err)
 	}
@@ -1982,6 +2036,12 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	if err != nil {
 		release()
 		return nil, nil, err
+	}
+	if spec.Prepare != nil {
+		if err := s.prepareWorkspace(sessionID, spec, bound != nil, sess.Root); err != nil {
+			release()
+			return nil, nil, err
+		}
 	}
 	if sess.Syntax, err = tools.ParseSyntaxMode(s.opts.Config.Tools.SyntaxCheck); err != nil {
 		release()
@@ -2032,8 +2092,9 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		snap:    takeSnapshot(sess.Root),
 		layer:   layer,
 		// A spec with no provider runs on the configured default.
-		provider: orDefaultStr(spec.Provider, s.opts.Config.Model.Default),
-		model:    adapter.Profile().Name,
+		provider:     orDefaultStr(spec.Provider, s.opts.Config.Model.Default),
+		model:        adapter.Profile().Name,
+		onAskTimeout: spec.OnAskTimeout,
 	}
 	// Once another process has taken the session over, nothing more is
 	// written to its record from here.
@@ -2061,7 +2122,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		if registry != nil {
 			if _, ok := registry.Get("bash"); ok {
 				registry = registry.Clone()
-				registry.Add(bound.Bash)
+				registry.Replace(bound.Bash)
 			}
 		}
 		live.closeBash = func() error { release(); return nil }
@@ -2070,7 +2131,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 			if shared, ok := t.(tools.Bash); ok {
 				bash, release := s.opts.SessionBash(sessionID, rec, shared)
 				registry = registry.Clone()
-				registry.Add(bash)
+				registry.Replace(bash)
 				live.closeBash = release
 			}
 		}
@@ -2081,6 +2142,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	own := s.sessionTools(sessionID, spec, mode, adapter, registry, skillReg, pol, sess, budget, cfg, rec)
 	cfg.SystemPrompt = toolset.SystemPrompt(workspace, adapter, s.skillListing(skillReg), own.Names())
 	loop := agent.NewLoop(adapter, own, pol, approver, sess, rec, cfg)
+	loop.Unattended = spec.Unattended
 	// Plan mode's exit_plan; the person answers with POST /v1/sessions/{id}/plan.
 	loop.EnablePlanExit()
 	if !s.opts.Config.Plan.Runbooks {
@@ -2115,6 +2177,18 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	toolset.Summarize(loop.Compactor, s.opts.Extensions, sessionID)
 	toolset.Hook(loop, s.opts.Extensions, func(msg string, _ bool) { s.log.Warn("extension hook", "session", sessionID, "note", msg) })
 	loop.Monitor = toolset.Supervisor(s.opts.Config, own, spec.Unattended)
+	if edition := s.allowance(spec, sessionID); edition != nil {
+		budget.Allowance = edition
+		// A budget the configuration already holds spent stays spent.
+		if held := toolset.Budget(s.opts.Config).Allowance; held != nil {
+			budget.Allowance = func(ctx context.Context) agent.Allowance {
+				if got := held(ctx); got.Stop {
+					return got
+				}
+				return edition(ctx)
+			}
+		}
+	}
 	loop.Budget = budget
 	loop.Provider = live.provider
 	// A person at the console or the IDE is offered a next prompt; an unattended run is not.
@@ -3319,7 +3393,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "client_id is up to 64 letters, digits, - and _")
 		return
 	}
-	msg := agent.Message{Text: req.Prompt, ClientID: req.ClientID}
+	msg := agent.Message{Text: req.Prompt, ClientID: req.ClientID, Typed: req.Prompt}
 
 	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	resumedHere := false
@@ -3800,6 +3874,28 @@ func (s *Server) StopOwnerBackground(ctx context.Context, tenant, user string) i
 	return s.stopRevoked(ctx, hit, user)
 }
 
+// StopSessionRevoked stops one session of owner (or of the unclaimed owner
+// it was released to) as StopOwnerBackground stops all of them: its run,
+// background work and terminals end recorded as owner_revoked. It is for an
+// edition that finds one session's owner gone (a background job whose
+// account was removed) while the name may already be another account's. It
+// reports whether it found the session. ctx bounds the wait for the run to
+// record its end.
+func (s *Server) StopSessionRevoked(ctx context.Context, tenant, owner, id string) bool {
+	if owner == "" || owner == auth.Anonymous || auth.OwnsNothing(owner) {
+		return false
+	}
+	s.mu.RLock()
+	live, ok := s.running[id]
+	mine := ok && live.Tenant == tenant && (live.User == owner || live.User == auth.UnclaimedOwner(owner))
+	s.mu.RUnlock()
+	if !mine {
+		return false
+	}
+	s.stopRevoked(ctx, []*liveSession{live}, owner)
+	return true
+}
+
 // stopRevoked is StopOwnerBackground for the sessions in hit, whose owner was user.
 func (s *Server) stopRevoked(ctx context.Context, hit []*liveSession, user string) int {
 	n := 0
@@ -4270,6 +4366,32 @@ func (s *Server) interruptSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// StopSession stops session id's run and all its background work, as the
+// owner's Stop in the console does, when this process runs it for owner in
+// tenant. It reports whether it found the session to stop. An edition stops
+// a job it started for someone through this, never another person's session.
+func (s *Server) StopSession(tenant, owner, id string) bool {
+	if owner == "" {
+		return false
+	}
+	s.mu.RLock()
+	live, ok := s.running[id]
+	mine := ok && live.Tenant == tenant && live.User == owner
+	s.mu.RUnlock()
+	if !mine {
+		return false
+	}
+	live.mu.Lock()
+	c := live.cancel
+	live.mu.Unlock()
+	if c != nil {
+		c()
+	}
+	live.Cancel()
+	live.Loop.Background.CancelAll(agent.TermUserInterrupt)
+	return true
+}
+
 type approveRequest struct {
 	Approved bool   `json:"approved"`
 	Scope    string `json:"scope,omitempty"`
@@ -4698,7 +4820,9 @@ type overviewResponse struct {
 	// either an open form or nothing at all — with only AllowSignup, an
 	// invite-only deployment is indistinguishable from a closed one and the
 	// UI correctly hides a door that is in fact open.
-	InviteSignup  bool   `json:"invite_signup"`
+	InviteSignup bool `json:"invite_signup"`
+	// GuestSignIn offers "Continue as guest" (auth.guest).
+	GuestSignIn   bool   `json:"guest_sign_in,omitempty"`
 	ProviderLabel string `json:"provider_label,omitempty"`
 	// AdminURL is where the Admin link goes, when an edition has mounted a
 	// page there. Empty means no page: the link is not drawn, whoever is
@@ -4793,6 +4917,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		o.AllowSignup = cfg.Auth.AllowSignup
 		o.InviteSignup = !cfg.Auth.AllowSignup && s.opts.Invites != nil
 	}
+	o.GuestSignIn = cfg.Auth.Guest
 	o.AdminURL = s.opts.AdminURL
 	for _, p := range s.signIns() {
 		if u, label := p.SignIn(); u != "" {
@@ -5323,6 +5448,16 @@ func badBody(w http.ResponseWriter, err error, msg string) {
 // ListenAndServe starts the HTTP server. With Options.TLS set every
 // connection is a TLS one.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	// An address another server holds fails here, before the startup work
+	// below reclaims, reconciles or sweeps anything that server is running.
+	// The probe is closed again, so nothing is accepted until that work ends.
+	if _, port, err := net.SplitHostPort(s.opts.Addr); err != nil || !loopport.AnyPort(port) {
+		probe, err := net.Listen("tcp", s.opts.Addr)
+		if err != nil {
+			return err
+		}
+		_ = probe.Close()
+	}
 	return s.serve(ctx, func() (net.Listener, error) { return loopport.ListenAddr(s.opts.Addr) })
 }
 
@@ -5336,8 +5471,10 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 // accepted, even into the backlog, before it has finished.
 func (s *Server) serve(ctx context.Context, listen func() (net.Listener, error)) error {
 	srv := &http.Server{
-		Addr:              s.opts.Addr,
-		Handler:           s.Handler(),
+		Addr: s.opts.Addr,
+		// A Host this server was not given is refused (DNS rebinding); the
+		// guard is on the network listener, where browsers reach it.
+		Handler:           hostGuard(s.opts.Config, s.log, s.Handler()),
 		ReadHeaderTimeout: 10 * time.Second,
 		// A slow body is the other half of slowloris: headers arrive promptly,
 		// then the body trickles in a byte at a time and holds the connection
@@ -5354,8 +5491,20 @@ func (s *Server) serve(ctx context.Context, listen func() (net.Listener, error))
 	// Sessions this node held before a restart are taken back, and sessions
 	// a crashed process left open reconciled, before anything is served; then
 	// again every stale window, by staleness alone.
-	s.RecoverOwnAtStart(ctx)
-	if s.opts.SessionSandboxes != nil {
+	held := true
+	if s.opts.StartupLock != nil {
+		release, err := s.opts.StartupLock()
+		if err != nil {
+			held = false
+			s.log.Warn("another abhed serve shares this machine's state; this one leaves its sessions and sandboxes alone at start", "error", err)
+		} else {
+			defer release()
+		}
+	}
+	if held {
+		s.RecoverOwnAtStart(ctx)
+	}
+	if s.opts.SessionSandboxes != nil && held {
 		// Sandboxes whose session is gone, as a restart finds them; none made from now on.
 		since := time.Now()
 		go func() {
@@ -5646,4 +5795,28 @@ func (t tapStore) Append(ev agent.Event) error {
 		}
 	}
 	return err
+}
+
+// recordHooks records each hook that fires in the session it fired for, as
+// the CLI does; one for no running session here is not recorded.
+func (s *Server) recordHooks() {
+	if s.opts.Extensions == nil {
+		return
+	}
+	if names := s.opts.Extensions.CommandHooks(); len(names) > 0 && s.opts.SessionSandboxes != nil {
+		// Each session's commands run in its own sandbox; the hooks do not.
+		s.log.Warn("command hooks run under this server's own sandbox and workspace, not in each session's own sandbox",
+			"hooks", strings.Join(names, ", "))
+	}
+	s.opts.Extensions.SetOnFired(func(f extension.Fired) {
+		s.mu.RLock()
+		live := s.running[f.SessionID]
+		s.mu.RUnlock()
+		if live == nil || live.Loop == nil || live.Loop.Recorder == nil {
+			return
+		}
+		if err := toolset.RecordFired(live.Loop.Recorder, f); err != nil {
+			s.log.Warn("could not record a hook", "session", f.SessionID, "hook", f.Extension, "err", err)
+		}
+	})
 }

@@ -72,7 +72,11 @@ From lowest to highest:
 
 Where the org policy and `/etc/abhed/config.json` both make a setting, the
 machine's file wins, setting by setting. `permissions.deny` and
-`permissions.ask` are joined, so a rule from either stays.
+`permissions.ask` are joined, so a rule from either stays. For
+`limits.max_budget_tokens` and `limits.max_budget_usd` the lower of the two
+applies (zero meaning none), so a cap in the machine's file never lifts a
+lower one the org policy sets, such as what is left of an organisation's
+budget.
 
 `model.allowed`, `mcp.allowed` and `mcp.denied` are kept as a layer of their
 own rather than merged: a model or MCP server must pass the machine file's
@@ -92,34 +96,87 @@ server. That covers model providers and `custom_providers`, `web_search`'s
 provider, endpoint and key, the supervisor's judge (`monitor.endpoint`,
 `api_key_env`, model), `rag`, `retrieval`, `telemetry`, `network` (the proxy
 names a local CA file and secret, and the policy is fetched through it), ssh
-hosts and `ssh.read_commands`, `k8s` clusters, `sandbox.read_only_paths`,
+hosts, `ssh.read_commands` and `ssh.read_contents`, `k8s` clusters, `sandbox.read_only_paths`,
 `sandbox.language_servers`, `sandbox.image`, `verify.contract.require`,
-`verify.critic`, extensions, `mcp.servers`, statusline, the `dirs` settings,
-`context`, `additional_dirs`, record paths and retention, storage, server,
-auth, schedules, the control plane and `org_policy` itself.
+`verify.critic`, extensions, simple hooks (`hooks.run`), `mcp.servers`,
+statusline, the `dirs` settings, `plugins.sources` and `plugins.trusted_root`, `context`, `additional_dirs`, record paths
+and retention, storage, server, auth, schedules, the control plane and
+`org_policy` itself.
+
+**Who may work on the machine**: `auth.client.sign_in` (only `required`
+or `server`), `auth.client.guest` (only `false`) and
+`auth.client.remember_days` (any bound), never `auth.client.server`; see
+[Signing in](42-signing-in.md).
 
 **Only where it tightens** what the layers below already say, by the same rule
 an untrusted workspace's file follows: deny and ask rules, honeytokens and `verify.contract.protect` (added to the
 person's own, never replacing them),
 `permissions.mode` and `mode.default` (only plan or default, and only
 narrower), `model.allowed` and the `mcp` lists, the web tools turned off,
-lower limits, a stronger `sandbox.min_tier`, `allow_network` and
+lower limits, `limits.budget_spent` on (every run stops before its first
+model call, as a server does once a person's budget is spent), a stronger `sandbox.min_tier`, `allow_network` and
 `readable_home` off, stricter toolchains and listen, `monitor.enabled` on and
 `on_unavailable: deny`, more supervisor reviews and honeytokens, stricter
-syntax checks and checkpoints, and the like. A value that would loosen is set
+syntax checks and checkpoints, `ssh.listed_reads_only` on (no remote
+read-only classifier), and the like. A value that would loosen is set
 aside.
 
 **Only when the machine pins the keys**: `permissions.allow`,
 `git_extensions`, `sandbox.tier`, `sandbox.network`, `protect_git`,
-`listen_ports`, preapproved toolchains, `fence`, `egress` and `hooks`, and the
+`listen_ports`, preapproved toolchains, `fence`, `egress` and `hooks.disabled`, and the
 loosening values of the tighten-only settings above. These change what runs
 or reaches out unasked, so they need keys `/etc/abhed/config.json` pins out
-of band (`org_policy.keys`); a key pinned on first use is not enough.
+of band (`org_policy.keys`); a key pinned on first use is not enough. So
+does `pricing`, with one exception, so an org dollar budget can admit models
+the laptop runs itself without pinned keys: an org whose keys are not
+pinned may price a model at exactly 0 (every figure 0). The laptop takes
+that 0 only when both hold:
+
+- the model has no price of its own: it is not on the built-in list, nor a
+  current hosted model Abhed knows by name but carries no price for (such as
+  `claude-sonnet-4-6`, `gpt-4.5`, `o1`, `o4-mini`, which stay unpriced, and
+  so refused under a dollar cap, until an operator prices them), nor a name
+  that may stand for either (a dated or tagged variant such as
+  `gpt-4o-2024-08-06`, a `provider/` prefix such as `openai/gpt-4o`, other
+  letter case, surrounding spaces, full-width letters, zero-width
+  characters or Unicode dashes, which are normalised before the lookup),
+  and the machine's file and the person's do not price it. Under a
+  managed or org dollar cap the person's own price does not count, since a
+  cap prices calls only by the managed layers: it is set aside, said once at
+  start-up, and does not keep the org's 0 from applying. The variants
+  match by prefix, so a local model named after a listed family (anything
+  `o3-…`, `gpt-5-nano-…`) is refused too: it fails closed, and is priced in
+  the managed file instead;
+- every provider the laptop configures for that model is a local model
+  server type, `ollama`, `vllm`, `llamacpp`, `tgi` or `sglang`, at its own
+  endpoint or a loopback `base_url`.
+
+No other provider type counts, even at a loopback address: not
+`openai-compatible` (the usual shape of a gateway such as LiteLLM, which
+may hold a company key), not a hosted API's type, not a custom type. So an
+unpinned org cannot lower any price a model has, and cannot price a model
+served through a gateway. A local model served by LM Studio or another
+`openai-compatible` server is priced in the machine's managed file, or by
+an org whose keys the machine pins. What remains trusted is the label: a
+provider written as one of the five local types is taken to be a local
+model server. The machine's managed file and the person's own file can
+write that label; under a managed dollar cap a workspace's file cannot (a
+provider a workspace defines or changes, trusted or not, keeps no org 0
+for the model it serves). Ollama's `*-cloud` models are an exception to "local": Ollama
+runs them on ollama.com and bills the person's own Ollama account. The
+check is made as each session's budget is built, so a provider changed
+later applies to the sessions started after it.
 `auto` and `bypass` modes are never set by an org policy.
 
 **Always**: `record.ship.enabled` and `record.ship.max_backlog_mb` (records
 go only to the server this machine enrolled with), `hooks.managed_only:
 true`, `studio.disable_host_terminal: true`, `model.allowed_loopback: false`,
+`plugins.disabled: true`, `plugins.require_signature: true`,
+`plugins.allowed_publishers` and `plugins.allowed_bundles` (a layer of their
+own that every bundle must pass as well as the machine's; they grant trust
+only when the machine pins the keys, and otherwise only narrow), and
+`plugins.org_source: true` (the server this machine enrolled with serves the
+plugin index, trusted only with pinned keys; see [Plugins](41-plugins.md#policy)),
 and `model.default` pinned to a provider the machine's managed file defines
 (never one the person configured with their own key). Under the org's `model.allowed`,
 endpoints are bound as under the managed file's, but only the managed file
@@ -202,7 +259,7 @@ owns the laptop can (`abhed policy leave`, or editing the file). Set
 
 | Key | Effect |
 |---|---|
-| `url` | the only server whose policy this machine takes; signing in to it takes the policy without asking, and `abhed login` to another does not enrol |
+| `url` | the only server whose policy this machine takes; signing in to it takes the policy without asking, and `abhed login` to another does not enrol. Keep credentials out of it, the path included: a refusal names the org policy by the URL's scheme, host and path, which reach the model and the record, and `abhed doctor` shows it whole with only the user part, query values and fragment redacted |
 | `keys` | the only keys trusted, base64 Ed25519 or PEM; statements cannot rotate them, so rotate here; also what lets the policy loosen settings |
 | `required` | with no verified policy, the fallback applies; `abhed policy leave` is refused |
 | `max_age_hours` | caps the statement's own age limit |

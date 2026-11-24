@@ -11,6 +11,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os/exec"
 	"slices"
 	"strings"
@@ -70,6 +72,10 @@ const (
 type Options struct {
 	// Workspace is the directory the retrieval index covers.
 	Workspace string
+	// ReadWithheld, when set, is the session's own read rules, its engine's
+	// layers included, which the retrieval index is built to; nil builds it
+	// to the configured rules (a server's index, shared by sessions).
+	ReadWithheld func(path string) bool
 	// Bash is the shell tool. The surface builds it because the sandbox is the
 	// surface's to choose and to refuse to start without; nothing here weakens it.
 	Bash tools.Bash
@@ -86,12 +92,24 @@ type Options struct {
 	// by name, and web_fetch refuses a URL holding a value from. Nil offers no
 	// stored secrets, and leaves web_fetch unable to fetch.
 	Vault *secrets.Store
+	// NoMCPLogins, when set, is why the OAuth logins in Vault are not used:
+	// a URL server that has one is refused with it.
+	NoMCPLogins error
 	// Warn receives what failed and was skipped: an MCP server, an extension,
 	// a skill, a corpus. Nil discards them.
 	Warn func(format string, args ...any)
+	// Machine offers the person's own machine setup with the Infra part:
+	// their kubeconfig contexts and ~/.ssh/config hosts, each asked before
+	// its first use, and the cluster logins they kept. Only a surface run by
+	// the person whose machine it is sets it; a server never does.
+	Machine bool
 	// Sandbox is the surface's sandbox. Under sandbox.network allowlist it
 	// confines the stdio MCP servers' network; without it they do not start.
 	Sandbox sandbox.Sandbox
+	// KeptNetwork is what the person opened to this workspace's commands
+	// before, and KeepNetwork keeps a new grant; nil keeps none.
+	KeptNetwork func() KeptNetwork
+	KeepNetwork func(all bool, host string) error
 }
 
 // Set is one assembled tool set. Registry holds no session-bound tool, so a
@@ -125,6 +143,11 @@ type Set struct {
 	HeldAtStart func(port int) bool
 	// ListenPorts are the ports listening opens.
 	ListenPorts func() []int
+	// FlushListen records now the contested-port joins still held back, as
+	// the session ends.
+	FlushListen func()
+	// Network is the session's network as the person may open it.
+	Network *Network
 	// extensionTools names the tools extensions provided.
 	extensionTools []string
 	uninstall      func()
@@ -149,6 +172,9 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		o.Bash.Secrets = o.Vault.Env
 		o.Bash.SecretNames = VaultNames(o.Vault)
 	}
+	net := NewNetwork(cfg, o.Sandbox)
+	net.Kept, net.Keep = o.KeptNetwork, o.KeepNetwork
+	o.Bash = withNetwork(o.Bash, net, o.Sandbox != nil)
 	tc := Toolchains(cfg, o.Workspace, o.Sandbox)
 	o.Bash = withToolchains(o.Bash, tc)
 	s := &Set{
@@ -160,6 +186,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 			agent.TodoTool{},
 		),
 		Toolchains: tc,
+		Network:    net,
 		SetListen:  func(on bool) bool { return sandbox.SetListen(resolved(o.Sandbox), on) },
 		Listens:    func() bool { return sandbox.Listens(resolved(o.Sandbox)) },
 		ListenWatch: func(still func() bool, contested func(sandbox.PortContested), lost func(why string)) {
@@ -167,11 +194,13 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		},
 		HeldAtStart: func(port int) bool { return sandbox.HeldAtStart(resolved(o.Sandbox), port) },
 		ListenPorts: func() []int { return sandbox.ListenPortsOf(resolved(o.Sandbox)) },
+		FlushListen: func() { sandbox.FlushListenRecords(resolved(o.Sandbox)) },
 		Skills:      skills.NewRegistry(),
 		Agents:      agent.BuiltinDefinitions(),
 	}
+	add := adder(s.Registry, warn)
 	if tc != nil && !tc.Off {
-		s.Registry.Add(toolchain.Tool{S: tc})
+		add(toolchain.Tool{S: tc})
 	}
 	// In force before anything below connects, MCP servers included.
 	// An unguarded set too, so a request naming no set amid a mix is refused.
@@ -182,6 +211,16 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		for _, err := range s.Extensions.Load(ctx, specs) {
 			warn("%v", err)
 		}
+		if o.Vault != nil {
+			red := o.Vault.Redactor()
+			s.Extensions.SetRedact(func(t string) string { return agent.WithheldText(red, t) })
+		}
+		// Simple hooks run per event: commands in bash's sandbox, requests under the egress guard.
+		if o.Parts&Vetoes != 0 {
+			for _, err := range s.Extensions.LoadHooks(cfg.HookSpecs(), HookEnv(o.Bash, o.Workspace, s.Guard())) {
+				warn("%v", err)
+			}
+		}
 	}
 	// MCP servers extend the tool surface. Every remote tool is namespaced and
 	// routes through the policy engine, since Abhed cannot know what it does.
@@ -189,13 +228,19 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		s.Gateway = mcp.NewGateway()
 		s.Gateway.Egress = s.Guard()
 		s.Gateway.Admit, s.Gateway.PinProgram = MCPAdmit(cfg), cfg.MCPListsMatchCommands()
+		switch {
+		case o.Vault != nil && o.NoMCPLogins != nil:
+			s.Gateway.Authorize = MCPLoginsWithheld(o.Vault, o.NoMCPLogins)
+		case o.Vault != nil:
+			s.Gateway.Authorize = MCPAuthorize(o.Vault)
+		}
 		ConfineMCP(s.Gateway, cfg, o.Sandbox, warn)
 		// The servers' life: their start-up and streams are this set's requests.
 		for _, err := range s.Gateway.Connect(egress.WithGuard(ctx, s.Guard()), MCPConfigs(cfg)) {
 			warn("%v", err)
 		}
 		for _, t := range s.Gateway.Tools() {
-			s.Registry.Add(t)
+			add(t)
 		}
 		for _, m := range s.Gateway.Overlaps() {
 			warn("%s", m)
@@ -210,24 +255,25 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 			warn("%v", err)
 		}
 		for _, t := range ts {
-			s.Registry.Add(t)
-			s.extensionTools = append(s.extensionTools, t.Name())
+			if add(t) {
+				s.extensionTools = append(s.extensionTools, t.Name())
+			}
 		}
 	}
 	if o.Parts&RAG != 0 {
 		for _, t := range RAGTools(cfg, warn) {
-			s.Registry.Add(t)
+			add(t)
 		}
 	}
 	if o.Parts&Infra != 0 {
-		for _, t := range InfraTools(cfg, o.Vault, warn) {
-			s.Registry.Add(t)
+		for _, t := range InfraToolsFor(cfg, o.Vault, warn, o.Machine) {
+			add(t)
 		}
 	}
 	if o.Parts&Skills != 0 {
 		s.Skills, s.SkillListing = LoadSkills(cfg, warn)
 		if s.Skills.Len() > 0 {
-			s.Registry.Add(SkillTool(s.Skills))
+			add(SkillTool(s.Skills))
 		}
 	}
 	if o.Parts&Agents != 0 {
@@ -246,23 +292,45 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		} else if t != nil {
 			// Results point at web_fetch only where it is offered.
 			t.Fetch = fetch != nil
-			s.Registry.Add(t)
+			add(t)
 		}
 	}
 	if fetch != nil {
-		s.Registry.Add(fetch)
+		add(fetch)
 	}
 	// Retrieval is an accelerator over grep, not a replacement.
 	if o.Parts&Retrieval != 0 && cfg.Retrieval.Enabled {
-		if ix, err := OpenIndex(ctx, cfg, o.Workspace); err != nil {
+		if ix, err := OpenIndexWithheld(ctx, cfg, o.Workspace, o.ReadWithheld); err != nil {
 			warn("index unavailable, falling back to grep: %v", err)
 		} else {
 			s.Index = ix
-			s.Registry.Add(&index.SearchTool{Index: ix})
+			add(&index.SearchTool{Index: ix})
 		}
 	}
 	warnCaseOnly(cfg, s.Registry.Names(), warn)
 	return s
+}
+
+// adder registers a tool unless its name or its wire name (model.WireName)
+// is taken; then it warns and the first tool keeps it.
+func adder(reg *tools.Registry, warn func(string, ...any)) func(tools.Tool) bool {
+	wires := map[string]string{}
+	for _, n := range reg.Names() {
+		wires[model.WireName(n)] = n
+	}
+	return func(t tools.Tool) bool {
+		if _, dup := reg.Get(t.Name()); dup {
+			warn("tool %s is not registered: a tool of that name is already registered and keeps it", config.Printable(t.Name()))
+			return false
+		}
+		w := model.WireName(t.Name())
+		if other, clash := wires[w]; clash {
+			warn("tool %s is not registered: it would reach the model provider as %s, as the tool %s does", config.Printable(t.Name()), w, config.Printable(other))
+			return false
+		}
+		wires[w] = t.Name()
+		return reg.Add(t)
+	}
 }
 
 // warnCaseOnly warns of each CaseOnlyRules finding once per process: a server
@@ -346,6 +414,9 @@ func (s *Set) Guard() *egress.Guard {
 
 // EndSession records what the egress guard still counts for session id.
 func (s *Set) EndSession(id string) {
+	if s != nil && s.Extensions != nil {
+		s.Extensions.EndSession(id) // its halt, and its async hook runs
+	}
 	if s != nil && s.Egress != nil {
 		s.Egress.EndSession(id)
 	}
@@ -519,23 +590,53 @@ func Police(h *extension.Host, pol *policy.Engine, sessionID string) {
 type HostHooks struct {
 	Host *extension.Host
 	Note func(text string, refused bool)
+	// Redact takes stored secrets out of what Note is told; nil leaves it.
+	Redact func(string) string
 }
 
-var _ agent.Hooks = HostHooks{}
+var (
+	_ agent.Hooks       = HostHooks{}
+	_ agent.StopHooks   = HostHooks{}
+	_ agent.ResultHooks = HostHooks{}
+)
 
 func (h HostHooks) note(s string, refused bool) {
-	if h.Note != nil {
-		h.Note(s, refused)
+	if h.Note == nil {
+		return
+	}
+	if h.Redact != nil {
+		s = h.Redact(s) // a hook's reason may hold a secret
+	}
+	h.Note(s, refused)
+}
+
+// NoteRedactor redacts what the person is told of hooks as loop's record
+// redacts what it keeps.
+func NoteRedactor(loop *agent.Loop) func(string) string {
+	return func(s string) string {
+		if loop == nil || loop.Recorder == nil {
+			return s
+		}
+		return agent.WithheldText(loop.Recorder.Redact, s)
 	}
 }
 
+// RunStarted and RunEnded mark the session tree rooted at rootID as having
+// a run going, whose halt is kept until it is taken.
+func (h HostHooks) RunStarted(rootID string) { h.Host.Own(rootID, true) }
+
+func (h HostHooks) RunEnded(rootID string) { h.Host.Own(rootID, false) }
+
 func (h HostHooks) PromptSubmitted(ctx context.Context, sessionID, text string) string {
-	why := h.Host.Veto(ctx, extension.EvUserPromptSubmit, extension.Request{SessionID: sessionID, Content: text})
-	if why != "" {
+	why, failed := h.Host.VetoReport(ctx, extension.EvUserPromptSubmit, extension.Request{SessionID: sessionID, Content: text})
+	switch down := h.Host.NotRunning(extension.EvUserPromptSubmit); {
+	case why != "":
 		h.note("your message was not sent: "+why, true)
-	} else if down := h.Host.NotRunning(extension.EvUserPromptSubmit); len(down) > 0 {
+	case len(down) > 0:
 		// A prompt hook fails open; the person is told it did not look.
 		h.note("not screened: the user_prompt_submit hook "+strings.Join(down, ", ")+" is not running", false)
+	case len(failed) > 0:
+		h.note("not screened: the user_prompt_submit hook "+strings.Join(failed, ", ")+" failed", false)
 	}
 	return why
 }
@@ -550,12 +651,35 @@ func (h HostHooks) Observe(ctx context.Context, event, sessionID, tool, detail s
 	h.Host.Observe(ctx, extension.Event(event), extension.Request{SessionID: sessionID, Tool: tool, Content: detail})
 }
 
+// Stop asks the stop hooks whether the run may end, and names the hook that
+// sent the agent back, with what it is told.
+func (h HostHooks) Stop(ctx context.Context, sessionID, answer string) (hook, instruction string) {
+	name, why := h.Host.OnStop(ctx, sessionID, answer)
+	if why == "" {
+		return "", ""
+	}
+	h.note("the "+name+" hook asked the agent to continue", false)
+	return name, "The " + name + " hook asks you to continue before finishing: " + why
+}
+
+// Halted is why a hook ended the session tree's run, once, or "";
+// HaltPending says so without taking it.
+func (h HostHooks) Halted(rootID string) string { return h.Host.Halted(rootID) }
+
+func (h HostHooks) HaltPending(rootID string) string { return h.Host.HaltPending(rootID) }
+
+// ToolResult lets the hooks that take tool_result see, and extensions
+// rewrite, a result before the model reads it.
+func (h HostHooks) ToolResult(ctx context.Context, sessionID, tool, content string, isErr bool) (string, bool) {
+	return h.Host.OnToolResult(ctx, sessionID, tool, content, isErr)
+}
+
 // Hook gives loop the extensions' hooks at its own points, when any are loaded.
 func Hook(loop *agent.Loop, h *extension.Host, note func(text string, refused bool)) {
 	if loop == nil || h == nil || h.Len() == 0 {
 		return
 	}
-	loop.Hooks = HostHooks{Host: h, Note: note}
+	loop.Hooks = HostHooks{Host: h, Note: note, Redact: NoteRedactor(loop)}
 }
 
 // Summarize lets an extension supply or refuse a compaction summary: the
@@ -600,17 +724,110 @@ func LoopConfig(cfg config.Config, system string) agent.Config {
 	if n := cfg.Limits.MaxTokens; n > 0 {
 		c.MaxTokens = n
 	}
+	if n := cfg.Limits.ReasoningStallTokens; n > 0 {
+		c.ReasoningStallTokens = n
+	}
+	if n := cfg.Limits.ReasoningStallSeconds; n > 0 {
+		c.ReasoningStall = time.Duration(n) * time.Second
+	}
 	if at := cfg.Context.CompactAt; at > 0 {
 		c.CompactAt = at
 	}
+	if n := cfg.Context.CompactAtTokens; n > 0 {
+		c.CompactAtTokens = n
+	}
 	c.OffloadAt = cfg.Context.OffloadFraction()
+	c.MaxContinues = cfg.ContinuesAllowed()
+	for _, l := range cfg.LoadedPlugins() {
+		p := agent.PluginInForce{Name: l.Name, Version: l.Version, Digest: l.Digest, Basis: l.Basis}
+		if l.Signer != nil {
+			p.Signer = l.Signer.String()
+		}
+		c.Plugins = append(c.Plugins, p)
+	}
 	return c
 }
 
 // Budget is the one allowance a session's loop and its subagents share, so a
 // fan-out cannot multiply spend unseen.
 func Budget(cfg config.Config) *agent.Budget {
-	return agent.NewBudget(int64(cfg.Limits.MaxBudgetTokens), cfg.Limits.MaxSubagents, cfg.Limits.NestedSubagents)
+	b := agent.NewBudget(int64(cfg.Limits.MaxBudgetTokens), cfg.Limits.MaxSubagents, cfg.Limits.NestedSubagents)
+	b.MaxUSD = cfg.Limits.MaxBudgetUSD
+	b.ManagedPrices = cfg.ManagedSets("limits.max_budget_usd") && cfg.Limits.MaxBudgetUSD > 0
+	if cfg.Limits.BudgetSpent {
+		// Spent before it starts: the first turn's check stops the run, and
+		// every other call (a completion, a suggestion) is refused.
+		const spent = "stopped: your budget is spent; an administrator can change it"
+		b.Hold(spent)
+		b.Allowance = func(context.Context) agent.Allowance {
+			return agent.Allowance{Stop: true, Scope: "spent", Message: spent}
+		}
+	}
+	if len(cfg.Pricing) > 0 {
+		b.Prices = make(map[string]model.Price, len(cfg.Pricing))
+		for name, p := range cfg.Pricing {
+			// An unpinned org's 0 holds only where nothing is spent: a model
+			// every configured provider of which runs on this machine.
+			if cfg.PricingLoopbackOnly[name] && !orgZeroHolds(cfg, name) {
+				continue
+			}
+			b.Prices[name] = model.Price{Input: p.Input, Output: p.Output, CachedInput: p.CachedInput, CacheWrite: p.CacheWrite}
+		}
+	}
+	return b
+}
+
+// orgZeroHolds reports whether an unpinned org's 0 for a model name is
+// taken: only for a model with no price of its own, nor one that may stand
+// for a model on the built-in list (a dated variant, a provider/ prefix,
+// surrounding spaces), served only by local model servers on this machine.
+// It is decided as the session's budget is built; a provider changed later
+// applies to sessions started after it.
+func orgZeroHolds(cfg config.Config, name string) bool {
+	if model.ListedOrAlias(name) {
+		return false
+	}
+	return servedOnThisMachine(cfg, name)
+}
+
+// servedOnThisMachine reports a model name that at least one configured
+// provider sends, and every provider sending it is a local model server
+// type (ollama, vllm, llamacpp, tgi, sglang) at its own endpoint or at a
+// loopback base_url. Any other type never counts, even at a loopback
+// address, where a gateway may front a paid model: openai-compatible, a
+// hosted API's type, or a custom provider type.
+func servedOnThisMachine(cfg config.Config, name string) bool {
+	managedCap := cfg.ManagedSets("limits.max_budget_usd") && cfg.Limits.MaxBudgetUSD > 0
+	found := false
+	for id, p := range cfg.Model.Providers {
+		if p.Model != name {
+			continue
+		}
+		found = true
+		// Under a managed cap a workspace's file is not trusted to label a
+		// provider local: one it defined serving the name drops the 0.
+		if managedCap && cfg.WorkspaceProviders[id] {
+			return false
+		}
+		if !model.LocalByDefault(p.Type) || p.BaseURL != "" && !loopbackEndpoint(p.BaseURL) {
+			return false
+		}
+	}
+	return found
+}
+
+// loopbackEndpoint reports a URL whose host is this machine.
+func loopbackEndpoint(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	h := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Subagents returns a copy of reg with task and tasks bound to one session's
@@ -636,11 +853,11 @@ func Subagents(reg *tools.Registry, f *agent.SubagentFactory, maxParallel int) *
 	var bg func(context.Context, agent.SubagentRequest) (string, error)
 	if f.Background {
 		bg = f.SpawnBackground
-		out.Add(agent.TaskStatus{})
-		out.Add(agent.TaskCancel{})
+		out.Replace(agent.TaskStatus{})
+		out.Replace(agent.TaskCancel{})
 	}
-	out.Add(agent.Task{Spawn: f.Spawn, Agents: f.Definitions, Workspace: f.Workspace, Models: models, Background: bg})
-	out.Add(agent.Tasks{Spawn: f.Spawn, Agents: f.Definitions,
+	out.Replace(agent.Task{Spawn: f.Spawn, Agents: f.Definitions, Workspace: f.Workspace, Models: models, Background: bg})
+	out.Replace(agent.Tasks{Spawn: f.Spawn, Agents: f.Definitions,
 		Workspace: f.Workspace, MaxParallel: maxParallel, Models: models, Background: bg})
 	return out
 }

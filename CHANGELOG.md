@@ -6,6 +6,2111 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-24
+
+### Security
+
+- With `protect_git` on, on the tiers that hold git's files by binding only
+  the ones that exist (the process tier under bubblewrap on Linux, the
+  container tier, including on macOS with podman, and the fence tier,
+  which binds git's files the same way), a command could make in the
+  workspace's git folder a `commondir`
+  (or `objects/info/alternates`, `http-alternates`, `info/attributes`,
+  `info/grafts`) that was not there before. The person's own git on the
+  host (`git status`, or an editor's) then followed it to configuration of
+  the command's choosing, which could run a program as the person, and a
+  planted `commondir` stayed after the sandbox closed. Releases 1.2.3
+  (where holding git's files began) to 1.2.9 have this with no mitigation:
+  1.2.3 to 1.2.6 kept the plant even past the next command, and 1.2.3 did
+  not hold `.git/config` itself under bubblewrap. No security advisory is
+  published. This release mitigates it and does not close it:
+  - `info` and `objects/info` are held read-only whole, so the files in
+    them cannot be made (`git gc` then cannot write the commit-graph);
+  - a `commondir` is moved aside soon after it is made (an inotify watch,
+    Linux), again as each command ends and as the sandbox closes, and the
+    next command is refused and says why;
+  - what remains: a command that plants a `commondir` over and over still
+    has it read by host git runs that fall between a plant and its move; in
+    a measured 60 s run about a third of the host's `git status` runs ran
+    the command's program. On macOS's container tier there is no watch,
+    only the sweeps, so a planted `commondir` stays for the whole command
+    and every host git run during it follows it. A repository a command
+    makes in the workspace is live to host tools (an editor that opens
+    nested repositories) until the command ends, and in this release it is
+    not taken out then either: a nested `.git` pointer file or a folder
+    laid out as a bare repository that a command makes stays in place, so
+    a later host git run in it can follow what the command wrote.
+    Commits keep working on these tiers. Each command on these tiers now
+    looks through the workspace's folders for git folders twice (as it
+    starts, and as it ends), within the same bound; a large monorepo pays
+    that twice. Until a later release closes this, keep host git tooling
+    off a workspace an untrusted command is writing, or use the macOS
+    process tier (Seatbelt), which denies these names outright and is not
+    affected.
+- A repository's own `remote.<name>.mirror`, or a `remote.<name>.push`
+  refspec that forces (`+…`) or deletes (`:…`), made a brokered `git push`
+  run on the host as a mirror, force or delete push behind only the plain
+  host-git ask. Such a push is now asked each time as one that can replace or
+  delete commits, and policy also judges the line it runs as (`git push
+  --force --mirror origin`): an organisation's `bash(git push -f*)` deny or
+  ask rule holds, and the destructive confirmation asks. The settings judged
+  are the settings it runs with, as before. `mirror` is read as git reads a
+  boolean (a key with no value, `true`/`yes`/`on`, or any non-zero integer in
+  decimal, octal or hex with a `k`, `m` or `g` unit, such as `2`, `-1`, `1k`
+  or `0x1`; a value git cannot read is never taken as false). The question
+  says what the setting makes the push do (mirror, force a refspec, or delete
+  a named ref) and whether it is the repository's configuration or your own;
+  a push that names its own refspec takes none of the configured ones. An
+  "always" for a plain push holds only while the remote's URL and its push
+  settings (refspecs, mirror) stay as they were. Affected: no release; a
+  brokered push through host git is new in this one.
+- Deny and ask rules missed GNU abbreviations of long options (`rm --recur
+  --forc`, `chmod --recursiv`, `git clean --fo`). An unambiguous prefix of
+  any length, as getopt reads it, of a known long flag or of the rule's own
+  now counts as that flag. Deny and ask only; allow rules match as written.
+  Affected: every release with deny or ask rules on flags.
+- `abhed rpc`, which scripts and other programs start sessions through, never
+  fetched the org policy as a session started, so a deny rule published
+  since did not reach those sessions until another command fetched it. It
+  now refreshes it as each session starts, at most once a minute, as the
+  terminal and ACP (which Abhed Studio uses) do. Affected: every release
+  with `abhed rpc` and an org policy.
+- `abhed serve` answered any `Host`, and an `Origin` equal to it passed the
+  cross-origin check, so a web page could reach the API by pointing its own
+  name at the server (DNS rebinding); with `auth.mode` `none` that was the
+  whole API. A request whose `Host` is not loopback, an IP address (with
+  sign-in on) or a configured name (`server.allowed_hosts`,
+  `server.canonical_host`, the hosts of `server.allowed_origins` and
+  `auth.redirect_url`) is now refused with `421`; with `auth.mode` `none`
+  only loopback and `server.allowed_hosts` are answered. Affected: every
+  release with `abhed serve`.
+- A second `abhed serve` on the same HOME swept the running server's
+  per-session sandboxes, and its sandbox control plane marked the running
+  server's sandboxes lost (`Error`, `InstanceLost`). A serve now claims its
+  address and this machine's state (`~/.abhed/serve.lock`) before it builds
+  anything: on the same address a second one fails at once; on another, one
+  with `control_plane.enabled` refuses to start, saying another serve holds
+  the lock file `~/.abhed/serve.lock`, and one without it serves but takes
+  back and sweeps nothing.
+  Only the serve holding the lock reconciles or sweeps.
+- An organisation's deny or ask rule whose flags end in a star, such as
+  `bash(rm -rf*)`, held only for the flags as written: `rm -r -f build` and
+  `rm -fr build` fell through to the destructive ask. Such a rule is now read
+  as its flags, in any order or grouping, then anything, as `bash(rm -rf *)`
+  already was. It only adds deny and ask matches; allow rules still match
+  only as written. Flags that do the same also match: `-R`, `--recursive` and
+  `--force` for `rm`; `--recursive` for `chmod`, `chown` and `chgrp`;
+  `--force` and `--force-with-lease` for `git push -f`; `--force` for
+  `git clean -f`; a `+ref` refspec forces as `git push -f` does; a long
+  flag with a glued star (`--force*`) is read as the flag, then anything; and
+  every git option before the subcommand is skipped (`-C dir`, `-c x=y`,
+  `--git-dir`, `--config-env`, `--no-pager`, `--no-optional-locks` and the
+  rest). Deny and ask only; `git -c alias.p=push p -f`, a push through an
+  alias, is not read as a push and reaches the destructive ask.
+- Abhed Studio's request to open the network for one host with scope
+  `workspace` opened, and kept, every host, while the record named only that
+  host. A named host now opens and keeps that host alone at every scope.
+- `git submodule update`, given as the whole line on the process tier and
+  the fence, ran through git on the host, where a submodule's own
+  configuration or attributes could name a program it then ran outside the
+  sandbox, as the person or, on `abhed serve`, as the server's account (a
+  smudge filter, `submodule.<name>.update = !cmd`). It is no longer run on
+  the host: it runs in the sandbox, where updating a submodule already
+  checked out can fail, so run it yourself outside Abhed. `git worktree`
+  add, remove and prune are still brokered. Affected: 1.2.8 and 1.2.9, on
+  the process tier and the fence.
+- A profile's client followed a redirect from https to plain http on the
+  same host, sending the server token in clear. Such a redirect is now
+  refused.
+- A wildcard entry in `ssh.read_commands` approved more than it named.
+  `*` matched any text, spaces included, so `tail -n * /var/log/app/app.log`
+  also ran `tail -n 100 /etc/shadow /var/log/app/app.log` without asking,
+  and `cat /var/log/*` ran `cat /var/log/../../etc/shadow`. A `*` or `?` now
+  stands within one argument: an entry matches only a call with the same
+  number of arguments, each matching the entry's word in its place. A word
+  a wildcard matches may hold nothing the remote shell would expand (an
+  unquoted glob, brace or `~`, or a `$`), so `cat /var/log/.[.]/.[.]/etc/shadow`
+  and `grep -i /etc/s* …` ask; only the entry's own word, written as in the
+  entry, may hold its glob. A `*` standing for an operand never matches an
+  option before a `--`, so `grep -i --file=/etc/shadow …` and `grep -i -r …`
+  ask under `grep -i * …`; one standing for an option's value is
+  unchanged. No wildcard stands for a `..` segment the entry does not write;
+  this is a rule about the text, and a symbolic link under an allowed folder
+  still reaches its target. A word that is `**` alone stands for one or
+  more whole arguments, each judged as a read form, and with a program that
+  prints files it matches only calls that print none unless
+  `ssh.read_contents` is set. Nor does a wildcard entry reach `getent
+  shadow` or `gshadow` without it. An entry with a wildcard in a path part
+  that starts with `.` (`/var/log/.*`), which some shells expand to `..`, is
+  refused at load. `abhed doctor` warns of an entry whose wildcard can name
+  any file for a program that prints files (`cat **`, `head -n 5 *`,
+  `getent *`); name the files, or a folder (`/var/log/app/*`).
+  Affected: every release with wildcard `ssh.read_commands` entries, on any
+  host, `ssh_connect`'s included. Exact entries, permission rules and the
+  read-only classifier are unchanged.
+- Abhed Studio's debug setup could overwrite a file outside the workspace.
+  When a person chose to run a workspace's commands in a container, Abhed
+  raised `sandbox.min_tier` in `.abhed/config.json` by writing a fixed
+  `.abhed/config.json.tmp`. A repository could ship that name as a link to
+  any file the person can write, such as `~/.bashrc`, and the repository's
+  own `config.json` chose the JSON written there. That is one click, after
+  opening a hostile repository in Studio, to overwrite a file and possibly
+  run code at the next shell start. Affected: 1.2.9 only, through ACP
+  `_abhed/debug/use-container`; the terminal and the server never call it.
+  The config is now written to a fresh, randomly named file made with
+  `O_EXCL` and renamed into place. A `config.json` that is a link, a pipe or
+  a device, or over 4 MiB, is refused instead of followed or waited on.
+- Studio's interactive terminal could take every line typed in it for a
+  program's input, so the deny rules never judged it. The shell's process
+  group was taken from the terminal's first output; wherever something
+  printed before the shell took the terminal, that group was not the
+  shell's, and each line after went through unjudged. The shell's group is
+  now learned only from the kernel: the group in front whose leader is the
+  shell, reading keys at its prompt, started by Abhed directly or through
+  bubblewrap and the egress relay alone. Until then every line is judged as
+  the shell's. Affected: the Linux process tier (bubblewrap) since 1.2.3,
+  wherever anything printed before bash took the terminal; known to occur in
+  1.2.9 in a project with a Python venv, whose start-up notice prints first.
+- A stored secret that the model repeated in its answer could reach stdout
+  unredacted. The record, the terminal, `-p` text output and rpc's
+  `answer` were redacted, but two copies were not. `abhed -p
+  -output-format json` and `stream-json` printed the answer raw in the
+  result line's `result` and `structured_output`, in every verify mode,
+  `off` included, and a `-json-schema` run printed its JSON raw in text
+  output too. The answer verdict, with each statement's text, was printed
+  raw on `-p`'s result line, in rpc's `answer` and `error` responses, and
+  by the SDK's `Agent.Verdict()`. Both are now redacted as the record is,
+  and withheld when that fails. The model never sees a stored value, so it
+  has to rebuild or guess one first. Affected: `-p`'s `result` and
+  structured output in every release before this one; the verdict on `-p`,
+  rpc and the SDK in 1.2.9, whenever verification was on: `-verify label`
+  or `strict`, `verify.mode` set in any configuration, a
+  `verify.contract`, rpc `start` with `verify`, or SDK `Options.Verify`.
+  The server and Abhed Studio read the redacted record and were not
+  affected.
+- `grep` returned matches from files a read deny rule covers.
+  `deny: ["read(secrets/**)"]` refused the `read` tool, but a `grep` over the
+  workspace, or one whose `path` named the denied file, still printed its
+  matching lines to the model. A managed or org deny rule was bypassed the
+  same way. Affected: every release through 1.2.9, on every surface (the
+  CLI, `-p`, `abhed serve`, Studio, the SDK, skill pipelines) and every
+  sandbox tier, since `grep` runs in Abhed itself. Every `grep` result is now
+  held to the read rules: a file a deny rule covers, or an ask rule (no one
+  can be asked through a search; the built-in ones for `.env`, `*.pem`,
+  `*.key` and SSH keys included), is judged by its path before it is read
+  and never opened; the answer says only how many files were not searched.
+- The `search` tool (the retrieval index, `retrieval.enabled`) returned
+  excerpts from files a read deny rule covers, and the index build sent
+  those files' chunks to the embedding endpoint when `retrieval.embed` is
+  on. Affected: every release through 1.2.9 with retrieval enabled. A file
+  a read deny or ask rule covers is now left out before ranking, as if it
+  were not indexed, and the index is built without such files (to the
+  session's own rules in the CLI and the SDK), so they reach neither the
+  model nor the embedding endpoint. A rule added after the index was built
+  still holds for the hits.
+- An org policy URL holding a password, a token or a signature
+  (`https://u:pw@…`, `https://TOKEN@…`, `?token=…`, `#…`, a signed URL)
+  was printed whole where a refusal or a warning named the org policy, and
+  in the status line of `abhed doctor`. Affected: 1.2.9 with an org policy.
+  A refusal, a warning, the fallback's reason and the record's
+  `session.started` `org_policy` (`reason`, `server`), which reach the
+  model, stderr and the record, now show only the URL's scheme, host and
+  path; the status lines of `abhed doctor` and `abhed policy status` show it
+  whole with the user part, every query value and the fragment redacted.
+
+### Upgrading from 1.2.9
+
+- `abhed doctor` and `abhed machine` now run as the person; where sign-in is
+  required and no one is signed in they exit 10. A script that only checks
+  the machine runs `abhed -guest doctor` (where guest is allowed).
+- `-verify strict` may now refuse to complete where 1.2.9 completed: a
+  report of work the record does not prove ("Pulled, branched and
+  pushed." after the push failed) is a claim it checks. See
+  docs/guide/29-verified-answers.md.
+- Brokered git fetch, pull, push and clone are refused, with the reason,
+  where your own git or ssh setup could let the agent choose what runs as
+  you: a credential helper that is a shell function, variable or pipe
+  (`!f() { …; }; f`); an ssh command using `sh -c`; a `ProxyCommand`,
+  askpass or git proxy given as a relative path or one in the workspace or
+  a folder commands can write; an ssh `Include` or `-F` path with `~user`, a
+  `%` token or an environment variable; a program in a folder other users
+  can write. The fix: put the helper in a script of your own and name it,
+  and write full paths. The checks are in
+  [Permissions](docs/guide/04-permissions.md#git-fetch-pull-push-and-clone-through-your-own-git).
+- `abhed serve` reached by a DNS name now needs that name configured: set
+  `server.allowed_hosts` (or `server.canonical_host`, or name it in
+  `server.allowed_origins` or `auth.redirect_url`). Loopback and, with
+  sign-in on, IP addresses work as before. With `auth.mode` `none`, only
+  loopback and `server.allowed_hosts` are answered. `abhed serve` and
+  `abhed serve -check` say so in a `hosts` line when they listen beyond
+  loopback with no name configured. With `auth.mode` `none` a request with
+  no `Host` is refused too. A container or reverse proxy that reaches the
+  server by a name must have that name configured. The Helm chart does this
+  itself: its probes send `Host: localhost`, and it puts the Service's DNS
+  names, the ingress and route hosts and the new `allowedHosts` value in
+  `server.allowed_hosts`; upgrade the chart with the server
+  ([Kubernetes](docs/guide/27-kubernetes.md#names-the-server-answers-to)).
+  Values with `route.enabled` and no `route.host`, which rendered before,
+  now fail to render: set `route.host` to the Route's host.
+- git fetch, pull, push, clone and ls-remote in Abhed Studio and the CLI
+  now reach remotes with the person's own credentials (SSH agent, keychain,
+  credential helpers), on the process tier and the fence; 1.2.9 ran them in
+  the sandbox, where they failed. With `sandbox.allow_network` off they
+  reach the repository's own remote after one approval, and an answer kept
+  as "always for this repository" also answers `-p` runs and `abhed rpc`
+  sessions, which have nobody to ask. An allow rule kept
+  from 1.2.9, such as `bash(git push*)`, now reaches the network through the
+  person's keys where it failed before. To turn it off, a person sets
+  `sandbox.host_git: false` (or `sandbox.protect_git: false`, which also
+  stops holding git's files); an organisation sets `sandbox.host_git:
+  false` in the managed file, and a managed file that holds the network off
+  turns it off too; remote git then runs in the sandbox as in 1.2.9, and
+  the session says why ("ask your administrator"). `abhed serve` never
+  brokers remote git.
+- The first interactive start asks who is working. With anything 1.2.9
+  kept in `~/.abhed` (sessions, history, memory, secrets, sign-ins, trust,
+  skills, plugins), choose **Create my account and bring my data**: it
+  moves into the account, every session's chain verified before and
+  after. Until then, a run that cannot ask (`-p`, rpc, scripts) works as
+  1.2.9 did where `~/.abhed` holds sessions or history, with one line on
+  stderr; after it, such
+  a run uses your remembered sign-in. On a machine with no earlier data and
+  no sign-in, such as a fresh CI runner, a run is guest and keeps nothing
+  (`-guest` silences the note); a script that read the record afterwards
+  (`abhed logs`, `-c`) should sign in once, or pass `-account NAME` to fail
+  with code 10 instead. Before going back to 1.2.x, run `abhed account
+  unmigrate`.
+- Your sessions are now recorded as `device:<username>` (or `guest:<id>`)
+  rather than `$USER`; those recorded before sign-in stay the adopting
+  account's.
+- `abhed login` on a machine no one is signed in to makes that server's
+  account the one working here.
+- A laptop that takes its policy from an org server upgraded to the Enterprise
+  edition now needs a sign-in to that server: a run that cannot ask
+  (`-p`, rpc, CI) exits 10 until the person runs `abhed login SERVER` once.
+  The server's administrator can keep the 1.2.9 behaviour with
+  `ABHED_ORG_MACHINE_SIGN_IN=off`.
+- Stored model keys and secrets now belong to an account. After sign-in,
+  those stored before it are the first account's; other accounts on the
+  machine get none, and neither does a guest. A fresh CI runner, which runs
+  as guest (above), no longer finds a key through `api_key_secret` or a key
+  stored with `abhed provider login`. Environment variables still work:
+  export the key there, or sign the runner in.
+- Model endpoints no longer follow a redirect to another host, port or
+  scheme, since the key would go with it. A provider reached through a
+  gateway that redirects elsewhere now fails, naming where it was sent;
+  point `base_url` at the final address.
+- On your own machine (the terminal, Studio, `abhed rpc`), the `k8s` and
+  `ssh` tools are now on where no file sets them, reaching your kubeconfig
+  contexts and `~/.ssh/config` hosts after one approval each; `k8s_login`
+  is offered once a login is pasted. They count toward `max_tools`. A token
+  or other credential pasted into a message now reaches the model as
+  `[pasted:P1]`, not its value, so a 1.2.9 habit of pasting a token for the
+  model to use (in a `curl` header, say) no longer works: store it with
+  `abhed secret set` and name it in a `secret(NAME)` rule. Set
+  `k8s.enabled` or `ssh.enabled` to `false` to turn the tools off. Under
+  a managed configuration or org policy:
+  - `k8s.allow_writes: false` alone only tightens, as in 1.2.9: the
+    person's own kubeconfig stays in use, read-only, and `k8s_apply` is
+    not offered. An organisation that wants its laptops read-only sets it
+    explicitly: where it says nothing of writes, a person's own
+    `k8s.allow_writes: true` offers `k8s_apply` (each write still asks,
+    after a dry run).
+  - A managed file that sets only `k8s.context`, `k8s.namespace` or
+    `k8s.ca_file` does not decide for the organisation either: the person's
+    own kubeconfig stays in use, with those values applied.
+  - `k8s.enabled: false` turns Kubernetes off: no cluster tool is offered,
+    and a pasted login is refused with that reason.
+  - Where the organisation sets Kubernetes up itself, by declaring
+    `k8s.clusters` or `k8s.kubeconfig` in its managed file (which turns
+    Kubernetes on for them) or turning `k8s.enabled` on, only that counts
+    on the laptop: a person's or
+    workspace's `k8s.enabled: true` is not taken, only its `k8s.clusters`
+    are offered, no kubeconfig is read unless its managed file names
+    `k8s.kubeconfig`, no login is kept, and a pasted login is refused with
+    that reason. In 1.2.9 such a laptop could still reach the person's own
+    kubeconfig contexts.
+  - Any `ssh` key leaves only its `ssh.hosts` and `ssh_connect`, and
+    `machine_setup: false` turns off both the kubeconfig and
+    `~/.ssh/config`. Anything else it sets, such as web search, leaves the
+    person's own setup on.
+- Under `-verify strict`, a statement that only explains code the session
+  read and did not change ("the running total is 0 because nothing has been
+  added yet"), or what changed code did before, no longer fails the
+  answer: it is shown as "explanation: not checked" and counted in the
+  verdict's `note`. 1.2.9 failed strict on it. A statement that the
+  session's own change works is still work, and still fails strict until
+  the record shows it.
+- A `*` or `?` in an `ssh.read_commands` entry now stands within one
+  argument. An entry that relied on `*` spanning several words, such as
+  `journalctl *` for `journalctl -u app -n 50`, no longer matches such a
+  call, which asks instead. Rewrite it with one wildcard per argument
+  (`journalctl -u * -n *`), or as exact entries. An entry with a wildcard in
+  a path part that starts with `.` (`ls -l /var/log/.*`) no longer loads. `**` as a word of its own
+  keeps any read form of a program that prints no file (`df **`); for one
+  that does (`cat`, `grep`, `journalctl`, …) it needs `ssh.read_contents`. A
+  call whose word holds a glob, brace, `~` or `$` the remote shell would
+  expand, other than the entry's own word as written, now asks.
+- Secret names beginning `MCP_OAUTH_` are now kept for Abhed's own MCP
+  logins: `abhed secret set` and `abhed secret rm` refuse them (the server's
+  secrets API answers 400), and a command or tool is never given one by
+  name. Store such a secret under another name.
+- A workspace other than your home folder whose config is your own
+  `~/.abhed/config.json`, such as a dotfiles folder linking to it, is no
+  longer trusted as your own file without asking; trust it once with
+  `abhed trust grant`. In the home folder nothing changes.
+- A workspace's `.abhed/config.json` that leads out of the workspace, by
+  its own link or through a `.abhed` that is a link, is now refused, and so
+  is one that is a link to no file (1.2.9 read that as no config). The
+  session does not start until it is a plain file or a link inside the
+  workspace. A link inside the workspace, and any link at your home
+  folder's `~/.abhed/config.json`, still work; a config above the opened
+  folder must be copied in, or the folder above opened instead.
+- `abhed -p --continue` and `abhed -p -r <session>` with no task used to
+  stop with exit code 2 ("no task"). They now continue the run that stopped
+  at its turn limit, and stop with exit code 2, before anything is
+  recorded, only when there is nothing to continue or the bound is spent.
+- A workspace memory file that a read rule asks about is no longer loaded:
+  memory loads with nobody there to say yes, so an ask keeps it out as a
+  deny does; start-up warns about each such file, and `/memory` says why.
+- `abhed -p`, `abhed rpc` and unattended server runs now check their
+  answers by default (`verify: label`), as the terminal does; 1.2.9
+  checked nothing there unless asked. The exit code is unchanged. When a
+  statement is contradicted, the agent gets the one revision turn: one
+  more model call, and the answer returned (the result line's `result`,
+  rpc's `answer`) is the revised one. The result line's `verdict`, and
+  rpc's answer `verdict`, now appear by default: a parser that does not
+  expect the field should ignore it. `verdict.outcome` is `verified` or
+  `unverified`, and `verdict.claims` lists each statement, the unverified
+  ones included. `-verify off`, `"verify":"off"` on `rpc` or `POST
+  /v1/sessions`, or `verify.mode: off` in your own configuration keeps the
+  1.2.9 behaviour where a managed `verify.mode` allows it; a flag or a
+  session's `verify` also lowers a trusted workspace's `verify.mode`. For
+  CI that fails closed on an unverified answer, pass `-verify strict`
+  (exit 8). The SDK still checks nothing unless asked, through 1.x: set
+  `Options.Verify`, or `Options.VerifyByDefault` to label as the terminal
+  does.
+- On a host in `ssh.hosts`, an `ssh` command that only shows metadata
+  (`ls`, `du`, `df`, `ps`, `stat`, `systemctl status -n 0`, …) now runs without
+  asking and in plan mode (below). Programs that print files still ask
+  unless you set `ssh.read_contents: true`. To keep every command but
+  `ssh.read_commands` behind approval, set `ssh.listed_reads_only: true`. A
+  managed file that sets any `permissions` or `ssh` key keeps the old
+  behaviour unless it sets `ssh.listed_reads_only` itself.
+- Under `-verify strict`, an answer given through the answer tool is now
+  checked by its `text` as well as its claims, so a run that 1.2.9 ended
+  verified with nothing verified (the text saying "the tests now pass", no
+  test run showing it) now ends `unverified`, exit 8.
+- `abhed -p "task"` with piped stdin now waits `-stdin-wait` (1.5 s) for
+  the input to start; 1.2.9 waited for it however long it took. Input that
+  starts in time is attached as before. A pipe still idle is ignored with a
+  note. Input that starts later stops the run with the new exit code 9,
+  and its result line carries no answer (text output keeps what had already
+  streamed): "input arrived on stdin after 1.5s; rerun with - to wait for
+  it, or -stdin-wait <dur>". A script piping a slow producer (a cold `go
+  test ./... 2>&1 | abhed -p …`) should pass `-` or a longer `-stdin-wait`.
+- MCP servers now start together, eight at a time, each within a startup
+  deadline of 60 seconds that covers the handshake and its lists. A server
+  that needs longer to start (a container image pulled on first run) is
+  reported as failed and its tools are absent; set
+  `startup_timeout_seconds` on it.
+- A request never offers a provider more than `max_tools` tools (128 by
+  default, for every provider type). Where the always-offered tools
+  (built-ins, extensions', MCP tools offered in full) pass it, the request is
+  now refused before it is sent with an error naming the count and the
+  limit, where a provider used to answer 400; narrow an MCP server with
+  `allow_tools`, disable a server or extension, or set `max_tools` on a
+  provider that takes more.
+- An extension tool whose name begins `mcp__`, in any case, is refused with a
+  warning; rename it. A tool whose name is already registered is no longer
+  allowed to replace the first one: it is refused with a warning.
+- A skill description longer than 300 characters is cut there in the
+  listing, with a warning naming the file. Past 8 KB the skill listing, the
+  `skill` tool's names, and the agent types on `task` and `tasks` are
+  counted rather than listed, and `agent_type` drops its `enum`; any of them
+  still loads by name.
+
+### Added
+
+- git fetch, pull, push, clone and ls-remote work in Abhed Studio and the
+  CLI with the git and ssh setup the person already has: their network part
+  runs through the person's own git on the host, with their keys, while
+  merges, checkouts and their pre-push hook run in the sandbox. Never on
+  `abhed serve`. A setup that could let the agent choose what runs as the
+  person is refused with the reason (see Upgrading). What is brokered,
+  refused, asked and recorded:
+  [Permissions](docs/guide/04-permissions.md#git-fetch-pull-push-and-clone-through-your-own-git).
+
+- Commits made on the fence and container tiers carry the person's git
+  name and email: their commands' home holds none of the person's
+  configuration, so `user.name` and `user.email` are read on the host as
+  the session starts and given as `GIT_AUTHOR_*` and `GIT_COMMITTER_*`. An
+  `include.path` to a file the account cannot read no longer loses the
+  whole identity: each file is read on its own and only that include is
+  skipped.
+
+- Configure once: the cluster and SSH tools work with the setup a developer
+  already has. On your own machine (the terminal, Abhed Studio and
+  `abhed rpc`, never `abhed serve`), `k8s_get` and `k8s_apply` reach your kubeconfig contexts
+  (`KUBECONFIG`'s files merged as `kubectl` merges them, or `~/.kube/config`)
+  by name, and `ssh`, `ssh_put` and `ssh_get` reach the hosts your
+  `~/.ssh/config` names, with their `HostName`, `User`, `Port`,
+  `IdentityFile`, `ProxyJump`, `UserKnownHostsFile` and `Include`s, signing
+  in with your ssh-agent. Every credential is read in Abhed's own process
+  and never reaches the sandbox, the record or the model. The first use of
+  each context or host asks once, in every mode but bypass; *always for this
+  cluster* (or host) keeps it for you in your own `state/machine-grants.json`,
+  outside every workspace, until its server, CA, credential helper, address
+  or user changes. A context whose credential helper Abhed would run names
+  the program and asks before it runs, even where `k8s.enabled` turned the
+  tools on; a legacy `auth-provider` or basic auth is refused with the
+  reason. `known_hosts` is checked for every host and jump, never written.
+  Cluster writes still ask each time. It is on where no file sets
+  `k8s.enabled` or `ssh.enabled` and the managed configuration or org
+  policy decides neither (see Upgrading for exactly when it does; a managed
+  file that only turns on web search, or only turns k8s writes off, leaves
+  it on); setting either to `false`, a workspace included, turns it off.
+  With no kubeconfig, `k8s_login` is offered from the moment a login is
+  pasted, so a pasted `oc login` works on any machine and costs nothing
+  until then, and the other cluster tools appear once a login exists. A
+  guest's approvals and pasted logins hold for the session only; grants are
+  kept per person. `abhed rpc` offers the same as the terminal. `abhed doctor` lists
+  the contexts, hosts and kept grants, never a credential;
+  `abhed machine list` and `abhed machine forget KIND NAME` show and drop
+  what is kept, as do ACP's `_abhed/machine/list` and `_abhed/machine/forget`.
+- A pasted login works in one approval. A credential pasted into a message
+  (an `oc login --token=… --server=…` command, an OpenShift or `Bearer` token,
+  a key of a known shape) reaches neither the model nor the record: both get
+  `[pasted:P1]`, you are told, and the value is held in the session's memory.
+  The agent is told what was pasted and offers `k8s_login` with
+  `pasted: "P1"`; one approval verifies the server (the system roots, the CA
+  your kubeconfig holds for it, or the certificate it presents, shown by its
+  SHA-256 fingerprint and pinned), checks the token there, stores it as a
+  secret and keeps the cluster for your later sessions, which reach it by
+  name with no `secret(NAME)` rule. The server is the one pasted with the
+  token; the model cannot choose another. A login that pins a certificate
+  is always put to a person with its fingerprint, whatever the mode or
+  rules, and refused where no one can be asked. A pasted value is withheld
+  again wherever it reappears in the session, and its shape is kept out of
+  prompt history and a server's session list. Where the managed
+  configuration or org policy sets `k8s`, only the organisation's
+  `k8s.clusters` take a token, and `k8s_login` refuses a pasted one with
+  that reason. `k8s_login` names only the secrets the model may be offered,
+  never a model key or another name Abhed keeps for itself. ACP editors get
+  `pastedCredentials` in the note's `_meta`, and a first use's permission
+  request carries `firstUse` in its `_meta`.
+- The agent no longer turns down cluster or remote-machine work as outside
+  its role: with the cluster or SSH tools offered, the system prompt says to
+  use them, explains the approvals to expect, and never to run `kubectl`, `oc`
+  or `ssh` through `bash`.
+- A person chooses the sandbox tier: `sandbox.tier` now takes `process`,
+  `container` and `vm` as well as `fence`, set with `/config set sandbox.tier`
+  (or `auto`). The chosen tier is used or the session is refused, and it may
+  not be weaker than `sandbox.min_tier`, the managed minimum included. A
+  workspace file still cannot set it. `abhed doctor` says why the tier was
+  chosen, what the container image lacks, and how to choose another.
+- The network on the person's word, without a config edit. Where it is off
+  and the managed file does not hold it, the person opens it: Studio offers
+  it when an agent's command fails for the network
+  (`_abhed/sandbox/network_refused`, `_abhed/sandbox/network`), and
+  `/network` does it at the terminal, each asked first: any host for the
+  workspace, one host, or this chat alone. The agent cannot open it. Commands reach it through the session's egress proxy, so deny
+  rules still win and ssh and ping still fail. Workspace and host choices are
+  kept with the workspace's kept approvals and revoked there. Default-deny
+  stays the default.
+- The session tells the model, from the first message, what it can do from
+  its real state: the tier, the network, whether git remote operations are
+  brokered through host git, the clusters configured and the tools the image lacks, and asks it
+  not to find these by trial or dispute them with the person. It is the
+  system prompt's last section, read again each turn, never part of a
+  message; recorded as `session.facts` when it changes.
+- Settings changed while chats are open are said: Studio gets
+  `_abhed/config/changed` (applies to new chats) and can give an open chat
+  the models added and the new default (`_abhed/config/apply`, recorded
+  `config.applied`); the command line says so after the task and
+  `/config apply` offers the added models. Nothing that widens what the agent
+  may do is applied to an open chat.
+- A provider's refusal is said with the provider's own words and the next
+  step (key, credit or quota, a model the provider says is retired or not
+  found, rate limit; a bare 404 is not taken as a retired model),
+  naming configured models whose key is at hand: in Studio's chat
+  (`_meta.providerError`), at the terminal and in `abhed doctor`. Anything
+  key-shaped in the message is redacted. A model the provider called retired
+  or not found is remembered for two weeks and named before the first call
+  (session/new `_meta.modelWarning`, the command line's start, doctor).
+- Model-aware context handling. Every provider now has a context window and
+  a reply cap without configuration: `context_window` on the provider first,
+  then what the endpoint reports (Anthropic's and Gemini's model resources,
+  the `/models` listing of vLLM, SGLang, OpenRouter, Together, Groq and
+  Mistral, llama.cpp's `/props`, TGI's `/info`, Ollama's `/api/ps` and
+  `/api/show`), then a built-in table of published limits matched by model
+  family (every current Claude model, and the OpenAI, Gemini and Grok
+  families), and for a model none of these knows an assumed
+  32,768 tokens, which the session says on its first turn and `abhed doctor`
+  warns of. A server on this machine is never given its model's trained
+  window from the table, since it decides its own. A configured reply cap
+  above the model's maximum is lowered to it. `abhed models list` shows the
+  configured models with each window, reply cap and source; `abhed doctor`
+  shows the default model's (`context` in its JSON). Discovery is off with
+  `ABHED_NO_MODEL_DISCOVERY` set.
+- A request a provider refuses as longer than the window is recovered once:
+  the window is lowered to the limit the provider named, every tool result
+  is cut to the new window's share, the history is compacted and the turn is
+  asked again, without counting as another turn. A refusal that names no
+  limit (Bedrock's `Input is too long for requested model`) lowers the
+  window to four fifths of the refused request's size. A second refusal in
+  a row ends the run saying what happened (the limit named, or that none was
+  and the refused request's size) and what to do (a new conversation,
+  `/compact` with what to keep, or `/model` for a larger window); it never
+  loops. A limit under 2,048 tokens is not believed, and an OpenAI-shaped
+  refusal of the reply cap rather than the prompt is not compacted for. A
+  limit of 16,384 or more that the provider named is kept for 30 days in
+  `context-windows.json` in the person's own folder (an account's under
+  `~/.abhed/accounts`, or `~/.abhed` where no one has signed in), per
+  provider type, endpoint, model and account under an HMAC keyed by a
+  random secret in `context-windows.key` beside it (no URL, credential or
+  query is written, and the file alone confirms no guess of a credential),
+  so a restarted session starts within it rather than being refused once
+  more. A guest, and `abhed doctor`, which probes the model without keeping
+  its window, keep none:
+  nothing is read or made. A kept limit never lowers a configured
+  `context_window`; `abhed models list` shows it with its date, and `abhed
+  models forget-window NAME` drops it. Anthropic's `prompt is too
+  long`, OpenAI's `context_length_exceeded`, Gemini's input token count and
+  the wording of Bedrock, vLLM, llama.cpp, TGI, Mistral, Groq, watsonx and
+  Ollama are recognised. A server that cuts an over-long prompt instead of
+  refusing it (Ollama) is caught by the prompt size it reports, and the
+  conversation is compacted before the next call. Recorded as
+  `context.overflow`.
+- Switching to a model with a smaller window (`/model`, the console's,
+  workbench's and Abhed Studio's picker, the SDK) fits the conversation to
+  it before the next call, recorded as `context.refit`. HawkEYE lists
+  `context.window`, `context.overflow` and `context.refit` (`context` in the
+  JSON), OCSF maps them to Base Event, and Abhed Studio shows them as
+  progress.
+- Claude Haiku 5.5 is priced, by prompt length as Anthropic bills it: a call
+  whose prompt is over 100,000 tokens (cache reads and writes included) pays
+  the long-prompt prices, each call on its own, so a dollar budget spends
+  what that call cost. Claude Opus 5.5 and Sonnet 5.5, Opus 5, Opus 4.8,
+  4.7, 4.6 and 4.5, Sonnet 5 and 4.6, and Fable and Mythos 5, 5.1 and 5.2 are priced too, from
+  Anthropic's pricing page on 23 November 2026.
+- Model keys without environment variables: `abhed provider login|logout|status`.
+  `login` asks for a hosted provider's key without echo and keeps it in the
+  macOS Keychain, or where there is none in Abhed's secret store (mode 600)
+  under a name Abhed keeps for itself. A provider finds it by
+  `api_key_secret`, by its `api_key_env` name, or, naming neither, by its
+  type's own name at its official endpoint, so Studio started from the Dock
+  has the key. The environment variable still wins when set; `abhed doctor`
+  says which source was used, never the value, and an auth or credit refusal
+  says when a different key is stored than the one exported. The key is never
+  written to config and is redacted from tool output, messages and the record.
+  A hosted type's stored key goes only to that type's own endpoint, and a
+  model a workspace's file defines gets a stored key only when your own
+  configuration names that key for the same endpoint and token URL, and an
+  exported hosted key only at its type's own endpoint. A stored key is the
+  Abhed account's: the Keychain service and the secret store are the
+  account's own, so within Abhed another account never sees it (not from
+  the OS user: accounts on one macOS user are that user to the Keychain, and
+  any program it runs can read another account's item), and the first account
+  takes over the keys stored before sign-in (a key held in both places with
+  different values is kept twice and named). A guest keeps and is given no
+  stored key: `provider login|logout` and every other way to the store are
+  refused; a key in the environment still works.
+- Models without editing JSON: `abhed models add PROVIDER MODEL...`, `abhed
+  models default NAME`, `list`, `remove` and `known`. They write only your own
+  `~/.abhed/config.json`, atomically, with a `config.json.bak` backup and the
+  file's mode and other keys kept; never the workspace or managed file. A
+  hosted default is confirmed first; a guest may not add, remove or choose a
+  model. The models are this Mac's configuration, shared by every account on
+  it; an `api_key` written there is too, while stored keys are each
+  account's. Studio's model picker gains Add Model…, Set as Default and Add API
+  Key…, which tell a guest to sign in instead.
+- `model.ollama.auto_start` (`false`: Ollama is never started without a click,
+  and "always start" is not offered) and `model.ollama.idle_stop_minutes`.
+- Sign-in first. Every start answers who is working before anything else
+  runs: an account on this machine, an account on an Abhed server, or
+  guest. In a terminal with no one signed in, the start asks; a sign-in is
+  remembered until sign-out, a password change or removal, and each start
+  says who is signed in (`/account` signs out or switches). An account on
+  this machine (`abhed account create`, `signin`, `signout`, `whoami`,
+  `list`, `passwd`, `reset`, `rm`) keeps its record, history, memory,
+  secrets, server sign-ins, trust decisions and plugins in a folder of its own under
+  `~/.abhed/accounts/`; the password is bcrypt-hashed, a recovery code
+  resets it, and so can the OS user, which the next sign-in reports. An
+  account is a separate space, not encryption. A guest keeps nothing: its
+  folder is removed as the run ends, and by the next start after a crash.
+  What the organisation keeps is apart from that: an OCSF export the
+  managed configuration sets up still receives a guest's sessions, and a
+  server keeps each step's metadata after a console guest's content is
+  crypto-shredded.
+  Policy, the sandbox, egress and approvals are the same for all three. A
+  run that cannot ask uses the remembered sign-in, or runs as guest with a
+  note, and exits 10 where the organisation requires sign-in; `-guest`,
+  `ABHED_GUEST=1`, `-account` and `ABHED_ACCOUNT` choose outright, and are
+  handed to MCP servers and process-tier commands, so an Abhed they start
+  only narrows who works; a server's `env` cannot set or clear them. A
+  server sign-in that is cancelled or refused before it is kept has its
+  token ended on the server. `abhed
+  rpc` answers `auth.status`, `auth.signin`, `auth.register` and
+  `auth.guest`, and ACP clients such as Studio sign in through ACP's
+  `authMethods` and `authenticate`. The managed configuration and the org
+  policy can require sign-in, require a server's, turn guest off, and bound
+  how long a sign-in is remembered (`auth.client`). Requiring it through
+  the managed configuration is part of the Community Edition; pushing it
+  from a signed org policy is the Enterprise edition's, and identity-provider
+  sign-in and SCIM are the Team edition's. See [Signing
+  in](docs/guide/42-signing-in.md).
+- Guests on a server's console: `auth.guest` (off by default) offers
+  Continue as guest on the sign-in page. A guest is an identity of its own
+  with no groups, under every rule anyone has; its sessions are stopped and
+  removed when it signs out or after `auth.guest_hours` (8), a running one
+  stopped first; a restart ends every guest, and with guests on the server
+  removes what ended guests left at start and hourly, never another
+  server's live guests on a shared Postgres; a server that finds another
+  running under its own `control_plane.ha.node_id` logs an error and does
+  not take that id's sessions for its earlier run's. One address starts at
+  most five guests an hour. It needs `auth.mode` `local` (with the Team and
+  Enterprise edition's browser sign-in, `oidc` too).
+- `abhed serve` in a terminal, with no sign-in on an address other machines
+  can reach, asks first: set up local accounts, serve on this machine only,
+  or serve as configured.
+- Abhed Studio opens a folder on an SSH host with the engine running there
+  (**Abhed: Reopen Folder on SSH Host…**). `abhed ssh-acp` connects with
+  the engine's SSH client (the host key must already be in known_hosts;
+  nothing is forwarded and no environment is sent), checks the engine on
+  the host against a pinned SHA-256 at every start (uploading a local build
+  first when asked), and carries ACP on its stdio. The editor's files,
+  search, a polling watch and a read-only SCM view come from that engine
+  through the new `_abhed/fs/*` methods (feature `fs`), so its read, write
+  and delete rules hold for the person's file operations and saves are
+  recorded on the host; delete and rename act on the entry named (a link,
+  never its target), and a folder rename is judged for every entry in it.
+  The SCM view's git runs in the session's sandbox with every `GIT_*`
+  unset and submodules ignored. The engine runs from a copy in the
+  account's private `~/.abhed/bin`, checked (owner, mode, links, hash) and
+  exec'd in one step. In an SSH window every path the engine reports is
+  mapped to the host's folder or refused, and no laptop file is sent to
+  the host's engine. The engine's SSH client now asks for the host key
+  types known_hosts records, and says a changed key apart from an unknown
+  one. `.git/modules`, `config.worktree` and `info/attributes` are
+  protected from the agent like `.git/config`.
+
+- Abhed Studio can run a trusted folder's engine in a dev container:
+  **Abhed: Reopen Folder in Dev Container…** runs the image
+  `devcontainer.json` names with the folder at the same path, Studio's own
+  read-only copy of a pinned Linux engine, and a fresh volume as the
+  engine's home, and starts `abhed acp` inside through the runtime's `exec`
+  with that home and the image's ABHED_* variables blanked. The image's
+  `~/.abhed` is not read (the volume is never filled from the image), its
+  `/etc/abhed` is hidden under an empty read-only mount, and no program of
+  the image's is run for Studio. The sandbox inside uses the image's own
+  bubblewrap, so it is only as strong as the image, and the process tier
+  says so ("image-supplied bubblewrap", `ABHED_IMAGE_BWRAP`). Before
+  every start Studio re-hashes its copy and inspects the container, refusing
+  another image, engine mount, folder mount or home. The image is code with
+  the folder (and `.git`) writable, and the default network reaches the
+  laptop's services; `abhed.devContainer.network: none` gives it none. No
+  credential or environment is passed in. Design and threat model:
+  `docs/architecture/studio-remote.md`.
+
+- Abhed Studio's settings import also takes another editor of the same
+  family found by its folder's layout (an AI editor built on it: settings,
+  keybindings and extension list, through the same filters), and other agent
+  tools' MCP servers, slash commands and agent definitions: a project's
+  `.mcp.json`, a home-folder JSON file listing `mcpServers` (with its
+  per-project servers), and a dot-folder's `mcp.json`, `commands/` and
+  `agents/`. Each is mapped to Abhed's shape or left out with why; they land
+  in the folder's `.abhed`, untrusted until reviewed and trusted, never
+  through a symbolic link. Environment variables are passed by name, and a
+  server is left out when its command or URL holds a credential in a shape
+  Studio recognises (a known token, the value after a secret-named flag, a
+  secret-named `NAME=VALUE`, an Authorization, Basic or Bearer header, a
+  secret-named query parameter); other shapes are not recognised, which the
+  modal says. A command's or agent's header is always one Studio builds.
+  Items from the home folder start unpicked, with a warning that the folder
+  may be committed.
+
+- Abhed Studio signs in to a remote MCP server with OAuth.
+  `abhed mcp login` takes `-confirm-fd N`: the yes is read from an inherited
+  descriptor in place of a terminal, and the browser is left to the editor
+  that asked. Studio's engine host process runs it after a modal whose
+  default is No and opens the printed address; the tokens stay in the
+  engine's store, and Studio never sees one. `_abhed/capabilities` gives
+  each URL server an `auth` object (state, issuer, expiry, a refused
+  refresh, and whether a sign-in is wanted), never a token; feature
+  `mcp.login`.
+
+- Plugin bundles: `abhed plugin install|approve|list|show|remove|publishers|
+  trusted-root|pack`. A plugin bundles agent definitions, skills, custom
+  commands, simple hooks and MCP servers under one manifest. The manifest lists
+  every file's SHA-256 and the tools, egress hosts, hook events, servers and
+  header environment variables it requests.
+  - **Install** reads and checks the bundle without running anything, and shows
+    what it adds and requests, every server header included. Manifest strings
+    with control or invisible characters are refused. The bundle stays off until
+    you approve that exact content (`-sha256` approves without a prompt).
+  - **Trust** comes from a Sigstore keyless signature (bundle 0.2 or 0.3, Rekor
+    v1), checked offline and checked again at every load, from a publisher you
+    trust. An allow list counts only a signature that verifies against the
+    managed `plugins.trusted_root`, or the public-good root built into Abhed.
+    Your own root counts for your own publishers. A SHA-256 pin serves air-gapped sites. A server's
+    `headers_env` may not name a variable that looks like a credential.
+  - **A plugin adds content, never policy.** Its hooks only block and run in the
+    sandbox. Its servers face `mcp.allowed`/`mcp.denied` and never get the
+    host's files. It never takes a name already in use.
+  - **Upgrade and remove.** An upgrade shows the diff, and the approved version
+    keeps loading until the new one is approved. Remove takes every file.
+  - **Policy.** The managed configuration and the signed org policy each set an
+    allow list, and a bundle must pass both. An org whose keys the machine does
+    not pin only narrows.
+    A trusted source's word at install is kept as the approval of that exact
+    digest. Turning a source off later does not unload a plugin installed from
+    it; the allow lists and `disabled` do. Install and approve refuse a bundle
+    that would not load.
+  - **Where plugins never load:** `abhed serve` sessions and `-bare` runs.
+  - **Record.** Changes reach the record as `config.changed`, and each session
+    records `plugin.loaded` (OCSF 5019).
+
+  See guide 41 and docs/architecture/plugins.md.
+- New public package `github.com/zybuu-ai/abhed/plugin`: the bundle reader,
+  the offline Sigstore verifier, the plugin store, the policy and the
+  plugin-source index types. It is an experimental API until 2.0 and may
+  change in a minor release.
+  - Package `config` gains the `plugins` section: `PluginsConfig`, with
+    `disabled`, `require_signature`, `allowed_publishers`, `allowed_bundles`,
+    `sources`, `org_source` and `trusted_root`. It is managed-only.
+  - New methods and functions: `Config.PluginPolicy`, `Config.PluginRoots`,
+    `Config.LoadedPlugins`, `Config.DropPlugins`, `Config.PluginServer`,
+    `PluginLayer`, `IsPluginLayer` and `SetVersion`.
+  - New constants: `OrgSourceName` and `OrgPluginIndex`.
+  - `LoadedPlugins`, `PluginPolicy` and `PluginRoots` return types from
+    package `plugin`, so they are experimental with it.
+  - The `plugin` package embeds a dated snapshot of the public-good Sigstore
+    trusted root (`PublicGoodRoot`, `PublicGoodRootSnapshot`). Loading and
+    `abhed plugin list` warn once the snapshot is more than a year old.
+- `abhed bg start` sends a snapshot of the repository it runs in, so a
+  background job works on your code: the tracked files as they are in the
+  working tree, without anything your read rules withhold, anything named
+  like a key or holding one or a stored secret, links or submodules, each
+  left-out file named. A file is left out when any rules a session in the
+  repository would follow withhold it: the root's, the folder `start` runs
+  in and those between, and any other folder with a `.abhed` of its own.
+  Every file is read by opening each folder on its path without following
+  a link. In a terminal it asks before sending, with the count
+  and size; `-y` sends without asking, and without a terminal `-y` or
+  `-no-snapshot` is required. `-no-snapshot` starts in an empty folder. `abhed bg
+  logs -patch` reads the patch a job kept when it ended. For editions, a
+  session's `StartSpec.Prepare` fills its own sandbox folder before it
+  starts, refused with `ErrNoOwnWorkspace` where sessions share a folder,
+  and `Server.SessionPatch` (cut at a size the edition names) and
+  `Server.DeleteSessionSandbox` keep a session's changes and remove its
+  folder. `server.background.snapshots_waiting` and `snapshots_mb` bound the
+  snapshots a server keeps waiting.
+- `/parallel <work>` in the terminal, in Studio and as an `abhed -p` task or
+  `-input-format stream-json` line: the work, its `@` mentions attached, goes
+  to the model with the instruction to start its independent parts at once
+  in one `tasks` call. It is recorded as `command.invoked`.
+- `max_concurrent_requests` on a provider of an OpenAI-compatible type: the
+  requests sent at once to its model on its server, shared by every adapter
+  in the process that reaches them, the smallest bound winning. Requests past
+  it wait in Abhed before their timeouts start; the wait is shown in the
+  terminal and in Studio and recorded as `model.waiting`, and `model.call`
+  keeps it apart as `queue_ms`. A value above 0 on another type is refused at
+  startup, on every provider.
+- Faster editor completions in Abhed Studio. A local completion model is
+  loaded ahead of the first completion (`_abhed/complete/warm`: an empty
+  request of one token, no code, once the editor session is open, at most
+  every two minutes per session and per connection, ended with the session
+  or the connection's input,
+  and only for a model whose address is on this machine). A suggestion is
+  one logical block, the statement at the cursor and the body of a block it
+  opens, and the model's streamed answer is ended as soon as that block is
+  whole. Studio waits briefly after a keystroke, cancels a request whose
+  place has gone (a cancel now names its `seq`), asks once more when over
+  the rate limit, and asks again after an accepted suggestion or Enter.
+  `completion.summary` and `next_edit.summary` record answer times
+  (median, 90th percentile, longest) of requests sent, and warm-ups, never
+  code, and `abhed hawkeye` shows them. The data-sent rules and
+  `completion.local_only` are unchanged.
+- A rename's next edit comes from the file, not a model: after edits that
+  turn one identifier into another, the other uses of the old name are
+  offered as one edit. They come from the language server's references when
+  one is running, or else, in Python, Go, JavaScript, TypeScript and Java
+  (not JSX, nor a .js file holding JSX, which is treated like .jsx), a
+  scan of the innermost function that skips strings, comments, members,
+  keyword arguments in calls and literal keys (a shorthand property is
+  written out as `old: new`, and so are a destructuring and an object in a
+  JSX `{{ }}`; a JSX `{name}` or a template's `${name}` is a use; a brace
+  it cannot classify leaves the edit to the model), and leaves the rename
+  to you
+  where the name is bound again in a nested scope. A one-word edit with
+  nothing to finish (a reserved or already used new name, no other use, a
+  use of a name declared elsewhere) is no rename, and the model is asked as
+  before. Nothing is sent for a rename; the summary and the metrics count
+  it as `local`, or `local_dropped` when left to you. Studio
+  parses the file with any next-edit suggestion applied (tree-sitter) and
+  drops one that adds syntax errors or cannot be checked.
+- Python language servers you already have: where `basedpyright-langserver`
+  is not installed but `pyright-langserver` or `pylsp` is, Studio's Python
+  server is that one, and the start you are asked about names it and what
+  it loads. Not under the container tier, which always runs basedpyright.
+- Studio can add and remove MCP servers. Adding is never an ACP method:
+  Studio has the engine check the server (`_abhed/mcp/check`, read only,
+  `mcp.check` in `features`), shows it in a modal whose default is No, and
+  then runs `abhed mcp add` itself, giving the yes on an inherited descriptor
+  (`-confirm-fd`) and holding it to the entry shown (`-sha256`). The same
+  checks, file and change log apply as at a terminal. Environment variables
+  are passed by name only, so no secret value is written. Removing is
+  `_abhed/mcp/remove`, recorded as `mcp.status` with the entry's transport
+  and hash. A refused add is recorded as `config.refused` with who asked,
+  and logged as an attempt in `~/.abhed/config-changes.jsonl`.
+- `abhed mcp add` takes `-confirm-fd N` (read the yes from an inherited
+  descriptor, 3 or above, for an editor that asked the person; it requires
+  `-sha256`, fails when no yes is read, and is logged as `by: "mcp add
+  -confirm-fd"`) and `-sha256 HEX` (add only that entry), and quotes a
+  command's words that hold spaces or shell syntax when it shows the server.
+- Each session records the entries of `~/.abhed/config-changes.jsonl`
+  written since a session last did, as `config.changed` (untrusted, since
+  the log is a file in your home), so an MCP server added at a terminal or
+  from Studio reaches a hash-chained record. A session takes at most 200;
+  the rest carry over to the next sessions, and an entry says at least how
+  many wait. A line over 1 MiB is skipped, with an entry saying so. The
+  events show the log as read, not proof that it was complete. A log replaced by hand is read from its start. In OCSF a refused
+  entry is a failure. Past 4 MiB the log no longer takes refused attempts;
+  changes are still logged.
+- `-tools NAMES`, the only tools a run and its subagents may use (the
+  harness's own `recall`, `exit_plan` and structured answer stay), and
+  `-bare`, a run without your own or the workspace's memory files,
+  extensions and skills. Both only take away: policy and every deny rule
+  still apply, and what the organisation sets stays: its `ABHED.md`, its
+  `rules.dirs` and `skills.dirs`, its extensions and its auto memory. MCP
+  servers stay unless `-strict-mcp-config` drops them. The record notes
+  both ([The command line](docs/guide/18-cli.md#a-narrower-run--tools-and--bare)).
+- Continuing a run that stopped at its turn limit: `/continue` at the
+  terminal, and `abhed -p --continue` (or `-p -r <session>`) with no task.
+  Each continuation gives the run its allowance of turns again, is recorded
+  first as `turns.extended`, and is bounded by `limits.max_continues`
+  (3 by default, 0 for none) for the whole conversation, counted from its
+  record; a branch or fork keeps the count. A managed `limits.max_turns`
+  without a managed `max_continues` allows none
+  ([Turn limit](docs/guide/04-permissions.md#turn-limit)).
+- A folder's own `ABHED.md`, below the workspace root, is loaded the first
+  time the agent works in that folder, added to that tool result inside a
+  tag with a random fence for the conversation, redacted, and recorded as
+  `memory.loaded` with scope `subdirectory`. Once one loads, the system
+  prompt names the fence and says what such a block may and may not do, and
+  any lookalike of the tag in tool output is escaped with a backslash. Read rules hold (an ask keeps
+  it out), `.abhed` and `.git` are skipped, at most 32 files load in a
+  conversation, and the default configuration asks before the agent writes
+  or edits one (`write(**/ABHED.md)`). `/memory edit <project|local|user>`
+  opens a memory file in your editor and saves it as your write, recorded as
+  `memory.written` ([Memory](docs/guide/19-input-and-memory.md#a-folders-own-abhedmd)).
+- `.abhed/config.local.json`, your own settings for one workspace, merged
+  over `.abhed/config.json`. It is read as safely as that file and under the
+  same trust: one decision covers both, so adding or changing it asks again;
+  untrusted it only tightens, and trusted it still cannot make a
+  managed-only setting or loosen the managed file. `abhed init` writes
+  `.abhed/.gitignore` naming it, and trusts only the file it writes: a local
+  file already there is shown and asked about on the next run, as init says ([The local file](docs/guide/02-configuration.md#the-local-file)).
+- Go API, `config` package (additive): `LimitsConfig.MaxContinues`,
+  `Config.ContinuesAllowed`, `Config.Bare`, `LocalConfigName`,
+  `WorkspaceTrust.LocalFile` and `WorkspaceTrust.WorkspaceFiles`.
+- Simple hooks: `hooks.run` runs one command, or POSTs to one HTTP endpoint,
+  per event, with no extension process to write. A command gets the event
+  as JSON on stdin and runs as the agent's own commands do: in the terminal,
+  `-p`, `abhed rpc`, `abhed acp` and the SDK, in the session's sandbox at
+  its tier and in the session's folder. `abhed serve` runs them under the
+  server's own sandbox and workspace, not a session's own sandbox where the
+  edition gives sessions one, and says so at start-up. Exit 0 goes on, exit
+  2 blocks with stderr as the reason, and any other exit or a timeout
+  refuses a `tool_call` or `permission_request`. A JSON reply's
+  `decision: "block"` blocks, and `continue: false` ends the run, and the
+  rest of its turn, as `policy_denied` (a subagent's ends the whole session
+  tree). An HTTP hook's request is judged by the egress allowlist, and
+  `headers_env` sends a token from the environment; headers go only over
+  https or to this machine. A hook can block, ask or end the run, never
+  approve. Each layer adds hooks, a
+  workspace's only once it is trusted; only the managed configuration
+  replaces a hook by name, and a lower file's hook of a name already taken
+  is set aside. Every run is recorded as `hook.fired` with its kind, layer,
+  exit status and duration. See
+  [Extensions](docs/guide/07-extensions.md#simple-hooks).
+- Hook events `subagent_start`, `tool_failure`, `post_compact` and `stop`,
+  for extensions and simple hooks alike, and `tool_result` is now sent:
+  hooks see each result after secrets are redacted, and an extension may
+  rewrite it. A `stop` hook can send the agent back to work with an
+  instruction, at most 3 times a run; the instruction is recorded as
+  `hook.continued`, with secrets withheld, and a resumed or forked session
+  reads it. `hook.fired` is now also recorded by `abhed serve` and the SDK,
+  in the session the hook fired for, and a `tool_call` hook is given the
+  real session id.
+- A laptop whose organisation removed the person's access is told so. A
+  refused sign-in whose answer carries `"access_removed": true` (which the
+  Enterprise server sends for a revoked or SCIM-deprovisioned person; the
+  middleware adds it for any refusal whose error reports `AccessRemoved()`)
+  stops record shipping with a warning, printed when it happens and as each
+  later session starts, in `abhed record ship` and as a failing
+  `record_ship` check in `abhed doctor` and Studio's Health view. The record
+  stays on the machine and ships once a pass reaches the server again. A
+  backlog over `record.ship.max_backlog_mb` is named the same way at a
+  session's start. New in `recordship`: `State.AccessRemoved`,
+  `State.Notices`, `AccessRemovedError` and the local-only `access_removed`
+  event; in `auth`: `AccessRemover` and `IsAccessRemoved`.
+- `abhed doctor` (and Studio's Health view, as the `tenant` check) warns
+  when `auth.mode` is `oidc` with no named provider, `storage.tenant` is not
+  `default` and `auth.tenant_claim` is unset: a sign-in's tenant is then the
+  claim named `tenant`, else `default`, so unless the identity provider
+  sends a matching `tenant` claim everyone it signs in is refused.
+- The agent is given a language server's diagnostics after each write or
+  edit, in the CLI and the editor protocol. The server is the one Studio
+  runs, started in the session's sandbox with the engine's safe settings,
+  once per language, and only where policy and the supervisor allow its
+  command (`tools.diagnostics`: `auto`, the default; `on` also answers the
+  plain ask a mode gives it, after the PermissionRequest hooks; `off`). The
+  start is recorded as the engine's call, with what allowed it, and shown
+  as an engine note in the CLI and a `Language server` card in Studio. At most `tools.diagnostics_max` (20)
+  are given per file, and an edit waits at most `tools.diagnostics_wait_ms`
+  (3000). Off where there is no sandbox or no server installed. Each is
+  recorded as `lsp.diagnostics`, the server's start and end as `lsp.started`
+  and `lsp.stopped` with `purpose: diagnostics`, and counted in
+  `abhed_lsp_diagnostics_total`. A workspace file, trusted or not, may only
+  lower the bounds and turn them off. Paths a read rule denies are not
+  hidden from the server. See [Language servers](docs/guide/33-language-servers.md#diagnostics-after-the-agents-edits).
+- `_abhed/codeActions` (feature `codeActions`) gives Studio Explain, Fix and
+  Add tests for a range of a file, each as the prompt Studio sends with
+  `session/prompt`, so it runs under the session's policy as any prompt does.
+  The editor's diagnostics on the range go with Fix and Explain as an
+  attachment. A file the agent may not read gets none.
+- Abhed Studio debugs Node programs and tests, JavaScript and TypeScript,
+  in the session's sandbox (`_abhed/debug/launch` with `language: "node"`).
+  A `runner` picks Node itself (TypeScript by Node's own type stripping),
+  `tsx`, `ts-node`, `node --test`, Vitest or Jest. Breakpoints in
+  TypeScript hold through source maps, whether the code is compiled in
+  memory or by `tsc`, and worker threads are threads of their own. Nothing
+  listens on a port for it: a worker thread in the program drives the
+  program's own inspector over a pipe. So Node debugs on every sandbox tier
+  as it is, the macOS process tier included, without opening loopback or
+  asking the process-tier agreement. The launch is judged and recorded as
+  the person's own call, as for Go and Python, and `debug.launched` records
+  it with `loopback` off, and the runner package that ran. A
+  `--inspect` in the sandbox's `NODE_OPTIONS` is not passed on, so nothing
+  inherited opens a port. Node missing offers its install. See
+  [Debugging](docs/guide/31-debugging.md#node).
+- `abhed bg start|list|logs|attach|cancel`: background jobs on a server
+  that serves them, run as the signed-in person and followed from the
+  command line. `attach` puts each ask to the person and answers it on the
+  job's session by its request id, showing the call's arguments escaped;
+  `logs -patch` prints what the job changed. Refused inside an agent's
+  command. `server.background` is the operator's alone: a workspace's
+  file never sets it, trusted or not, and `notify_url` is https, or http
+  to this machine only. The wire types, paths and a Go client are package
+  `bgjob`. The server side is a Team feature: a Community `abhed serve`
+  refuses `server.background.enabled`.
+- `server.StopSession`, `server.DenyPending`, `server.StartRefusal`,
+  `server.UpstreamTransport` and `StartSpec.OnAskTimeout`, for an edition
+  that starts, answers and stops sessions for people on routes of its own.
+  A denial through `DenyPending` is recorded as the system's, with its
+  reason, never as a person's rejection.
+- Sign-in to remote MCP servers with OAuth 2.1, as the MCP authorization
+  specification describes: `abhed mcp login NAME` finds the server's
+  protected-resource and authorization-server metadata, registers a client
+  where the server offers that (or uses `oauth.client_id`), and signs in
+  through your browser with PKCE (S256 only) and a loopback redirect;
+  `abhed mcp logout NAME` revokes and forgets the login. The tokens are kept
+  in the secret store under names Abhed holds for itself: never listed to
+  the model, never given to a command, redacted from the record. A login is
+  bound to the server's name and URL, refreshed when it ends, sent only to
+  the server's own origin (never on a redirect or to another host), and
+  every request of it, the browser's apart, goes under the egress allowlist
+  and the corporate upstream proxy. Only an `https` server and authorization
+  server are signed in to (`http` only for a server on this machine); a
+  resource or issuer that does not match is refused. A refresh holds a lock
+  across processes (one process only on Windows and with a secrets driver),
+  and a login removed while a session runs stops being used within five
+  seconds and stays removed.
+  OAuth logins aren't available per account yet: an `abhed serve` that
+  accounts sign in to uses none, and warns
+  ([MCP](docs/guide/08-mcp.md#signing-in-with-oauth)).
+- MCP resources: a server that offers them adds
+  `mcp__<server>__list_resources` and `mcp__<server>__read_resource`,
+  judged by policy as its tools are (a rule may name the URI:
+  `mcp__docs__read_resource(docs://private/*)`; a URI is read only in its
+  canonical form, a host not in ASCII is refused, and deny and ask rules
+  also match without regard to case, in NFC and NFKC, and with escapes
+  decoded once and twice), capped at 30,000
+  characters, binary content described rather than sent, and recorded.
+  `@server:uri` in the terminal or an editor's prompt attaches one, read as
+  your own call through the same tool and policy; `/mcp resources SERVER`
+  lists them ([MCP](docs/guide/08-mcp.md#resources)).
+- Workspace skills. A repository's `.abhed/skills/<name>/` folders load as
+  skills once the person trusts their exact content, under the same
+  hash-pinned trust as its agent definitions. `abhed trust` and the trust
+  prompt show each skill's name, description and hash; the hash covers every
+  file in the skill's folder, so any change asks again; an untrusted
+  workspace loads none; and a workspace skill never replaces or sits beside
+  an installed one whose name matches without case or in NFKC (its name must
+  be ASCII). Only its `SKILL.md` and `pipeline.json` are used, since the
+  agent cannot read `.abhed`. `abhed trust grant -skills-sha256 H` pins a
+  grant.
+  `skills.disable_workspace: true`, from the managed configuration or any
+  layer, keeps them off whatever the trust.
+- A denial names where its rule came from. The reason the model and the
+  person read says `denied by rule bash(curl*) from the org policy
+  (https://org.example, version 3)`, or the managed file, the workspace's
+  or your user configuration, a `-settings` file, the `-allow`/`-deny`
+  flag or the built-in rules, and the model is told a rule refused the
+  call, not that a capability is missing. `action.approved` and
+  `action.denied` record it as `source` (`org`, `managed`, `workspace`,
+  `user`, `settings`, `flag`, `default`, `session`, an edition's layer,
+  `mode` or `hook`), and HawkEYE shows it per call.
+- A `-p` run's refused call says what would allow it: the exact flag, such
+  as `-mode accept-edits` or `-allow 'bash(make deploy)'` (an MCP tool's
+  name for an MCP tool), on stderr and in the result line as
+  `permission_denials`. A flag is offered only when the configuration would
+  accept it and the policy would then allow the call; otherwise the hint
+  says why none would, such as `denied by org policy; ask your admin`.
+- Cost in US dollars. Each model call is priced from its model's name, at
+  the Standard-tier list price Abhed carries for some hosted models
+  (checked against Anthropic's pricing page on 23 November 2026 and
+  OpenAI's on 9 November 2026; models priced by prompt length are left out) or at a price set under
+  `pricing` in the configuration. The cost is recorded on each call's
+  `model.call` (`cost_usd`, or `unpriced`) and the session's end, for the
+  turns, the critic, suggestions, compaction summaries and pipeline model
+  steps alike, and on `completion.summary`, `next_edit.summary` and
+  `commit_message.generated` for Studio's editor calls (a commit message is
+  also a `model.call`, with tokens and cost only). Usage a provider did not
+  report, or reported under a quarter of the request's size, is estimated,
+  marked `estimated`, and charged. Under a dollar cap a cut call's output is
+  charged at the most the request allowed, whatever input was reported, so
+  interrupting, or a stream that fails after the provider accepted it, does
+  not save money under a cap; only a call the provider never accepted is
+  not charged. Three failed replies in a row with no usable text or tool
+  call (a malformed tool call included), whatever the error, end the run
+  `retry_exhausted`. `/usage` shows the session's cost and each turn's,
+  `-p -output-format json` its `usage.cost_usd`, and HawkEYE the cost per
+  turn and in all; a record written before this release shows its cost as
+  not recorded. A model with no price is shown as unpriced, and its cost is
+  never guessed. No workspace sets prices, trusted or not. For
+  `azure-openai`, prices are keyed by deployment name.
+- Prompt caching on OpenAI-shaped providers. OpenAI's own API is sent
+  `prompt_cache_key`, and OpenRouter's Anthropic and Gemini models
+  `cache_control` on the system prompt and the last message; no other
+  server gets either field unless `extra.prompt_cache` names one. Cached
+  tokens are read from DeepSeek's and Anthropic-shaped proxies' usage as
+  well as OpenAI's, and recorded with cache writes (OpenRouter's
+  `cache_write_tokens` included) on each `model.call`.
+- `-max-budget-usd` and `limits.max_budget_usd` cap a session's cost,
+  subagents included. The run ends `max_budget` (exit `3`) with a message
+  and a `budget.stopped` event; with a cap set, a model with no price is
+  refused before any call, whatever makes it: a turn, the critic, a
+  suggestion, a compaction summary, a pipeline model step, a Studio
+  completion, completion warm-up, next edit or commit message (Studio is
+  told once that the feature is off and how to price its model; a local
+  address is not taken as free), or a fallback, which is not moved to. A
+  managed or org cap may only be lowered, and under one, prices come only
+  from that layer and the built-in list. A resumed session carries what it
+  had spent.
+- `server.Options.SessionAllowance`: an edition's limits on what a
+  session's owner may spend, asked before every turn of the session and its
+  subagents. A spent allowance ends the run `max_budget` with a
+  `budget.stopped` of reason `allowance` naming the limit (`scope`); under a
+  dollar limit a model with no price is refused; a limit that cannot be
+  read, or a hook that panics or does not answer within 10 seconds, stops
+  the run. It is asked at turn boundaries; every other call (a suggestion,
+  the critic, a compaction, a pipeline step, a fallback) passes the same
+  gate, which refuses an unpriced model under a dollar limit and any call
+  once the allowance last said stop.
+- Where a machine's managed file and the org policy both set
+  `limits.max_budget_tokens` or `limits.max_budget_usd`, the lower applies
+  (zero meaning none), so a generic cap in `/etc/abhed/config.json` no
+  longer lifts the org's lower cap.
+- `limits.budget_spent`: a run stops before its first model call, with a
+  `budget.stopped` of reason `allowance`, and every other call is refused.
+  An org policy turns it on once a person's budget is spent, so a laptop
+  under it no longer runs a turn per session past the budget. Only a lower
+  layer's on is taken.
+- An org policy whose keys the machine does not pin may price a model at
+  exactly 0, so an org dollar budget admits a model the laptop runs itself.
+  The laptop takes the 0 only for a model with no price of its own (not on
+  the built-in list or a list of current hosted models Abhed names without
+  a price, not a variant of either once case, prefixes, padding, full-width
+  and zero-width characters and Unicode dashes are normalised, and not
+  priced in the machine's file or the person's), and only when every
+  provider it configures for the model is a local model server type:
+  `ollama`, `vllm`, `llamacpp`, `tgi` or `sglang`, and, under a managed
+  dollar cap, not one a workspace's file defined. No other type
+  counts, `openai-compatible` and hosted API types included, even at a
+  loopback address; a model served that way is priced in the managed file
+  or by an org with pinned keys. Any other price from such an org is set
+  aside, as before. Under a managed or org dollar cap, an unpriced model's
+  refusal says an administrator sets the price.
+- `abhed rpc` can put approvals to its caller. `start` with
+  `"approvals": true` sends each call that needs approval as an `approval`
+  line (the recorded request id, tool, arguments, reason, policy step and
+  rule, the scope offered, and whether the command is destructive or its
+  arguments hide characters), answered by an `approve` request with
+  `decision` `allow` or `deny`, an optional `approver`, and `remember` to
+  keep the offered scope for the session. An ask still open when stdin ends
+  is refused; one open when its run is stopped ends as interrupted, and an
+  answer arriving with the stop is not applied. Without `approvals`, a call needing approval
+  is refused as before.
+- A GitHub Action, `integrations/github-action`. It installs a pinned
+  Abhed release, checked against the SHA-256 the action pins and, by
+  default, the release's Sigstore signature, before it runs; runs `abhed -p`
+  with `-verify strict` by default; uploads the run's output, its exported
+  record (verifiable with `abhed record verify`) and a transcript as an
+  artifact; and fails the job on a non-zero exit. Inputs take the task, the
+  model provider (its key from a secret, masked, in one variable, its entry
+  never merged with a policy's), a policy as `-settings` (a file in the
+  repository, read with git alone at the pull request's base commit on a
+  pull request and at `HEAD` otherwise, never from the disk; a symbolic link
+  is refused),
+  allow and deny rules, limits, and the variables to pass through. The
+  agent runs under `env -i`: no GitHub token reaches it, and a checkout that
+  kept its token in `.git/config` is refused. Its home is a fresh folder
+  outside the runner's temp folder, and its `TMPDIR` is bubblewrap's
+  private `/tmp` on Linux and the account's temp folder on macOS, never the
+  runner's; one hash over the binary and its
+  helpers is checked again before every later run of them. A flag newer than the pinned
+  release is refused before the run. `pull_request_target` is refused.
+  See [The GitHub Action](docs/guide/38-github-action.md).
+- Pull request review, the action's `mode: review`. It takes the diff
+  between the pull request's base and head with hooks and textconv off,
+  reviews it read-only (`plan`, the `read`, `glob` and `grep` tools only,
+  `-bare`, the workspace's configuration untrusted, a JSON schema for the
+  findings) and posts one review: `COMMENT`, or `REQUEST_CHANGES` at a
+  severity you set, never `APPROVE`, with an inline comment on each finding
+  whose line is in the diff. Every `@` in the model's text is defused, and
+  every `&`, `<` and `>` outside code escaped; code blocks and spans are
+  rebuilt with delimiters nothing inside can close. From a policy a review takes only deny and
+  ask rules and limits; its model comes from the action's inputs alone. Only the posting step holds the token. On a release
+  before 1.3.0, which lacks `-tools` and `-bare`, deny rules narrow the
+  tools instead. On
+  `pull_request` a fork's pull request has no model key and is skipped with
+  a notice; a maintainer reviews it with `workflow_dispatch`. See
+  [Pull request review](docs/guide/39-pr-review.md), with its threat model.
+- TypeScript and Python SDKs, `sdk/typescript` (`abhed-sdk` on npm) and
+  `sdk/python` (`abhed-sdk`, imported as `abhed_sdk`). Each drives
+  `abhed rpc` as a child process: start a session, prompt or stream its
+  events, steer, answer approvals with a handler or from the stream,
+  verdicts and `RunError` with the terminal reason, usage, export,
+  background tasks and wake, and `visible` and `args_hidden` ported from the
+  engine's escaper and tested against its answers
+  (`sdk/testdata/visible.json`). No runtime dependencies and no network call
+  of their own. Not yet published. See
+  [TypeScript and Python SDKs](docs/guide/40-sdk-typescript-python.md).
+- MCP `readOnlyHint` can be honoured for a server the operator opts in:
+  the managed file's entry for it sets `"trust_read_only_hint": true`, and
+  the entry in force is exactly that one. A tool such a server marks
+  read-only then runs without asking in the default and plan modes, deny
+  and ask rules still applying. It is off by default, so upgrading changes
+  nothing; a server a person, a `-mcp-config` file or a workspace added is
+  never believed, since the hint is the server's own claim.
+- `abhed -p` notes, in its verdict, an answer that seems not to address the
+  question typed: `verdict.relevance` is `addresses` or `off_topic`, and an
+  off-topic answer adds why to `verdict.note`. The check makes no model
+  call and flags only the plain case (the question names a phrase, file or
+  identifier the answer never mentions, or they share no topic word). It is
+  a note only: the outcome and the exit code are unchanged.
+
+### Changed
+
+- `abhed doctor` and `abhed machine` run as whoever is working, as the
+  commands that read a person's state do: on a first interactive start they
+  may ask who is working, where sign-in is required and no one is signed in
+  they are refused (exit code 10), and they take `-guest` and `-account`.
+  Doctor prints a `person` line saying whose trust decisions, secrets and
+  kept grants it shows. Where signing in fails, `abhed -guest doctor` still
+  checks the machine, where guest is allowed.
+- HawkEYE (the API and `abhed hawkeye`) keeps each tool call apart when a
+  model reuses a call id in a later turn, as OpenAI-compatible servers that
+  number each turn's calls from `call_0_0` do. It used to merge them, list
+  the last call once for each, and drop an earlier call's denial from the
+  call list and the policy count; a decision or result now goes to the call
+  last asked under its id, and a supervisor review to the next one.
+
+- On a Mac, with no `sandbox.tier`, no `sandbox.image` or
+  `ABHED_SANDBOX_IMAGE`, and nothing managed setting the tier or its minimum,
+  the container tier on the default image is passed over for the process
+  tier: with podman running, the bare default image left the agent without
+  git, curl or node, and no network to get them. Set `"tier": "container"` to
+  use it anyway, or name an image, which keeps the container. The look in an
+  image now starts it as commands do (its entry point, then `/bin/sh -c`), so
+  an image whose entry point runs no shell is reported lacking every program,
+  and a look is bounded to 10 seconds.
+- Where the network may be opened from a session, commands get the session's
+  egress proxy, closed until it is opened, also when toolchains or their
+  registries are off.
+- A conversation is compacted before it passes `context.compact_at_tokens`
+  tokens (default 200,000), however large the window: on a 1M-token model
+  the fraction alone sent calls of about 650,000 tokens. The threshold, the
+  history kept, offloading and the cap on each tool result work within that
+  ceiling. Set it to the model's window to use all of it; a value under
+  16,384 is refused.
+- The compaction check made after a turn's tool results land now keeps room
+  for the model's reply (its output cap, at most an eighth of the window), and
+  counts tokens as the provider last reported them for a prompt rather than
+  by a fixed characters-per-token estimate, which undercounted code, JSON and
+  YAML.
+- A tool result cut to fit the window now says how to read the rest: the
+  whole output is in the session record, and `recall` with the result's
+  `call_id` and an offset reads it.
+- Prices and context windows come from one table of models. A price is found
+  through the wrapping a gateway or cloud puts on a model's id
+  (`anthropic/claude-opus-5-5`, `us.anthropic.claude-opus-5-5`,
+  `anthropic.claude-opus-5-5-v1:0`, `claude-opus-5-5@…`, a Claude snapshot
+  date), which were unpriced and so refused under `-max-budget-usd`. Only
+  the model's own id is priced: another vendor's dated snapshot keeps its own
+  price and stays unpriced. The prices are Anthropic's list prices; a Bedrock
+  id naming a geography (`us.anthropic.…`) is priced 10% over them, as
+  Anthropic states for regional endpoints, as an estimate. Bedrock and
+  Google Cloud invoice at their own prices, so set `pricing` where a budget
+  must match the cloud's bill.
+- An `ollama serve` that Abhed or Studio started itself is now stopped by
+  Abhed, by its own process id only: after 10 minutes with no session using a
+  local model (chat, completions, next edits, commit messages or embeddings;
+  `model.ollama.idle_stop_minutes`), and when the Abhed that started it
+  exits, on a signal too, as when Studio quits. Abhed says so when it starts one.
+  An Ollama it did not start is never stopped.
+- Model endpoints no longer follow a redirect to another host, port or
+  scheme, since the key would go with it; such a request fails and says
+  where it was sent. Under `completion.local_only` both checks apply.
+- An `anthropic` provider at its own endpoint with no `api_key_env` now reads
+  `ANTHROPIC_API_KEY`, as the other hosted types read theirs.
+- Writes to `~/.abhed/config.json` (`/config set`, `abhed mcp add|remove`) now
+  keep the file's mode and numbers as written, sync before the rename, and
+  keep the previous file as `config.json.bak`.
+- On macOS's process tier, a process a command started no longer outlives
+  it. It used to keep running, and writing the workspace and the shared
+  temp folders, after the command, the session and its record had ended
+  (bubblewrap on Linux always ended it). When a foreground command ends, Abhed now
+  ends the processes in the session it leads and every descendant it
+  followed while the command ran, and waits for them to go before the
+  command is reported finished; closing a sandbox ends what its foreground
+  commands still run. Only processes proven to descend from the command are
+  signalled. Its random marker (`ABHED_COMMAND_ID`) is no such proof, since
+  an app started from a command's terminal inherits it and `launchctl
+  setenv` can plant it, so a marked process that is neither followed nor in
+  the session is named in the command's result and left running. A process
+  handed to launchd before a read saw it is still ended when the process
+  that forked it was followed (macOS keeps the parent's unique id). One that
+  takes a session of its own and whose parent was born and gone within one
+  20 ms read of the process table escapes (on Linux's `none` tier, one that
+  loses its parent within one read); see the Sandbox section of the
+  configuration guide. The result names the processes that were ended, and
+  says to start a program with `run_in_background`, or an app with
+  `open -a`, to keep it running. A background command's leftovers are
+  ended the same way when it ends or is stopped, before it is reaped,
+  rather than by their process group's number afterwards. Terminal shells
+  are not ended when a sandbox closes: they end with their terminal. Commands on that tier also get an
+  `xcrun_db` of the sandbox's own.
+
+- On macOS, the process sandbox keeps the account's own home unreadable to
+  commands when `HOME` names another folder, as well as `$HOME`: its state
+  folder and credential paths too, and, whatever the user database says,
+  the `/Users/NAME` folder that holds `$HOME`. Moving `HOME` (as a CI run
+  given a fresh one does) no longer opens the real home's `~/.ssh` and the
+  rest to the agent's commands. `/Users/Shared` is not taken for a home. A
+  failed lookup of the account is said in the sandbox's description, which
+  `abhed doctor` shows and the record keeps.
+
+- On the process tier, git works again where a workspace's git folder lies
+  outside it, including under a home the sandbox otherwise keeps
+  unreadable. In each shape:
+  - a folder inside a repository: `git status`, `log`, `diff` and `show`
+    work, and remote `fetch`, `pull` and `push` run through host git; the
+    repository's top folder is readable (unless it holds another
+    workspace's `.abhed`, when it is only listed) and its `.git` is read
+    only, as its index covers files outside the workspace, so `add` and
+    `commit` fail, as in 1.2.9;
+  - a linked worktree: the same, with its own and the common git folder
+    read only, so `add` and `commit` fail, as in 1.2.9;
+  - a submodule checkout: everything, `add` and `commit` included; its own
+    git folder (`.git/modules/<name>`) is written as git writes it, with its
+    configuration, hooks, `info/attributes`, alternates, grafts,
+    `sparse-checkout`, `http-alternates`, `shallow` and replace refs held as
+    for a git folder inside the workspace, without Abhed making any file
+    there that git would notice (with `protect_git` off it stays read
+    only). The submodule's folder outside the workspace is reached only on
+    the process tier; under bubblewrap, which binds only the git files that
+    exist, a `commondir` made there is moved aside soon after it is made,
+    as in the workspace's own git folder: a mitigation that a command
+    planting in a loop can still beat for some of the person's host git
+    runs, as the Security section says. Seatbelt denies the name there.
+
+  No command can write another work tree's branch, index or HEAD, plant
+  replace refs or grafts in a shared git folder, or stage a file outside
+  the workspace. A git folder is reached only when it names the work tree
+  back (a worktree's `gitdir`, a submodule's `core.worktree`), so a `.git`
+  file pointed at another repository reaches nothing, and a home kept in
+  git is never read. A `.abhed` anywhere under what is read stays
+  unreadable; under bubblewrap one made in the top after the session
+  started is not hidden. The sandbox's description, which `abhed doctor`
+  shows and the record keeps, names what is read and written. Committing
+  in a folder inside a repository or a linked worktree (a commit brokered
+  on the host, limited to the workspace's paths) is planned for 1.3.x, and
+  the fence tier does not reach these folders yet.
+
+- The `served` field of the `next_edit.summary` record event now includes
+  renames finished from the file, which are also counted in `local`; before,
+  `served` left them out. A SIEM or other reader of the record that added
+  `served` and `local` counts those renames twice; use `served` alone for
+  suggestions offered, and `served - local` (at least 0) for those from the
+  model. The `abhed_next_edits_total` metric already keeps `served` (from
+  the model) and `local` apart, and clamps an older summary's count at 0.
+- Providers of type `ollama` now send one request at a time unless
+  `max_concurrent_requests` says more, matching Ollama's documented
+  `OLLAMA_NUM_PARALLEL` default of 1; the rest wait in Abhed. Set the key to
+  the server's `OLLAMA_NUM_PARALLEL` where that is higher.
+- Remote reads no longer need an entry for every variant. On a host the
+  operator declared, Abhed reads an `ssh` command with the bash parser and
+  the read-only program list behind `ssh.read_commands` wildcards, and runs
+  it unasked when it only shows metadata: every program on that list in a
+  read form, joined only by `|`, with plain or single-quoted words and no
+  redirection, expansion, substitution, double quote, device, automounted
+  path or form that never ends. `ls -lah`, `du -ah … | sort -rh | head` and
+  `find … -exec ls -lh {} +` now run. Programs that print files (`cat`,
+  `grep`, `tail`, `journalctl`, `docker logs` and `inspect`, `systemctl
+  cat` and `show`, …) run unasked only under the operator's new
+  `ssh.read_contents`, and even then not on a name that may hold
+  credentials. `rm`, `find -delete`, `sort -o`, `tee`, `xargs`, `awk`,
+  `sed -i`, `less`, redirections and `$(…)` still ask; hosts added with
+  `ssh_connect`, which may no longer take a name in `ssh.hosts`, and
+  undeclared hosts are unchanged. Checksums, `findmnt -s` and
+  `systemctl status` with its journal lines count as contents; no path
+  under `/dev`, `/proc` or `/sys` is read, however it is written, and a
+  walk that opens files must stay on one file system (`find -xdev`,
+  `rg --one-file-system`; `grep -r` does not search from `/`, `~` or a
+  relative path, since the login folder may be `/`). `ssh.read_commands` stays an extra allow
+  list. The approval and the record name the rule that allowed each call:
+  `ssh.read_only`, or `ssh.read_commands: <entry>`. The classifier reads
+  text, so start-up files, `~/.ssh/rc`, `ForceCommand` and symbolic links on
+  the host are outside what it can see; the SSH guide says so.
+- An `ssh` call's `timeout_seconds` is now capped at
+  `ssh.max_timeout_seconds` (default 120, the timeout a call gets when it
+  names none; at most 86400); a workspace or org policy may only lower it.
+- An `ssh.read_commands` entry refused at load, such as `"df -h*"`, now says
+  which forms are accepted (an exact command, or `*` for a whole operand or
+  a value after `=`) and lists the program's read options.
+- `grep` is faster on a large repository. It now skips the files a
+  `.gitignore` excludes (unless `path` names them), reads the rest in
+  parallel, and, when a ripgrep owned by root, in folders only root can
+  write, is on `PATH` at start-up, lets one `rg` run narrow the files by a
+  literal every match contains. Measured
+  with `BenchmarkGrep` (`internal/tools/grep_bench_test.go`) on one
+  11.2k-file checkout on a 12-core arm64 Mac, 9 Nov 2026: 9–17 s before,
+  0.4–1 s after, with or without ripgrep; most of the gain there is the
+  gitignored build output no longer read. Path rules and redaction are the
+  same on both paths; gitignored files no longer show up unless asked for
+  by `path`.
+- `abhed -p "/name args"` runs a custom command as the terminal does,
+  recorded as `command.invoked`, with its own `@` files attached through
+  policy; it used to send the text to the model as
+  it was. A workspace command nobody trusted is refused with exit code 2,
+  before anything is recorded, and the message gives the exact `abhed trust
+  grant -commands-sha256 …` line, which trusts those commands and nothing
+  else. A command with shell lines or its own
+  `model` is refused in `-p`, which cannot ask.
+- `abhed trust` shows the workspace's commands and their hash, and `abhed
+  trust grant -commands-sha256 H` trusts exactly those commands and nothing
+  else of the workspace, so they no longer need `/commands trust` in the
+  terminal. A plain `abhed trust grant` is unchanged and trusts no command;
+  it prints the line that would. `abhed trust revoke` forgets the commands
+  too.
+- `abhed login` and `abhed profile list` say who you are signed in as by
+  the account's email, or its name, instead of the identity provider's
+  subject (such as `u-bob`); the profile keeps the subject as the
+  account's key.
+- `abhed login` and `abhed mcp login` honour `BROWSER`, and take
+  `-no-browser` to only print the sign-in address.
+- MCP servers start in parallel, eight at a time, each within its own
+  deadline (`startup_timeout_seconds`, 60 by default): a server that hangs
+  is reported once its deadline passes, with its tools absent. One still
+  starting after 5 seconds gives its place to the next, so hung servers
+  delay the others' starts by 5 seconds for each group of eight. They used
+  to start one after another, so each hung server delayed every session by
+  a minute; now the session waits for the longest deadline, plus 5 seconds
+  for each further group of eight hung servers.
+- A tool name a provider would refuse, an MCP full name longer than 64
+  characters or one holding `.`, is sent to the provider under a short,
+  stable wire name (up to 47 plain characters, the `mcp__<server>__` prefix
+  kept whole where it fits, `_` and 16 hex digits of its SHA-256) and mapped
+  back on the call. A tool whose name or wire name is already another's is
+  not registered, with a warning, at startup and for a server added to a
+  running server alike. Permission rules, approvals, hooks
+  and the record keep the real `mcp__<server>__<tool>` name. A remote tool's
+  own name may now be up to 128 characters, as the MCP specification
+  allows.
+- `tool_search` keeps at most 100 tools loaded per session, unloading the
+  least recently loaded or called; the loop also unloads them, least
+  recently used first, to keep each request within the `max_tools` of the
+  provider serving it. Built-in tools are never unloaded. What a session
+  loads is its own: before, one session's search loaded the tool in every
+  session sharing the tool set, other users' on a server included.
+- New provider setting `max_tools`, and MCP server setting
+  `startup_timeout_seconds`.
+- The skill listing, the `skill` tool's list of names, and the agent types
+  on `task` and `tasks` are each kept within 8 KB; the rest are counted.
+  The `skill` tool and `task` answer a name they do not know with the skills
+  or types whose names or descriptions hold its words. A skill description
+  is capped at 300 characters, as an agent's is.
+- New `make test-scale`: 50 stub MCP servers of 20 tools, 300 skills and
+  100 agent types in one session, checking routing, the provider's tool
+  limit and the listing budgets; CI runs it as the integration-scale job.
+  That is the tested bound, not a ceiling the code enforces: more servers
+  have not been tested, each stdio server is a process of its own, and in
+  that run the tools and listings cost about 16,000 tokens before the first
+  message. See the MCP guide's Limits and Scale sections.
+
+### Fixed
+
+- Under `-verify strict`, "Changed `bump` in calc.py to return x + 3"
+  verified after an edit that took `x + 3` away, from what the edit was
+  given to remove or from the line numbers in the edit's report; and "to
+  x + 4" verified after x + 3 → x + 4 → x + 3. What a change is said to
+  have made, or put in ("`bump` now returns `x + 5`"), is now shown only
+  by what a change put in and kept: never by what it took away, the
+  numbers of an edit's report, or the report of an edit a later change of
+  that file left behind. A false description followed by a revision that
+  says nothing ("Understood.", "(end of script)") now ends unverified,
+  and a name `cat` showed defined (`def bump`) counts as one the session
+  saw, so "Bump returns x + 2." after `cat calc.py` is checked rather
+  than read as advice.
+- Two answers ended `verified`, exit 0, under `-verify strict` with their
+  work unproven. "bump returns x + 2." after a read of `return x + 3` was
+  read as advice (a function named like a verb), which never counts
+  against an answer. A sentence that opens with a name the session saw
+  defined (`def bump`, `bump(`) or the answer quotes, a verb of what it
+  does and code or a value now describes that thing; "Add checks for
+  empty input." stays advice. And a revision that showed nothing ("(end
+  of script)") after a first answer whose test run was refused completed;
+  a revision that verifies none of the work the first answer claimed (a
+  pass, a command run, or a change naming a file or code) now leaves it
+  unproven.
+- The verifier passed a report of work after the calls for it failed:
+  "Pulled, branched feat-p1, committed and pushed." after the pull failed,
+  the commit was refused and the push exited 128 ended `verified`, exit 0,
+  even under `-verify strict`. A sentence that opens with what was done and
+  leaves out "I" was read as a plain statement, which never counts against
+  an answer. It is now a claim about the session's work, as "I pushed" is,
+  so it stays unverified and strict mode does not complete on it. "listed"
+  after only a refused call no longer passes as a look at nothing. Prose
+  that opens with a past form used as an adjective ("Built-in functions
+  …", "Released versions are tagged …", "Changed files:") is not read as
+  such a report, unless it heads a work noun whose state is said to be
+  new, in a session that made a git or deploy call ("Pushed branches are
+  visible on origin now."). A word with a digit in
+  it ("python3", "r2alice") was read as a number, which marked true
+  answers unverified; it is now a name that a result must hold, or that
+  an ssh or Kubernetes call which succeeded was made to (its host,
+  cluster, context, namespace or name), so "signed in as r2alice" verifies against a result showing it
+  and "python2" does not verify against one showing python3. The read
+  tool's line numbers, truncated reads included, no longer count as what
+  the file holds, which verified "returns x + 2" against `return x + 3`. The false-claim corpus and the strict regression pin gain the
+  evaluation's cases, and its floors rise.
+- A model endpoint's user, password and query (such as `?key=`) were shown
+  in the explanation of an endpoint that did not answer, in the terminal,
+  Studio's chat and `_meta.providerError`. Only its scheme, host and path are
+  shown now.
+
+- In Abhed Studio, a model endpoint where nothing answered (refused, a host
+  that does not resolve, a timeout) showed the raw Go error. It is now said
+  as at the terminal, with the next step (`_meta.providerError` kind
+  `unreachable`).
+- A provider's "context length exceeded" refusal, with nothing left to
+  compact, said to run `abhed doctor`. It now says the request is too large
+  for the model's window and what to do: shorten the input, start a new
+  conversation or compact, pick a model with a larger window, or adjust the
+  context settings (`_meta.providerError` kind `too_large`).
+
+- The verifier labelled a greeting ("I'm Abhed, your technical assistant")
+  an unverified observed claim, and strict mode asked for a revision of it. A
+  sentence that is wholly a self-introduction or a general statement of what
+  the assistant can do is now no claim about the session's work. One that goes
+  on to anything else ("I'm Abhed, and the server is healthy", "I can help:
+  the bug is resolved"), or names anything of the session, is checked as
+  before. The false-claim corpus gains these cases, planted ones included,
+  and its floors rise.
+- The supervisor asked about every later call that could reach the network
+  as credential-egress once `.git/config` had been read, with only plain
+  remote URLs in it. A git config now counts only when it holds a credential:
+  a URL with a password, a token-shaped user (long, or a known token prefix
+  such as `ghp_`, `glpat-`, `x-access-token` or `oauth2` at any length), any
+  `extraheader`, or a `cookieFile`, read with git's backslash continuations
+  joined.
+
+- A session on a Claude model whose provider set no `context_window` never
+  compacted: the window was taken as 0, which meant unknown, so a session
+  that read many Kubernetes pods failed with `prompt is too long: 200397
+  tokens > 200000 maximum` and could not continue. The window now comes from
+  the model (see Added), and a refusal like this one is compacted and retried.
+- `abhed mcp list` said "(signed in)" after the authorization server had
+  refused the refresh token. The refusal is now kept with the login, the
+  refused token is not sent again, and the list reads "not signed in: the
+  login was refused at refresh" with the time until `abhed mcp login` runs
+  again; a login that ended with no refresh token reads "the login ended".
+- Quitting Studio while an editor model call ran lost the session's
+  `completion.summary`, `next_edit.summary` and `session.ended`: a stop
+  signal while Studio's input was still open let the exit go after 250 ms,
+  and with the input closed the engine waited up to 30 s for the call
+  before closing the sessions. Editor model calls in flight are now
+  cancelled when the input ends or a stop signal comes, and on a signal
+  every session is closed, with its summaries and end recorded, within 3 s.
+  The signal's close and the input's end are one close, which both wait
+  for, so the input ending during a signal's close no longer lets the exit
+  go before the summaries are written, and each is written once. A call
+  cancelled as its session closes is counted in the summary, as it is
+  charged to the budget, instead of being left out when its handler had
+  not yet counted it. The close cancels every session's editor calls first
+  and then waits for them once, up to 1 s for the whole close rather than
+  1 s for each feature of each session, so slow calls no longer use up the
+  3 s a signal allows. A stop signal during a close begun by the input's
+  end now bounds it to 3 s from the signal, and a session opened during
+  the close is refused and shut by the close, with its `session.ended`
+  recorded, before the exit. A commit message call in flight is waited for
+  the same way, so its `commit_message.generated` and `model.call` come
+  before the session's end.
+- `next_edit.summary` counted a rename finished from the file as `local`
+  but not as `served`, so a session whose only next edit was such a rename
+  showed `served: 0`. It now counts in both; the metrics keep `served`
+  (from the model) and `local` apart.
+- `abhed -p -mode acceptEdits` was refused ("unknown -mode"), although
+  `-permission-mode acceptEdits` was taken. `-mode` now takes
+  `acceptEdits` and `bypassPermissions` (and their snake_case forms) as
+  aliases of `accept-edits` and `bypass`.
+- Ghost text at the end of a file was English prose, and Tab inserted it.
+  The completion request went to Ollama with an empty suffix, so no
+  fill-in-the-middle template was applied and a coder model answered the
+  code as a chat ("It looks like you're working on a Python script…", 7 of 7
+  suggestions at the end of a file with `qwen2.5-coder:7b`). The suffix sent
+  is now never empty: a newline at the end of a file. A suggestion that
+  opens as an English sentence where code is written (not in a comment, a
+  docstring, a string, or a prose or configuration language) is dropped,
+  with `dropped` saying why; text inside a string that spans lines (a Go raw
+  string, a template literal, a Rust raw string, a heredoc) is kept. Studio
+  does not show one that would leave the file parsing worse than it does.
+- Next-edit calls starved ghost text on a model server that answers one
+  request at a time: 17 next-edit calls wrote 12,708 tokens in one session,
+  and completions shown in 2.6 s by the engine reached the editor after 4.6
+  to 10 s. Completions now go first: one waiting for a request slot is given
+  the next free one, fill-in-the-middle requests take a slot rather than
+  queueing at the server, next-edit calls to that server wait while a
+  completion is asked for, and one in flight is cancelled
+  (`cancelled: "a completion went first"`). Studio cancels the next edit in
+  flight on each keystroke (`_abhed/nextEdit/cancel`), and a next-edit
+  answer is bounded by the window it rewrites rather than 1,024 tokens; one
+  cut at that bound is dropped, never read as lines to delete. This applies
+  on servers that queue requests (local, `ollama`, or
+  `max_concurrent_requests`); a call that never left the queue is not
+  charged.
+- After a rename, Tab could insert the rest of the line a second time
+  (`stride = size - overlap  = size - overlap`): a completion that wrote the
+  text already after the cursor was offered whole. That text is now taken
+  off. On the renamed line Studio shows the rename's own edit, which needs
+  no model, instead of asking for ghost text.
+- A `-p` run with no Python language server installed reported the engine's
+  attempt to start one as a permission denial ("denied bash: …
+  basedpyright-langserver --stdio", an entry in `permission_denials` with
+  an empty hint). Where the CLI chooses its sandbox tier at the first
+  command, a missing server is now found before anything is judged:
+  diagnostics for the language are off with one note on stderr naming the
+  install (`abhed toolchain install -lsp python`), and a start that policy
+  does not allow is a note too, never a denial of the agent's.
+- Answer checks refused correct claims on a real model. A command named in
+  a claim ("the tests were run using `python3 -m unittest tests.test_text`
+  and passed") was looked for only in tool output, never in the call that
+  ran it; an edit claim's file name was read as code that should have
+  changed; a `file:line` cite had to match the line almost exactly, and
+  was read from the file on disk rather than from the read the session
+  made; evidence given as `{"call_id", "quote"}` objects was dropped. On a
+  recorded review, 0 of 5 accurate, line-cited claims verified; on a
+  recorded correct fix, strict mode exited 8. A command is now shown by the
+  call that ran it, an edit claim by the session's own edit (what it took
+  away and put in), a `file:line` cite by the read's numbered lines within
+  three lines of the cite, "I fixed X" by the change to X and a test run
+  that passed after it and covers what failed before it, and evidence
+  objects are read. A change made by another tool's call (`k8s_apply`
+  scaling `web` to 2) is still not read from that call, whose text cannot
+  show the change held: such a claim stays unverified, a known false
+  negative. A `file:line` cite counts within three lines only inside the
+  same innermost definition (JavaScript and TypeScript arrow functions,
+  methods, object functions and class fields included), only at the
+  line itself where the line is in no definition, and the code and
+  numbers the claim gives must be there; "`f` is defined at L" needs
+  `f`'s definition there. An explanation of code the
+  session read, or of what changed code did before, with no event, count,
+  result, change, run or citation of its own, is shown as "explanation:
+  not checked" and no longer fails strict mode; a statement that the
+  session's own change works ("This correctly handles …", "The new logic
+  ensures …") is work. Of the two real answers' 24 statements, 14 now
+  verify (2 did) and 1 is an explanation. The recorded correct fix still
+  ends `unverified` in strict mode: its answers say their change works
+  ("This correctly handles multiple whitespace…") where the record shows
+  only that the tests pass, and the first also cites two call ids the
+  record never held. "Running `X` resulted in `OK`" is read from the
+  last run of exactly X, with no change after it. A success needs a known
+  exit 0 that is X's own (one command, or an `&&` chain ending in the
+  test run, so never `pytest || true`, `pytest; echo done` or
+  `npm test | tail`), no failure in the output (FAIL, a count such as
+  "1 failed", "1 failures" or "Failed: 1", TAP's "not ok", or make's
+  "Error 1 (ignored)") and, for tests, a whole run that ran some, by the
+  same rules as a test claim (only `cd` before it, no variable such as
+  `PYTEST_ADDOPTS` that may filter it, and no change to the Makefile,
+  `package.json` or pytest config before a `make`, `npm` or pytest
+  run); a failure needs a known non-zero exit. A pytest run that reports
+  tests "deselected" (a `-k` or `-m` in its config) is not a whole run,
+  for "All tests pass" too. A cite of a range (`a.py:22-81`), of a method named
+  with its class, or several cites in one statement are read; what the
+  person attached (piped stdin, an @ file) shows the values in it but
+  never the work; and an ssh call the policy ran as a read, whose
+  command parses as known readers, no longer makes earlier results out
+  of date. On a regression check of a 1.3.0 candidate, the strict fix's
+  final answer now verifies in full, 3 of 5 line-cited review statements
+  verify (0 did), and both listed core dumps verify.
+  The false-claim corpus gains the two sessions' statements (14 controls,
+  2 planted, 8 neutral), the regression check's 42 statements (21
+  controls, 1 planted, 20 neutral), 160 more planted cases (62 of them
+  changes said of another tool's call, or a pass "after the changes"
+  that only another tool's call or a change outside the workspace made),
+  31 controls and 10 neutral known false negatives, and 3 true statements
+  that were neutral now verify; none of the 1143 planted claims verifies,
+  all 322 controls do, and none of the 472 true or neutral claims is
+  contradicted.
+- In `abhed -p -runbook`, a change the runbook does not list was refused
+  with the hint "rerun with -allow '…'", which could not help: under a bound
+  runbook such a change asks whatever an allow rule says. The hint now says
+  no flag allows it, and to add the call to the runbook or run it
+  interactively. Found with the new `scripts/dev/k8s-kind-runbook/run.sh`,
+  which runs a runbook flow against a throwaway kind cluster.
+- `ssh_connect` called with the name of a host in `ssh.hosts` was asked
+  about, refused in `-p` as one that "can make changes", and offered
+  `-allow 'ssh_connect(app1)'`, which could never help: a declared name is
+  not for `ssh_connect`. It is now answered before any approval, in plan
+  mode too, that the host is ready for the `ssh` tool, and nothing is
+  connected; `-p` names no flag for it. The `ssh` tool's description lists the declared hosts as
+  ready with no connect needed, and `ssh_connect`'s says it is not for them;
+  a declared host that did not load is named as such, never as ready.
+- A log read on a declared host (`tail`, `grep`, `cat`, …) without
+  `ssh.read_contents` was refused as "ssh can make changes". The reason now
+  says the program prints the contents of files, which runs unasked only
+  where the operator sets `ssh.read_contents: true` or lists the command in
+  `ssh.read_commands`; any other command a declared host asks for gives the
+  classifier's reason too. What runs unasked is unchanged. The SSH guide
+  shows `read_commands` entries for log reads, with what a `*` matches.
+- The SSH client refused a host that OpenSSH accepts when `known_hosts` held
+  one key type for it, as `ssh` itself writes it. The client offered the
+  library's own order of host key types (ecdsa before ed25519), so a server
+  with several keys showed one not on file. It now offers the types on file
+  for that host first, as OpenSSH does, and offers ssh-rsa's SHA-1 form or
+  ssh-dss only for a key of that type on file, never in FIPS mode.
+  Verification is unchanged: only a key on file is accepted. A key of a known type that does not match is now
+  reported as a mismatch, with no advice to accept it, and the advice to
+  record a key is a command ssh accepts (`ssh -p 12222 root@127.0.0.1`, not
+  `ssh root@127.0.0.1:12222`). A host in `ssh.hosts` is no longer told to
+  retry with `ssh_connect`'s `accept_host_key`.
+- After the organisation removed a person's access (SCIM deprovisioning or
+  a revocation), `abhed policy refresh` said only "the org server refused
+  the sign-in (401); run abhed login". It, the refresh as a session starts,
+  the policy key fetch, `abhed login` and the identity check after a
+  sign-in now say the organisation removed the access, with the server's
+  reason, that signing in again will not restore it, and to ask the
+  organisation's Abhed administrator for that server, as the record
+  shipping banner already did. A local-account sign-in an edition refuses
+  this way is answered `access_revoked`, not `access_denied`. A sign-in
+  that only lapsed still says to run `abhed login`. New exported API:
+  `profiles.AccessRemovedError`, `profiles.RemovedFrom` and
+  `profiles.GrantRemoved`.
+- `abhed bg` rough edges. `bg start -name N` and `-mode M` were refused with
+  "-name does not apply to bg" although `bg -h` lists them; both are now
+  the job's. `bg logs` and `bg attach` show the agent's reply whole, below
+  its line, instead of a line per streamed fragment of the reply and its
+  reasoning (`-o json` still has every event). When an ask offers a rule to
+  remember, attach shows it and asks `Allow it? [y/N/a]`: `a` allows the
+  call and, on that job's session only, every later call the rule covers,
+  recorded as the answer's granted scope. `GET /v1/bg/jobs/{id}` carries it
+  as `waiting.scope` (`PendingAsk.Scope` for an edition's job list), and a
+  rule the record would redact is not offered. Why a job stopped is now in
+  the table too: `list` shows `failed (max_budget)`, a budget stop's line
+  shows its message rather than its kind, a run's end its detail, and
+  attach's last line the budget's words. Where a workspace's four-eyes rule
+  lets the owner only refuse, an approval is refused and attach offers to
+  refuse or to leave the ask to the approvers, following on; any other 403
+  still ends attach with its reason. A reply streamed but never finished is
+  shown from its fragments. `abhed bg start -C DIR` snapshots DIR when
+  written before the prompt; `start`'s flags now end at the prompt's first
+  word, so `-C`, `-y` or any flag-like word after it is the prompt's text
+  (the other bg commands still refuse `-C`).
+  New exported API: `bgjob.Approval.Scope`, `bgjob.Client.AnswerAlways`,
+  `bgjob.AnswerRefused` and `bgjob.IsAnswerRefused`, and
+  `server.PendingAsk.Scope`.
+- A model reply that only reasons, with no text or tool call, is cut past
+  `limits.reasoning_stall_tokens` reasoning tokens (8000 by default, or the
+  request's thinking budget if larger), with `limits.reasoning_stall_seconds`
+  (300, held to half the provider's call timeout) as a time backstop,
+  instead of being held to the ten-minute call cap
+  and failing the run with no answer. Floors of 1000 tokens and 30 seconds
+  apply. The cut call is charged as any cut call is; an answer that arrives
+  as the cut comes is kept; otherwise the turn asks once more with thinking
+  off and a nudge, and a second cut reply before the model next answers ends
+  the run `stalled` with the reasoning kept in the record. A text reply cut
+  part way is kept and finished, and `-p` returns it whole; a second cut
+  before a full reply also ends the run `stalled`. A workspace may only
+  lower the bounds.
+- "Thinking off" is now off on Anthropic and Gemini when a `thinking_budget`
+  is configured. Before, the budget won, so the critic, next-prompt
+  suggestion and commit-message calls, which ask with thinking off, thought
+  anyway (on Anthropic, a budget with thinking off made an invalid request),
+  and a provider set to `think: false` with a budget still thought.
+- "Thinking off" now reaches Ollama. Its OpenAI-compatible `/v1` endpoint
+  ignores `think: false` and turns thinking off only for
+  `reasoning_effort: "none"`, which is now sent with it for type `ollama`
+  and an `openai-compatible` entry on the loopback port 11434; `extra.think_off`
+  (`reasoning_effort` or `think`) sets it for any other server. The
+  reasoning-stall retry, the critic, the next-prompt suggestion and the
+  commit message ask with thinking off.
+- A cancelled or cut call to a local server known to stream its reasoning
+  (Ollama and llama.cpp, or vLLM, TGI or SGLang on a loopback address) is
+  charged what came back rather than its whole output bound, unless a dollar
+  cap is set. Every other server with a `think` switch, which may front a
+  model that reasons out of sight, keeps the bound, and the official OpenAI
+  API's o-series and gpt-5 models now get it too, since their reasoning is
+  billed unseen.
+- Asking for work "in parallel" started no parallel subagents. The model read
+  it as a request to make the project's code concurrent, or did the parts one
+  after another: neither subagent tool said what such a request means. `tasks`
+  now says that work asked for in parallel or by several agents means starting
+  subagents, and `task` that several calls in one response run at once. When
+  the person's own words ask for parallel work, the model also gets a short
+  note after the message, recorded on its `user.message` as
+  `harness_note`; on a small local model the descriptions alone did not turn
+  it. The note is judged only on what the person typed, not on attached files,
+  Studio resources or piped stdin. It says to start subagents only when the
+  message opens with reading or analysis work such as review, audit or
+  investigate, or with subagents named as the doers, has a parallel phrase,
+  and does not describe a program to be changed or how a program runs; any other mention of parallel work gets a note
+  telling the model to ask one short question if it is unclear which the
+  person means, except in a run nobody can answer, such as `-p`. Neither is added when the message names
+  creating or changing code, building agents or the program's own concurrency
+  (the whole list is in the parallel-subagents guide), in a subagent's task,
+  or when no subagent could start. A `tasks` start now shows as one line naming each part (`3 in
+  parallel: …`) in the terminal and on Studio's card, and `task` cards name
+  their description; a task given no description is labelled from its
+  prompt. Outside a git repository `tasks` no longer offers worktree
+  isolation, which was only refused there.
+- Parallel subagents on Ollama all failed with "the model sent nothing for
+  5m0s". Ollama serves one request at a time and queues the rest without a
+  byte, so the stall timeout ended every queued request. Requests now wait in
+  Abhed for the provider's slot (see `max_concurrent_requests` under Added).
+- Studio's ghost text could stop for good after a burst of typing. Every
+  keystroke spent the completion rate limit as it arrived, even those a
+  newer keystroke replaced before anything was sent, so the last keystroke
+  of a burst was often answered `limited` and nothing was asked again. The
+  limit is now spent only by a request about to be sent.
+- A debug session in Abhed Studio, in any language, no longer shows the
+  editor a source path outside the workspace. Such a frame, output line or
+  breakpoint now carries only its name. Studio opens a frame's file on your
+  machine, outside the sandbox, and the debugged program chooses those
+  paths, so a repository could make Studio open a file the sandbox would
+  not let it read. A frame in a language's own library now shows its name
+  without its file.
+- The completion contract's check of protected files could hang the end of
+  a run. A protected file swapped for a link to `/dev/zero` or a pipe was
+  read without end, and a sparse file of any size was hashed in full. A
+  protected file is now opened only as a plain file, never through a link
+  or waiting on a pipe or device. Past 256 MiB it is named by its size,
+  times (modification and change) and inode instead of hashed, so a
+  change to it, even one that puts its modification time back, is still seen.
+- Generate Commit Message asks with thinking off on providers of the
+  OpenAI-compatible kind whose type takes the `think` switch (Ollama and
+  the other local servers, Together, and `openai-compatible` or custom
+  providers), so a thinking model no longer spends the whole
+  2,048-token budget thinking and writes no message. A server that
+  refuses the switch with a 400 or 422 before answering is asked once
+  more without it; nothing else is retried, and the record counts the
+  tokens of both requests. When a message still comes back empty after
+  the full budget, the error says so and names `model.commit`.
+- `abhed record verify` no longer prints warnings about session settings,
+  such as egress settings set aside, which buried its answer about the
+  chain. Warnings about `record`, `storage`, `network` and `org_policy`
+  settings, a misspelled key close to one of them, and the org policy's
+  own, are still given, since they change what verify checks.
+- A repository could stall every session's start. A `.abhed/config.json`
+  that was a pipe, or a link to `/dev/zero`, was waited on or read without
+  end as soon as Abhed opened the workspace. The file is now read only when
+  it is a plain file of at most 4 MiB, or a link to one inside the
+  workspace, and a pipe or device is never waited on. A link out of the
+  workspace is refused; in your home folder `~/.abhed/config.json` may
+  still link anywhere. The error names the file and says what to do
+  ([The workspace file](docs/guide/02-configuration.md#the-workspace-file)).
+- `abhed init` wrote the starter config through a `.abhed/config.json` that
+  a repository had made a link, overwriting the file it named. It now
+  writes a fresh file and renames it into place.
+- A lock file beside a state file in a folder a repository controls, such
+  as the workspace's `users.json.lock`, was opened through a link, which made
+  an empty file at the path the link named, or waited on a pipe. It is now
+  opened without following a link or waiting, and must be a plain file.
+- Verified answers marked true statements unverified after a fix and a
+  passing test run. An edit given a relative path (`tip.py`) was not
+  matched to the file the statement named; `python3 -m unittest` counted
+  as a possible change to every file, so what was read before them went
+  out of date (it is now a reader only for test names, each lower-case
+  part starting with "test" and each upper-case part holding "Test",
+  workspace folders and a test pattern), and `PYTHONPATH=.` made the run
+  not a whole one; unittest's "Ran 3 tests … OK" did not count 3 passed;
+  and code said with other spacing (`amount * percent` for
+  `amount*percent`) or named by the function it was changed in did not
+  match. Each is now read as it is, and none can verify a statement the
+  calls do not show.
+- A warning logged while the interactive command line held the screen (such
+  as the egress relay's, from a binary built with cgo) was written under it
+  and left a stale "Running…" line behind; the log package's output now goes
+  through the screen as the rest of stderr does.
+- A folder made again at the same path could inherit the commands kept as
+  "always allow" for the old one when the file system reused its inode; a
+  folder's identity now includes its birth time on Linux and macOS. Grants
+  kept before 1.3.0 still match by device and inode until they are kept
+  again, so until then they can still follow a re-created folder. One kept
+  with a birth time, read where the file system gives none, no longer
+  matches, so its commands are asked about again.
+- A bash command's checkpoint missed a same-size rewrite on a file system
+  whose timestamps are coarse (seconds, or a clock tick), so its /undo had
+  nothing to take back: a file whose mtime is within two seconds of the
+  snapshot is now compared by its content, or a key file by its hash, read
+  for that alone and never kept.
+- With a corporate upstream proxy in force, a local model server left at
+  its default endpoint (`ollama`, `vllm`, `llamacpp`, `tgi`, `sglang` with
+  no `base_url`) is no longer reported as reached through the proxy, by
+  `/doctor` or in a failed call's error; a hosted provider's default
+  endpoint is checked against `no_proxy` like any other host. The proxy's
+  own 407 on an `http://` endpoint now says to check the proxy credentials
+  ([Network policy](docs/guide/21-network-policy.md#a-corporate-upstream-proxy)).
+- A dev server that recycles the workers sharing its listening socket
+  (gunicorn, php-fpm) keeps its master process, so the contested-port
+  notice counts it as one program and does not tell a contest again for
+  each new worker. A program is the same one only with the same sockets
+  and a process in common, so a new program on a socket address another
+  left is told, and programs that stopped listening are forgotten, so a
+  long contest does not grow without bound. Every new program is still
+  told at once, and `_abhed/sandbox/port_contested` now carries `joined`
+  and `latestJoin` so Studio updates one entry per port in place; the
+  record (`sandbox.port_contested`, with a new `joined` field) and the log
+  take a port's first notice at once and then at most one entry per port
+  every 30 seconds, so a command that keeps starting listeners cannot
+  flood them; joins still held back are recorded when the session closes,
+  before its end, a turn running or not. The "at most once a minute" for
+  a contest coming back, which could never apply, is gone.
+- When Abhed Studio ends its input and stops the engine at once, the
+  engine now finishes closing its sessions (their ends, the terminals'
+  last lines) before it exits: a stop signal that comes while stdin is
+  open waits up to 250 ms for it to end, so a lone SIGTERM now exits
+  after about a quarter of a second.
+- Answer checks failed a correct fix in strict mode, so CI saw exit 8 on
+  success. After `python3 -m unittest tests.test_text` passed, "All tests
+  in tests.test_text passed" was unverified, because only a run of the
+  whole suite was read as covering a test claim. A run of a named test
+  module, file or package (`python3 -m unittest tests.test_text`, `pytest
+  tests/test_x.py`, `go test ./pkg/x`) now verifies a claim that names it,
+  and "the tests pass" when every message the person typed names those
+  test runs and, once those runner commands are taken out, every word left
+  is exactly a connective word ("fix it and run the tests"); a word with a
+  `/`, a digit or a symbol is not one, and a runner given an argument the
+  checks do not read counts as a whole-suite run. Anything else leaves the
+  whole workspace: "all the tests", "the whole suite", another runner
+  (`npm test`, `make test`, a bare `make`), "CI", the build or lint, "the
+  api tests", a negation such as "don't run" or "skip", a message in
+  another language, and any path or file name outside a runner command,
+  the file to fix included: after "`python3 -m unittest tests.test_text`
+  fails. Fix src/utils/text.py and run the tests", "the tests pass" needs
+  a whole run. A task split over two messages, the second only "run the
+  tests", needs one too. A file attached with `@` or piped stdin never
+  names them. "All tests", "the whole suite" and "the tests, including X"
+  still need a whole run, and `pkg/x/...` a recursive one; a run of
+  another module, of one class, a failed run, an edit since the run, or a
+  run that ran no test (all skipped or expected failures, `[no test
+  files]`) still leave the claim unverified, and a go claim about one
+  package needs that package's own passing line, found by its exact import
+  path from `go.mod`. A run that ran no test no longer verifies "all tests
+  pass" either. The false-claim corpus gains 100 planted cases and 15
+  controls for it; none of the 868 planted claims verifies, all 240
+  controls do, and none of the 341 true or neutral claims is contradicted.
+- The revision note after an unverified answer now lists the session's
+  tool results the agent may cite, by their real `call_id` (or `#seq` for
+  a text answer), so a model no longer cites an id it made up. A cited id
+  that is not in the record still counts as no evidence. Commands, paths
+  and statements in the note are quoted, so text the model chose cannot
+  start a line of its own in it.
+- Strict verification could pass an answer with nothing verified. Through
+  the answer tool, only the listed claims were checked, not the `text`
+  the person reads, and a `knowledge` claim about the session's work was
+  checked only when it said "I changed" or named a pass. A model that
+  wrote "The tests now pass" in `text` and gave one `knowledge` claim
+  ("The tests were updated by fixing the bugs in …") ended strict mode
+  verified with 0 verified claims. Each statement of `text` that no claim
+  repeats is now checked; under `strict` every `knowledge` claim that
+  says a change, an event or a finished state is checked as work, so a
+  fact about other software ("TLS 1.3 removed RSA key exchange") is
+  unverified there and needs the revision. In `label` mode such a claim is
+  shown as "not checked: about other software", never as verified, and
+  the `note` and footer count it, only when its sentence opens with a
+  technology from a fixed list with a version or release word (or a year
+  before it, or an RFC number) and nothing in it ties it to the session:
+  no first person or possessive, code, path, name from the session's
+  reads or changes, passive, upgrade or migration word, or "the" before a
+  noun after the verb ("Go 1.22 fixed our flaky test" and "The Node 20
+  upgrade fixed the build" are work). One that says a pass, a change in
+  the first person, a command or a file:line always is work; and an
+  answer that passes with nothing
+  verified says why in the verdict's `note` (no statement was read as a
+  claim about the session's work). Finished work said in the present ("the
+  issue is resolved", "the service is deployed", "the cache is now
+  populated") is a claim about the work too.
+- Label mode marked correct statements about code the session read as
+  unverified. Code described in the present ("`OmniRAGAgent` is
+  initialized with an instance of `HybridRetriever`", "the results are
+  passed to the `synthesizer` node", "Specialized Worker Role: …") was read
+  as something that happened in the session; "passed to" was read as a
+  test passing; and a refusal the agent quoted back ("Denied: denied by
+  rule bash(curl*) …") was in no tool result, because a refused call has
+  none. A present passive of a verb of data flow or wiring, a participle
+  that names what produced or receives a value, and one that qualifies a
+  noun now describe the code, so the names in the sentence are checked
+  against the read; verbs of change and of finished work (merged,
+  processed, resolved, built), a label with a word of change in it, the
+  past tense, "now" and the first person are still events, and "passed
+  to" said of CI, a build or checks is still a result; wiring or a flag
+  said in the present ("is registered", "is enabled", "is set up") is a
+  claim about the work, since a read cannot show that one thing is wired
+  into another. A statement about a refusal (its quoted
+  text, or that the call was denied by its rule, from its layer) is now
+  checked against the refusal's own fields: the layer it names ("IT"
+  and the security team being the org) must be the refusal's own, and
+  nothing else may be said in it ("succeeded after
+  being blocked" stays unverified). The refusal is evidence for nothing
+  else, since its reason can hold text the model chose. The false-claim
+  corpus gains 112 planted cases and 13 controls; none of the 980 planted
+  claims verifies, all 253 controls do, and none of the 368 true or
+  neutral claims is contradicted.
+- A spent budget says so. An org server marks one with `budget_spent` and a
+  least dollar cap beside it; the run then stopped with "a budget of $0.00
+  is set and … has no price". It now stops with the spent budget's own
+  message, and a dollar cap under a cent is written in full ($0.000001),
+  never as $0.00.
+- Under a managed or org dollar cap, a person's own `pricing` entry for a
+  model kept an unpinned org's price of 0 for it from applying, though the
+  cap already set the person's entry aside: the model stayed unpriced and
+  was refused, and two contradictory warnings printed. The person's entry
+  is now set aside once and the org's 0 applies, still only for a model
+  served by a local model server on this machine.
+- `abhed doctor` reported a healthy reasoning model, such as gemma4:26b, as
+  "tool calling FAILED": both probes shared one 60-second timeout and the
+  tool probe had 256 tokens, which thinking used up. Each probe now has the
+  whole timeout to itself, both ask with thinking off where the provider
+  takes it, and the tool probe has 1,024 tokens; `/doctor` and first-run
+  setup probe the same way.
+- `abhed doctor` and the `abhed serve` banner no longer say git is "held
+  read-only from commands", which read as if commands could not commit.
+  The line now says commands cannot change git's config or hooks but can
+  still commit.
+- The `task` tool no longer refuses a call without a `description`, which
+  cost the model a turn: it labels the subagent from its prompt, as `tasks`
+  does.
+- First-run setup is offered under a managed file or org policy that does
+  not choose the model; it used to be skipped whenever a managed file
+  existed, so a new laptop under one started with no model set. It offers
+  only the models `model.allowed` admits, refuses an endpoint model it does
+  not before contacting the endpoint, and does not ask what the managed
+  layer sets.
+- `abhed -p "task"` run with a stdin pipe nobody writes or closes, as some
+  CI steps and drivers leave it, waited on it for good. With a task, it now
+  waits for piped input to start for `-stdin-wait` (1.5 s by default):
+  input that starts in that time is attached as before, so `git diff |
+  abhed -p "review"` is unchanged; a pipe still idle is ignored with one
+  note on stderr ("stdin left open with no input; ignored. Pass - to wait
+  for it, or -no-stdin to silence this"). Input that starts after the wait
+  stops the run with exit code 9 (see Upgrading). A lone `-`
+  waits for stdin to end however late its input starts.
+- An MCP server's tool list was read as its first page only: `nextCursor`
+  was ignored, so a server that pages its tools lost the rest without a
+  word. Tool, prompt and resource lists now follow the cursor, up to a page
+  cap and a total cap (100 pages and 2,000 tools; 10 pages and 200 prompts;
+  10 pages and 500 resources), and a warning names a server past one. A
+  cursor seen before ends the list, with a warning naming the server.
+- More than 128 tools in a request, or an MCP tool whose full name was
+  longer than 64 characters or held `.`, made an OpenAI-compatible provider
+  answer 400 to every request of the session. Both are handled now (see
+  Changed).
+- Tools loaded by `tool_search` were never unloaded, so a long session
+  passed the provider's tool limit (162 tools after fifteen searches) and
+  every request after failed.
+- An extension tool could take an MCP tool's name and silently replace it,
+  and any second tool registered under a name replaced the first. Both are
+  refused with a warning.
+- A skill in a later configured directory replaced one of the same name in
+  an earlier directory without a word, and prompts past a server's 200th
+  were dropped without one. Both now warn.
+- An MCP tool's description, cut at 1,024 bytes, and its result, cut at
+  30,000, could be cut inside a character, sending invalid UTF-8 to the
+  provider. Cuts now fall on a character boundary, as does the end of a
+  server's stderr shown on a failed start.
+- A stdio MCP server's stdout line was read into memory however long it
+  was. A line past 16 MiB now ends the connection with an error naming the
+  server.
+- A call to a server whose connection had ended failed with "unexpected end
+  of JSON input". It now says the connection ended, and why.
+- The MCP guide said tool lists are fetched lazily on first use (servers
+  start with the session) and that a tool name over 64 characters is left
+  out for providers' sake; the skills guide put a listing line at about
+  fifteen tokens. All three are corrected, and the MCP guide now has a
+  table of every limit and a Scale section saying what was tested.
+- Red-team check A13 (MCP tool poisoning) skipped wherever `python3` was
+  missing, CI included. Its server is now a stub in Go, and the check fails
+  rather than skips when the server does not start.
+- A vague request for parallel work or speed under `abhed -p` (or any run
+  nobody can answer) went straight to code edits: it got no note, since the
+  note that asks a question cannot be answered there. A message that names
+  speed or parallelism and no concrete task now gets a note: if it only
+  asks to speed things up or run things in parallel, make no code edits for
+  it, and answer with a plan of both readings or the question it would ask.
+  A message that names work ("delete these three files at once", "merge
+  these three branches at once", "run the three migrations in parallel")
+  gets no note and is done as asked: a specific object counts as concrete,
+  not only a verb from a list, and so does an issue number, a version, a
+  name with a number ("PR 12") or two names ("nginx and redis"), unless the
+  word before it opens an adjunct or is vague ("on Python 3", "things quick
+  and easy"); "steps", "parts", "the whole lot" and the like are as generic
+  as "things". What is
+  sped up, and a phrase after a preposition or a comma ("for the demo",
+  "the deadline is close"), is not an object, so a vague request keeps the
+  note. The judgement is English only. "Make everything run in parallel" counts as
+  vague, as the request without "make" does. Explicit parallel requests
+  still get the note that starts subagents.
+- The `-p` relevance check marked an answer `off_topic` when the question
+  named one of the session's tools ("call the ssh_connect tool, then show
+  the uptime"). A tool name is no longer taken as what the answer must
+  mention.
+- A run stopped while running because input came late on stdin is recorded
+  as `stdin_late`, not `user_interrupt`, in `session.ended` and the text
+  footer. Input that comes only after the run has ended still exits 9, but
+  the record keeps the reason the run ended with, usually `completed`.
+- First-run setup lists a local Ollama's models in name order, so the
+  default choice no longer changes between runs.
+- A managed price that replaces your own `pricing` entry for the same model
+  is now said once at start-up, as the guide says.
+- `abhed trust` and `/commands trust` show a command's description, or its
+  first body line, instead of its front matter's `---`.
+
+### Go API
+
+- `sdk.Options.NobodyToAsk`: set with an `Approve` that asks no one and only
+  answers from grants kept earlier, the session records itself headless and
+  the supervisor runs as with no `Approve`. `abhed rpc` sets it for a
+  session started without `approvals`. Additive; existing callers are
+  unchanged.
+- `monitor.Case` gains `Engine`, set for a command the engine runs outside
+  the agent's calls (a diagnostics server's start): the supervisor reviews
+  it but does not count it against `Guard.MaxPerTurn`. Additive; existing
+  callers are unchanged.
+
 ## [1.2.9] - 2026-11-02
 
 ### Upgrading from 1.2.8

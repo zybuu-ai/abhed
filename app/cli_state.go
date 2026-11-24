@@ -19,15 +19,18 @@ import (
 
 // cliState carries what the slash commands need across turns.
 type cliState struct {
-	store     server.EventStore
-	appCfg    config.Config
-	loop      *agent.Loop
-	sessionID string
-	total     agent.Usage
-	undo      *agent.UndoLog
-	workspace string
-	adapter   model.Adapter
-	provider  config.ProviderConfig
+	// cfgSeen is the person's configuration file as this session last saw it.
+	cfgSeen    []byte
+	cfgSeenSet bool
+	store      server.EventStore
+	appCfg     config.Config
+	loop       *agent.Loop
+	sessionID  string
+	total      agent.Usage
+	undo       *agent.UndoLog
+	workspace  string
+	adapter    model.Adapter
+	provider   config.ProviderConfig
 	// open starts the loop for session id, whose record goes on after seq
 	// after (0 for a new one), and makes it the conversation.
 	open func(id string, after int64) *agent.Loop
@@ -91,6 +94,9 @@ type cliState struct {
 	// labelID and label are what the footer calls session labelID, kept
 	// where the store is a database rather than asked after every turn.
 	labelID, label string
+	// continueOnly is a -p run with no task: a conversation that cannot be
+	// continued is refused before any branch of it is written.
+	continueOnly bool
 	// copiedID is the session a record from elsewhere, or one that failed
 	// verification, was copied into, with the events copied.
 	copiedID     string
@@ -215,6 +221,9 @@ func usageSince(before, after agent.Usage) agent.Usage {
 		ColdPrefillTokens: after.ColdPrefillTokens - before.ColdPrefillTokens,
 		Turns:             after.Turns - before.Turns,
 		Compactions:       after.Compactions - before.Compactions,
+		CostUSD:           after.CostUSD - before.CostUSD,
+		Unpriced:          after.UnpricedCalls > before.UnpricedCalls,
+		UnpricedCalls:     after.UnpricedCalls - before.UnpricedCalls,
 	}
 }
 
@@ -225,4 +234,6 @@ func (c *cliState) accumulate(u agent.Usage) {
 	c.total.ColdPrefillTokens += u.ColdPrefillTokens
 	c.total.Turns += u.Turns
 	c.total.Compactions += u.Compactions
+	c.total.CostUSD += u.CostUSD
+	c.total.Unpriced = c.total.Unpriced || u.Unpriced
 }

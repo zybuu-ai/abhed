@@ -19,11 +19,13 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/embedded"
+	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/lsprelay"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -189,9 +191,13 @@ func jsonKind(t reflect.Type) string {
 }
 
 type acpSession struct {
-	id    string
-	cwd   string
-	agent acpAgent
+	// networkTold is set once Studio was told a command failed for the network this turn.
+	networkTold bool
+	id          string
+	cwd         string
+	agent       acpAgent
+	// shutOnce makes the session's close (its summaries and end) happen once.
+	shutOnce sync.Once
 	// parts are the SDK agent's insides; inner is false for a test's
 	// stand-in, whose session answers what needs them with a refusal.
 	parts embedded.Parts
@@ -225,6 +231,8 @@ type acpSession struct {
 	wake chan struct{}
 	// window is the review window a person opened for held asks (§6.3).
 	window *reviewWindow
+	// pairing gives the editor each message's seq (acp_usermsg.go).
+	pairing msgPairing
 	// waiting counts held asks by background task.
 	waiting map[string]int
 	// notes are what the record said about each background task.
@@ -232,6 +240,16 @@ type acpSession struct {
 	// thoughts is set once reasoning streamed as deltas, so its whole text
 	// that follows is not sent again.
 	thoughts bool
+	// totalUSD is what the session's priced calls cost, and unpriced marks
+	// a call to a model with no price, for usage_update's cost.
+	totalUSD float64
+	unpriced bool
+	// costPartial marks a replayed call from a record written before costing:
+	// the session's cost then leaves those calls out.
+	costPartial bool
+	// engineCalls are the engine's diagnostics starts, by call id, with
+	// their command line, so a refusal is told as information.
+	engineCalls map[string]string
 	// totalIn and totalOut are the session's tokens, for usage_update.
 	totalIn, totalOut int
 	// dirty are the files with unsaved changes in the editor, by real path.
@@ -333,10 +351,12 @@ func (s *acpSession) pokeLocked() {
 func subagentCallID(requestID string) string { return "subagent-" + requestID }
 
 type acpConn struct {
-	out     io.Writer
-	outMu   sync.Mutex
-	version string
-	base    string // the workspace given on the command line, when cwd is absent
+	// cfgWatch starts the look at the person's configuration file once.
+	cfgWatch sync.Once
+	out      io.Writer
+	outMu    sync.Mutex
+	version  string
+	base     string // the workspace given on the command line, when cwd is absent
 	// trust is -trust-workspace, the default for every session's cwd.
 	trust config.TrustChoice
 	// noNetwork is a network configuration that would not go in force; no org fetch goes without it.
@@ -355,6 +375,23 @@ type acpConn struct {
 	recErr             error
 	recDir             string
 	recUser, recTenant string
+
+	// identMu orders who is working against everything that works as them:
+	// authenticate holds it from its check through the switch, and every other
+	// method but initialize takes it once to mark the connection started, after
+	// which who is working is fixed. initialize reads the record fields under it.
+	identMu      sync.Mutex
+	identStarted bool
+	// switching is a server sign-in waiting on its network or browser part,
+	// with identMu released; switchCancel ends it (under identMu), and
+	// switchCancelUnlocked is the same for _abhed/auth/cancel (under switchMu).
+	switching bool
+	// signedOut is set by _abhed/auth/signout: nothing more works as anyone.
+	signedOut            bool
+	switchCancel         context.CancelFunc
+	switchGen            int
+	switchMu             sync.Mutex
+	switchCancelUnlocked context.CancelFunc
 
 	sessMu   sync.Mutex
 	sessions map[string]*acpSession
@@ -381,6 +418,11 @@ type acpConn struct {
 	compMu   sync.Mutex
 	comps    map[string]*acpCompleter
 	compRate bucket
+	// warmed is when each completion provider was last warmed on this
+	// connection, so many sessions load a model once.
+	warmed map[string]time.Time
+	// pool puts completions before next-edit calls on a model server.
+	pool editorPool
 
 	// inflight are the requests being answered; gone closes when stdin
 	// does, so nothing waits for an answer the client can no longer send.
@@ -388,7 +430,23 @@ type acpConn struct {
 	goneInit sync.Once
 	gone     chan struct{}
 	goneOnce sync.Once
+
+	// The one close of every session, whoever starts it (a stop signal or
+	// stdin ending); every caller waits for it. closing refuses sessions
+	// opened after it began; late are those, shut by the close before it
+	// ends, and closed says it has ended (a session refused then is its
+	// opener's to shut).
+	shutOnce sync.Once
+	shutDone chan struct{}
+	shutAt   time.Time
+	closing  bool
+	closed   bool
+	late     []*acpSession
 }
+
+// closeHook, set only by tests, runs in closeAll once the sessions are taken
+// and before they are shut, so a test can hold the close there.
+var closeHook atomic.Pointer[func(*acpConn)]
 
 // drainWait bounds how long the requests read before stdin closed may take
 // to be answered before the process exits anyway.
@@ -437,6 +495,10 @@ func acpCmd(workspace string, build acpBuild, trust config.TrustChoice) int {
 	c.useRecord(workspace, trust)
 	err := c.run(os.Stdin)
 	c.closeRecord()
+	// Stopped by a signal: the exit says so, as a shell reports it.
+	if code, stopped := stopCode(stopper.ctx); stopped {
+		return code
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: acp: %v\n", err)
 		return 1
@@ -447,12 +509,125 @@ func acpCmd(workspace string, build acpBuild, trust config.TrustChoice) int {
 // run serves in, answers every request read from it, then closes every
 // session.
 func (c *acpConn) run(in io.Reader) error {
-	err := c.serve(in)
-	if !c.drain(drainWait) {
-		fmt.Fprintln(os.Stderr, "abhed: acp: stdin closed and some requests were still unanswered after "+drainWait.String())
+	// Once stdin has ended, a stop signal waits for the close to record each
+	// session's end. A signal while stdin is open waits stdinGrace for it to
+	// end, as Studio ends stdin and signals at once and the signal can come
+	// first, and otherwise starts the close itself. Either way there is one
+	// close, and the exit is let go only once it has ended (or run out of
+	// signalCloseWait).
+	release := func() {}
+	if c.busy != nil {
+		var once sync.Once
+		done := c.busy()
+		release = func() { once.Do(done) }
 	}
-	c.closeAll()
+	served := make(chan struct{})
+	go func() {
+		select {
+		case <-c.root().Done():
+			// Stopped: the editor's model calls end now, as a prompt does, so
+			// nothing in flight holds the exit.
+			c.cancelEditorCalls()
+			select {
+			case <-served:
+			case <-time.After(stdinGrace):
+				// Stdin is still open: the sessions are closed here, their
+				// summaries and ends recorded, within signalCloseWait.
+				c.closeOnce(signalCloseWait)
+				release()
+			}
+		case <-served:
+		}
+	}()
+	err := c.serve(in)
+	close(served)
+	// Nobody is left to read an editor suggestion: those in flight end.
+	c.cancelEditorCalls()
+	wait := drainWait
+	if c.root().Err() != nil {
+		wait = signalCloseWait // stopped: what is still running was cancelled
+	}
+	if !c.drain(wait) {
+		fmt.Fprintln(os.Stderr, "abhed: acp: stdin closed and some requests were still unanswered after "+wait.String())
+	}
+	// The close a signal began, if one did: waited for, never run again.
+	if c.root().Err() != nil {
+		c.closeOnce(signalCloseWait)
+	} else {
+		select {
+		case <-c.startClose():
+		case <-c.root().Done():
+			// A signal during the close stdin's end began: bounded from now.
+			c.cancelEditorCalls()
+			c.closeWaitUntil(time.Now().Add(signalCloseWait))
+		}
+	}
+	release()
 	return err
+}
+
+// stdinGrace is how long a stop signal that comes while stdin is open waits
+// for stdin to end, so the sessions are closed before the exit.
+const stdinGrace = 250 * time.Millisecond
+
+// signalCloseWait bounds the close of every session on a stop signal: what
+// it records (each session's summaries and end) is written, then the exit.
+const signalCloseWait = 3 * time.Second
+
+// closeOnce closes every session, once for the connection whoever asks
+// first, and waits for that close: at most wait after it began, or until it
+// ends when wait is 0. It says whether the close ended.
+func (c *acpConn) closeOnce(wait time.Duration) bool {
+	done := c.startClose()
+	if wait <= 0 {
+		<-done
+		return true
+	}
+	return c.closeWaitUntil(c.shutAt.Add(wait))
+}
+
+// startClose begins the one close, if it has not begun, and says when it
+// has ended.
+func (c *acpConn) startClose() <-chan struct{} {
+	c.shutOnce.Do(func() {
+		c.shutDone, c.shutAt = make(chan struct{}), time.Now()
+		go func() {
+			defer close(c.shutDone)
+			c.closeAll()
+		}()
+	})
+	return c.shutDone
+}
+
+// closeWaitUntil waits for the close begun by startClose, until deadline.
+func (c *acpConn) closeWaitUntil(deadline time.Time) bool {
+	t := time.NewTimer(time.Until(deadline))
+	defer t.Stop()
+	select {
+	case <-c.startClose():
+		return true
+	case <-t.C:
+		fmt.Fprintln(os.Stderr, "abhed: acp: the sessions were not all closed within "+signalCloseWait.String())
+		return false
+	}
+}
+
+// cancelEditorCalls ends every editor model call in flight (completions,
+// next edits): their counts stay for the summary as cancelled.
+func (c *acpConn) cancelEditorCalls() {
+	c.compMu.Lock()
+	all := make([]*acpCompleter, 0, len(c.comps))
+	for _, k := range c.comps {
+		all = append(all, k)
+	}
+	c.compMu.Unlock()
+	for _, k := range all {
+		k.mu.Lock()
+		if k.cancel != nil {
+			k.cancel()
+		}
+		k.mu.Unlock()
+	}
 }
 
 // serve answers the requests on in until it ends, then says the input is
@@ -727,9 +902,35 @@ func (c *acpConn) closeAll() {
 	c.sessMu.Lock()
 	all := c.sessions
 	c.sessions = map[string]*acpSession{}
+	c.closing = true
 	c.sessMu.Unlock()
+	// Every editor call is cancelled first, then waited for once against one
+	// deadline, so a call slow to end costs the close summaryWait, not
+	// summaryWait for each feature of each session.
+	counted := time.Now().Add(summaryWait)
+	c.stopEditors(all)
+	if h := closeHook.Load(); h != nil {
+		(*h)(c)
+	}
 	for _, s := range all {
-		c.shut(s)
+		c.shutBy(s, counted)
+	}
+	// Sessions refused while this ran are shut before it ends, so the exit
+	// waits for their ends too.
+	for {
+		c.sessMu.Lock()
+		late := c.late
+		c.late = nil
+		if len(late) == 0 {
+			c.closed = true
+		}
+		c.sessMu.Unlock()
+		if len(late) == 0 {
+			break
+		}
+		for _, s := range late {
+			c.shutBy(s, counted)
+		}
 	}
 	c.killTerminals("")
 	c.killDebugs("")
@@ -739,6 +940,20 @@ func (c *acpConn) closeAll() {
 // shut ends a session's hold: its prompt and review window stop, its
 // background tasks end as session_closed, and its record is let go.
 func (c *acpConn) shut(s *acpSession) {
+	c.shutBy(s, time.Now().Add(summaryWait))
+}
+
+// shutBy is shut, its summaries waiting until counted for the calls in flight.
+func (c *acpConn) shutBy(s *acpSession, counted time.Time) {
+	s.shutOnce.Do(func() { c.shutNow(s, counted) })
+}
+
+func (c *acpConn) shutNow(s *acpSession, counted time.Time) {
+	// Contested-port joins held back are recorded first, before a running
+	// turn is cancelled and records its own end.
+	if s.inner && s.parts.Set != nil && s.parts.Set.FlushListen != nil {
+		s.parts.Set.FlushListen()
+	}
 	// A prompt sets and clears cancel under s.mu while it runs.
 	s.mu.Lock()
 	cancel := s.cancel
@@ -748,11 +963,13 @@ func (c *acpConn) shut(s *acpSession) {
 	if cancel != nil {
 		cancel()
 	}
+	// A steer still waiting for its message's seq is answered now.
+	s.pairing.settleAll("the session closed before it was delivered")
 	// The terminals' last lines are recorded before the end is.
 	c.killTerminals(s.id)
 	c.killDebugs(s.id)
 	c.killLSPs(s.id)
-	c.completionSummary(s)
+	c.completionSummary(s, counted)
 	c.unsubscribeSession(s.id)
 	s.recordClosed(cancel != nil)
 	s.agent.Close()
@@ -785,13 +1002,39 @@ func (c *acpConn) request(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errNoMethod, "method not found: %s", msg.Method))
 		return
 	}
+	if !acpBeforeSignIn[msg.Method] {
+		// Waits for an authenticate in progress, so this works as whoever it settles on.
+		c.identMu.Lock()
+		if c.signedOut {
+			c.identMu.Unlock()
+			c.reply(msg.ID, nil, &rpcError{Code: errRefused, Message: "signed out; restart the engine to sign in again",
+				Data: map[string]any{"authRequired": true, "signedOut": true}})
+			return
+		}
+		if c.switching {
+			c.identMu.Unlock()
+			c.reply(msg.ID, nil, &rpcError{Code: errRefused, Message: "a sign-in is in progress; try again when it has finished",
+				Data: map[string]any{"signingIn": true}})
+			return
+		}
+		err := pendingSignIn()
+		if err == nil {
+			c.identStarted = true
+		}
+		c.identMu.Unlock()
+		if err != nil {
+			c.reply(msg.ID, nil, &rpcError{Code: errRefused, Message: "Authentication required: " + err.Error(),
+				Data: map[string]any{"authRequired": true}})
+			return
+		}
+	}
 	h(c, msg)
 }
 
 // acpMethods are the requests the engine answers; anything else is -32601.
 var acpMethods = map[string]func(*acpConn, rpcMessage){
 	"initialize":                (*acpConn).initialize,
-	"authenticate":              func(c *acpConn, m rpcMessage) { c.reply(m.ID, map[string]any{}, nil) },
+	"authenticate":              (*acpConn).authenticate,
 	"session/new":               (*acpConn).newSession,
 	"session/prompt":            (*acpConn).prompt,
 	"session/set_config_option": (*acpConn).setConfigOption,
@@ -960,10 +1203,30 @@ func (c *acpConn) openSession(o openOptions) (*acpSession, *rpcError) {
 	if e := c.buildAgent(s, o); e != nil {
 		return nil, e
 	}
-	c.sessMu.Lock()
-	c.sessions[s.id] = s
-	c.sessMu.Unlock()
+	if !c.addSession(s) {
+		return nil, refusal(errParams, "the editor is closing; no session is opened")
+	}
 	return s, nil
+}
+
+// addSession adds s to the connection, unless every session is being
+// closed: false then, and s is shut (its end recorded) by the close if it
+// is still running, so the exit waits for it, or else here.
+func (c *acpConn) addSession(s *acpSession) bool {
+	c.sessMu.Lock()
+	switch {
+	case !c.closing:
+		c.sessions[s.id] = s
+		c.sessMu.Unlock()
+		return true
+	case !c.closed:
+		c.late = append(c.late, s)
+		c.sessMu.Unlock()
+		return false
+	}
+	c.sessMu.Unlock()
+	c.shut(s)
+	return false
 }
 
 // buildAgent makes s's agent and wires its undo log and guard.
@@ -972,8 +1235,13 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 		Workspace: o.cwd, ConfigDir: o.cwd, Sandbox: true, WorkspaceTrust: config.GrantFor(o.trust, c.base, o.cwd), AllowDefaultModel: true,
 		// The agent the terminal runs, subagents and configured tools included.
 		ConfiguredTools: true,
+		// The editor runs on the person's own machine: their kubeconfig and
+		// ~/.ssh/config are offered as the terminal offers them.
+		MachineSetup: true,
 		// The configuration's turn limit binds, as it does from the terminal.
 		ConfiguredLimits: true,
+		// The person reads each answer in the editor and can reply.
+		Attended: true,
 		// Stdout is the protocol; what the tool set skipped goes to stderr.
 		Warn: warnf,
 		// Background tasks outlive a turn; a result that arrives between
@@ -988,10 +1256,13 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 		Suggest: true,
 		// A person reads the answer there, so it is labelled unless configured otherwise.
 		VerifyByDefault: true,
+		// What the person opened to this workspace's commands, kept with its grants.
+		KeptNetwork: func() toolset.KeptNetwork { return keptNetwork(o.cwd) },
+		KeepNetwork: func(all bool, host string) error { return keepNetwork(o.cwd, all, host) },
 	}
 	// The editor's own files in the workspace are out of the agent's reach (§2.6).
 	s.protected = protectedPaths(o.cwd)
-	settings := embedded.Settings{Protect: s.protected, ProtectGit: true, Surface: "acp", PlanExit: true}
+	settings := embedded.Settings{Protect: s.protected, ProtectGit: true, Surface: "acp", PlanExit: true, Principal: principalStart()}
 	if c.durable() {
 		rec, err := c.record()
 		if err != nil {
@@ -1011,6 +1282,9 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 	s.parts, s.inner = embedded.Of(a)
 	s.loadKeptGrants()
 	s.loadListen(c)
+	if c.ctx != nil {
+		c.cfgWatch.Do(func() { go c.watchUserConfig() })
+	}
 	if s.inner {
 		s.undo = agent.NewUndoLog(s.parts.Session.RestoreFile, s.parts.Session.RemoveFile)
 		loop := s.parts.Loop
@@ -1050,6 +1324,13 @@ func (c *acpConn) sessionResult(s *acpSession) map[string]any {
 	// and unread keys, and the workspace settings an untrusted file could not make.
 	if w := configWarnings(s.agent); len(w) > 0 {
 		metaOf(res)["configWarnings"] = w
+	}
+	// A default model its provider said is retired or not found is named
+	// before the first prompt fails on it, with the models to use instead.
+	if s.inner {
+		if w := defaultModelWarning(s.parts.Config); w != "" {
+			metaOf(res)["modelWarning"] = map[string]any{"message": w, "others": usableModels(s.parts.Config, s.parts.Config.Model.Default)}
+		}
 	}
 	return res
 }
@@ -1287,6 +1568,21 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	}
 	mentions = append(mentions, links.mentions...)
 	attached += links.text
+	used = 0
+	for _, m := range mentions {
+		used += int(m.Bytes)
+	}
+	resLinks, err := c.resourceMentions(ctx, s, text, mentionMaxBytes-used)
+	if err == nil && resLinks.why != "" {
+		err = errors.New(resLinks.why)
+	}
+	if err != nil {
+		end()
+		c.reply(msg.ID, nil, refusal(errPolicy, "%s", err.Error()))
+		return
+	}
+	mentions = append(mentions, resLinks.mentions...)
+	attached += resLinks.text
 	// What the person attached is recorded where it reaches the model.
 	withAttached := func(prompt string) string {
 		for _, m := range mentions {
@@ -1315,10 +1611,16 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	undo = append(undo, func() { _ = attachImages(s.agent, nil) })
 	defer promptExit()
 	s.undo.BeginTurn()
+	s.mu.Lock()
+	s.networkTold = false // told again in a later turn
+	s.mu.Unlock()
+	s.pairing.beginPrompt(msg.ID)
+	asCommand := false
 	if cmdErr, handled := c.slashCommand(ctx, s, text, withAttached); handled {
-		err = cmdErr
+		err, asCommand = cmdErr, true
 	} else {
-		_, err = s.agent.Run(ctx, withAttached(text))
+		// The person's own words, not what they attached, are what a note is judged on.
+		_, err = s.agent.Run(agent.WithTyped(ctx, text), withAttached(text))
 		// A plan the run proposed is put to the editor; accepted, the turn goes on with it.
 		if next := c.decidePlan(ctx, s, err); next != "" {
 			_, err = s.agent.Run(ctx, next)
@@ -1330,8 +1632,18 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	cancelFlush()
 	stop, reason := stopReason(ctx, err)
 	var ended *abhed.EndedError
-	if stop == "refusal" && err != nil && !errors.As(err, &ended) {
-		c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "agent_message_chunk", "content": textBlock("\n" + err.Error())})
+	var problem *providerProblem
+	if s.inner && err != nil {
+		problem = explainProvider(s.parts.Config, s.provider(), err)
+		noteProviderProblem(problem)
+	} else if s.inner && stop == "end_turn" {
+		modelAnswered(s.provider(), s.parts.Config.Model.Providers[s.provider()].Model)
+	}
+	if stop == "refusal" && problem != nil {
+		// What the provider said and what to do, in the chat, not only "error".
+		c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "agent_message_chunk", "content": textBlock("\n\n" + problem.Text() + sessionKeyHint(s, err))})
+	} else if stop == "refusal" && err != nil && !errors.As(err, &ended) {
+		c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "agent_message_chunk", "content": textBlock("\n" + err.Error() + sessionKeyHint(s, err))})
 	} else if stop == "refusal" && errors.As(err, &ended) && ended.Reason != agent.TermPromptRefused {
 		// The reason is said in the chat, so the editor has something to point to.
 		why := ui.EndedText(ended.Reason, ended.Detail)
@@ -1343,6 +1655,18 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	res := map[string]any{"stopReason": stop}
 	if reason != "" {
 		metaOf(res)["reason"] = reason
+	}
+	if problem != nil {
+		metaOf(res)["providerError"] = problem
+	}
+	notRecorded := "the prompt ended before its message was recorded"
+	if asCommand {
+		notRecorded = "it was a command, which is not recorded as a message"
+	} else if err != nil {
+		notRecorded = redacted(err.Error())
+	}
+	for k, v := range s.pairing.endPrompt(notRecorded).meta(s.id) {
+		metaOf(res)[k] = v
 	}
 	end()
 	c.reply(msg.ID, res, nil)
@@ -1393,11 +1717,15 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySessionScope, Scope: scope})
 		return true, nil
 	}
-	// A bash grant answers only the policy's default ask, never a rule's,
-	// the destructive check's, the supervisor's or a screen's.
+	// A bash grant answers only the policy's default ask, or host git's,
+	// never a rule's, the destructive check's, the supervisor's or a screen's.
 	command, grantable := s.grantable(tool, args, d)
 	if grantable {
-		if g, ok := s.grantFor(command); ok {
+		hostBind := ""
+		if d.Step == hostgit.StepHostGit {
+			hostBind = d.Scope
+		}
+		if g, ok := s.grantFor(command, hostBind); ok {
 			by := abhed.BySessionScope
 			if !g.Session {
 				by = abhed.ByWorkspaceGrant
@@ -1470,12 +1798,16 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	once, always, reject := "once:"+bind, "always:"+bind, "reject:"+bind
 	options := []map[string]any{{"optionId": once, "name": "Allow once", "kind": "allow_once"}}
 	if offerAlways {
-		options = append(options, map[string]any{"optionId": always, "name": "Always allow " + ui.VisibleLine(shownScope), "kind": "allow_always"})
+		name := "Always allow " + ui.VisibleLine(shownScope)
+		if d.Keeps != "" {
+			name = "Always for " + ui.VisibleLine(d.Keeps) + " (kept for you, not in the workspace)"
+		}
+		options = append(options, map[string]any{"optionId": always, "name": name, "kind": "allow_always"})
 	}
 	var grantOpts []grantOption
 	// Offered only when the card shows the command as it runs.
 	if grantable && bashCommandOf(shown) == command {
-		grantOpts = bashGrantOptions(command, s.workDir(), s.workRoot(), bind)
+		grantOpts = bashGrantOptions(command, s.workDir(), s.workRoot(), bind, d)
 		for _, g := range grantOpts {
 			kind := "allow_always"
 			if g.grant.Session {
@@ -1509,6 +1841,15 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	}
 	if offerAlways {
 		meta["scope"] = shownScope
+	}
+	// The first use of a cluster or host from the person's own setup: the
+	// editor can draw it as such, and its "always" is kept for the person.
+	if d.Keeps != "" {
+		meta["firstUse"] = map[string]any{"what": d.Keeps, "kept": "person"}
+	}
+	// The certificate approving pins, for the card to show beside the text.
+	if d.PinSHA256 != "" {
+		meta["pinnedCertificate"] = map[string]any{"sha256": d.PinSHA256, "subject": d.PinSubject}
 	}
 	if held {
 		meta["held"] = true
@@ -1723,6 +2064,16 @@ func toolTitle(tool string, args json.RawMessage) string {
 func rawToolTitle(tool string, args json.RawMessage) string {
 	var m map[string]any
 	_ = json.Unmarshal(args, &m)
+	switch tool {
+	case "tasks":
+		if sum := ui.TasksSummary(args); sum != "" {
+			return "tasks: " + sum
+		}
+	case "task":
+		if d, _ := m["description"].(string); d != "" {
+			return "task: " + d
+		}
+	}
 	if bg, _ := m["run_in_background"].(bool); bg && tool == "bash" {
 		tool = "bash (background)"
 	}
@@ -1747,4 +2098,12 @@ func anyHidden(fields ...string) bool {
 		}
 	}
 	return false
+}
+
+// provider is the configured provider the session's model calls go to now.
+func (s *acpSession) provider() string {
+	if s.parts.Loop != nil && s.parts.Loop.Provider != "" {
+		return s.parts.Loop.Provider
+	}
+	return s.parts.Config.Model.Default
 }

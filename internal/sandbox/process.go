@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -17,14 +18,22 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/loopport"
 )
 
 // Process confines a command with OS process-level primitives: macOS
 // sandbox-exec (Seatbelt) or Linux bubblewrap. Use TierVM for untrusted code.
 type Process struct {
-	policy  Policy
+	choice
+	policy Policy
+	// reach is gitReachOf the workspace, read once as the session starts;
+	// see gitReads and gitWrites.
+	reach   func() gitReach
 	backend string // "sandbox-exec" | "bwrap"
+	// cmds are the commands made; a followed one still running is ended when
+	// the sandbox closes.
+	cmds commandSet
 	// listen is SetListen's: commands may listen on loopback from now on.
 	listen atomic.Bool
 	// listenStill, onPortContested and onListenWatchLost are SetListenWatch's.
@@ -39,6 +48,9 @@ type Process struct {
 	// notices are what this sandbox was told of each contested listen
 	// port; guarded by watching.mu.
 	notices map[int]*portNotice
+	// windows bound the records of each contested listen port; guarded by
+	// watching.mu, and kept while listening goes off and on.
+	windows map[int]*recordWindow
 
 	// Whether bwrap may mount a fresh /proc and /dev: a hardened container
 	// refuses, which looked like an agent failure. Probed once.
@@ -59,6 +71,8 @@ type Process struct {
 	egress egressSessions
 	// git is what the look for git folders keeps between commands.
 	git gitMemory
+	// gitg keeps a planted commondir from the person's git (bubblewrap).
+	gitg gitGuard
 	// Whether a sandboxed command is left no capabilities and no writable
 	// host-root path. Probed once; empty means it is, so the tier fails closed.
 	capsOnce sync.Once
@@ -119,6 +133,9 @@ var bwrapRun = func(ctx context.Context, args ...string) ([]byte, error) {
 
 func NewProcess(p Policy) *Process {
 	s := &Process{policy: p}
+	// Read once, as the session starts: a .git file a command rewrites later
+	// does not change what is readable.
+	s.reach = sync.OnceValue(func() gitReach { return gitReachOf(p.Workspace) })
 	switch runtime.GOOS {
 	case "darwin":
 		if _, err := exec.LookPath("sandbox-exec"); err == nil {
@@ -324,19 +341,49 @@ func (s *Process) Describe() string {
 	}
 	d := fmt.Sprintf("process isolation via %s · workspace-scoped writes · %s · %s · %s",
 		s.backend, net, procs, mem)
-	if s.Caveat() != "" {
+	if s.noProc() {
 		d += " · no /proc: bubblewrap cannot mount one here, so commands that read it fail"
+	}
+	if s.imageBwrap() {
+		d += " · bubblewrap is the container image's own, so this tier is only as strong as the image"
+	}
+	if s.backend == "sandbox-exec" {
+		if n := homeLookupNote(); n != "" {
+			d += " · " + n
+		}
+	}
+	if n := s.gitReachNote(); n != "" {
+		d += " · " + n
 	}
 	return d
 }
 
-// Caveat is "no /proc" where bubblewrap cannot mount a fresh one, as under
-// a seccomp profile that allows user namespaces but not that mount.
+// ImageBwrapEnv, set to 1 by an editor that runs the engine in a container
+// image it did not build, says the bubblewrap found is the image's own.
+const ImageBwrapEnv = "ABHED_IMAGE_BWRAP"
+
+func (s *Process) imageBwrap() bool {
+	return s.backend == "bwrap" && os.Getenv(ImageBwrapEnv) == "1"
+}
+
+func (s *Process) noProc() bool {
+	return s.backend == "bwrap" && !s.bwrapFreshOK() && !rootCaps()
+}
+
+// Caveat names what makes this process tier weaker than it reads: "no
+// /proc" where bubblewrap cannot mount a fresh one, as under
+// a seccomp profile that allows user namespaces but not that mount; and
+// "image-supplied bubblewrap" where the bubblewrap is a container image's
+// own, which the image's author chose and Abhed cannot check.
 func (s *Process) Caveat() string {
-	if s.backend == "bwrap" && !s.bwrapFreshOK() && !rootCaps() {
-		return "no /proc"
+	var c []string
+	if s.imageBwrap() {
+		c = append(c, "image-supplied bubblewrap")
 	}
-	return ""
+	if s.noProc() {
+		c = append(c, "no /proc")
+	}
+	return strings.Join(c, ", ")
 }
 
 // Seatbelt is allow-default with targeted denials: deny-default breaks
@@ -407,19 +454,36 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 	b.WriteString("(version 1)\n(allow default)\n\n")
 	// Home holds credentials no list names, so little is readable there; first,
 	// so the state and credential denies below still win.
-	if home, err := os.UserHomeDir(); err == nil && !s.policy.ReadableHome {
+	if hs := homes(); len(hs) > 0 && !s.policy.ReadableHome {
 		b.WriteString(";; Home is unreadable but for the toolchains and the workspace.\n")
-		for _, h := range PathForms(home) {
-			fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", h)
-			fmt.Fprintf(&b, "(allow file-read-metadata (literal %q))\n", h)
+		var roots []string
+		for _, home := range hs {
+			for _, h := range PathForms(home) {
+				fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", h)
+				fmt.Fprintf(&b, "(allow file-read-metadata (literal %q))\n", h)
+				roots = append(roots, h)
+			}
 		}
-		allow := append(append(append(s.workspaces(), formsOf(s.policy.ReadOnlyPaths)...), homeToolchains(home)...), nonEmpty(readable)...)
+		allow := append(append(s.workspaces(), formsOf(s.policy.ReadOnlyPaths)...), nonEmpty(readable)...)
+		// Read only: the repository top and git folders the workspace's git needs.
+		allow = append(allow, s.gitReads()...)
+		// A top not read whole is still listed: git changes into it.
+		if s.reach != nil {
+			if r := s.reach(); r.top == "" && r.root != "" {
+				for _, f := range PathForms(r.root) {
+					fmt.Fprintf(&b, "(allow file-read* (literal %q))\n", f)
+				}
+			}
+		}
+		for _, home := range hs {
+			allow = append(allow, homeToolchains(home)...)
+		}
 		for _, p := range allow {
 			fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", p)
 		}
 		// The folders on the way to them can be stat'ed, not listed or read:
 		// Node's realpath, Python's and Java's path checks lstat each one.
-		for _, d := range ancestorsWithin(allow, PathForms(home)) {
+		for _, d := range ancestorsWithin(allow, roots) {
 			fmt.Fprintf(&b, "(allow file-read-metadata (literal %q))\n", d)
 		}
 		b.WriteString("\n")
@@ -436,6 +500,11 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 	b.WriteString("(deny file-write*)\n")
 	for _, ws := range s.workspaces() {
 		fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", ws)
+	}
+	// The git folders outside the workspace, as git writes them; what it
+	// reads as configuration is held below with the workspace's own.
+	for _, g := range s.gitWrites() {
+		fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", g)
 	}
 	for _, p := range append(tempAreas[:len(tempAreas):len(tempAreas)], "/dev/null", "/dev/stdout", "/dev/stderr", "/dev/urandom", "/dev/dtracehelper") {
 		fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", p)
@@ -498,14 +567,30 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 		// it and reading what it holds do not.
 		fmt.Fprintf(&b, "(allow file-read-metadata (subpath %q))\n", state)
 	}
+	// What git reads outside the workspace holds no Abhed state a command
+	// may reach: a .abhed at any depth, in any case, made later too.
+	for _, r := range s.gitReads() {
+		fmt.Fprintf(&b, "(deny file-read* (regex #\"%s\"))\n", stateAnywherePattern(r))
+		fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", stateAnywherePattern(r))
+	}
 	// Seatbelt matches the path the kernel resolved, so a home reached
 	// through a link is named both ways.
-	if home, err := os.UserHomeDir(); err == nil {
-		for _, st := range PathForms(filepath.Join(home, stateDir)) {
+	for _, h := range homes() {
+		for _, st := range PathForms(filepath.Join(h, stateDir)) {
 			fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", st)
 			fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", st)
-			// Skills are the one part of it a command may need: a skill can ship a script.
-			fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", filepath.Join(st, "skills"))
+		}
+	}
+	// Skills and plugins are the parts of it a command may need: a skill
+	// can ship a script, and a hook or server may run one its plugin
+	// ships. Only the person's own, never another account's, and only read.
+	for _, sub := range []string{"skills", "plugins"} {
+		dir, err := home.PersonPath(sub)
+		if err != nil {
+			continue
+		}
+		for _, d := range PathForms(dir) {
+			fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", d)
 		}
 	}
 
@@ -541,6 +626,13 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 					fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", t)
 				}
 			}
+		}
+		// The git folders outside the workspace hold the same files.
+		for _, g := range s.gitWrites() {
+			fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", gitFolderPattern(g))
+			fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", gitFolderFoldersPattern(g))
+			fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", gitExtrasPattern(g))
+			fmt.Fprintf(&b, "(deny file-write* (literal %q))\n", g)
 		}
 	}
 	for _, p := range s.statePaths() {
@@ -640,7 +732,7 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 	// Credentials are readable by many tools legitimately, but an agent has no
 	// reason to read keys and tokens. Bubblewrap leaves home out altogether.
 	b.WriteString("\n;; Credential paths are unreadable.\n")
-	if home, err := os.UserHomeDir(); err == nil {
+	for _, home := range homes() {
 		for _, c := range HomeSecrets {
 			for _, p := range PathForms(filepath.Join(home, c)) {
 				fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", p)
@@ -882,7 +974,9 @@ func (s *Process) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 	if err != nil {
 		return &exec.Cmd{Err: err}
 	}
-	return s.wrapEgress(ctx, cwd, env, eg, "/bin/bash", "-c", command)
+	cmd := s.wrapEgress(ctx, cwd, env, eg, "/bin/bash", "-c", command)
+	s.cmds.add(cmd)
+	return cmd
 }
 
 // commandEnv is env with the proxy variables under the allowlist; a proxy that
@@ -930,6 +1024,9 @@ func (s *Process) Shell(ctx context.Context, cwd string) *exec.Cmd {
 			env = append(env, "ZDOTDIR="+*z)
 		}
 	}
+	// A shell is not in cmds: it ends with its terminal (hang-up, then the
+	// session sweep), never with the sandbox, which could reach an app the
+	// person started from it.
 	return hangUp(s.wrapEgress(ctx, cwd, env, eg, choice.argv...))
 }
 
@@ -1063,6 +1160,45 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		// /tmp first: a workspace under it is bound on top afterwards, or
 		// the tmpfs would hide it and every command would fail to start.
 		args = append(args, tmpArgs...)
+		// The repository top and git folders the workspace's git reads, read
+		// only and before the workspace, which is bound writable over them.
+		// A top holding any other .abhed is never read (gitReachOf).
+		for _, r := range s.gitReads() {
+			args = append(args, "--ro-bind-try", r, r)
+		}
+		// Git's own folders outside the workspace are written as git writes
+		// them, with what it reads as configuration held read-only below.
+		var outside, outsideDirs []string
+		if w := s.gitWrites(); len(w) > 0 {
+			r := s.reach()
+			dirs := []string{r.own}
+			held, planted, ok := outsideGitHeld(s.policy.Workspace, r.own, r.shallow)
+			// A commondir git would not have written is taken out, and the
+			// command refused, as in the workspace's own git folder.
+			if entries, err := takeOutGitPlanted(planted); err != nil {
+				if l := LaunchOf(ctx); l.Record != nil {
+					_ = l.Record(EvGitPlanted, map[string]any{"entries": entries, "reason": err.Error(),
+						"call_id": l.CallID, "sandbox": s.backend, "workspace": s.policy.Workspace})
+				}
+				return &exec.Cmd{Err: err}
+			}
+			if ok {
+				for _, g := range w {
+					args = append(args, "--bind-try", g, g)
+				}
+				outside, outsideDirs = held, dirs
+				// A commondir made there is moved aside soon after it is made
+				// (a mitigation; see gitGuard).
+				s.gitg.watch(dirs)
+			}
+		}
+		// Git stops looking for its folder at a mount, and the workspace is
+		// one; where the top is not bound, the folder above it is another.
+		if s.reach != nil {
+			if r := s.reach(); r.top == "" && r.root != "" {
+				args = append(args, "--setenv", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "1")
+			}
+		}
 		args = append(args,
 			"--bind", s.policy.Workspace, s.policy.Workspace,
 			// An empty, throwaway directory over Abhed's own state: nothing in
@@ -1092,15 +1228,23 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 					return &exec.Cmd{Err: err}
 				}
 				protected = append(protected, found...)
+				s.gitg.watchFound(&s.git, ws)
+			}
+			// What the watch moved aside since the last command, or while the
+			// scan above looked, is said, and this command refused, as the scan
+			// does for one it finds.
+			if err := s.gitg.refuse(ctx, s.backend, s.policy.Workspace, &s.git); err != nil {
+				return &exec.Cmd{Err: err}
 			}
 		}
-		for _, p := range holders(s.workspaces(), protected) {
+		for _, p := range append(holders(s.workspaces(), protected), holders(outsideDirs, outside)...) {
 			if info, err := os.Lstat(p); err == nil && info.IsDir() {
 				args = append(args, "--bind", p, p)
 			} else if err == nil && info.Mode().IsRegular() {
 				args = append(args, "--ro-bind", p, p)
 			}
 		}
+		protected = append(protected, outside...)
 		for _, p := range append(s.policy.ReadOnlyPaths[:len(s.policy.ReadOnlyPaths):len(s.policy.ReadOnlyPaths)], protected...) {
 			args = append(args, "--ro-bind-try", p, p)
 		}
@@ -1132,6 +1276,11 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		cmd := s.bounded(ctx, "bwrap", args)
 		cmd.Dir = cwd
 		cmd.Env = env
+		// What the command left in a git folder is taken out as it ends, not
+		// only as the next one starts.
+		if s.policy.ProtectGit {
+			OnExit(cmd, func(error) { s.sweepGit() })
+		}
 		return s.place(ctx, cmd)
 	}
 
@@ -1287,7 +1436,10 @@ func (s *Process) env() []string {
 	keep := []string{"PATH", "HOME", "LANG", "LC_ALL", "TERM", "TMPDIR",
 		"GOPATH", "GOROOT", "GOCACHE", "GOMODCACHE",
 		"NODE_PATH", "npm_config_cache", "CARGO_HOME", "RUSTUP_HOME",
-		"JAVA_HOME", "PYTHONPATH", "VIRTUAL_ENV"}
+		"JAVA_HOME", "PYTHONPATH", "VIRTUAL_ENV",
+		// Who is working: they only narrow, so an Abhed a command starts
+		// with the real HOME works for the same person, or a guest's.
+		"ABHED_GUEST", "ABHED_ACCOUNT"}
 	out := []string{"ABHED_SANDBOX=" + string(s.Tier()), vimInitEnv()}
 	own := map[string]string{}
 	if s.backend == "sandbox-exec" && !s.policy.SharedCaches {
@@ -1342,6 +1494,11 @@ func (s *Process) ownCaches() map[string]string {
 	for k, sub := range map[string]string{"XDG_CACHE_HOME": "cache", "GOCACHE": "go-build", "GOMODCACHE": "go-mod",
 		"npm_config_cache": "npm", "PIP_CACHE_DIR": "pip", "CARGO_HOME": "cargo"} {
 		out[k] = filepath.Join(s.caches, sub)
+	}
+	// xcrun, behind /usr/bin/git and python3, keeps its cache in the account's
+	// temp folder, which later programs share: the sandbox's commands keep theirs here.
+	if s.backend == "sandbox-exec" {
+		out["xcrun_db"] = filepath.Join(s.caches, "xcrun_db")
 	}
 	proxy := os.Getenv("GOPROXY")
 	if proxy == "" {
@@ -1523,7 +1680,20 @@ const vimInit = `if 1 | if has('nvim') | let g:abhed_rc = stdpath('config') . (f
 
 // None runs commands directly on the host. It keeps the tier explicit, and
 // refuses selection when isolation is required.
-type None struct{ policy Policy }
+type None struct {
+	choice
+	policy Policy
+	// cmds are the commands made; a followed one still running is ended when
+	// the sandbox closes.
+	cmds commandSet
+}
+
+// Close ends every followed command made here that still runs, with what it
+// was seen to start. Shells end with their terminals.
+func (n *None) Close() error {
+	n.cmds.end()
+	return nil
+}
 
 func NewNone(p Policy) *None { return &None{policy: p} }
 
@@ -1559,6 +1729,7 @@ func (n *None) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	cmd.Dir = cwd
 	cmd.Env = append(HostCommandEnv(), "ABHED_SANDBOX=none")
+	n.cmds.add(cmd)
 	return cmd
 }
 
@@ -1575,7 +1746,7 @@ func HostCommandEnv() []string {
 }
 
 func hostDropped(kv string) bool {
-	for _, p := range []string{"BASH_ENV=", "CDPATH=", "SHELLOPTS=", "BASHOPTS=", "BASH_FUNC_", "ZDOTDIR=", "ENV=", "ABHED_TRUST_WORKSPACE="} {
+	for _, p := range []string{"BASH_ENV=", "CDPATH=", "SHELLOPTS=", "BASHOPTS=", "BASH_FUNC_", "ZDOTDIR=", "ENV=", "ABHED_TRUST_WORKSPACE=", markerName + "="} {
 		if strings.HasPrefix(kv, p) {
 			return true
 		}
@@ -1589,7 +1760,7 @@ func (n *None) Shell(ctx context.Context, cwd string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, shellArgv[0], shellArgv[1:]...) // #nosec G204 -- a fixed argv
 	cmd.Dir = cwd
 	cmd.Env = append(append(hostEnv(), "ABHED_SANDBOX=none"), shellEnv(TierNone)...)
-	return hangUp(cmd)
+	return hangUp(cmd) // not in cmds: see Process.Shell
 }
 
 // Backend says there is none.
@@ -1631,6 +1802,63 @@ func ancestorsWithin(paths, roots []string) []string {
 		}
 	}
 	return out
+}
+
+// homes are the folders whose contents commands may not read: $HOME, and
+// the account's own home when HOME names another folder, as a CI run given a
+// fresh HOME does. Moving HOME never opens the real one. The account's home
+// comes from the user database; failing closed, an account-style folder
+// that holds $HOME (/Users/NAME, /home/NAME) is denied too, whatever the
+// database says. A lookup that fails is said by homeLookupNote, which
+// Describe carries to doctor and the record.
+func homes() []string {
+	var out []string
+	add := func(h string) {
+		if h == "" || !filepath.IsAbs(h) {
+			return
+		}
+		if h = filepath.Clean(h); h != "/" && !slices.Contains(out, h) {
+			out = append(out, h)
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err == nil {
+		add(home)
+	}
+	u, uerr := user.Current()
+	if uerr == nil {
+		add(u.HomeDir)
+	}
+	if err == nil {
+		add(accountHomeOf(home))
+	}
+	return out
+}
+
+// homeLookupNote says, when the account's home could not be looked up and
+// $HOME does not show which it is, that only $HOME is kept from commands;
+// "" otherwise.
+func homeLookupNote() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	if _, uerr := user.Current(); uerr != nil && accountHomeOf(home) == filepath.Clean(home) {
+		return "the account's home could not be looked up (" + uerr.Error() + "); commands are kept out of " + home + " only"
+	}
+	return ""
+}
+
+// accountHomeOf is the account-style home that holds p (/Users/NAME or
+// /home/NAME and anything below them), or p itself. /Users/Shared is
+// macOS's folder for every account, not one's home, so it is not one.
+func accountHomeOf(p string) string {
+	parts := strings.Split(filepath.Clean(p), string(filepath.Separator))
+	if len(parts) >= 3 && parts[0] == "" && (parts[1] == "Users" || parts[1] == "home") && parts[2] != "" &&
+		!(parts[1] == "Users" && strings.EqualFold(parts[2], "Shared")) {
+		return filepath.Join("/", parts[1], parts[2])
+	}
+	return filepath.Clean(p)
 }
 
 func homeToolchains(home string) []string {
@@ -1722,4 +1950,76 @@ func seatbeltPrivateDirs(dirs []string) string {
 		return ""
 	}
 	return "\n;; Folders made for this command alone.\n" + b.String()
+}
+
+// gitReads are the folders outside the workspace its git reads (GitReach),
+// in both forms, readable to commands; none for a sandbox not made by NewProcess.
+func (s *Process) gitReads() []string {
+	if s.reach == nil {
+		return nil
+	}
+	r := s.reach()
+	if r.top == "" {
+		return formsOf(r.dirs)
+	}
+	return formsOf(append([]string{r.top}, r.dirs...))
+}
+
+// gitWrites is, in both forms, the one git folder outside the workspace that
+// serves it alone (a submodule checkout's), which commands may write as git
+// does in one inside it, with the same files and ownGitExtras held under
+// protect_git; none without it. Folders shared with other work trees stay
+// read-only (gitReach).
+func (s *Process) gitWrites() []string {
+	if s.reach == nil || !s.policy.ProtectGit || s.reach().own == "" {
+		return nil
+	}
+	return PathForms(s.reach().own)
+}
+
+// gitReachNote says what outside the workspace commands may read and write
+// for its git, for the description doctor shows and the record keeps.
+func (s *Process) gitReachNote() string {
+	if s.reach == nil {
+		return ""
+	}
+	r := s.reach()
+	var parts []string
+	if r.top != "" {
+		parts = append(parts, "the repository's top folder "+r.top+" readable")
+	}
+	var ro []string
+	for _, d := range r.dirs {
+		if d != r.own || !s.policy.ProtectGit {
+			ro = append(ro, d)
+		}
+	}
+	if len(ro) > 0 {
+		parts = append(parts, "its git folders "+strings.Join(ro, ", ")+" readable, not writable")
+	}
+	if r.own != "" && s.policy.ProtectGit {
+		parts = append(parts, "the submodule's git folder "+r.own+" written as git writes it, configuration, hooks and history held")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "git outside the workspace: " + strings.Join(parts, "; ")
+}
+
+// sweepGit takes out what a command left in the workspace's git folders that
+// git would follow (a commondir, a repository it made), as the next command's
+// start would, for a command that ended and a sandbox closing: the person's
+// own git may run before any next command.
+func (s *Process) sweepGit() {
+	if !s.policy.ProtectGit || s.backend != "bwrap" {
+		return
+	}
+	sweepGit(s.workspaces(), s.backend, &s.git)
+	// And the submodule's own git folder outside it, when commands write it.
+	if s.reach != nil {
+		if r := s.reach(); r.own != "" {
+			_, planted, _ := outsideGitHeld(s.policy.Workspace, r.own, r.shallow)
+			_, _ = takeOutGitPlanted(planted)
+		}
+	}
 }

@@ -11,12 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/term"
-
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/ollama"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
@@ -25,6 +24,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/internal/webfetch"
 	"github.com/zybuu-ai/abhed/orgpolicy"
+	"golang.org/x/term"
 )
 
 func run(a *App, workspace string, f *cliFlags) int {
@@ -100,6 +100,9 @@ func run(a *App, workspace string, f *cliFlags) int {
 	if cfg, err = applyFlags(cfg, f.mode, f.maxTurns, joinRules(f.allow, f.allowedTools), joinDenyRules(f.deny, f.disallowedTools), splitLists(f.addDirs)); err != nil {
 		fail(err)
 	}
+	if cfg, err = usdBudgetFlag(cfg, f.maxBudgetUSD); err != nil {
+		fail(err)
+	}
 	if cfg, err = budgetFlag(cfg, f.maxBudget); err != nil {
 		fail(err)
 	}
@@ -109,9 +112,12 @@ func run(a *App, workspace string, f *cliFlags) int {
 	}
 	// Checked here so a critic whose model cannot be had stops the start,
 	// rather than leaving answers unchecked.
-	if _, err := toolset.Verifier(cfg, !headless); err != nil {
+	if _, err := toolset.Verifier(cfg, true); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 2
+	}
+	if f.bare {
+		cfg = bareConfig(cfg)
 	}
 	cfg, mcpSrc, err := mcpFlags(cfg, ff, f.mcpConfig, f.strictMCP)
 	if err != nil {
@@ -170,6 +176,10 @@ func run(a *App, workspace string, f *cliFlags) int {
 			}
 			return newAdapter(p)
 		})
+		for _, name := range fallback.names {
+			p, _ := cfg.ProviderNamed(name)
+			fallback.limits = append(fallback.limits, p.MaxTools)
+		}
 		adapter = fallback
 	}
 	sess, err := tools.NewSession(workspace)
@@ -189,13 +199,14 @@ func run(a *App, workspace string, f *cliFlags) int {
 	pol.Cwd = sess.WorkDir
 	pol.StartupBaseline = config.StartupBaseline()
 	pol.Session = &policy.Overlay{}
+	pol.RuleSource = cfg.RuleSource
 	must(pol.AddDeny(cfg.Permissions.Deny...))
 	must(pol.AddAsk(cfg.Permissions.Ask...))
 	pol.KeepAsk = toolset.KeepManagedAsks(cfg)
 	must(pol.AddAllow(toolset.ToolchainAllows(cfg)...))
 	must(pol.AddAllow(cfg.Permissions.Allow...))
 	must(pol.AllowGitExtensions(cfg.Permissions.GitExtensions...))
-	must(pol.AllowRemoteReads(cfg.SSH.ReadCommands...))
+	must(toolset.RemoteReads(pol, cfg))
 
 	sb, err := startSandbox(cfg, workspace, !headless)
 	if err != nil {
@@ -227,9 +238,14 @@ func run(a *App, workspace string, f *cliFlags) int {
 
 	// The tool set every surface builds the same way; the CLI takes all of it.
 	vault := openVault()
+	gitBroker := hostgit.NewBroker(workspace, sb.Tier, sandboxconfig.HostGitNetwork(cfg), sb.Command).
+		HoldsGit(func() bool { return sandbox.HoldsGit(sb) }, func() bool { return sandbox.HoldsNewGit(sb) }).
+		RemotesOff(sandboxconfig.HostGitOff(cfg))
 	set := toolset.Build(context.Background(), cfg, toolset.Options{
-		Workspace: workspace,
-		Bash: tools.Bash{Sandbox: hostgit.Broker(workspace, sb.Tier, sandboxconfig.NetworkOpen(cfg), sb.Command),
+		Workspace:    workspace,
+		ReadWithheld: pol.ReadWithheldFunc(),
+		// The sandbox may still be being chosen: whether git is held is asked as it is used.
+		Bash: tools.Bash{Sandbox: gitBroker.Command, HostAsk: lazyHostAsk(gitBroker), HostGitOn: func() bool { return cliHostGitOn(cfg, sb, gitBroker) },
 			Home:      sandbox.HomeFunc(sb),
 			Isolation: sandboxconfig.Isolation(cfg, tier),
 			RanUnder:  func() string { return string(sb.Tier()) }},
@@ -238,6 +254,11 @@ func run(a *App, workspace string, f *cliFlags) int {
 		Warn:    warnf,
 		Agents:  sessionDefs,
 		Sandbox: sb,
+		// The terminal is the person's own: their kubeconfig and ~/.ssh/config are offered.
+		Machine: true,
+		// What the person opened to this workspace's commands, as Studio keeps it.
+		KeptNetwork: func() toolset.KeptNetwork { return keptNetwork(workspace) },
+		KeepNetwork: func(all bool, host string) error { return keepNetwork(workspace, all, host) },
 	})
 	defer set.Close()
 	// A skill's own directory is reachable: its instructions reference files beside them.
@@ -249,11 +270,15 @@ func run(a *App, workspace string, f *cliFlags) int {
 	// The prompt is set once the tools are known, so it names only those there.
 	loopCfg := toolset.LoopConfig(cfg, "")
 	loopCfg.Egress = set.Guard()
+	loopCfg.SessionNote = func() string { return toolset.SessionNote(cfg, sb, set.Network) }
 
 	// Subagents share the parent's budget, so a fan-out cannot multiply spend
 	// invisibly. No Approver: a subagent answers to the approver of the loop
 	// that spawned it, the person at the prompt or the headless refuser.
 	budget := toolset.Budget(cfg)
+	if fallback != nil {
+		fallback.SetGate(budget.Refuse)
+	}
 	factory := &agent.SubagentFactory{
 		Adapter: adapter, Policy: pol,
 		Session: sess, Budget: budget, Config: loopCfg, Workspace: workspace,
@@ -284,12 +309,27 @@ func run(a *App, workspace string, f *cliFlags) int {
 		}
 		factory.Config.Effort, factory.Config.MaxTurns = loopCfg.Effort, loopCfg.MaxTurns
 	}
+	if only := splitLists(f.toolsOnly); len(only) > 0 {
+		// -tools keeps these tools and no others, for the session and its subagents.
+		if registry, err = toolsOnly(registry, only); err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: -tools: %v\n", err)
+			return 2
+		}
+		factory.Tools = agent.RoleToolsFor(factory.Tools, &agent.Definition{Name: "-tools", Tools: only})
+	}
 	// The memory in it follows the configuration and the read rules (input track).
-	loopCfg.SystemPrompt = sysPrompt.apply(cliSystemPrompt(cfg, pol, workspace, adapter, set.SkillListing, registry.Names()))
+	loopCfg.SystemPrompt = sysPrompt.apply(cliSystemPrompt(cfg, pol, workspace, adapter, set.SkillListing, registry.OfferedNames()))
 	loopCfg.SystemPrompt += roleSection(role)
 	start := startPayload(cfg, f, headless, provider.Model)
 	sysPrompt.record(start)
 	recordRunFlags(start, cfg, mcpSrc, f.strictMCP, agentsSrc, role)
+	if only := splitLists(f.toolsOnly); len(only) > 0 {
+		start["tools_only"] = registry.Names()
+		start["tools_harness"] = harnessTools // the loop's own, kept whatever -tools names
+	}
+	if f.bare {
+		start["bare"] = true
+	}
 	start["web"] = toolset.WebState(cfg)
 	if org := toolset.OrgPolicyState(cfg); org != nil {
 		start["org_policy"] = org
@@ -328,14 +368,18 @@ func run(a *App, workspace string, f *cliFlags) int {
 		// Either way the model must be told WHY, or it retries blindly: the
 		// first real run against a local model spent 20 turns re-phrasing the
 		// same rejected command.
-		approver = agent.AutoApprove{Yes: false}
+		//
+		// A grant the person kept for this repository still answers.
+		approver = keptApprover{keep: cliKeeper{workspace: sess.Root, locked: cfg.AllowLocked()}, next: agent.AutoApprove{Yes: false}}
 	} else {
 		// LazyStdout, not os.Stdout: the approver is built before
 		// editor.Capture() replaces os.Stdout with the raw-mode pipe that adds
 		// the carriage return \n needs. A writer bound to the original file
 		// here writes bare \n into a raw terminal and staircases the prompt —
 		// the same reason the renderer above resolves os.Stdout at write time.
-		approver = ui.NewApprover(ui.LazyStdout{})
+		ap := ui.NewApprover(ui.LazyStdout{})
+		ap.Keep = cliKeeper{workspace: sess.Root, locked: cfg.AllowLocked()}
+		approver = ap
 	}
 
 	if headless {
@@ -348,18 +392,37 @@ func run(a *App, workspace string, f *cliFlags) int {
 			}
 		}
 		prompt := f.task()
+		// The person's own words: the task given after -p, or stdin when that is the whole task.
+		o.typed = prompt
+		o.stdinWait = f.stdinWait
 		if f.inputFormat == "stream-json" {
 			o.inputs = streamInputs(os.Stdin, os.Stderr)
-		} else if prompt, err = headlessTask(ctx, prompt, os.Stdin, !f.noStdin && stdinIsPipe(), os.Stderr); err != nil {
+		} else if prompt, o.lateStdin, err = headlessTask(ctx, prompt, os.Stdin, stdinWindow(f, prompt, stdinIsPipe()), os.Stderr); err != nil {
 			if code, stopped := stopCode(ctx); stopped {
 				return code
 			}
 			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			return 2
 		}
+		if o.typed == "" {
+			o.typed = prompt
+		}
+		// A custom command runs as the terminal runs it; one the workspace
+		// brought and nobody trusted is refused before anything is recorded.
+		if strings.HasPrefix(o.typed, "/") || o.inputs != nil {
+			o.commands = readCustomCommands(cfg, sess.Root)
+			if _, _, err := headlessCustom(o.commands, sess.Root, o.typed); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: %v\n", config.PrintableText(err.Error()))
+				return 2
+			}
+		}
 		if prompt == "" && o.inputs == nil {
-			fmt.Fprintln(os.Stderr, "abhed: -p has no task: give it after -p, or on stdin")
-			return 2
+			if !startFlags.resuming() {
+				fmt.Fprintln(os.Stderr, "abhed: -p has no task: give it after -p, or on stdin")
+				return 2
+			}
+			// -p --continue with no task goes on with a run that stopped at its turn limit.
+			o.continueLimit = true
 		}
 		return headlessExit(runOnce(ctx, store, renderer, o, adapter, registry, pol, approver, sess, loopCfg, cfg, prompt, budget, set.Extensions), closeAll)
 	}
@@ -496,11 +559,17 @@ func fail(err error) {
 	os.Exit(1)
 }
 
-// endAtExit ends what an exit would leave behind: background shells, and
-// MCP servers' containers, which their closes did not reach.
+// endAtExit ends what an exit would leave behind: an Ollama server this
+// process started, background shells, and MCP servers' containers, which
+// their closes did not reach.
 func endAtExit() {
+	// First, and briefly: a server Abhed started itself, by its own pid only.
+	ollama.StopOwned("the Abhed that started it exited")
 	tools.EndBackgroundShells(shellEndWait)
 	sandbox.EndServers()
+	// Last: a guest's shells and servers have ended, so nothing writes into
+	// the folder as it goes.
+	endGuest()
 }
 
 // shellEndWait bounds how long an exit waits for background shells to end.
@@ -554,6 +623,12 @@ func checkHeadlessFlags(f *cliFlags) int {
 		return bad("-input-format stream-json needs -p")
 	case !f.print.on && f.noStdin:
 		return bad("-no-stdin needs -p")
+	case !f.print.on && f.stdinDash:
+		return bad("- (attach stdin) needs -p")
+	case f.noStdin && f.stdinDash:
+		return bad("-no-stdin and - disagree: - attaches stdin")
+	case f.stdinDash && f.inputFormat == "stream-json":
+		return bad("- and -input-format stream-json disagree: stream-json reads stdin as messages")
 	case f.noStdin && f.inputFormat == "stream-json":
 		return bad("-no-stdin and -input-format stream-json disagree: stream-json reads stdin")
 	case !f.print.on && f.format != "text":
@@ -582,7 +657,7 @@ func skipPermissions(cfg config.Config, f *cliFlags, confirm func(config.Config)
 // -dangerously-skip-permissions.
 func startPayload(cfg config.Config, f *cliFlags, headless bool, model string) map[string]any {
 	return map[string]any{"surface": "cli", "headless": headless, "provider": cfg.Model.Default, "model": model,
-		"mode": cfg.StartMode(), "bypass_confirmed": f.skipPerms}
+		"mode": cfg.StartMode(), "bypass_confirmed": f.skipPerms, "principal": principalStart()}
 }
 
 // confirmBypass asks, on a terminal, before -dangerously-skip-permissions

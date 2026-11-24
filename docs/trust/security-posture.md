@@ -392,7 +392,19 @@ reads in home only the workspace, `read_only_paths`, the toolchains (`~/go`,
 home with the install a program linked there comes from, never a whole folder
 at the top of home), the caches (`~/.cache`, `~/Library/Caches`) and the files
 git, vim and shells read (`~/.gitconfig`, `~/.config/git`, `~/.vimrc`,
-`~/.zshrc`, …). The credential list above still applies inside those. What
+`~/.zshrc`, …), and what git needs outside the workspace: the repository's
+top folder, read only, when the workspace is a folder inside one (unless it
+holds another workspace's `.abhed`), and the git folders a linked worktree's
+or submodule's `.git` file names, when they name the work tree back. Those
+are read only, but for a submodule's own git folder, which serves its work
+tree alone and which commands write as git does, with configuration, hooks,
+grafts, replace refs and the rest held as for a git folder inside the
+workspace; a git folder shared with another work tree is never written. That
+common git folder's `config`, with any
+token kept in a remote URL or an `http.extraheader`, is readable to commands
+in those shapes, as it is when the git folder is inside the workspace. A
+`.abhed` under any of them stays unreadable. The credential list above still
+applies inside those. What
 remains: a secret kept inside one of those folders, such as a token in
 `~/.cache`, is readable, since the rules are paths, not contents; the
 container or vm tier keeps home out altogether, as Linux's bubblewrap does.
@@ -735,6 +747,24 @@ it, so a collector being down cannot slow or fail a session.
 ## What is NOT in place
 
 Stated plainly rather than buried:
+
+- **Git's files are not fully held on bubblewrap, the container tier or the
+  fence.** With `protect_git` on, these tiers bind read-only only the git
+  files that exist. A `commondir` a command makes in a git folder, pointing
+  the person's own git at configuration that runs a program, is moved aside
+  soon after it is made (an inotify watch on Linux; on macOS's container
+  tier only as each command ends and as the sandbox closes, so there a
+  planted `commondir` stays for the whole command and every host git run
+  during it follows it) and the next command is refused. That is a
+  mitigation, not a fix: a command planting in a loop still had its
+  program run by about a third of host `git status` runs in a measured
+  60 s test on Linux, and a repository a command makes is live to host
+  tools (an editor opening nested repositories) until the command ends.
+  Releases 1.2.3 (where holding git's files began) to 1.2.9 had this with no
+  mitigation; 1.2.3 did not hold `.git/config` itself under bubblewrap. Seatbelt (the
+  macOS process tier) denies these names outright and is not affected.
+  Keep host git tooling off a workspace an untrusted command is writing on
+  those tiers.
 
 - **No SOC 2, ISO 27001, HIPAA, or FedRAMP certification.** Any mapping of
   Abhed's controls onto a compliance framework is engineering judgment to

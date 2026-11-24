@@ -6,5 +6,6 @@ import (
 	"github.com/zybuu-ai/abhed/internal/testenv"
 )
 
-// The tests load configurations; keep them off this machine's.
+// The test binary links the managed paths; keep its tests off this
+// machine's managed files and model services.
 func TestMain(m *testing.M) { testenv.Main(m) }

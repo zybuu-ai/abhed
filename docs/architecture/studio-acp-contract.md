@@ -83,14 +83,57 @@ interface AbhedAgentMeta {
   features: string[];              // see below
   record: { store: "local" | "postgres" | "memory"; dir?: string };
   managed: boolean;                // a managed configuration is in force
+  identity: {                      // who is working (docs/architecture/sign-in.md)
+    kind: "account" | "server" | "guest" | "legacy" | "";
+    display: string;
+    chosen: boolean;               // false: no one chose; show the sign-in choice
+    pending?: string;              // a sign-in is required and none is held
+    owner?: string;                // whose history this is: device:<name>, guest, …
+    adopted?: true;                // the account that took over the history from before sign-in
+    account?: string;              // 1.3.0: how ABHED_ACCOUNT names it (username, or username@host);
+                                   // Studio runs this window's engine commands with it
+  };
 }
 ```
+
+### 1.5 Sign-in
+
+`initialize` lists the ways in as ACP `authMethods`, filtered by the
+managed configuration and the org policy: `abhed.account` (sign in),
+`abhed.register` (create an account on this machine), `abhed.server`
+(sign in to an Abhed server) and `abhed.guest`. When `identity.chosen` is
+false, Studio shows the choice before it opens a session, and calls
+`authenticate` with `methodId` and, in `_meta["zybuu.ai/abhed"]`,
+`username`, `password` and `email` (register), or `url` (server). The
+password crosses the pipe once and is never recorded or echoed. For
+`abhed.server` the engine runs the browser sign-in and sends the
+notification `_abhed/auth/openUrl {url}` for Studio to open. The reply's
+`_meta` carries the new `identity`, and `recoveryCode` for a new account,
+shown once. While a server sign-in waits for the browser, other requests
+are refused at once with -32000 and `data.signingIn: true` (retry later);
+`_abhed/auth/cancel`, or another `authenticate`, ends it with nothing kept.
+`authenticate` is refused (-32000) once a session has opened:
+switching ends the engine. While `identity.pending` is set, every method
+but `initialize` and `authenticate` is refused with -32000 and
+`data.authRequired: true`.
+
+Studio keeps each person's chat history apart, keyed by `identity.owner`
+(the unkeyed history from before sign-in belongs to the `adopted` account
+and to `legacy`), and keeps nothing of a guest: a guest window's chat
+history lives in memory and is dropped when the person changes.
+`_abhed/auth/signout` (feature `auth`) signs out the person this engine
+works as, and no one another process signed in since: their remembered
+sign-in is forgotten, the account's revocation count rises, and a server
+sign-in's token is revoked at the server (the reply's `notice` says when the
+server could not be told yet). The engine then refuses everything with
+-32000 `data.signedOut` until it restarts; Studio restarts it, and its
+next start asks.
 
 `features` names every `abhed/*` area the engine serves: `sessions`, `fork`,
 `events`, `record.verify`, `hawkeye`, `export`, `tasks`, `tasks.review`,
 `capabilities`, `policy.explain`, `trust.inspect`, `modes`, `review`,
 `checkpoints`, `terminal`, `queue`, `manual`, `doctor`, `resolve`, `index`,
-`infra`, `mcp.restart`, `memory`, `suggestions`, `answer-verdicts`, `worktrees`, `ollama`, `team` (EE). Studio shows a view only when
+`infra`, `mcp.restart`, `mcp.check`, `memory`, `suggestions`, `answer-verdicts`, `worktrees`, `ollama`, `team` (EE). Studio shows a view only when
 its feature is listed, and otherwise says which engine version adds it. It
 never probes by calling a method and reading the error.
 
@@ -126,9 +169,11 @@ relax them.
    option or `cancelled`. The engine refuses an option id it did not offer.
 3. **Destructive and widening steps need a modal whose default is No.**
    Destructive calls get a second confirm in Studio. Trust grants and settings
-   that widen the harness are never done over ACP: Studio's main process shows
-   a native dialog and then runs the engine's own command line
-   (`abhed trust grant -sha256 …`, `abhed config set …`).
+   that widen the harness are never done over ACP: Studio shows a modal whose
+   default is No, and then Studio's main process or its engine host process
+   (a Studio utility process that the engine's stdio and ACP cannot call)
+   runs the engine's own command line with an argv array, never a shell
+   (`abhed trust grant -sha256 …`, `abhed config set …`, `abhed mcp add …`).
 4. **No secret value passes through Studio.** Secrets are typed into the
    engine's own hidden prompt in an Abhed terminal. Studio sees names only.
    Responses carry names, hashes and redacted text.
@@ -253,7 +298,8 @@ interface OllamaReport extends OllamaStatus {
   assist: "ask" | "local" | "off";  // model.ollama.assist
   can_act: boolean;                 // the next step may be offered
   detail: boolean;                  // sizes were asked of the registry or download host
-  start_always: boolean;            // the person said "always start"
+  start_always: boolean;            // the person said "always start" (false while auto_start is false)
+  auto_start: boolean;              // 1.3.0: model.ollama.auto_start; false: never offer "always", never start unclicked
   start?: { command: string; log?: string; program?: string; app_binds?: boolean };
   install?: { kind: "run" | "open" | "manual"; command: string; source: string;
               size?: string; steps?: string[] };
@@ -268,7 +314,7 @@ interface OllamaReport extends OllamaStatus {
 | Method | Params → result |
 |---|---|
 | `_abhed/ollama/status` | `{sessionId, provider?, detail?: boolean}` → `OllamaReport`. `provider` defaults to the session's current model. Reads only, and without `detail` asks nothing off this machine: the local Ollama, the disk and the memory, with a curated model's size from Abhed's list (`pull.size_known: false`). Studio's automatic status (after `session/new`, on a model switch, when polling) must not set `detail`. With `detail: true`, sent only when the person opens the install or download step, it also asks the registry or download host for the size as it is now (`detail: true` in the report), and only when that step may be offered (never under `assist: "local"` or `"off"`). Not recorded |
-| `_abhed/ollama/start` | `{sessionId, provider?, always?: boolean}` → `{started: {pid?, version, log?}, status: OllamaStatus}`, or `{status}` when it was already running. `always` keeps "always start without asking" (only after the person ticked it). Recorded `ollama.start` |
+| `_abhed/ollama/start` | `{sessionId, provider?, always?: boolean}` → `{started: {pid?, version, log?, owned?, stopAfterMinutes?}, status: OllamaStatus, notice?}`, or `{status}` when it was already running. `owned` (1.3.0): the engine launched the server as its own child and stops it after `stopAfterMinutes` with no local model used and when the engine exits; `notice` says so in one sentence. `always` keeps "always start without asking" (only after the person ticked it; ignored when the report's `auto_start` is false). Recorded `ollama.start` with `owned` and `stop_after_minutes` |
 | `_abhed/ollama/install` | `{sessionId, provider?}` → `{outcome: "ok" \| "manual", output, status}`, or `{status}` when installed. Runs `brew install ollama` where Homebrew is, or opens the macOS download page (`outcome: "manual"`: the person installs). Never runs `sudo`, nor the official Linux install script, which does: both are `manual_steps`, printed with their source. Recorded `ollama.install` |
 | `_abhed/ollama/pull` | `{sessionId, provider?, pullId}` → `{status}` when it ends ready. While it runs, notifications `_abhed/ollama/progress {sessionId, pullId, status, completed?, total?}`. Disk short, model not in the registry or no network fail before any download. Recorded `ollama.pull` |
 | `_abhed/ollama/cancel` | `{pullId}` → `{cancelled: boolean}`; the pull's reply is then -32000 with `kind: "cancelled"`. Ollama keeps what it fetched |
@@ -357,12 +403,27 @@ expands; running one is recorded `command.invoked` with its source and hash.
 skills. **Security:** workspace commands are listed only when the workspace is
 trusted, since a command is instructions.
 
+**Implemented in 1.3.0:** the built-in `/parallel <work>`, which runs a prompt
+as a custom command does: the work, its attachments added, with the
+instruction to start its parts as subagents in one `tasks` call. A subagent
+waiting for its provider's request slot updates its `sub-<session>` card with
+`tool_call_update` content "waiting for the model (n ahead)".
+
 ### 3.4 Usage and cost
 
-`usage_update` (spec) `{used, size}` per model call. **Not implemented in 1.2.2:**
-`cost: {amount, currency}` only when a price table is configured, and
+`usage_update` (spec) `{used, size}` per model call, with
 `meta = {tokensIn, tokensOut, tokensCached, sessionTotalIn, sessionTotalOut}`.
-No invented prices.
+When the call's model has a price, `meta.costUsd` is the call's cost; while
+every call so far was priced, `cost: {amount, currency: "USD"}` and
+`meta.sessionCostUsd` are the session's. After a replay of calls recorded
+before costing, `meta.costPartial` is true and `meta.sessionCostUsd` is what
+is known; `cost` is not sent. Every `model.call` counts, in tokens and cost,
+replayed ones, the critic's, a suggestion's, a compaction summary's and a
+commit message's included. Completions and next edits are counted from
+their summaries' `cost_usd` (§7.10, §7.11), which are recorded when the
+session closes. Once a call goes to a
+model with no price (its `model.call` says `unpriced`), `meta.unpriced` is true and the session's cost is left out. No price
+is invented.
 
 ### 3.4a Next-prompt suggestion
 
@@ -752,6 +813,56 @@ interface AskMeta {
   `permission.changed {op: "remove", list: "allow", rule, scope:
   "workspace"}`; refused inside an agent's command, `-32602` for an unknown
   id. With `managed` true none is loaded or offered.
+- **Machine grants (1.3.0, feature `machine`).** What the person let Abhed
+  use of their own setup (a kubeconfig context, an `~/.ssh/config` host, a
+  cluster kept from a pasted login) is theirs, not a session's or a
+  workspace's, so neither method takes a session. `_abhed/machine/list {}` →
+  `{grants: [{kind, name, what, grantedAt}]}`, `kind` one of `k8s-context`,
+  `ssh-host`, `k8s-login`; `what` names the server or address and, for a
+  login, the secret's name, never a token or a certificate.
+  `_abhed/machine/forget {kind, name}` → `{forgotten: true, kind, name}`:
+  the next first use asks again; a session that already approved it this
+  session keeps that approval. `-32602` for an unknown kind or a grant that
+  is not kept; refused inside an agent's command. A permission request for
+  a first use carries `meta.firstUse = {what, kept: "person"}`, and its
+  "always" option is named for what is kept. A permission request whose
+  approval pins a server's certificate (a pasted login to a server no public
+  CA or kubeconfig CA vouches for) carries `meta.pinnedCertificate =
+  {sha256, subject}`: the SHA-256 as colon-separated upper-case hex pairs,
+  the same value the request's reason names, and the certificate's subject
+  as a distinguished name, for the card to show apart from the text. Every
+  message that held a stored secret's value or a pasted credential is
+  followed, once, by a note (`agent_message_chunk`) whose `meta` has `text`,
+  the message as recorded (`[secret:NAME]`, `[pasted:ID]` or, where nothing
+  is held for use, `[pasted credential]` in place of each value), `seq`, the
+  `seq` of its event, and `steered`, whether it was sent while a run was
+  working; with `secretsWithheld: [NAME…]` and `pastedCredentials: [{id,
+  kind}]` as they apply. A paste held with no session to keep it has `id`
+  `""`. A message that was not delivered (a hook refused it, a stop, a
+  shutdown or a hand-over) gets the note too, for its `message.dropped`
+  event, with `dropped: true`, so the editor redraws the bubble it drew as
+  typed in every case. No update carries a value.
+- **Message seq (1.3.0).** The editor pairs the message it drew with the
+  `user.message` the engine records by `seq`. A `session/prompt`'s message
+  is announced as soon as it is recorded, by the notification
+  `_abhed/session/userMessage {sessionId, requestId, _meta.abhed:
+  {sessionId, userMessageSeq}}`, where `requestId` is the prompt's JSON-RPC
+  id, and the prompt's reply repeats it as `_meta.abhed.userMessageSeq`,
+  with `_meta.abhed.sessionId` beside it wherever it is sent. The seq is
+  always that message's own `user.message` event's in the session's record. The reply to
+  `_abhed/session/steer` comes once its message is recorded, at the run's
+  next turn boundary, with `{queueId, _meta.abhed.userMessageSeq}`. A
+  message that is not recorded gets `userMessageSeq: null` and
+  `userMessageReason`: a prompt a hook or the policy refused, one that was
+  a command, a prompt whose turn ended before its message was recorded, a
+  steer the person cancelled (`_abhed/queue/cancel`) or that was dropped,
+  and a steer still waiting when the turn ends, which goes with the next
+  prompt. A request refused with an error records nothing.
+- `_abhed/machine/list` items for a `k8s-login` also carry `login: {server,
+  secret, caFingerprint?}`: the server as displayed (no user, query or
+  fragment), the stored secret's name (never its value), which stays stored
+  after a forget until `abhed secret rm`, and the SHA-256 of the pinned
+  certificate when one was pinned.
 - An answer of "always" is recorded `approval.scope_granted {scope, by:
   "user"}` (**not implemented in 1.2.2**) so `session/load` can restore it.
 - A call whose input the record withheld is refused without asking, with a
@@ -836,7 +947,7 @@ attached (§3.1a) and this flag.
 | | |
 |---|---|
 | Wire today | `session/new`, `session/load`, `session/resume` and `_abhed/session/fork` accept `_meta["zybuu.ai/abhed"].trust: "untrusted"` only (tighten-only; an empty value counts as absent, anything else is -32602) and return `_meta["zybuu.ai/abhed"].workspaceTrust = {workspace, file?, sha256?, trusted, reason, applied[], ignored[{key, value?, reason?}]}`. The legacy `_meta.abhed.trust` is still accepted on input; replies use only `zybuu.ai/abhed`, and both keys at once are -32602. |
-| Added in 1.2.3 | `_abhed/trust/inspect {cwd}` → the same object plus `agents[{name, sha256}]`, `skills[{name, dir}]`, `commands[]` and `mcp[]` the file would bring. Notification `_abhed/trust/changed {cwd, oldSha256, newSha256}` when the file's bytes change during a session; the next prompt restarts the session under the new decision. |
+| Added in 1.2.3 | `_abhed/trust/inspect {cwd}` → the same object plus `agents[{name, sha256}]`, `skills[{name, dir}]`, `commands[]` and `mcp[]` the file would bring; `local_file` names `.abhed/config.local.json` when there is one, and `skills` and `mcp` are listed from both files. When the files changed after they were hashed, `content_changed` is true and `skills` and `mcp` are empty. Notification `_abhed/trust/changed {cwd, oldSha256, newSha256}` when the file's bytes change during a session; the next prompt restarts the session under the new decision. |
 | Studio | A banner, then a review editor built from `inspect`, then **Trust this exact file**, which asks in a native dialog raised by Studio's main process (path and SHA-256 shown) and then runs `abhed trust grant -sha256 <H> <dir>` with the bundled, hash-checked engine binary. |
 | Security | There is no grant method, now or later. A grant is pinned to the reviewed hash, so a file changed after review is not trusted. Studio's own Restricted Mode must send `trust: "untrusted"` on every method that opens a session, a continued one included; up to 1.2.6 the engine ignored it on load and resume. |
 
@@ -983,7 +1094,8 @@ interface Capabilities {
          status: "connected" | "starting" | "stopped" | "error" | "refused"; error?: string;
          tools: string[]; source: "user" | "workspace" | "managed";
          pinned: boolean;                                   // digest-pinned command or image
-         refusedTools?: string[] }[];                       // offered, not registered for their name
+         refusedTools?: string[];                           // offered, not registered for their name
+         auth?: McpAuth }[];                                // URL servers only (1.3.0, `mcp.login`)
   extensions: { name: string; events: string[];            // Abhed hook extensions
                 status: "running" | "stopped" | "not started"; error?: string; source: string }[];
   web: { search: boolean; fetch: boolean; allowed_hosts: string[]; ask: boolean };
@@ -1008,6 +1120,83 @@ interface Capabilities {
   restarted server lives as long as the session, not the request. `error` here and in `mcp[]` is
   redacted text; `refusedTools` names are untrusted text with hidden
   characters marked.
+- **Adding and removing MCP servers** (1.3.0; `mcp.check` in `features`).
+  Adding a server widens the harness, so it is not an ACP method (§2.1,
+  §2.3); `_abhed/mcp/add` does not exist.
+  - `_abhed/mcp/check {sessionId, name, command?, args?, url?, env?,
+    headersEnv?, allowTools?}` → `{file, description, kind, sha256}`. Read
+    only: it writes nothing. Exactly one of `command` and `url`. `env` holds
+    variable names only: the server gets the person's own value of each, so
+    no value is written. `headersEnv` maps a header to the variable it is
+    read from (URL servers). `sha256` is the hash of the entry that would be
+    written.
+  - Studio then shows `description` in a modal whose default is No
+    (`IDialogService`, native by default), and on a yes its engine host
+    process (a Studio utility process, which the engine's stdio and ACP
+    cannot call) runs the engine's own command line with an argv array,
+    never a shell: `abhed mcp add -confirm-fd 3 -sha256 <sha256> [-env NAME]…
+    [-header-env H=VAR]… [-allow-tools a,b] NAME COMMAND [ARGS…]` (or `NAME
+    URL`), writing `y` on the inherited descriptor 3 in place of a terminal.
+    The command line requires `-sha256` with `-confirm-fd`, refuses an entry
+    whose hash differs, fails when no yes is read from the descriptor, and
+    re-checks the managed configuration's servers and MCP lists under the
+    file's lock. It logs the change as `by: "mcp add -confirm-fd"`, and the
+    next session records it as `config.changed`.
+  - `_abhed/mcp/remove {sessionId, name}` → `{removed: true, file}`, recorded
+    `mcp.status {server, op: "remove", status: "removed", kind, sha256, by:
+    "user"}`; it narrows, so it needs no agreement.
+  - Refusals: -32602 for a bad name, command or URL, an env value, an unknown
+    field or session; -32001 when the managed configuration sets
+    `mcp.servers`, or its `mcp.allowed`/`mcp.denied` refuse the server (it
+    would never start), and inside an agent's command, recorded as
+    `config.refused {key: "mcp.servers", value: "<name> sha256:<hash>",
+    principal}`; -32000 when the file already has a server of that name.
+- **Signing in to a URL server** (1.3.0; `mcp.login` in `features`). A
+  sign-in hands the agent a credential, so it is not an ACP method either;
+  `_abhed/mcp/login` does not exist, and no token ever crosses ACP.
+  ```ts
+  interface McpAuth {
+    state: "none" | "signed-in" | "refused" | "ended" | "other-url" | "unreadable";
+    issuer?: string; expiresAt?: number;                    // Unix seconds
+    refreshable: boolean; refusedAt?: number;               // when a refresh was refused
+    needsLogin: boolean;                                    // a 401, or a login that cannot give a token
+    error?: string }                                        // "unreadable" only, redacted
+  ```
+  On the person's Sign In, Studio asks in a modal whose default is No, then
+  its engine host process runs `abhed mcp login -confirm-fd 3 NAME` with an
+  argv array and writes `y` on descriptor 3. The command line refuses inside
+  an agent's command, fails when no yes is read, prints the authorization
+  address (`  https://…` on the line after "Sign in to MCP server NAME in
+  your browser:") and does not open a browser itself: Studio opens that
+  address, and only an `http(s)` one. The engine keeps the tokens in its
+  store and logs `by: "login -confirm-fd"`; `/mcp restart` takes the new
+  login up. Cancelling ends that process only.
+- **The editor's files from the engine** (1.3.0; `fs` in `features`), for a
+  folder on another machine (studio-remote.md). Every method takes
+  `{sessionId, path}` with `path` absolute on the engine's machine and inside
+  the session's roots; a path outside them, Abhed's state and anything the
+  read rules withhold are refused (-32001) with `data.fs` naming the kind
+  (`notFound`, `exists`, `notADirectory`, `isADirectory`, `noPermissions`).
+  - `_abhed/fs/stat` → `{type: 1 | 2, size, mtime, ctime}` (milliseconds);
+    `_abhed/fs/readDir` → `{entries: [{name, type}]}`, withheld names left
+    out; `_abhed/fs/read` → `{content: base64, sha256}` (at most 16 MiB).
+  - `_abhed/fs/write {path, content: base64, create, overwrite}`: text only,
+    through the write tool on the manual path (recorded by: user);
+    `_abhed/fs/delete {path, recursive}` through the delete rules;
+    `_abhed/fs/rename {path, to, overwrite}` judged as a delete and a write,
+    recorded `manual.edit`; `_abhed/fs/mkdir {path}` through the write rules.
+  - `_abhed/fs/search {path, query, isRegex, caseSensitive, wholeWord,
+    include, exclude, maxResults}` → `{matches: [{path, line, text,
+    ranges: [[start, end]]}], limitHit}` (0-based, UTF-16 columns);
+    `_abhed/fs/files {path, query, include, exclude, maxResults}` →
+    `{files, limitHit}`.
+  - `_abhed/fs/watch {path, recursive, id}` and `_abhed/fs/unwatch {id}`;
+    changes arrive as `_abhed/fs/changed {id, changes: [{path, type: 1
+    changed | 2 added | 3 deleted}]}`.
+  - `_abhed/fs/git {op: "status"}` → `{root, changes: [{x, y, path}]}`
+    (porcelain v1) and `{op: "original", path}` → `{content}` (HEAD's),
+    run with hooks, fsmonitor, pager and external diff off. Nothing is
+    staged or committed.
 - `_abhed/index/status {sessionId}` and `_abhed/index/rebuild {sessionId}`
   (recorded `by: user`; progress as events).
 - `_abhed/infra/status {sessionId}` is `infra` alone, for polling.
@@ -1061,12 +1250,48 @@ _abhed/terminal/listen_refused { sessionId, terminalId, canAllow, why?, message 
 // 1.2.9: an interactive terminal now uses the project's venv (abhed_venv)
 _abhed/terminal/venv { sessionId, terminalId, inUse }
 // 1.2.9: more than one program listens on a listen port; Abhed stops nothing
-_abhed/sandbox/port_contested { sessionId, port, message }
+_abhed/sandbox/port_contested { sessionId, port, message, joined, latestJoin }
 // 1.2.9: contested ports can no longer be seen (lsof failed)
 _abhed/sandbox/listen_watch_lost { sessionId, message }
 // engine → client request: confirm a destructive command
 _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean }
+// 1.3.0 (feature network): an agent's command failed because the network is off
+_abhed/sandbox/network_refused { sessionId, canOpen, why?, message, choices: ["workspace","host","once"] }
+// 1.3.0 (feature config_watch): the person's ~/.abhed/config.json changed while chats are open
+_abhed/config/changed { sessionIds, change: { models?, default?, newChats? }, message, canApply }
 ```
+
+- **The network on the person's word (1.3.0, feature `network`).** Once a
+  turn, an agent's command that failed because the network is off sends
+  `_abhed/sandbox/network_refused`. `_abhed/sandbox/network {sessionId,
+  scope: "workspace"|"host"|"once", host?}` → `{opened}` opens it: any host
+  for the workspace, one host (kept), or this chat alone (not kept), over
+  http and https through the session's egress proxy, deny rules still
+  winning. A kept choice applies at once to this process's other open
+  sessions of the workspace and to every later session, is listed by
+  `_abhed/grants/list` as id `network` and revoked by `_abhed/grants/revoke`
+  for new chats. Recorded `permission.changed {op: "add", list: "allow",
+  rule: "network(<host>|any host)", scope}`. Refused inside an agent's
+  command, and wherever the managed file sets `sandbox.allow_network`,
+  `sandbox.network` or `egress` (then `canOpen` is false and `why` says so).
+- **Settings changed while chats are open (1.3.0, feature `config_watch`).**
+  The engine looks at the person's own file every two seconds while a
+  session is open. `_abhed/config/changed` sorts the change: `models`
+  added and a new `default` an open chat can take, and `newChats`, every
+  other setting changed, which applies to new chats only. `_abhed/config/apply
+  {sessionId, switchDefault?}` → `{added, switchedTo?}` offers the added
+  providers in that chat, each as the configuration resolves it (managed
+  allowlists and pins hold), and switches to the new default when asked;
+  recorded `config.applied`, the switch as `model.switched`. Nothing that
+  widens what the agent may do is applied to an open chat.
+- **Provider errors (1.3.0).** A prompt that ends because the model provider
+  refused it carries `_meta.providerError {kind, status, message, provider,
+  model, next, others}` on its reply (`kind`: key, credit, retired, too_large, unreachable,
+  rate_limit, unavailable or other; `message` is the provider's own, with
+  anything key-shaped redacted; `others` are configured models whose key is
+  at hand), and the same text as an `agent_message_chunk`. session/new
+  carries `_meta.modelWarning {message, others}` when the provider said the
+  default model is retired or not found within the last two weeks.
 
 - **Network (1.2.9).** The terminal has the network the agent's commands
   have: off but for the package registries open to the session through
@@ -1113,9 +1338,21 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
   `sandbox.port_contested {port, listeners}`, within a few seconds: once
   while the port stays contested (a session that starts watching during a
   contest, or turns listening on again, is told too), again within one
-  read whenever a program not told of joins the port (programs are told
-  apart by their sockets and processes), and for the same programs coming
-  back at most once a minute. A server and
+  read whenever a program not told of joins the port (a program is the
+  same one only with the same sockets and a process in common, so a server
+  recycling its workers keeps its master and stays one, a new process on a
+  socket address another left is new, and a program gone is forgotten),
+  at most one notice per port per read and none held back. A later
+  `port_contested` for the same session and port replaces the earlier one
+  in place: it carries `joined`, the programs joined since the port was
+  last recorded, which starts again from the next join after each record
+  (it is not a running total), and `latestJoin`, the time of the latest. The record and
+  the engine's log take a port's first notice at once and then at most
+  one entry per port every 30 s, flushed when the window ends even if the
+  port has cleared, and when the session closes, before `session.ended`;
+  a clear does not reset the window. A record's `listeners` is the count
+  at its latest join, so one recorded after the port cleared still says
+  how many programs contested it. A server and
   the workers it forks, sharing one socket, count as one program; Abhed
   cannot prove which listener is a sandbox's and signals
   no process. A new command's profile leaves the port out. If the Mac's
@@ -1241,8 +1478,15 @@ conversation rewind is `_abhed/session/fork` at the turn's seq.
 
 ### 7.6 Queue, steer and stop
 
-- `_abhed/session/steer {sessionId, text}` → `{}`: "send now" while a prompt
-  runs; recorded as a `user.message` with `meta.steered: true`.
+- `_abhed/session/steer {sessionId, text}` → `{queueId}`: "send now" while a
+  prompt runs; recorded as a `user.message` with `meta.steered: true`. It is
+  an error only when the message was not queued: no such session, no prompt
+  running, the session closed, or empty text; nothing of it is then in the
+  record, and Studio puts the text back in the input. Once queued, every
+  outcome is a successful reply: delivered (`_meta.userMessageSeq`), or not
+  (`userMessageSeq: null` with `userMessageReason`: withdrawn, dropped by a
+  hook, the turn ended before it was delivered, the session or the
+  connection closed).
 - `_abhed/queue/list {sessionId}` → `{items: {id, text, queued}[]}` and
   `_abhed/queue/cancel {sessionId, id}` → `{}`.
 - Stop is spec `session/cancel`, which also cancels background tasks (done).
@@ -1258,10 +1502,11 @@ forge token comes from the secrets vault by name. **Not implemented in 1.2.2.**
 ### 7.8 Debugging (Run and Debug)
 
 ```ts
-_abhed/debug/launch { sessionId, language: "go" | "python",
+_abhed/debug/launch { sessionId, language: "go" | "python" | "node",
                       program?: string, test?: string,   // exactly one; inside the workspace
                       args?: string[], cwd?: string,      // cwd inside the workspace
-                      env?: { [name]: string } } → { debugId }
+                      env?: { [name]: string },
+                      runner?: "node" | "tsx" | "ts-node" | "vitest" | "jest" } → { debugId }  // node only
 _abhed/debug/send   { debugId, message: DapRequest } → {}   // passed on in the order sent
 _abhed/debug/stop   { debugId } → {}
 // notifications
@@ -1275,9 +1520,42 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   the network open its loopback would be the host's); elsewhere `launch`
   fails with `-32000` and `data.problem` `{kind: "container-setup", message,
   steps, retry}` and `data.setup` (below), unless the person chose the
-  process tier (`processTier: true`, below).
+  process tier (`processTier: true`, below). Node is the exception: its
+  adapter opens no port (a worker thread in the program drives the
+  program's own inspector over a pipe), so a Node launch starts on any
+  sandbox tier as the session's commands run, never opens loopback, never
+  asks the process-tier consent, and is refused only with no sandbox (the
+  `none` tier, or a tier not known; `nodeReady` is the same rule), as
+  `-32000` with `problem.kind: "sandbox-required"` and no `setup`;
+  `debug.launched` has `loopback: false`. `runner` picks the command line:
+  `node FILE` (default; TypeScript by Node's own type stripping), `node
+  --import tsx FILE`, `node --require DIR/register FILE`, for a test
+  `node --test --test-isolation=none FILE`, `node DIR/vitest.mjs run
+  --pool=threads --no-file-parallelism TEST` or `node DIR/bin/jest.js
+  --runInBand TEST`, DIR being the runner's package the engine finds in
+  the nearest `node_modules` from cwd up to the workspace; a runner that
+  runs tests with a program, or the reverse, is `-32602`, and one not
+  installed is `-32000` with `problem.kind: "runner-missing"` before
+  anything is judged. `debug.launched` adds `runner` (that package). The
+  engine's launch carries `argv` (after `node`) and `runner`. The adapter
+  runs without `NODE_OPTIONS`; the program gets the inherited one without
+  any option whose name, `_` read as `-`, starts `--inspect` or `--debug`,
+  unless the launch's `env` sets it. Node missing ends `adapter-missing` with
+  `install: {language: "node"}`. Breakpoints in TypeScript or other
+  source-mapped code are set as each of the program's own scripts loads,
+  answered `verified: false` until then and announced by a `breakpoint`
+  event; `evaluate` may have side effects only with `context: "repl"`;
+  worker threads are DAP threads; child processes are not debugged.
+- For every language, a `source` the adapter sends (a frame's, an output
+  event's, a breakpoint's, `loadedSources`) whose `path` is outside the
+  workspace, or leads out of it by a link, reaches Studio without `path`,
+  with its `name` and `presentationHint: "deemphasize"`. Every adapter
+  message is decoded and encoded again before it is passed on, so a key
+  written with escapes or given twice reaches Studio as the one key the
+  engine judged; one the engine cannot decode is dropped and counted
+  (`dropped`).
 - `_abhed/debug/status-tier {sessionId}` → `DebugSetup`:
-  `{os, tier, ready, engine?, brew?, machine?: "none" | "stopped" |
+  `{os, tier, ready, nodeReady, engine?, brew?, machine?: "none" | "stopped" |
   "running", steps: [{id: "install-podman" | "machine-init" |
   "machine-start" | "use-container-tier", title, command?}],
   processTier: {available, consented, consent?}}`. `steps` are those left,
@@ -1548,15 +1826,21 @@ _abhed/complete { sessionId, uri, position: { line, character }, prefix: string,
                   context?: { uri, text }[] }        // other open files, optional
   → { items: { text: string, range?: Range }[], disabled?: string, refused?: string, limited?: string, cancelled?: string,
       dropped?: string }  // why the model's answer was not used as code, such as prose
-_abhed/complete/cancel { sessionId } → {}
+_abhed/complete/cancel { sessionId, seq?: number } → {}
+_abhed/complete/warm { sessionId } → { warmed: boolean, ms?: number, recent?: boolean, skipped?: string, failed?: string }
 ```
 
 - Listed under the `complete` feature; whether completions are on is in each
   answer: `disabled` names why not (no `model.completion`,
   `completion.enabled: false`, a provider the configuration does not offer,
   a managed `model.default` pin the managed file does not extend to
-  `model.completion`, or `completion.local_only` with a remote model).
-  Nothing is sent then. Only the provider's own key is sent.
+  `model.completion`, `completion.local_only` with a remote model, or a
+  session dollar cap with no price for the completion model: "completions
+  are off: the completion model has no price under this dollar cap; set
+  pricing for it (0 for a local model)"). Nothing is sent then. The first
+  answer refused by the dollar cap carries the same text as `notice`, for
+  Studio to show once; next edits and commit messages do the same. Only the
+  provider's own key is sent.
 - The engine sends at most the last 6,000 characters of `prefix`, the first
   2,000 of `suffix`, and the first 60 lines of up to three `context` files,
   4 KiB of each and 12 KiB in all, cut between characters. A document or
@@ -1570,24 +1854,103 @@ _abhed/complete/cancel { sessionId } → {}
 - One request in flight per session: a newer one cancels it (`cancelled`).
   `seq`, increasing per session, orders requests; one at or below the newest
   seen is dropped (`cancelled`). Without it, arrival order. A short debounce;
-  at most five a second per session and ten per connection (`limited`). A
-  model error is `-32000`; a closed session's request is refused with
-  `-32602`.
+  a request replaced during it is not sent and spends no rate; at most five
+  requests sent a second per session and ten per connection (`limited`). A
+  cancel with `seq` ends that request only, never a newer one; without it,
+  whatever is in flight. A model error is `-32000`; a closed session's
+  request is refused with `-32602`.
+- One logical block: the statement at the cursor and the body of a block it
+  opens (deeper lines, then one closing line), ending at a blank line or a
+  line back at its indentation (a blank line inside a string, such as a
+  docstring, does not end it), at most 12 lines. Fill-in-the-middle asks
+  with `stream: true` and the stops `<|endoftext|>`, `<|file_sep|>`,
+  `<|fim_pad|>` and `<|fim_prefix|>`; the stream is ended as soon as the
+  block is whole, so the model stops writing, and anything after an
+  end-of-text or next-file marker is cut. A server that answers the streamed request with
+  one JSON body is read as before.
+- `_abhed/complete/warm` (feature `completeWarm`) loads a local completion
+  model before the first completion needs it: one fill-in-the-middle request
+  with an empty prompt and suffix and `max_tokens: 1`, so no code is sent,
+  with its own 60-second deadline, ended when the session closes or the
+  connection's input ends, at most once in two minutes per session and per
+  connection for a provider (`recent`). A model whose URL is not on this
+  machine (as `local_only` decides it: a loopback proxy to a remote model
+  counts as local), a chat-only provider, or completions that are off are
+  `skipped`, and nothing is sent.
 - Fill-in-the-middle on the completions endpoint for local server types and
   `openai-compatible`, else a chat turn; a 404, 405 or 501 from the
   completions endpoint, or a 400 saying it or `suffix` is not supported,
   switches the session to chat. Each request is sent once, no retries; under
   `local_only` no provider follows a redirect off the machine. Text only, no
-  tools. The answer is cleaned before it is offered: reasoning a model wrote
+  tools. The suffix sent is never empty: at the end of a file it is a
+  newline, since Ollama applies a model's fill-in-the-middle template only
+  to a request with a suffix, and without one a coder model answers the
+  prefix in prose. The answer is cleaned before it is offered: reasoning a model wrote
   into its text (`<think>`, `analysis…final` channels) is removed, a fenced
   block gives its code, code repeated from either side of the cursor is
-  trimmed, and an answer that reads as prose is dropped, with `dropped`
-  saying so.
+  trimmed (a one-line answer that ends with the rest of the cursor's line
+  loses that rest, so it is not inserted twice; a rest of brackets alone
+  only when keeping it would close more than the cursor's line opened), and
+  an answer that reads as prose is dropped, with `dropped` saying so: one
+  that opens as a chat answer does ("Here's", "Sure,", "It looks like"), or
+  as an English sentence that opens with no constant or keyword (`None`,
+  `True`, `Self`, `Some`…) and has a contraction, a pronoun, or an article
+  in six words or more ("None if x is None else x" is code), unless the
+  cursor is in a comment, a docstring or a string, or the language is
+  written in sentences (Markdown, plain text, YAML and the like). A string
+  that spans lines counts, each in the languages that have it: in Go,
+  JavaScript and TypeScript an odd count of backticks before the cursor
+  (escaped ones aside); in Rust a raw string (`r"`, `r#"`, `br#"`) left
+  open; in Ruby, shell, Perl and PHP a heredoc whose closing line has not
+  come; in any language an open triple quote. With no language named, every
+  rule applies. The counts are rough: a stray backtick in a Go comment, say,
+  keeps the prose filter quiet for the rest of the file, where Studio's
+  parse check below still applies. Studio also parses the
+  document with the suggestion inserted, where it has the language's
+  grammar and the document is at most 256 KB (larger ones are left to the
+  engine's filter), and drops one whose own text holds a syntax error or
+  that leaves more syntax errors than there were. It parses the document
+  once per version and each suggestion incrementally, on the renderer.
+- Completions go first on a model server they share with next edits and
+  agent turns: a completion waiting for one of the server's request slots
+  (`max_concurrent_requests`, one for `ollama`) is given the next free one
+  ahead of requests that waited without the mark, and fill-in-the-middle
+  requests now take a slot too, rather than waiting in the server's own
+  queue. While a completion is asked for, from its arrival to its answer,
+  next-edit model calls to that server wait, and one in flight is cancelled
+  (§7.11), on a server that queues requests only.
 - Recorded as `completion.enabled` just before the first request is sent,
   and again with `mode: "chat"` before a fallback's first chat request (if
   it cannot be recorded, nothing is sent) and `completion.summary` when
-  the session closes, which counts `superseded` (replaced before sending)
-  apart from `cancelled` (after); single completions are not recorded.
+  the session closes (also when the editor quits: when its input ends, or a
+  stop signal comes while it is still open, the completion and next-edit
+  calls in flight are cancelled and every session is closed, its summaries
+  and `session.ended` recorded once; the signal's close and the input's end
+  share one close, and the exit waits for it). After a stop signal the exit
+  waits at most 3 seconds from the close beginning: a signal while the
+  input is open begins the close after 0.25 seconds, so at most 3.25
+  seconds after the signal; a signal during a close the input's end began
+  waits at most 3 seconds from the signal; and when the input ends within
+  those 0.25 seconds, the requests still running are first given up to 3
+  seconds to answer, so the exit comes at most about 6.25 seconds after
+  the signal. Without a signal, the close is waited for to its end. A
+  session opened while the close runs is refused, and the close shuts it
+  (recording its `session.ended`) before it ends. Calls in flight are
+  cancelled for every session first, then waited for once, up to a second
+  for the whole close, so a call cancelled as its session closes is in the
+  summary as it is in the budget.
+  The summary counts `superseded` (replaced before sending)
+  apart from `cancelled` (after), the answer times of requests answered
+  (`latency_p50_ms`, `latency_p90_ms`, `latency_max_ms`, from the request
+  reaching the engine, of requests sent to the model only), and `warmups`
+  with the longest (`warmup_ms`); single
+  completions are not recorded, and no code is. HawkEYE shows the counts and
+  times.
+  Each request's cost is charged to the session's budget and summed in the
+  summary's `cost_usd` (`unpriced` when the model has none), with the tokens
+  charged; `estimated` counts the requests whose tokens were estimated, as
+  a turn's are (configuration guide, budgets). A warm-up is refused under a
+  dollar cap when the completion model has no price.
 
 ### 7.11 Next-edit suggestions
 
@@ -1595,8 +1958,10 @@ _abhed/complete/cancel { sessionId } → {}
 _abhed/nextEdit { sessionId, uri, cursor: { line, character },
                   window: { startLine: number, text: string },   // the document's lines around the cursor
                   recentEdits?: { uri, range: Range, oldText: string, newText: string }[],
-                  language?: string, seq?: number }
-  → { edits: { uri, range: Range, newText: string }[], disabled?: string, refused?: string,
+                  language?: string, seq?: number,
+                  rename?: { from: string, to: string, at: Position },  // Studio's reading of a rename
+                  sites?: Range[] }                                     // the old name's uses, from a language server
+  → { edits: { uri, range: Range, newText: string }[], rename?: true, disabled?: string, refused?: string,
       limited?: string, cancelled?: string, dropped?: string }
 ```
 
@@ -1612,9 +1977,65 @@ _abhed/nextEdit { sessionId, uri, cursor: { line, character },
   edits by whole lines in `uri` only. A changed line that held a withheld
   secret, a suggestion carrying one, prose, or a rewrite of more than half the
   window is `dropped` with the reason.
+- A rename is finished from the window, with no model asked and nothing
+  sent: `rename`, or else the last recent edit in `uri` on one line, turns
+  an identifier into another that reads whole at its place in `window`,
+  in a language with reserved words here (Python, Go, JavaScript,
+  TypeScript, Java, Rust, C, C++). The other uses of the old name are the
+  `sites` inside the window that read it whole, when Studio sends any (a
+  language server's references). Without sites, Python, Go, JavaScript,
+  TypeScript and Java are scanned: the innermost function the rename is in
+  (the window at a file's top level), skipping strings, comments, members
+  after `.`, `->` or `::`, keyword arguments in a call (not a parameter's
+  default on the function's own header), and in JavaScript, TypeScript and
+  Go a key right after `{` or `,` in a brace that opens an expression (not
+  a Go map literal, whose keys are uses, nested ones with their type left
+  out included). A JavaScript or TypeScript shorthand property, a
+  destructuring (after `const`, `let`, `var`, `using`, `import`, `export`,
+  `(`, `[` or `,`) or an object directly inside a JSX expression container
+  (`{{ … }}`), at a scanned use or a site, is written out as `old: new`;
+  the brace is read as the scan reads it, so a name in a block or arrow
+  body, a template's `${…}` or a JSX expression container is a use,
+  renamed in place. A shorthand-shaped use in a brace that cannot be
+  classified with confidence (an `= {` in JSX with no tag or declaration on
+  its line, a brace alone on its line after anything but `(`, `[`, `,` or
+  `)`, an object inside a template's `${ }`) makes the edit no rename: the
+  model is asked. Rust, C, C++, `javascriptreact` and `typescriptreact` need
+  sites. A `javascript` window holding JSX (a tag in an operand position, after
+  `[`, `!`, `yield` or `await` too; `<Name` with an attribute, a spread or
+  `>`, anywhere; `</`, `/>` or `<>`) is read as `javascriptreact`. The uses come back as one edit over
+  the lines from the first to the last, with `rename: true`. Only a name bound again
+  in a nested function, lambda, comprehension or inner block is `dropped`
+  (left to the person). Otherwise, an edit is no rename, and the model is
+  asked as for any edit, when the new name is a reserved word or already
+  used in the scope, when the old name has no other use, when the edit was
+  at a use of a name declared elsewhere in the scope, or when it is outside
+  any function the window shows and no sites were sent.
+  Studio re-parses the document with any suggestion applied before showing
+  it, and drops it when the parse fails or is cut short.
+- Completions go first (§7.10): a model call waits while a completion to
+  the same server is asked for, and is cancelled when one arrives while it
+  runs, answered `cancelled: "a completion went first"`. A rename finished
+  from the file asks no model and never waits. This holds only on a server
+  that queues requests (one on this machine, `ollama`, or one with
+  `max_concurrent_requests`); a hosted server serves both side by side and
+  nothing waits or is cancelled there. A call cancelled while it waited for
+  the server's request slot was never sent and is not charged. The answer is
+  bounded by the window it rewrites: `max_tokens` is half the window's bytes
+  plus 64, at least 128 and at most 1,024. An answer cut at that bound
+  (`finish_reason` `length`, `max_tokens` or `MAX_TOKENS`) is `dropped`
+  ("the model's answer was cut short"), never read as the window, so the
+  lines it did not reach are never offered as deletions.
+- `_abhed/nextEdit/cancel { sessionId, seq? }` → `{}` (feature
+  `nextEditCancel`) ends the request in flight, as Studio sends on each
+  keystroke: with `seq`, only that one.
 - Rate limits, `seq` ordering, supersede and cancel as §7.10. Recorded as
   `next_edit.enabled` before the first request and `next_edit.summary` when
-  the session closes.
+  the session closes, which counts renames finished from the file as
+  `served` and, of those, `local`, and those that offered nothing as
+  `local_dropped` (neither in the answer times), and the answer times as
+  §7.10. The metrics keep outcomes apart: `served` there is from the model
+  only, beside `local`.
 
 ### 7.12 Commit messages
 
@@ -1650,6 +2071,32 @@ _abhed/commitMessage { sessionId } → { message: string, source?: "staged" | "u
   or changed, `disabled` and `limited` as above. Each request is logged on
   the engine's stderr with how it ended.
 
+### 7.13 Code actions
+
+```ts
+_abhed/codeActions { sessionId, uri, range: Range,
+                     diagnostics?: { range: Range, severity?: 1|2|3|4, message: string, source?: string }[] }
+  → { actions: { id: "explain" | "fix" | "tests", kind: string, title: string,
+                 isPreferred?: boolean, prompt: ContentBlock[] }[] }
+```
+
+- Listed under the `codeActions` feature. `range` is LSP's (0-based). The
+  engine runs nothing and reads nothing of the file: each action's `prompt`
+  is what Studio sends with `session/prompt` when the person picks it, so it
+  runs as any prompt does, under the session's mode, policy and supervisor.
+  The prompt names the file and lines; the agent reads the file with its
+  own tools.
+- `explain` (`abhed.explain`), `fix` (`quickfix.abhed`) and `tests`
+  (`source.abhed.addTests`; not offered for a test file). The editor's
+  diagnostics that touch the range (up to 20, each cut to 240 characters)
+  go with `explain` and `fix` as a `resource` block, which the model reads
+  fenced as data, never as the person's words; with any, `fix` is
+  `isPreferred` and its title names the first.
+- A URI that is not a file, a file outside the session's roots, one that
+  looks like keys, Abhed's state, or one a read rule denies is refused
+  (`-32000`), as is a read-only session (`-32003`); a range that is not one
+  is `-32602`.
+
 ## 8. Health, setup and memory
 
 ### 8.1 Doctor
@@ -1664,12 +2111,28 @@ redacted. **Not implemented in 1.2.2:** both.
 
 Setup is not an ACP method: it runs before a session can exist. Studio's main
 process runs `abhed setup --json …` (writes `~/.abhed/config.json`
-atomically, validates, runs doctor) and `abhed secret set NAME` in an Abhed
-terminal for a hosted provider's key. Providers name keys by
-`api_key_secret: NAME`, resolved from the vault, because an app launched from
-the Dock has no shell environment. **Not implemented in 1.2.2:** `setup --json`,
-`api_key_secret` and `config get|set --scope user --json`, which classifies
-each key as tightening or widening.
+atomically, validates, runs doctor). **Not implemented:** `setup --json` and
+`config get|set --scope user --json`.
+
+Model keys and models (1.3.0), each the engine's own command line run by the
+engine host with an argv array, flags before `--`:
+
+- **Add API Key…** opens a terminal (not the sandboxed Abhed terminal) running
+  the verified engine binary as `abhed provider login -- <type>`: the key is
+  typed into the engine's hidden prompt, kept in the Keychain (else Abhed's
+  secret store), and never passes through Studio. Providers name a stored key
+  by `api_key_secret: NAME`, else their `api_key_env` name, else their type's
+  own, because an app launched from the Dock has no shell environment.
+  `abhed provider status -json` → `{providers: {type, key, source: "env" |
+  "keychain" | "file" | "config" | "none", models?}[], store}`; names only.
+- **Add Model…**: `abhed models known -json [-- <type>]` → `{types: {type,
+  hosted, key?, models: {id, context_window?}[]}[]}`, then `abhed models add
+  -json -- <type|name> <id…>` → `{file, added?, existing?}`.
+- **Set as Default**: `abhed models default -check -json -- <name>` →
+  `{file, name, widens, description}`; when `widens`, a modal whose default is
+  No, then `abhed models default -confirm-fd 3 -json -- <name>` with the yes on
+  descriptor 3 → `{file, default}`. Without a yes the engine refuses a
+  widening default itself.
 
 ### 8.3 Memory files and auto memory
 
@@ -1701,7 +2164,7 @@ them.
 |---|---|---|
 | `session.started`, `session.ended` | system | reason on end |
 | `session.resumed` | system | `via`, `through_seq`, `workspace_trust` |
-| `user.message` | user | text; `steered?` |
+| `user.message` | user | text; `steered?`; `harness_note?`, a note Abhed sent after the text: the note to start subagents, or the note to ask first |
 | `agent.message`, `agent.delta` | agent | text |
 | `agent.reasoning`, `agent.reasoning.delta` | agent | text |
 | `action.requested` | agent | call_id, tool, args, subject, `rule?` |
@@ -1713,8 +2176,10 @@ them.
 | `session.woken`, `session.wake_set` | system | |
 | `compaction.started`, `compaction.completed` | system | before, after |
 | `context.offloaded` | system | results, before, after |
+| `context.window`, `context.overflow`, `context.refit` | system | model, window, action or reason, before, after; also sent live as an `agent_thought_chunk` with the sentence the terminal shows |
 | `plan.updated`, `todo.updated` | agent | items |
-| `model.call`, `model.switched` | system | tokens, latency, model; `purpose` (`suggestion`) on a call outside the conversation |
+| `model.call`, `model.switched` | system | tokens, latency, model; `queue_ms?`, time spent waiting for a request slot, left out of latency; `purpose` (`suggestion`) on a call outside the conversation |
+| `model.waiting` | system | model, ahead; `session` for a subagent's |
 | `suggestion.offered` | system | text, turn |
 | `change.accepted` | user | path, hunk |
 | `conversation.forked` | user | from, through_seq |
@@ -1734,7 +2199,8 @@ them.
 | *new* `model.fallback` | system | from, to, reason |
 | *new* `hook.fired` | system | extension, event, verdict |
 | *new* `record.repaired` | system | reason, truncated_bytes |
-| `mcp.status` | user | server, op (`restart`), status, error |
+| `mcp.status` | user | server, op (`restart`, `remove`), status, error, kind and sha256 (remove) |
+| `config.changed` | system (untrusted) | by, key, name, kind, sha256, refused: an entry of `~/.abhed/config-changes.jsonl` written since a session last recorded them (an MCP server added at a terminal or from Studio) |
 | `ollama.start`, `ollama.install`, `ollama.pull` | user | op, outcome (`ok`, `failed`, `declined`, `refused`, `cancelled`, `manual`), provider, model, command, source, bytes, pid, consent, problem, error, surface (§3.2a) |
 | Studio's additions: `approval.scope_granted`, `manual.edit`, `trust.changed`, `extension.status`, `task.cancelled`, `team.connected` | as named | as in the sections above |
 
@@ -1773,8 +2239,10 @@ table.
 | Debugging | `_abhed/debug/launch`, `/send`, `/stop`, `_abhed/debug/message`, `_abhed/debug/status` | ext | done in the engine (1.2.9; `debug` in `features`): Go and Python; Studio's view is the Studio track's |
 | Language servers | `_abhed/lsp/start`, `/send`, `/stop`, `_abhed/lsp/message`, `_abhed/lsp/status` | ext | done in the engine (1.2.9; `lsp` in `features`); the servers come with the toolchains |
 | Inline completions | `_abhed/complete`, `_abhed/complete/cancel` | ext | done in the engine (1.2.9; `complete` in `features`) |
+| Code actions | `_abhed/codeActions` | ext | done in the engine (1.3.0; `codeActions` in `features`); Studio's lightbulb not yet |
 | Agents, skills, MCP, extensions, web, infra, secrets, index, RAG, memory | `_abhed/capabilities` | ext | done (see note 7) |
 | MCP restart | `_abhed/mcp/restart` | ext | done (1.2.4; `mcp.restart` in `features`) |
+| MCP check and remove (add is the command line) | `_abhed/mcp/check`, `_abhed/mcp/remove` | ext | done (1.3.0; `mcp.check` in `features`) |
 | Local Ollama model | `meta.ollama` on a model switch, `_abhed/ollama/*`, `_abhed/ollama/progress` | meta + ext | done in the engine (1.2.9; `ollama` in `features`); Studio's card not yet |
 | Index, infra polling | `_abhed/index/*`, `_abhed/infra/status` | ext | not yet (-32601; `index`, `infra` not in `features`) |
 | Abhed terminal | `_abhed/terminal/*` | ext | done, both modes (see note 4) |
@@ -1784,7 +2252,7 @@ table.
 | Queue, steer, stop | `_abhed/session/steer`, `_abhed/queue/*`, `session/cancel` | ext + spec | done |
 | Resolve | `_abhed/resolve` | ext | not yet (-32601; `resolve` not in `features`) |
 | Doctor | `_abhed/doctor`, `abhed doctor --json` | ext | done |
-| Setup, config, trust grant, secrets | engine command line from Studio's main process | — | `trust grant -sha256` and `secret set` exist; `setup --json`, `api_key_secret` and `config get|set` not yet |
+| Setup, config, trust grant, secrets | engine command line from Studio's main process | — | `trust grant -sha256`, `secret set`, `provider login`, `models add|default` and `api_key_secret` exist; `setup --json` and `config get|set` not yet |
 | Memory area | `memory` feature | ext | not yet (memory files are in `capabilities`) |
 | Team server (EE) | `_abhed/team/*` | ext | CE answers -32601 |
 | Deletion | none; `abhed record prune` in a terminal | — | — |

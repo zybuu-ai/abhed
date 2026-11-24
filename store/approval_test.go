@@ -2,14 +2,15 @@ package store
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/testdb"
 )
 
 func approvalStore(t *testing.T, tenant string) (*Postgres, context.Context) {
 	t.Helper()
-	dsn := os.Getenv("ABHED_TEST_DSN")
+	dsn := testdb.DSN(t, "ABHED_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set ABHED_TEST_DSN to run approval tests")
 	}

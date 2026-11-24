@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -408,7 +410,7 @@ func changedRegion(a, b string, context int) (string, string) {
 
 // editorFiles are the paths in a workspace an editor reads as its own
 // configuration; the agent may not change them (§2.6).
-var editorFiles = []string{".vscode", ".devcontainer", ".git/config", ".git/hooks"}
+var editorFiles = []string{".vscode", ".devcontainer", ".git/config", ".git/config.worktree", ".git/hooks", ".git/modules", ".git/info/attributes"}
 
 // protectedPaths are a workspace's editor files as paths for the sandbox, from
 // the workspace as given and resolved, with the *.code-workspace files that
@@ -427,7 +429,8 @@ func protectedPaths(ws string) []string {
 			}
 		}
 		for _, dir := range gitDirs(root) {
-			out = append(out, filepath.Join(dir, "config"), filepath.Join(dir, "hooks"))
+			out = append(out, filepath.Join(dir, "config"), filepath.Join(dir, "config.worktree"), filepath.Join(dir, "hooks"),
+				filepath.Join(dir, "modules"), filepath.Join(dir, "info", "attributes"))
 		}
 		out = append(out, nestedGit(root)...)
 	}
@@ -706,7 +709,8 @@ func (c *acpConn) capabilities(msg rpcMessage) {
 	out["infra"] = map[string]any{"clusters": clusters, "ssh_hosts": hosts}
 	secretNames := []any{}
 	if names, err := openVault().Names(); err == nil {
-		for _, n := range names {
+		// Abhed's own values (an MCP login) are never offered for a rule.
+		for _, n := range slices.DeleteFunc(names, secrets.Held) {
 			secretNames = append(secretNames, map[string]any{"name": n})
 		}
 	}
@@ -824,6 +828,9 @@ func mcpView(cfg config.Config, set *toolset.Set) []any {
 			v["error"] = mcpError(st.Err)
 		}
 		v["status"] = status
+		if m.URL != "" {
+			v["auth"] = mcpAuthView(m, known && st.Err != nil && errors.Is(st.Err, mcp.ErrUnauthorized), time.Now())
+		}
 		if refused := refusedNames(st.Refused); len(refused) > 0 {
 			v["refusedTools"] = refused
 		}
@@ -997,44 +1004,51 @@ func (c *acpConn) trustInspect(msg rpcMessage) {
 	}
 	out["commands"] = cmds
 	skills, servers := []any{}, []any{}
-	if st.File != "" {
-		if data, err := os.ReadFile(st.File); err == nil { // #nosec G304 -- the workspace file InspectWorkspace found
-			var f struct {
-				Skills struct {
-					Dirs []string `json:"dirs"`
-				} `json:"skills"`
-				MCP struct {
-					Servers []struct {
-						Name    string `json:"name"`
-						Command string `json:"command"`
-						URL     string `json:"url"`
-					} `json:"servers"`
-				} `json:"mcp"`
+	// Listed only from the content trust was decided on; a file changed since
+	// is flagged and its skills and servers are not shown.
+	_, contents, unchanged, _ := st.WorkspaceFiles()
+	if !unchanged {
+		contents = nil
+		if st.File != "" {
+			out["content_changed"] = true
+		}
+	}
+	for _, data := range contents {
+		var f struct {
+			Skills struct {
+				Dirs []string `json:"dirs"`
+			} `json:"skills"`
+			MCP struct {
+				Servers []struct {
+					Name    string `json:"name"`
+					Command string `json:"command"`
+					URL     string `json:"url"`
+				} `json:"servers"`
+			} `json:"mcp"`
+		}
+		if json.Unmarshal(data, &f) == nil {
+			for _, d := range f.Skills.Dirs {
+				dir := d
+				if !filepath.IsAbs(dir) {
+					dir = filepath.Join(p.Cwd, dir)
+				}
+				found, _ := filepath.Glob(filepath.Join(dir, "*", "SKILL.md"))
+				for _, sk := range found {
+					skills = append(skills, map[string]any{"name": filepath.Base(filepath.Dir(sk)), "dir": filepath.Dir(sk)})
+				}
 			}
-			if json.Unmarshal(data, &f) == nil {
-				for _, d := range f.Skills.Dirs {
-					dir := d
-					if !filepath.IsAbs(dir) {
-						dir = filepath.Join(p.Cwd, dir)
-					}
-					found, _ := filepath.Glob(filepath.Join(dir, "*", "SKILL.md"))
-					for _, sk := range found {
-						skills = append(skills, map[string]any{"name": filepath.Base(filepath.Dir(sk)), "dir": filepath.Dir(sk)})
-					}
+			for _, m := range f.MCP.Servers {
+				if !mcp.ValidServerName(m.Name) {
+					continue
 				}
-				for _, m := range f.MCP.Servers {
-					if !mcp.ValidServerName(m.Name) {
-						continue
-					}
-					v := map[string]any{"name": m.Name}
-					if m.Command != "" {
-						v["command"] = m.Command
-					}
-					if m.URL != "" {
-						v["url"] = m.URL
-					}
-					servers = append(servers, v)
+				v := map[string]any{"name": m.Name}
+				if m.Command != "" {
+					v["command"] = m.Command
 				}
+				if m.URL != "" {
+					v["url"] = m.URL
+				}
+				servers = append(servers, v)
 			}
 		}
 	}

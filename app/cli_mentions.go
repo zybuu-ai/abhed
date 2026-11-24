@@ -116,7 +116,7 @@ var _ InputExpander = mentionExpander{}
 func (m mentionExpander) Expand(ctx context.Context, loop *agent.Loop, raw string) (agent.Message, []Attachment, error) {
 	refs := parseMentions(raw)
 	if len(refs) == 0 {
-		return agent.Message{Text: raw}, nil, nil
+		return agent.Message{Text: raw, Typed: raw}, nil, nil
 	}
 	if loop == nil || loop.Session == nil {
 		return agent.Message{}, nil, errors.New("there is no conversation to attach files to")
@@ -128,7 +128,22 @@ func (m mentionExpander) Expand(ctx context.Context, loop *agent.Loop, raw strin
 		abs := mentionPath(sess, ref.Path)
 		info, err := os.Lstat(abs)
 		if err != nil {
-			continue // not a path: an @handle or a typo stays as text
+			// Not a path: an MCP server's resource, or an @handle or a typo, which stays as text.
+			server, uri, tool, ok := resourceMention(loop, ref.Raw)
+			if !ok {
+				continue
+			}
+			block, att, why, err := attachResource(ctx, loop, sess, server, uri, tool, mentionMaxBytes)
+			if err != nil {
+				return agent.Message{}, nil, err
+			}
+			if why != "" {
+				refused = append(refused, fmt.Sprintf("@%s: %s", ref.Raw, why))
+				continue
+			}
+			blocks = append(blocks, block)
+			atts = append(atts, att)
+			continue
 		}
 		isDir := info.IsDir()
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -164,10 +179,10 @@ func (m mentionExpander) Expand(ctx context.Context, loop *agent.Loop, raw strin
 		}
 	}
 	if len(blocks) == 0 {
-		return agent.Message{Text: raw}, nil, nil
+		return agent.Message{Text: raw, Typed: raw}, nil, nil
 	}
-	text := raw + "\n\nFiles the person attached with @, read through the session's policy. " + untrustedNote + "\n" + strings.Join(blocks, "\n")
-	return agent.Message{Text: text}, atts, nil
+	text := raw + "\n\nWhat the person attached with @, read through the session's policy. " + untrustedNote + "\n" + strings.Join(blocks, "\n")
+	return agent.Message{Text: text, Typed: raw}, atts, nil
 }
 
 // mentionPath is the absolute path a mention names: ~/ is the home

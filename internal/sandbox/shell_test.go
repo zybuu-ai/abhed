@@ -145,6 +145,7 @@ func TestSweepSaysWhyItDidNotRun(t *testing.T) {
 // A session is swept only while its shell is exited but unreaped and the
 // pid's process started with it, so a reused pid is never taken for it.
 func TestSweepNeedsTheShellItNamed(t *testing.T) {
+	requireKillTestsOnMac(t)
 	ws := workspace(t)
 	cmd := NewNone(DefaultPolicy(ws)).Shell(context.Background(), ws)
 	tty, err := pty.Start(cmd)
@@ -183,6 +184,7 @@ func TestSweepNeedsTheShellItNamed(t *testing.T) {
 
 // byExit ends the shell with exit rather than by cancelling it.
 func shellEndsJobs(t *testing.T, s Interactive, ws, job string, byExit bool) {
+	requireKillTestsOnMac(t)
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -295,9 +295,9 @@ func borrowedHosts(r Report, evs []agent.Event) []Finding {
 	var out []Finding
 	flagged := map[string]bool{}
 
-	byID := map[string]Call{}
+	bySeq := map[int64]Call{}
 	for _, c := range r.Calls {
-		byID[c.CallID] = c
+		bySeq[c.Seq] = c
 	}
 
 	for _, e := range evs {
@@ -319,7 +319,7 @@ func borrowedHosts(r Report, evs []agent.Event) []Finding {
 		case agent.EvActionRequested:
 			var a agent.ActionRequested
 			_ = json.Unmarshal(e.Payload, &a)
-			c := byID[a.CallID]
+			c := bySeq[e.Seq]
 			if c.Decision != "allowed" || c.byPerson() {
 				continue
 			}
@@ -363,10 +363,6 @@ func networkFindings(r Report) []Finding {
 	if r.Network == nil {
 		return nil
 	}
-	byID := map[string]Call{}
-	for _, c := range r.Calls {
-		byID[c.CallID] = c
-	}
 	var out []Finding
 	for _, f := range r.Network.Refusals {
 		dest := f.Host
@@ -374,7 +370,7 @@ func networkFindings(r Report) []Finding {
 			dest = fmt.Sprintf("%s:%d", f.Host, f.Port)
 		}
 		who := fmt.Sprintf("Abhed's own %s request", f.Kind)
-		if c, ok := byID[f.CallID]; ok && f.CallID != "" {
+		if c, ok := callAt(r.Calls, f.CallID, f.Seq); ok && f.CallID != "" {
 			who = fmt.Sprintf("%s %s", c.Tool, clip(c.Subject, 160))
 		} else if f.CallID != "" {
 			who = fmt.Sprintf("a command (call %q, not in this record)", f.CallID)

@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,9 +21,9 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/defaults"
 	"github.com/zybuu-ai/abhed/internal/egress"
-	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
@@ -323,6 +324,17 @@ type gatedAdapter struct {
 	probe *endpointProbe
 }
 
+// SamplingDefaults passes the wrapped adapter's through, so its thinking
+// budget is seen.
+func (g gatedAdapter) SamplingDefaults() model.Params { return model.SamplingDefaultsOf(g.Adapter) }
+
+// ToolLimit is the wrapped adapter's.
+func (g gatedAdapter) ToolLimit() int { return model.ToolLimitOf(g.Adapter) }
+
+// CallTimeout passes the wrapped adapter's through, so the reasoning
+// backstop stays under it.
+func (g gatedAdapter) CallTimeout() time.Duration { return model.CallTimeoutOf(g.Adapter) }
+
 func (g gatedAdapter) Complete(ctx context.Context, req model.Request) (<-chan model.Chunk, error) {
 	if err := g.probe.check(ctx); err != nil {
 		return nil, err
@@ -333,13 +345,16 @@ func (g gatedAdapter) Complete(ctx context.Context, req model.Request) (<-chan m
 // friendlyModelError says what went wrong with a model call and what to do
 // about it, in place of a Go dial error or an upstream JSON body.
 func friendlyModelError(err error, name string, p config.ProviderConfig) string {
-	where := p.BaseURL
+	where := endpointShown(p.BaseURL)
 	if where == "" {
 		where = "the " + p.Type + " endpoint"
 	}
 	next := "Run `abhed doctor` to check the configuration, `abhed init` to write one, or set ABHED_BASE_URL to use another endpoint for this run."
 	var se *model.StatusError
 	msg := friendlyCause(err, name, p, where, next)
+	if hint := keyMismatchHint(err, p); hint != "" {
+		msg += "\n" + hint
+	}
 	// A local Ollama that is down or lacks the model: also what is wrong with it, and the steps.
 	if errors.Is(err, syscall.ECONNREFUSED) || errors.As(err, &se) && se.Status == http.StatusNotFound {
 		if steps := ollamaSteps(context.Background(), name, p); steps != "" {
@@ -357,20 +372,35 @@ func friendlyCause(err error, name string, p config.ProviderConfig, where, next 
 	var dns *net.DNSError
 	var se *model.StatusError
 	var ne net.Error
+	var overflow *agent.ContextOverflowError
 	switch {
+	case errors.As(err, &overflow):
+		return overflow.Error()
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return fmt.Sprintf("Nothing is answering at %s (model %q). Start the model server there. %s", where, name, next)
 	case errors.As(err, &dns) && dns.IsNotFound:
 		return fmt.Sprintf("The host of %s does not resolve (model %q). Check base_url. %s", where, name, next)
 	case errors.As(err, &se):
+		// The provider's own words come first: "no longer available to new
+		// users" says more than a status.
+		if p := model.ProblemOf(err); p != nil && se.Status < 500 && p.Message != "" && p.Message != http.StatusText(se.Status) {
+			where = fmt.Sprintf("%s (%q)", where, p.Message)
+		}
+		if pp := model.ProblemOf(err); pp != nil && pp.Kind == model.ProblemTooLarge {
+			return fmt.Sprintf("%s refused the request (%d). %s", where, se.Status, tooLargeNext(p.Model))
+		}
 		switch {
 		case se.Status == http.StatusUnauthorized || se.Status == http.StatusForbidden:
 			key := "the key"
-			if p.APIKeyEnv != "" {
+			switch {
+			case p.KeySource.Kind != "":
+				key = keySourceText(p)
+			case p.APIKeyEnv != "" && os.Getenv(p.APIKeyEnv) == "":
+				key = "$" + p.APIKeyEnv + ", which is not set,"
+			case p.APIKeyEnv != "":
 				key = "the key in $" + p.APIKeyEnv
-				if os.Getenv(p.APIKeyEnv) == "" {
-					key = "$" + p.APIKeyEnv + ", which is not set,"
-				}
+			case p.KeySource.Name != "":
+				key = keySourceText(p) + " (store one with `abhed provider login " + loginArg(p) + "`)"
 			}
 			return fmt.Sprintf("%s refused the request (%d): check %s and that it may use model %q. %s", where, se.Status, key, p.Model, next)
 		case se.Status == http.StatusNotFound:
@@ -389,12 +419,57 @@ func friendlyCause(err error, name string, p config.ProviderConfig, where, next 
 
 // ---- first run ----
 
+// onboardManaged is the managed layer first-run setup works within: the
+// machine's managed file and the org policy, if any; a variable for tests.
+var onboardManaged = func() (config.Config, error) {
+	return config.LoadManagedWith(config.LoadOptions{Warn: func(string) {}})
+}
+
+// errNotAdmitted marks a provider type the managed layer admits no model of.
+var errNotAdmitted = errors.New("no model of this type is allowed")
+
+// typeAdmitted reports whether every model.allowed list could admit some
+// model of provider type typ: each has an entry whose text before its first
+// * agrees with "typ/". It is decided before any endpoint is contacted.
+func typeAdmitted(m config.Config, typ string) bool {
+	id := typ + "/"
+	for _, l := range m.ModelsAllowed() {
+		ok := false
+		for _, e := range l.Entries {
+			pre, _, _ := strings.Cut(e, "*")
+			if strings.HasPrefix(id, pre) || strings.HasPrefix(pre, id) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// managedChoosesModel reports whether the managed layer itself says which
+// model to use, leaving first-run setup nothing to choose.
+func managedChoosesModel(m config.Config) bool {
+	return m.ManagedSets("model.providers") || m.ManagedSets("model.default")
+}
+
 // firstRunNeeded reports whether this is a first run: a terminal, and no
-// configuration anywhere to say which model to use.
+// configuration anywhere to say which model to use. A managed file that
+// sets other things, such as rules or the allowed models, leaves the model
+// to the person, so setup is still offered, within what it allows.
 func firstRunNeeded(workspace string) bool {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stderr.Fd())) {
 		return false
 	}
+	return nothingChoosesModel(workspace)
+}
+
+// nothingChoosesModel reports whether no configuration says which model to
+// use: no environment variable, no file of the person's or the workspace's,
+// and no managed setting of the model.
+func nothingChoosesModel(workspace string) bool {
 	if os.Getenv("ABHED_BASE_URL") != "" || os.Getenv("ABHED_MODEL") != "" {
 		return false
 	}
@@ -403,12 +478,13 @@ func firstRunNeeded(workspace string) bool {
 		return false
 	}
 	for _, p := range []string{filepath.Join(home, ".abhed", "config.json"),
-		filepath.Join(workspace, ".abhed", "config.json"), managed.ConfigFile} {
+		filepath.Join(workspace, ".abhed", "config.json")} {
 		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
 			return false
 		}
 	}
-	return true
+	m, err := onboardManaged()
+	return err == nil && !managedChoosesModel(m)
 }
 
 // ollamaBase is where a local Ollama answers: OLLAMA_HOST, as Ollama itself
@@ -461,6 +537,9 @@ func listModels(ctx context.Context, base, key string) ([]string, error) {
 			out = append(out, d.ID)
 		}
 	}
+	// The server's order varies between calls (Ollama's follows use), and
+	// the first is the default choice: sorted, the same list each time.
+	sort.Strings(out)
 	return out, nil
 }
 
@@ -473,13 +552,19 @@ func probeToolCalling(ctx context.Context, p config.ProviderConfig) (bool, error
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	ch, err := a.Complete(ctx, model.Request{
+	req := model.Request{
 		System:   "You are testing tool calling. Call the tool you are given; do not answer in text.",
 		Messages: []model.Message{{Role: model.RoleUser, Content: "Call get_time with zone UTC."}},
 		Tools: []model.ToolDef{{Name: "get_time", Description: "Returns the current time in a zone.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"zone":{"type":"string"}},"required":["zone"]}`)}},
-		MaxTokens: 256,
-	})
+		// Room for the call; a reasoning model would spend 256 on thinking.
+		MaxTokens: 1024,
+	}
+	if a.Profile().Sampling.Think {
+		off := false
+		req.Params.Think = &off
+	}
+	ch, err := a.Complete(ctx, req)
 	if err != nil {
 		return false, err
 	}
@@ -503,6 +588,9 @@ type onboarding struct {
 	in  io.Reader
 	out io.Writer
 	ctx context.Context
+	// managed is the managed layer setup works within; nothing it refuses
+	// is contacted.
+	managed config.Config
 }
 
 func (o onboarding) ask(q, def string) (string, error) {
@@ -527,14 +615,29 @@ func (o onboarding) ask(q, def string) (string, error) {
 // name of the variable that holds its key. A key itself is never written.
 // It writes only ~/.abhed/config.json, and only when asked to.
 func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
-	o := onboarding{in: in, out: out, ctx: ctx}
+	m, err := onboardManaged()
+	if err != nil {
+		return fmt.Errorf("the managed configuration does not load: %w", err)
+	}
+	o := onboarding{in: in, out: out, ctx: ctx, managed: m}
 	fmt.Fprintln(out, "\nWelcome to Abhed. There is no configuration yet, so first choose the model it talks to.")
 	fmt.Fprintln(out, "Nothing is written unless you confirm; `abhed init` writes a workspace configuration instead.")
+	if m.Managed {
+		fmt.Fprintln(out, "Your organisation's managed configuration applies: only the models it allows are offered, and what it sets is not asked.")
+	}
 
 	base := ollamaBase()
-	fmt.Fprintf(out, "\nLooking for Ollama at %s … ", strings.TrimSuffix(base, "/v1"))
-	models, err := listModels(ctx, base, "")
+	var models []string
+	// No endpoint is contacted for models the managed layer cannot admit.
+	if !typeAdmitted(m, "ollama") {
+		err = errNotAdmitted
+		fmt.Fprintf(out, "\nNot looking for Ollama: the managed configuration allows no Ollama model.\n")
+	} else {
+		fmt.Fprintf(out, "\nLooking for Ollama at %s … ", strings.TrimSuffix(base, "/v1"))
+		models, err = listModels(ctx, base, "")
+	}
 	switch {
+	case errors.Is(err, errNotAdmitted):
 	case err != nil:
 		fmt.Fprintln(out, "not running.")
 	case len(models) == 0:
@@ -544,12 +647,20 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 	}
 	fmt.Fprintln(out)
 	var choices []string
-	for i, m := range models {
-		if i == 9 {
+	refused := 0
+	for _, name := range models {
+		if len(choices) == 9 {
 			break
 		}
-		choices = append(choices, m)
-		fmt.Fprintf(out, "  %d) Ollama: %s\n", i+1, config.Printable(m))
+		if m.EndpointRefused(config.ProviderConfig{Type: "ollama", BaseURL: base, Model: name}) != nil {
+			refused++
+			continue
+		}
+		choices = append(choices, name)
+		fmt.Fprintf(out, "  %d) Ollama: %s\n", len(choices), config.Printable(name))
+	}
+	if refused > 0 {
+		fmt.Fprintf(out, "  (%d more Ollama model(s) not offered: the managed configuration does not allow them)\n", refused)
 	}
 	fmt.Fprintln(out, "  e) an OpenAI-compatible endpoint: its URL, and the name of the variable holding its key")
 	fmt.Fprintln(out, "  s) skip: start with the defaults and write nothing")
@@ -573,6 +684,9 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 		case "e":
 			if name, p, err = o.endpoint(); err != nil {
 				return err
+			}
+			if p.Model == "" {
+				p = config.ProviderConfig{} // not admitted: choose again
 			}
 		default:
 			n, convErr := strconv.Atoi(pick)
@@ -599,9 +713,12 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 		fmt.Fprintln(out, "it answered without calling the tool. Abhed works through tools, so this model will do little; a larger or tool-trained one is better.")
 	}
 
-	auto, err := o.confirm("Let the agent keep memory notes of its own between sessions? They are recorded, and text a file planted could persist in them.", "Yes, keep notes")
-	if err != nil {
-		return err
+	// What the managed layer decides is not asked.
+	auto := false
+	if !m.ManagedSets("memory.auto") {
+		if auto, err = o.confirm("Let the agent keep memory notes of its own between sessions? They are recorded, and text a file planted could persist in them.", "Yes, keep notes"); err != nil {
+			return err
+		}
 	}
 
 	// Nothing is chosen for Enter; input that ends writes nothing.
@@ -625,6 +742,10 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 func (o onboarding) endpoint() (string, config.ProviderConfig, error) {
 	var p config.ProviderConfig
 	p.Type = "openai-compatible"
+	if !typeAdmitted(o.managed, p.Type) {
+		fmt.Fprintln(o.out, "  The managed configuration allows no model at an OpenAI-compatible endpoint.")
+		return "", p, nil
+	}
 	for {
 		u, err := o.ask("Base URL, such as http://localhost:8000/v1", "")
 		if err != nil {
@@ -652,7 +773,15 @@ func (o onboarding) endpoint() (string, config.ProviderConfig, error) {
 		}
 		fmt.Fprintln(o.out, "  Enter an https:// URL, or one on this machine.")
 	}
-	models, err := listModels(o.ctx, p.BaseURL, os.Getenv(p.APIKeyEnv))
+	// Under an allowed-models list the endpoint is not asked for its models:
+	// the model is named, and checked, before anything is sent there.
+	var models []string
+	var err error
+	if len(o.managed.ModelsAllowed()) > 0 {
+		fmt.Fprintln(o.out, "  The managed configuration lists the models allowed, so name the model; it is checked before the endpoint is contacted.")
+	} else {
+		models, err = listModels(o.ctx, p.BaseURL, os.Getenv(p.APIKeyEnv))
+	}
 	if err != nil {
 		fmt.Fprintf(o.out, "  Could not list its models: %s\n", friendlyModelError(err, "endpoint", p))
 	} else if len(models) > 0 {
@@ -672,6 +801,10 @@ func (o onboarding) endpoint() (string, config.ProviderConfig, error) {
 			return "", p, err
 		}
 		p.Model = m
+		if rerr := o.managed.EndpointRefused(p); rerr != nil {
+			fmt.Fprintf(o.out, "  %s is not allowed: %v\n", config.Printable(m), rerr)
+			p.Model = ""
+		}
 	}
 	return "endpoint", p, nil
 }
@@ -754,6 +887,9 @@ func looksLikeKey(v string) bool {
 // writeUserConfig writes the person's own configuration, which must not
 // exist yet. It holds a key's variable name, never a key.
 func writeUserConfig(name string, p config.ProviderConfig, autoMemory bool) (string, error) {
+	if err := guestRefusal("writing this machine's configuration"); err != nil {
+		return "", err
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -803,15 +939,23 @@ func viaUpstream(addr string) bool {
 	return !up.Bypass(host)
 }
 
-// proxyFor is the authority of the upstream proxy a model's calls go
-// through, or "" when they go directly. A provider's default endpoint (no
-// base_url) is a public host, taken to go through the proxy in force.
-func proxyFor(base string) string {
+// proxyFor is the authority of the upstream proxy a provider's calls go
+// through, or "" when they go directly. With no base_url, the type's own
+// default endpoint is checked, so a local server's loopback default is direct.
+func proxyFor(p config.ProviderConfig) string {
 	up := egress.CurrentUpstream()
 	if up == nil {
 		return ""
 	}
+	base := p.BaseURL
 	if base == "" {
+		base = defaultEndpoint(p)
+	}
+	if base == "" {
+		// A type that does not say where it calls: a hosted one goes through the proxy.
+		if p.OnThisMachine() {
+			return ""
+		}
 		return up.Authority()
 	}
 	if addr := dialAddr(base); addr == "" || !viaUpstream(addr) {
@@ -820,21 +964,47 @@ func proxyFor(base string) string {
 	return up.Authority()
 }
 
+// defaultEndpoint is the URL a provider with no base_url calls, as its
+// adapter resolves it, or "" when that cannot be told.
+func defaultEndpoint(p config.ProviderConfig) string {
+	if p.Model == "" {
+		p.Model = "m" // the endpoint does not depend on it, but the adapter needs one
+	}
+	a, err := p.Adapter()
+	if err != nil {
+		return ""
+	}
+	return model.Endpoint(a)
+}
+
 // proxiedFailure names the upstream proxy when a model call through it
 // failed at the proxy: the proxy not answering, its refusal of the tunnel,
 // or a 502, 503 or 504 the call came back with. An answer the model server
 // gave is never put on the proxy.
 func proxiedFailure(err error, name string, p config.ProviderConfig, where, next string) (string, bool) {
-	up := proxyFor(p.BaseURL)
+	up := proxyFor(p)
 	if up == "" || err == nil {
 		return "", false
 	}
-	host := dialAddr(p.BaseURL)
+	base := p.BaseURL
+	if base == "" {
+		base = defaultEndpoint(p)
+	}
+	host := dialAddr(base)
 	if host == "" {
 		host = where
 	}
+	credentials := func() (string, bool) {
+		return fmt.Sprintf("The upstream proxy %s asked for credentials (407) for %s (model %q): check network.upstream_proxy.credentials_secret "+
+			"and the user:password stored under that name. %s", up, host, name, next), true
+	}
 	var se *model.StatusError
 	if errors.As(err, &se) {
+		// An http:// call is forwarded, so the proxy's 407 comes back as the call's;
+		// inside an https tunnel a 407 is the server's or its gateway's.
+		if se.Status == http.StatusProxyAuthRequired && strings.HasPrefix(strings.ToLower(base), "http://") {
+			return credentials()
+		}
 		if se.Status != http.StatusBadGateway && se.Status != http.StatusServiceUnavailable && se.Status != http.StatusGatewayTimeout {
 			return "", false
 		}
@@ -864,9 +1034,30 @@ func proxiedFailure(err error, name string, p config.ProviderConfig, where, next
 	case 0:
 		return "", false
 	case http.StatusProxyAuthRequired:
-		return fmt.Sprintf("The upstream proxy %s asked for credentials (407) for %s (model %q): check network.upstream_proxy.credentials_secret "+
-			"and the user:password stored under that name. %s", up, host, name, next), true
+		return credentials()
 	}
 	return fmt.Sprintf("The upstream proxy %s answered %d %s for %s (model %q): it did not reach the model server, or would not. "+
 		"Check that the server is up and that the proxy lets this machine reach it. %s", up, status, http.StatusText(status), host, name, next), true
+}
+
+// endpointShown is a base URL as a message may show it: scheme, host and
+// path only. Its user, password, query (a ?key=) and fragment never reach a
+// terminal, Studio's chat or a reply's _meta.
+func endpointShown(base string) string {
+	u, err := url.Parse(base)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		if i := strings.IndexAny(base, "?#"); i >= 0 {
+			base = base[:i]
+		}
+		if at := strings.LastIndex(base, "@"); at >= 0 {
+			if s := strings.Index(base, "://"); s >= 0 && s < at {
+				base = base[:s+3] + base[at+1:]
+			} else {
+				base = base[at+1:]
+			}
+		}
+		return config.Printable(base)
+	}
+	u.User, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = nil, "", false, "", ""
+	return config.Printable(u.String())
 }

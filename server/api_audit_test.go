@@ -23,7 +23,7 @@ import (
 var routeConsts = map[string]string{
 	"CLIDevicePath": auth.CLIDevicePath, "CLITokenPath": auth.CLITokenPath, "CLIApprovePath": auth.CLIApprovePath,
 	"CLIAuthorizePath": auth.CLIAuthorizePath, "CLIRevokePath": auth.CLIRevokePath,
-	"CLIDiscoveryPath": CLIDiscoveryPath, "CLIPagePath": auth.CLIPagePath,
+	"CLIDiscoveryPath": CLIDiscoveryPath, "CLIPagePath": auth.CLIPagePath, "GuestPath": auth.GuestPath,
 }
 
 // exposeLine is how the exposure routes are registered, one per method.
@@ -108,8 +108,10 @@ func auditRig(t *testing.T, audit controlplane.AuditLog, m *Metrics, mounted *bo
 			t.Fatal(err)
 		}
 		o.Config.Auth.Mode = "local"
-		o.Auth = &auth.Middleware{Providers: []auth.Provider{local}, Verifier: o.Auth.Verifier,
-			PublicPaths: append(PublicPaths(), local.PublicPaths()...)}
+		// A guest's start is a mutating route anyone may call: audited too.
+		guest := auth.NewGuestAuth(time.Hour, false, "", nil)
+		o.Auth = &auth.Middleware{Providers: []auth.Provider{local, guest}, Verifier: o.Auth.Verifier,
+			PublicPaths: append(append(PublicPaths(), local.PublicPaths()...), guest.PublicPaths()...)}
 		o.CLILogin = auth.NewCLILogin(cli)
 		o.APIAudit, o.Metrics = audit, m
 		o.Mounts = append(o.Mounts, func(_ *Server, mux *http.ServeMux) {

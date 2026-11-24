@@ -40,12 +40,19 @@ type Report struct {
 	// Toolchains are the language toolchains installed for the session's
 	// commands, as toolchain.install events recorded them.
 	Toolchains []ToolchainStep `json:"toolchains,omitempty"`
+	// Editor are the editor's completions and next-edit suggestions, as
+	// each session's summary counted them: how many, and how fast.
+	Editor []EditorStats `json:"editor,omitempty"`
 	// Network is what the egress allowlist decided; nil when the record has no decision.
 	Network     *NetworkStats `json:"network,omitempty"`
 	Compactions []Compaction  `json:"compactions,omitempty"`
 	Offloads    []Offload     `json:"offloads,omitempty"`
-	Subagents   []Subagent    `json:"subagents,omitempty"`
-	Files       []FileTouch   `json:"files,omitempty"`
+	// Context are the times the conversation was fitted to the model's
+	// window other than by a compaction at the threshold: an assumed window,
+	// a request refused as too long, a cut prompt, a switch to less room.
+	Context   []ContextFit `json:"context,omitempty"`
+	Subagents []Subagent   `json:"subagents,omitempty"`
+	Files     []FileTouch  `json:"files,omitempty"`
 	// RemoteChanges are the commands and cluster writes sent to each host
 	// and cluster, with how each ended and the runbook step it was.
 	RemoteChanges []RemoteTarget `json:"remote_changes,omitempty"`
@@ -55,6 +62,10 @@ type Report struct {
 	// offTurn are the model calls outside the conversation (a suggestion):
 	// no turn, but their tokens and time count in the totals.
 	offTurn []Turn
+	// editorUSD and editorUnpriced are Studio's completions and next edits,
+	// whose cost their summaries carry rather than a model.call each.
+	editorUSD      float64
+	editorUnpriced bool
 
 	// SubagentActions are the subagents' refused or asked-about calls, as the
 	// parent's record holds them.
@@ -84,6 +95,12 @@ type Totals struct {
 	// CacheReported is false when no turn's provider gave a cached-token
 	// figure, so a zero rate means unknown, not a cold cache.
 	CacheReported bool `json:"cache_reported"`
+	// CostUSD is what the priced calls cost; Unpriced marks a call to a model
+	// with no price, left out of it.
+	CostUSD  float64 `json:"cost_usd"`
+	Unpriced bool    `json:"unpriced,omitempty"`
+	// CostNotRecorded marks calls from a record written before costing.
+	CostNotRecorded bool `json:"cost_not_recorded,omitempty"`
 	// ModelMS and ToolMS split the wall clock between waiting on the model
 	// and waiting on tools, which is the first question about a slow session.
 	ModelMS    int64 `json:"model_ms"`
@@ -109,8 +126,13 @@ type Turn struct {
 	TokensCached int    `json:"tokens_cached"`
 	// CacheReported is false when the provider gave no cached-token figure.
 	CacheReported bool `json:"cache_reported,omitempty"`
-	Window        int  `json:"context_window"`
-	CutOff        bool `json:"cut_off,omitempty"`
+	// CostUSD is the call's cost; nil when its model has no price.
+	CostUSD *float64 `json:"cost_usd,omitempty"`
+	// Unpriced marks a call to a model with no price; with neither, the
+	// record predates costing.
+	Unpriced bool `json:"unpriced,omitempty"`
+	Window   int  `json:"context_window"`
+	CutOff   bool `json:"cut_off,omitempty"`
 	// Estimated marks tokens the harness estimated for a reply stopped early.
 	Estimated    bool   `json:"estimated,omitempty"`
 	FirstTokenMS int64  `json:"first_token_ms"`
@@ -133,7 +155,10 @@ type Call struct {
 	// when an edition added it.
 	Rule  string `json:"rule,omitempty"`
 	Layer string `json:"layer,omitempty"`
-	By    string `json:"by,omitempty"` // policy | reviewer | user | session-scope | headless | system
+	// Source is where the decision came from: the rule's layer (org,
+	// managed, workspace, user, settings, flag, default, session), mode, or hook.
+	Source string `json:"source,omitempty"`
+	By     string `json:"by,omitempty"` // policy | reviewer | user | session-scope | headless | system
 	// Scope is the remembered "always allow" rule that let it through, when By is session-scope.
 	Scope string `json:"scope,omitempty"`
 	// Approver is the signed-in person who answered, when the record names one.
@@ -186,6 +211,14 @@ type ToolchainStep struct {
 	agent.ToolchainAction
 }
 
+// EditorStats is one completion.summary or next_edit.summary: Feature is
+// completion or next_edit.
+type EditorStats struct {
+	Seq     int64  `json:"seq"`
+	Feature string `json:"feature"`
+	agent.CompletionSummary
+}
+
 // LocalModelStep is one ollama.start, ollama.install or ollama.pull.
 type LocalModelStep struct {
 	Seq int64 `json:"seq"`
@@ -228,6 +261,19 @@ type NetworkRefusal struct {
 	Rule     string `json:"rule,omitempty"`
 	Reason   string `json:"reason,omitempty"`
 	Count    int    `json:"count"`
+}
+
+// ContextFit is one context.window, context.overflow or context.refit.
+type ContextFit struct {
+	Seq int64 `json:"seq"`
+	// Kind is window, overflow or refit; Action what was done (an overflow's
+	// compacted_retry, gave_up or truncated; a refit's reason).
+	Kind   string `json:"kind"`
+	Action string `json:"action,omitempty"`
+	Model  string `json:"model,omitempty"`
+	Window int    `json:"window,omitempty"`
+	Before int    `json:"before_tokens,omitempty"`
+	After  int    `json:"after_tokens,omitempty"`
 }
 
 type Compaction struct {

@@ -145,6 +145,9 @@ func (t ApplyTool) Precheck(sess *tools.Session, raw json.RawMessage) error {
 
 // PrecheckContext is Precheck stopping with ctx: the turn's, in the loop.
 func (t ApplyTool) PrecheckContext(ctx context.Context, sess *tools.Session, raw json.RawMessage) error {
+	if t.WritesOff != "" {
+		return fmt.Errorf("cluster writes are off on this machine: %s. Tell the user so", t.WritesOff)
+	}
 	if t.M == nil {
 		return nil
 	}

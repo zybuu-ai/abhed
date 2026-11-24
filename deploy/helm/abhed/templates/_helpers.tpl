@@ -62,6 +62,11 @@ httpGet:
   path: {{ index . 1 }}
   port: http
   scheme: {{ ternary "HTTPS" "HTTP" $tls.enabled }}
+  # The kubelet would name the pod IP, which the host guard refuses with
+  # auth.mode none; loopback is always answered.
+  httpHeaders:
+    - name: Host
+      value: localhost
 {{- end }}
 {{- end }}
 
@@ -88,6 +93,22 @@ httpGet:
 {{- $_ := set $storage "driver" "postgres" }}
 {{- $_ := set $cfg "storage" $storage }}
 {{- end }}
+{{- /* The names clients reach the server by, for the host guard. */}}
+{{- $srv := default (dict) (get $cfg "server") }}
+{{- $hosts := list }}
+{{- range (default (list) (get $srv "allowed_hosts")) }}{{- $hosts = append $hosts . }}{{- end }}
+{{- $name := include "abhed.fullname" . }}
+{{- $ns := .Release.Namespace }}
+{{- $hosts = concat $hosts (list $name (printf "%s.%s" $name $ns) (printf "%s.%s.svc" $name $ns) (printf "%s.%s.svc.%s" $name $ns .Values.clusterDomain)) }}
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}{{- if .host }}{{- $hosts = append $hosts .host }}{{- end }}{{- end }}
+{{- end }}
+{{- if and .Values.route.enabled .Values.route.host }}
+{{- $hosts = append $hosts .Values.route.host }}
+{{- end }}
+{{- $hosts = concat $hosts .Values.allowedHosts | uniq }}
+{{- $_ := set $srv "allowed_hosts" $hosts }}
+{{- $_ := set $cfg "server" $srv }}
 {{- if .Values.controlPlane.sshHostKey.existingSecret }}
 {{- $cp := default (dict) (get $cfg "control_plane") }}
 {{- $_ := set $cp "ssh_host_key" (printf "/run/abhed/secrets/%s" (include "abhed.sshHostKeyPath" .)) }}
@@ -133,6 +154,9 @@ ssh_host_ed25519_key
 {{- $storage := default (dict) (get (default (dict) .Values.config) "storage") }}
 {{- if and (eq (toString (get $storage "driver")) "postgres") (not .Values.postgres.enabled) }}
 {{- fail "config.storage.driver is postgres: set postgres.enabled and postgres.existingSecret so the connection string comes from a Secret." }}
+{{- end }}
+{{- if and .Values.route.enabled (not .Values.route.host) }}
+{{- fail "route.enabled needs route.host: the server answers only to names it is given, and the host OpenShift would generate is not known when the chart renders. Set route.host to the Route's host." }}
 {{- end }}
 {{- if and .Values.postgres.enabled (not .Values.postgres.existingSecret) }}
 {{- fail "postgres.enabled needs postgres.existingSecret: the chart never creates or templates a secret." }}

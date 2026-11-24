@@ -5,7 +5,6 @@ package filelock
 
 import (
 	"fmt"
-	"os"
 	"time"
 )
 
@@ -13,7 +12,7 @@ import (
 // waiting at most wait. busy is the error's text when it is not got in time,
 // formatted with the lock's path and the wait.
 func Lock(lock string, wait time.Duration, busy string) (func(), error) {
-	f, err := os.OpenFile(lock, os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 -- a lock file beside the caller's own file
+	f, err := openLock(lock)
 	if err != nil {
 		return nil, err
 	}

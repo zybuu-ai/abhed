@@ -153,8 +153,16 @@ started when it exits. `abhed ollama check` does the same from a shell, and
 `abhed ollama models` lists the models it suggests — [A local Ollama
 model](03-providers.md#a-local-ollama-model).
 
-The first time you run `abhed` on a terminal with no configuration
-anywhere, it offers to set one up:
+The first time you run `abhed` on a terminal with no configuration of
+your own or the workspace's, it offers to set one up. A managed file
+(`/etc/abhed/config.json`) or an org policy that chooses the model
+(`model.default` or `model.providers`) leaves nothing to set up; one that
+does not is worked within: only the models its `model.allowed` admits are
+offered, an endpoint model it does not admit is refused and asked again
+before the endpoint is contacted (under an allowed-models list the
+endpoint is not asked for its models, and a provider type no entry can
+admit is not offered), and a setting it makes, such as `memory.auto`, is
+not asked.
 
 - It looks for Ollama (at `OLLAMA_HOST`, or `localhost:11434`) and lists
   its models. A model chosen from that list is written as `"type":
@@ -190,8 +198,11 @@ tool call in prose instead of emitting one cannot drive an agent at all, however
 well it writes, and finding that out during a real task wastes the run.
 It first names the edition, the workspace and the configuration files it
 read (yours, the workspace's, `-settings` and the managed file), so a run
-from a subfolder says which files it judged. The endpoint checks stop after
-60 seconds; `abhed doctor -timeout 3m` gives a slow local model longer.
+from a subfolder says which files it judged. Each of the two endpoint
+checks stops after 60 seconds of its own; `abhed doctor -timeout 3m` gives a
+slow local model longer. Both ask with thinking off where the provider
+takes that setting, so a reasoning model's thinking does not use up the
+answer's room.
 
 ```
 checking endpoint... ok
@@ -201,11 +212,27 @@ checking tool calling... ok
 Ready.
 ```
 
+When the provider refuses (a key it does not take, no credit or quota left,
+a model it has retired or that this account cannot use, a rate limit), doctor
+shows the provider's own words and the next step, naming the configured
+models whose key is at hand to use instead. A model the provider called
+retired or not found is remembered for two weeks: the next session (the
+command line, and Studio when a chat opens) and doctor warn of it before the
+first call, and it is forgotten once it answers. In a session the same
+refusal is said in the chat with its next step, not only as an error.
+Doctor's `sandbox` line also says why the tier was chosen and how to choose
+another ([choosing the tier](02-configuration.md#choosing-the-tier)).
+
 ## First run
 
 ```bash
 abhed
 ```
+
+The first start asks who is working: an account on this machine, an
+account on an Abhed server, or guest. Create an account, and this machine
+remembers it until you sign out; if `~/.abhed` holds data from an earlier
+version, the account takes it over. See [Signing in](42-signing-in.md).
 
 The session opens at once: a check for a container runtime, and for the
 model endpoint, run behind the prompt. The banner says `process or stronger
@@ -304,6 +331,7 @@ running turn, and at an empty prompt pressed twice exits. Every key is in
 | `/clear [name]` | end this session and start a new one; `/cost`, `/diff` and `/undo` start over, the workspace is kept |
 | `/resume [id]` | continue a recorded session; with no id, pick one |
 | `/rename <name>` | name the session, for `/resume` and `-r` |
+| `/continue` | go on with a run that stopped at its turn limit; recorded, at most `limits.max_continues` times a conversation |
 | `/branch` | go on in a copy of this session, leaving it as it was |
 | `/export [path]` | write the transcript, HTML in `~/.abhed/exports` by default |
 | `/model [name]` | show or switch the model, keeping the conversation |

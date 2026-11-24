@@ -18,7 +18,7 @@ VRAM         = weights + kv_total + activations(~5-10%) + fragmentation
 ```
 
 The second line is the one that decides your cluster. **KV cache, not weights, is the
-binding constraint for a coding agent**, because agent sessions run long contexts.
+binding constraint for a deep agent**, because agent sessions run long contexts.
 
 ## 2. Per-model memory profile
 

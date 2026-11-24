@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -71,7 +73,7 @@ func slashSessions(ctx context.Context, fields []string, r *ui.Renderer,
 	if owned, ok := st.store.(interface {
 		ListSessionsOwnedBy(context.Context, string, int) ([]store.SessionRecord, error)
 	}); ok {
-		for _, owner := range []string{cliUser(), auth.LocalOwner(cliUser())} {
+		for _, owner := range myOwners() {
 			recs, lerr := owned.ListSessionsOwnedBy(ctx, owner, 50)
 			all, err = append(all, recs...), errors.Join(err, lerr)
 		}
@@ -399,10 +401,20 @@ func cliTenant(cfg config.Config) string {
 	return "default"
 }
 
-// cliUser is who the CLI records a session as. A $USER shaped like an owner
-// the store gives a meaning (unclaimed:, nobody:, github:…, agent, anonymous)
-// is not taken as a person's name, or it could record or resume as that owner.
+// cliUser is who the CLI records a session as: the principal working, or,
+// before sign-in, $USER.
 func cliUser() string {
+	if p := currentPrincipal(); p.Owner != "" {
+		return p.Owner
+	}
+	return legacyCLIUser()
+}
+
+// legacyCLIUser is who the CLI recorded sessions as before sign-in. A $USER
+// shaped like an owner the store gives a meaning (unclaimed:, nobody:,
+// github:…, agent, anonymous) is not taken as a person's name, or it could
+// record or resume as that owner.
+func legacyCLIUser() string {
 	user := os.Getenv("USER")
 	switch u := strings.ToLower(strings.TrimSpace(user)); {
 	case u == "", strings.Contains(u, ":"), u == auth.Subagent, u == auth.Anonymous:
@@ -469,6 +481,8 @@ func rebuildFrom(st *cliState, id string, events []agent.Event) error {
 	loop.Recorder.Advance(events[len(events)-1].Seq)
 	loop.SetHistory(msgs, end.Turns)
 	loop.CarryUsage(end)
+	loop.NoteContinues(events) // the bound on continuing holds across processes
+	loop.NoteFolderMemory(events)
 	// The allowance goes on from what the session spent, and results the
 	// record owes the conversation arrive at the next task's first boundary.
 	loop.Budget.Carry(agent.CarriedSpend(events))
@@ -530,7 +544,7 @@ func ownedHere(ctx context.Context, st *cliState, id string) error {
 	// A subagent's row whose chain ends without a person owns nothing, even
 	// for a user who happens to be named like the subagent rows are.
 	// A session the owner migration moved to the same-named account is still this user's.
-	mine := owner.User == cliUser() || owner.User == auth.LocalOwner(cliUser())
+	mine := isMe(owner.User)
 	// An unclaimed or nobody row is no one's, whatever $USER says.
 	if ownsNoOne(owner.User) || ownsNoOne(rec.User) {
 		mine = false
@@ -552,8 +566,22 @@ func mineToList(rec store.SessionRecord, tenant string) bool {
 	if rec.ParentID != "" || rec.Tenant != tenant || ownsNoOne(rec.User) {
 		return false
 	}
-	return rec.User == cliUser() || rec.User == auth.LocalOwner(cliUser())
+	return isMe(rec.User)
 }
+
+// myOwners are the owners whose sessions are this person's: who the CLI
+// records as now, and, for the account that took over the data from before
+// sign-in, who that data was recorded as.
+func myOwners() []string {
+	out := []string{cliUser(), auth.LocalOwner(cliUser())}
+	if lu := currentPrincipal().Entry.LegacyUser; lu != "" {
+		out = append(out, lu, auth.LocalOwner(lu))
+	}
+	return out
+}
+
+// isMe reports whether a session recorded as user is this person's.
+func isMe(user string) bool { return slices.Contains(myOwners(), user) }
 
 // ownsNoOne reports whether owner is an unclaimed or nobody key, in any case.
 func ownsNoOne(owner string) bool {
@@ -835,6 +863,12 @@ func storageLabel(cfg config.Config) string {
 	dir := cfg.Record.Dir
 	if dir == "" {
 		dir = "~/.abhed/records"
+		switch p := currentPrincipal(); p.Kind {
+		case identity.Guest:
+			dir = "guest, removed on exit"
+		case identity.Account, identity.Server:
+			dir = p.Entry.Username + "'s"
+		}
 	}
 	return "local record, chained (" + dir + "; abhed record verify)"
 }

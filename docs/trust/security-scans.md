@@ -652,6 +652,48 @@ written from the Linux and macOS scans together.
 | G703 | internal/sandbox/paths.go:23 | `os.Lstat` while resolving a path's links | False positive: `RealPath` resolves the paths rules are put to, so that a link cannot dodge them; it reads link targets and opens nothing |
 | G703 | internal/sandbox/process_mcpfiles.go:100 | `os.Stat` on each `PATH` entry joined with an MCP server's program | Accepted: finding the operator's configured program, through absolute `PATH` entries only, so its install folder can be shown to the server's sandbox; a folder that holds Abhed's state is refused |
 
+#### Refreshed 3 November 2026 (1.3.0)
+
+1.2.9 shipped with the gosec step not blocking, and 57 findings outside the
+baseline. Scanned as CI scans (gosec v2.29.0) on Linux and macOS together,
+with no package that failed to load, every one was read. Two led to real bugs,
+both fixed: one in the protected-file hash, and one in the function a G304
+pointed at, Studio's debug setup. The rest are annotated in the code with
+`#nosec` and the reason, or their discarded error is now explicit. Shared by
+both fixes, `internal/regularfile` opens a file only when `Lstat` shows a
+plain file, with `O_NOFOLLOW` and `O_NONBLOCK`, and checks the open file is
+the one looked at.
+
+Three triaged findings that are no longer reported on either platform, G120
+`server/upload.go` and G705 `server/export.go` and `server/server.go`, were
+kept on 14 October so that a refactor bringing them back would not read as
+new. Their code is unchanged, and they are now dropped from the baseline; if
+they come back, they are triaged above. The baseline holds 104 findings,
+written from both scans, and the gate blocks again.
+
+| Rule | file:line | Finding | Triage |
+|---|---|---|---|
+| G304 | app/acp_debug_setup.go (`raiseWorkspaceTier`), the read of `.abhed/config.json` | reads the workspace config, then writes it back through a fixed `config.json.tmp` | **Fixed** (1.2.9 only). A repository can ship `.abhed/config.json.tmp` as a link to a file outside it. When the person chose the container option in Studio's debug setup, the config was written through that link, overwriting the file it named (`~/.bashrc`, say) with JSON the repository chose. The read also followed a link and waited on a pipe at `config.json`. The new config is now written to a fresh, randomly named file made with `O_EXCL`, its mode set on the open file, then renamed into place. `config.json` is read through `regularfile`, at most 1 MiB, so a link, pipe or device there is refused. `TestRaiseWorkspaceTierDoesNotWriteThroughAPlantedLink` fails on the old code, and `TestRaiseWorkspaceTierRefusesAConfigThatIsNotAPlainFile` covers a pipe and links |
+| G304 | internal/agent/verify_contract.go (`hashFile`) | reads each protected file whole to hash it | **Fixed.** The walk saw a regular file, but `os.ReadFile` then followed whatever was at that name. A file swapped for a link to `/dev/zero`, or for a pipe, read without end, and a sparse file of any size was hashed in full; either held up the end of the run. It now opens the file through `regularfile` and hashes at most 256 MiB. A larger file is named by size, time and inode, so a change is still seen. `TestHashFileReadsOnlyARegularFile` hangs on the old code, `TestHashFileBoundsALargeFile` covers a 1 TiB sparse file, and `TestOpenRefusesASwapAfterTheLook` swaps a pipe in between the look and the open |
+| G301 | app/acp_debug_setup.go:305 | `.abhed` made 0755 | Accepted: the workspace's config folder, as readable as the repository it sits in |
+| G304 | app/acp_debug_setup.go:379 | reads the consent file | False positive: the person's own file under their home |
+| G304 | app/cli_runbook.go:124, app/logs_cmd.go:306 | reads `-runbook` and `-cursor` files | False positive: files the person named on the command line; the runbook is read up to 1 MiB |
+| G115 | app/ollama_assist.go:251, internal/ollama/pull.go:152-153 | free bytes uint64 to int64 for display | False positive: only beyond 8 EiB would it print oddly; the difference at 153 is positive because free is below the size needed |
+| G115 | internal/ollama/pull.go:164, internal/ollama/sys_unix.go:20 | memory in GiB to int; statfs counts to uint64 | False positive: the values are small and never negative |
+| G118 | app/serve_metrics.go:81 | shutdown goroutine uses `context.Background` | False positive: it runs once ctx has ended, and the shutdown needs its own deadline |
+| G702, G204 | internal/clitest/harness.go:1027 | runs the binary under test | False positive: the test harness's own binary with fixed arguments |
+| G204 | internal/mcp/client.go:643 | starts an MCP server at its judged path | Accepted: the program path the MCP lists judged, started at exactly that path |
+| G204 | internal/ollama/env.go:177, launch_unix.go:16 | runs ollama or a package manager | Accepted: a program found on `PATH`, run only after the person agrees |
+| G104 | internal/ollama/install.go:136, internal/remote/sftp.go:143, 146, 219 | unchecked `Close` and `bytes.Buffer` writes | False positive: a HEAD response's body and an in-memory buffer cannot lose data; the discard is now explicit |
+| G115 | internal/remote/sftp.go:146, 217, 372, 389, 501 | lengths and offsets to uint32/uint64 in the SFTP client | False positive: a string is a path, a handle or one chunk, a packet holds one chunk, offsets count up from 0, and the limit is a positive bound |
+| G304 | internal/ollama/start.go:178, 233 | reads the ollama log | False positive: the log Abhed itself opened for the ollama it started |
+| G101 | internal/secretfiles/content.go:87-88, monitor/drift.go:28, monitor/rules.go:24 | "hardcoded credential" | False positive: patterns that recognise secret names, the drift suite's planted honeytoken, and a verdict code's name |
+| G703, G115 | internal/testenv/private_unix.go:28, testenv.go:279 | test helpers | False positive: the tests' own temp folder, checked private; the bytes of an IPv4 address |
+| G122, G302 | internal/toolchain/cache.go:732, 739, 750 | chmod inside a walk over a toolchain | Accepted: a toolchain Abhed unpacked into its own folder, which commands only read; links are skipped, so only Abhed could swap a folder |
+| G301 | internal/toolchain/cache.go (10), extras.go (2), lsp_extras.go (3), ruby.go (2) | toolchain folders made 0755 | Accepted: the cache is readable to every user by design; a container's commands read it, read-only |
+| G202 | store/sqlite/audit_links.go:29 | SQL built by concatenation | False positive: only `?` placeholders are joined; the seqs are bound as arguments |
+| G118 | internal/lspdiag/lspdiag.go (`server`) | the diagnostics server's goroutine uses its own context, not the edit's | False positive, annotated with `#nosec G118`: the server is started by one edit but serves the session's later edits, so it must outlive that edit's context; the diagnoser's `Close` at the session's end, and a 12-hour life, end it |
+
 #### Single-instance rules
 
 | Rule | Severity | file:line | Finding | Triage |

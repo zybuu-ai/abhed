@@ -77,6 +77,31 @@ func (g *Guard) dialOwn(ctx context.Context, kind, network, addr string) (net.Co
 	return conn, err
 }
 
+// AllowTunnel judges and records a connection to addr (host:port) that one
+// of Abhed's own clients makes through another, such as ssh to a host behind
+// a jump host, by the guard in force as Dial would; nil when none is.
+func AllowTunnel(ctx context.Context, kind, addr string) error {
+	g := CallerOf(ctx).Guard
+	if g == nil {
+		var err error
+		if g, err = Installed(); err != nil {
+			return err
+		}
+	}
+	if g == nil || g == Unguarded {
+		return nil
+	}
+	host, ps, err := net.SplitHostPort(addr)
+	if err != nil {
+		return &DeniedError{Host: addr, Rule: "parse", Reason: err.Error()}
+	}
+	port, err := parsePort(ps)
+	if err != nil {
+		return &DeniedError{Host: addr, Rule: "parse", Reason: err.Error()}
+	}
+	return g.Allow(ctx, kind, strings.Trim(host, "[]"), port)
+}
+
 // Allow judges and records a connection a client makes itself, such as git
 // pushing over HTTPS, before it is made: by host and port, as a tunnel.
 func (g *Guard) Allow(ctx context.Context, kind, host string, port uint16) error {

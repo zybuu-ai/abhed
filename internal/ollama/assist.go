@@ -61,6 +61,20 @@ type Assist struct {
 	Admin bool
 	// Record writes an attempt to the session's record; nil records nothing.
 	Record func(agent.EventType, agent.OllamaAction)
+	// IdleStop is how long a server this process starts may go unused
+	// before it is stopped; 0 stops it only when this process exits.
+	IdleStop time.Duration
+	// Notify hears that a server this process started was stopped.
+	Notify func(string)
+	// NoAutoStart is model.ollama.auto_start false: every start is asked,
+	// and a standing "always start" is neither offered nor honoured.
+	NoAutoStart bool
+}
+
+// StartAlways reports whether program may be started without asking: the
+// person chose "always" for it and auto start is not turned off.
+func (a Assist) StartAlways(program string) bool {
+	return !a.NoAutoStart && a.Env.StartAlways(program)
 }
 
 var evOf = map[string]agent.EventType{OpStart: agent.EvOllamaStart, OpInstall: agent.EvOllamaInstall, OpPull: agent.EvOllamaPull}
@@ -152,6 +166,12 @@ func (a Assist) Start(ctx context.Context, t Target, st Status, consent string) 
 		ev.Command = plan.Display
 		s, p = a.Env.Start(ctx, t, st, plan)
 		ev.PID = s.PID
+		// Only a server this process launched as its own child is its to stop.
+		if _, child := childOf(s.PID); p == nil && s.PID != 0 && !plan.handsOff && child {
+			Own(s.PID, t.API, a.Env.StateDir, a.IdleStop, a.Notify)
+			s.Owned, s.StopAfterMinutes = true, int(a.IdleStop/time.Minute)
+			ev.Owned, ev.StopAfterMinutes = true, s.StopAfterMinutes
+		}
 	}
 	ev.Outcome = outcomeOf(p)
 	if p != nil {

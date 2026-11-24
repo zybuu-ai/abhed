@@ -63,3 +63,36 @@ func TestRPCNewSessionRecordsItsStart(t *testing.T) {
 		t.Fatalf("start: %v", p)
 	}
 }
+
+// An rpc session without approvals records itself headless (its approver
+// answers only from grants kept earlier), and one with approvals does not,
+// so the supervisor's mode follows whether anyone is asked.
+func TestRPCStartRecordsHeadlessByApprovals(t *testing.T) {
+	ws := t.TempDir()
+	srv := scriptedModel(t, "true")
+	cfg := `{"model": {"default": "fake", "providers": {"fake": {"type": "openai-compatible", "base_url": "` + srv.URL + `", "model": "m"}}}}`
+	if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.TrustEnv, "1")
+	for start, want := range map[string]bool{
+		`{"id":"1","method":"start"}`:                  true,
+		`{"id":"1","method":"start","approvals":true}`: false,
+	} {
+		out := runRPC(t, ws, start, `{"id":"2","method":"prompt","prompt":"hi"}`, `{"id":"3","method":"quit"}`)
+		var p map[string]any
+		for _, line := range strings.Split(out, "\n") {
+			var r rpcResponse
+			if json.Unmarshal([]byte(line), &r) == nil && r.Type == "event" && r.Event != nil && r.Event.Type == agent.EvSessionStarted {
+				_ = json.Unmarshal(r.Event.Payload, &p)
+				break
+			}
+		}
+		if p == nil || p["headless"] != want {
+			t.Errorf("%s: session.started headless %v, want %v", start, p["headless"], want)
+		}
+	}
+}

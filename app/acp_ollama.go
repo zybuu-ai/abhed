@@ -113,13 +113,16 @@ func (c *acpConn) ollamaStart(msg rpcMessage) {
 	}
 	consent := "asked"
 	plan, planErr := a.Env.PlanStart(t, st)
-	if p.Always && planErr == nil {
+	if p.Always && planErr == nil && a.NoAutoStart {
+		// model.ollama.auto_start is off: this start was clicked, the "always" is not kept.
+		warnf("model.ollama.auto_start is off, so \"always start Ollama\" was not kept")
+	} else if p.Always && planErr == nil {
 		if pr := a.May(ollama.OpStart, t, st); pr == nil {
 			if err := a.Env.SetStartAlways(true, plan.Program); err != nil {
 				warnf("the choice to always start Ollama could not be kept: %v", err)
 			}
 		}
-	} else if planErr == nil && a.Env.StartAlways(plan.Program) {
+	} else if planErr == nil && a.StartAlways(plan.Program) {
 		consent = "always"
 	}
 	s, pr := a.Start(c.root(), t, st, consent)
@@ -127,7 +130,11 @@ func (c *acpConn) ollamaStart(msg rpcMessage) {
 		c.reply(msg.ID, nil, ollamaRefusal(pr, a.Env.Check(c.root(), t)))
 		return
 	}
-	c.reply(msg.ID, map[string]any{"started": s, "status": a.Env.Check(c.root(), t)}, nil)
+	out := map[string]any{"started": s, "status": a.Env.Check(c.root(), t)}
+	if n := s.OwnedNotice(); n != "" {
+		out["notice"] = n
+	}
+	c.reply(msg.ID, out, nil)
 }
 
 func (c *acpConn) ollamaInstall(msg rpcMessage) {

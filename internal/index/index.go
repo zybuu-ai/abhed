@@ -80,6 +80,7 @@ type Index struct {
 
 	embedder Embedder
 	vcache   VectorCache
+	withheld func(string) bool // the read rules the last build kept to
 	root     string
 	built    time.Time
 }
@@ -117,6 +118,10 @@ type BuildOptions struct {
 	// Embed populates vectors. Off by default: for most repos the symbol and
 	// BM25 tiers answer the question, and embedding a monorepo is expensive.
 	Embed bool
+	// Withheld, when set, reports a file the read rules keep from the agent,
+	// by absolute path. Such a file is never indexed, so its chunks reach
+	// neither the search tool nor the embedding endpoint.
+	Withheld func(path string) bool
 }
 
 func DefaultBuildOptions() BuildOptions {
@@ -175,6 +180,9 @@ func (ix *Index) Build(ctx context.Context, opts BuildOptions) error {
 		if !exts[strings.ToLower(filepath.Ext(path))] {
 			return nil
 		}
+		if opts.Withheld != nil && opts.Withheld(path) {
+			return nil
+		}
 		info, err := d.Info()
 		if err != nil || info.Size() > opts.MaxFileSize {
 			return nil //nolint:nilerr // an unreadable entry is skipped, not fatal to the index
@@ -196,6 +204,7 @@ func (ix *Index) Build(ctx context.Context, opts BuildOptions) error {
 
 	ix.mu.Lock()
 	ix.docs = docs
+	ix.withheld = opts.Withheld
 	ix.rebuildLocked()
 	ix.built = time.Now()
 	ix.mu.Unlock()
@@ -228,6 +237,12 @@ func (ix *Index) Update(ctx context.Context, path string) error {
 		if tools.IsState(abs, ix.root) {
 			return fmt.Errorf("index: %s is Abhed's own state", path)
 		}
+	}
+	ix.mu.RLock()
+	withheld := ix.withheld
+	ix.mu.RUnlock()
+	if withheld != nil && withheld(path) {
+		return fmt.Errorf("index: a read rule withholds %s", path)
 	}
 	content, err := ix.readConfined(path)
 	if err != nil {
@@ -364,6 +379,29 @@ func (ix *Index) embedAll(ctx context.Context) error {
 // cosine scores are not on comparable scales, and RRF only needs rank order,
 // which makes it robust when one tier is missing entirely.
 func (ix *Index) Search(ctx context.Context, query string, limit int) ([]Hit, error) {
+	return ix.SearchKept(ctx, query, limit, nil)
+}
+
+// SearchKept is Search over only the files keep admits, by path, as if the
+// others were not indexed: they are left out before any scoring, and the
+// lexical tier's statistics are of the kept files alone, so nothing in a
+// left-out file changes what is found or its order. A nil keep keeps all.
+func (ix *Index) SearchKept(ctx context.Context, query string, limit int, keep func(path string) bool) ([]Hit, error) {
+	if keep != nil {
+		memo := map[string]bool{}
+		var mu sync.Mutex
+		inner := keep
+		keep = func(p string) bool {
+			mu.Lock()
+			defer mu.Unlock()
+			v, ok := memo[p]
+			if !ok {
+				v = inner(p)
+				memo[p] = v
+			}
+			return v
+		}
+	}
 	if limit <= 0 {
 		limit = 10
 	}
@@ -378,11 +416,11 @@ func (ix *Index) Search(ctx context.Context, query string, limit int) ([]Hit, er
 	ix.mu.RUnlock()
 
 	rankings := [][]Hit{
-		ix.searchSymbols(query, limit*2),
-		ix.searchBM25(query, limit*2),
+		ix.searchSymbols(query, limit*2, keep),
+		ix.searchBM25(query, limit*2, keep),
 	}
 	if haveVectors && ix.embedder != nil {
-		vec, err := ix.searchVector(ctx, query, limit*2)
+		vec, err := ix.searchVector(ctx, query, limit*2, keep)
 		if err == nil {
 			rankings = append(rankings, vec)
 		}
@@ -392,7 +430,7 @@ func (ix *Index) Search(ctx context.Context, query string, limit int) ([]Hit, er
 
 // searchSymbols matches identifiers exactly. An agent looking for "handleAuth"
 // wants the definition, not documents that merely mention it.
-func (ix *Index) searchSymbols(query string, limit int) []Hit {
+func (ix *Index) searchSymbols(query string, limit int, keep func(string) bool) []Hit {
 	ix.mu.RLock()
 	defer ix.mu.RUnlock()
 
@@ -400,7 +438,7 @@ func (ix *Index) searchSymbols(query string, limit int) []Hit {
 	seen := map[int]bool{}
 	for _, term := range tokenize(query) {
 		for _, idx := range ix.symbols[term] {
-			if seen[idx] {
+			if seen[idx] || keep != nil && !keep(ix.docs[idx].Path) {
 				continue
 			}
 			seen[idx] = true
@@ -419,13 +457,31 @@ func (ix *Index) searchSymbols(query string, limit int) []Hit {
 }
 
 // searchBM25 is the lexical tier: strong on identifiers and error strings,
-// which is most of what a coding agent actually searches for.
-func (ix *Index) searchBM25(query string, limit int) []Hit {
+// which is most of what an agent actually searches for.
+func (ix *Index) searchBM25(query string, limit int, keep func(string) bool) []Hit {
 	ix.mu.RLock()
 	defer ix.mu.RUnlock()
 
 	const k1, b = 1.2, 0.75
-	n := float64(len(ix.docs))
+	n, avgLen := float64(len(ix.docs)), ix.avgLen
+	kept := make([]bool, len(ix.docs))
+	if keep == nil {
+		for i := range kept {
+			kept[i] = true
+		}
+	} else {
+		// The statistics are of the kept files alone.
+		n, avgLen = 0, 0
+		for i, d := range ix.docs {
+			if kept[i] = keep(d.Path); kept[i] {
+				n++
+				avgLen += float64(ix.docLen[i])
+			}
+		}
+		if n > 0 {
+			avgLen /= n
+		}
+	}
 	if n == 0 {
 		return nil
 	}
@@ -433,16 +489,27 @@ func (ix *Index) searchBM25(query string, limit int) []Hit {
 	scores := make(map[int]float64)
 	for _, term := range tokenize(query) {
 		df := float64(ix.df[term])
+		if keep != nil {
+			df = 0
+			for i, counts := range ix.docTerms {
+				if kept[i] && counts[term] > 0 {
+					df++
+				}
+			}
+		}
 		if df == 0 {
 			continue
 		}
 		idf := math.Log(1 + (n-df+0.5)/(df+0.5))
 		for i, counts := range ix.docTerms {
+			if !kept[i] {
+				continue
+			}
 			tf := float64(counts[term])
 			if tf == 0 {
 				continue
 			}
-			norm := tf * (k1 + 1) / (tf + k1*(1-b+b*float64(ix.docLen[i])/ix.avgLen))
+			norm := tf * (k1 + 1) / (tf + k1*(1-b+b*float64(ix.docLen[i])/avgLen))
 			scores[i] += idf * norm
 		}
 	}
@@ -460,7 +527,7 @@ func (ix *Index) searchBM25(query string, limit int) []Hit {
 
 // searchVector is the semantic tier: earns its place on natural-language
 // queries over docs and runbooks, where the wording will not match.
-func (ix *Index) searchVector(ctx context.Context, query string, limit int) ([]Hit, error) {
+func (ix *Index) searchVector(ctx context.Context, query string, limit int, keep func(string) bool) ([]Hit, error) {
 	vecs, err := ix.embedder.Embed(ctx, []string{query})
 	if err != nil || len(vecs) == 0 {
 		return nil, fmt.Errorf("embed query: %w", err)
@@ -472,7 +539,7 @@ func (ix *Index) searchVector(ctx context.Context, query string, limit int) ([]H
 
 	hits := make([]Hit, 0, len(ix.docs))
 	for _, d := range ix.docs {
-		if len(d.Vector) == 0 {
+		if len(d.Vector) == 0 || keep != nil && !keep(d.Path) {
 			continue
 		}
 		hits = append(hits, Hit{Doc: d, Score: cosine(q, d.Vector), Tier: "vector"})

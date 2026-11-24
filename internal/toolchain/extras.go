@@ -458,7 +458,7 @@ func (c Cache) installGoTool(ctx context.Context, ep Endpoints, e Extra, goroot,
 		if h := Host(); h != p {
 			built = filepath.Join(gopath, "bin", p.OS+"_"+p.Arch, t.bin)
 		}
-		if err := os.MkdirAll(filepath.Join(top, "bin"), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(top, "bin"), 0o755); err != nil { // #nosec G301 -- a toolchain folder, readable to commands by design
 			return ExtraInstalled{}, err
 		}
 		digest, n, err := copyHashed(built, filepath.Join(top, "bin", t.bin))
@@ -562,7 +562,7 @@ func (c Cache) placeExtra(e Extra, p Platform, build func(tmp, top string) (Extr
 	if err := writeExclusive(filepath.Join(top, extraMarker), marker, 0o444); err != nil {
 		return ExtraInstalled{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil { // #nosec G301 -- a toolchain folder, readable to commands by design
 		return ExtraInstalled{}, err
 	}
 	if err := os.Rename(top, dir); err != nil {

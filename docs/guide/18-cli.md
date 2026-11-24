@@ -21,20 +21,24 @@ more often a mistyped command than a task.
 | Flag | |
 |---|---|
 | `-C DIR` | the workspace (default: the current directory) |
+| `-guest` | work as guest: nothing is kept when the run ends (also `ABHED_GUEST=1`); see [Signing in](42-signing-in.md) |
+| `-account NAME` | work as this account on this machine, which must be signed in; a run that cannot ask exits 10 otherwise (also `ABHED_ACCOUNT`) |
 | `-model NAME` | a configured provider for this run |
 | `-fallback-model A,B` | configured providers to move to when the model is unavailable |
 | `-mode MODE` | `default`, `accept-edits`, `plan`, `auto` or `bypass` |
 | `-allow RULES`, `-deny RULES` | rules for this run, e.g. `bash(go test*)`; repeatable |
 | `-add-dir DIRS` | more directories the agent may read and write; repeatable |
-| `-max-turns N`, `-max-budget-tokens N` | limits for this run; a managed limit may only be lowered |
+| `-max-turns N`, `-max-budget-tokens N`, `-max-budget-usd D` | limits for this run; a managed limit may only be lowered; a dollar cap refuses a model with no price |
 | `-append-system-prompt TEXT` | instructions added to the system prompt |
 | `-system-prompt TEXT` | the system prompt replaced; refused under a managed configuration |
 | `-trust-workspace` | trust the workspace's `.abhed/config.json` for this run |
 | `-settings FILE` | a settings file, or inline JSON, for this run; see below |
 | `-mcp-config FILE`, `-strict-mcp-config` | MCP servers for this run, and whether they are the only ones; see below |
 | `-agents JSON`, `-agent NAME` | subagent definitions for this run, and a role to run the session as; see below |
+| `-tools NAMES` | the only tools this run, and the subagents it starts, may use; repeatable; see below |
+| `-bare` | run without your own or the workspace's memory files, extensions and skills; see below |
 | `-verify MODE` | `off`, `label` or `strict`: how each answer is checked against the session's record; a managed mode may only be made stricter — [Verified answers](29-verified-answers.md) |
-| `-p`, `-output-format`, `-input-format`, `-no-stdin`, `-json-schema`, `-include-partial-messages`, `-verbose` | headless runs: see [Automation](10-automation.md#headless) |
+| `-p`, `-` (wait for stdin to end), `-stdin-wait`, `-output-format`, `-input-format`, `-no-stdin`, `-json-schema`, `-include-partial-messages`, `-verbose` | headless runs: see [Automation](10-automation.md#headless) |
 | `-runbook FILE`, `-runbook-sha256 HASH` | with `-p`, approve a plan's runbook for the run, pinned to the hash you reviewed: see [Runbooks](28-runbooks.md#headless-runs) |
 
 These flags come before a subcommand or after it: `abhed -C ~/src/app
@@ -71,6 +75,32 @@ filter it, Enter opens the first match, and the session you are in is marked
 The familiar spellings `-permission-mode`, `-allowedTools`,
 `-disallowedTools` and `-dangerously-skip-permissions` are accepted too; the
 table of what each maps to is in [Automation](10-automation.md#familiar-flag-spellings).
+`-mode` itself also takes `acceptEdits` and `bypassPermissions` (and
+`accept_edits`, `bypass_permissions`) for `accept-edits` and `bypass`.
+
+### A narrower run: -tools and -bare
+
+`-tools read,glob,grep` keeps those tools for the session and the
+subagents it starts. A name the session does not have stops the run before
+it starts, naming the tools it has. MCP tools are named in full
+(`mcp__github__search`). The harness's own tools stay whatever you name:
+`recall`, which reads this session's own record, and, where the session has
+them, `exit_plan` in plan mode and `result`, which a structured
+(`-json-schema`) run answers with; naming one is allowed. It only takes tools away: policy
+still judges each call, and every deny and ask rule, the managed ones
+included, still applies. The start of the record lists the tools kept as
+`tools_only` and the harness's as `tools_harness`.
+
+`-bare` runs without the memory files of your own and the workspace's
+(`ABHED.md`, `ABHED.local.md`, a folder's own `ABHED.md`, rules and auto
+memory), without your own or the workspace's extensions, and without your
+own skills. What the organisation sets stays: the managed `ABHED.md`, the
+rule and skill directories the managed configuration names
+(`rules.dirs`, `skills.dirs`), the extensions it names, and auto memory
+where the managed file turns it on. MCP servers are not extensions: your
+own and the workspace's stay under `-bare`, and `-strict-mcp-config` drops
+them. The start of the record says `bare`. Both flags work with and
+without `-p`.
 
 ### Settings, servers and roles for one run
 
@@ -121,7 +151,7 @@ to do.
 
 | Command | |
 |---|---|
-| `/model` | pick a configured model: its id, context window, and whether it is local |
+| `/model` | pick a configured model: its id, context window (marked assumed when Abhed could not place the model; [Context windows](03-providers.md#context-windows)), and whether it is local |
 | `/model NAME` | switch to a configured provider, keeping the conversation; recorded. It does not check that the model answers: if the next turn fails, the error is followed by the `/model` line that goes back to the model you were on. A local Ollama model is the exception: it is checked first, and what it lacks offered ([A local Ollama model](03-providers.md#a-local-ollama-model)); when it is still not ready you choose whether to switch anyway, and No stays |
 | `/ollama` | check the current model's local Ollama again and offer each missing step (start, install, pull), asking before each |
 | `/ollama forget` | take back "always start Ollama without asking" |
@@ -166,7 +196,9 @@ provider is refused under a managed `model.default`, as `/model` is.
 | `/evidence [N \| #seq]` | the checks on the last answer: every statement with its verdict, or the record behind statement N, or one entry of the record — [Verified answers](29-verified-answers.md#where-you-see-it) |
 | `/copy` | put the last reply on the clipboard through the terminal (OSC 52); `cli.copy: false` turns it off — [The terminal](20-terminal.md#the-title-notifications-and-the-clipboard) |
 | `/config` | each setting and where it comes from: managed, a file, or the default |
-| `/config set KEY VALUE` | set `model.default`, `permissions.mode`, `sandbox.allow_network`, `limits.max_turns`, `tools.syntax_check` or `statusline.command` in your own `~/.abhed/config.json`, for the next session |
+| `/config set KEY VALUE` | set `model.default`, `permissions.mode`, `sandbox.allow_network`, `sandbox.tier`, `limits.max_turns`, `tools.syntax_check` or `statusline.command` in your own `~/.abhed/config.json`, for the next session |
+| `/network [workspace \| host NAME \| once [NAME]]` | what commands can reach; open the network to them for this workspace, one host, or this session, asked first. Not where the managed configuration holds the network |
+| `/config apply` | offer this session the models added to your own file since it started; nothing else of the file applies to it. When the file changes, the session says so after the task: a change applies to new sessions |
 
 `/config set` refuses a setting the managed configuration makes, and asks
 before a change that lets the agent do more: a broader mode, network on

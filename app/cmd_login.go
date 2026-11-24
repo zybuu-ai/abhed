@@ -17,11 +17,23 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/profiles"
 )
 
-// openBrowser opens a URL in the person's browser; replaced in tests.
+// openBrowser opens a URL in the person's browser; replaced in tests. The
+// person's BROWSER, when set, is used first.
 var openBrowser = func(u string) error {
+	if cmds := browserCommands(os.Getenv("BROWSER"), u); len(cmds) > 0 {
+		var err error
+		for _, c := range cmds {
+			// A command the person chose, run with the URL as one argument; no shell.
+			if err = exec.Command(c[0], c[1:]...).Start(); err == nil { // #nosec G204 -- the person's own BROWSER
+				return nil
+			}
+		}
+		return fmt.Errorf("BROWSER: %w", err)
+	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	// The URL is the server's own sign-in page, built here; no shell is involved.
@@ -35,11 +47,40 @@ var openBrowser = func(u string) error {
 	return cmd.Start()
 }
 
+// browserCommands reads BROWSER as other programs do: a list of commands
+// separated by the path list separator, tried in turn, each given the URL in
+// place of %s or after its words. Words are split on spaces; nothing is
+// handed to a shell.
+func browserCommands(env, u string) [][]string {
+	var out [][]string
+	for _, entry := range filepath.SplitList(env) {
+		words := strings.Fields(entry)
+		if len(words) == 0 {
+			continue
+		}
+		placed := false
+		for i, w := range words {
+			if strings.Contains(w, "%s") {
+				words[i], placed = strings.ReplaceAll(w, "%s", u), true
+			}
+		}
+		if !placed {
+			words = append(words, u)
+		}
+		out = append(out, words)
+	}
+	return out
+}
+
 // canOpenBrowser says whether a browser on this machine can reach a loopback
-// listener here; over SSH the browser is on another machine.
+// listener here; over SSH the browser is on another machine. A BROWSER the
+// person set counts as one.
 var canOpenBrowser = func() bool {
 	if os.Getenv("SSH_CONNECTION") != "" || os.Getenv("SSH_TTY") != "" {
 		return false
+	}
+	if strings.TrimSpace(os.Getenv("BROWSER")) != "" {
+		return true
 	}
 	switch runtime.GOOS {
 	case "darwin", "windows":
@@ -50,6 +91,42 @@ var canOpenBrowser = func() bool {
 	}
 	_, err := exec.LookPath("xdg-open")
 	return err == nil
+}
+
+// signInOpener shows the person the browser sign-in address, and opens it
+// unless they asked only to see it (-no-browser).
+func signInOpener(noBrowser bool, errOut io.Writer, open func(string) error) func(string) error {
+	return func(u string) error {
+		if noBrowser {
+			fmt.Fprintf(errOut, "Open this address in a browser on this machine to approve the sign-in:\n  %s\n", u)
+			return nil
+		}
+		fmt.Fprintf(errOut, "Opening your browser to approve this sign-in. If it does not open, visit:\n  %s\n", u)
+		if err := open(u); err != nil {
+			fmt.Fprintf(errOut, "abhed: could not open a browser (%v); use the link above, or run abhed login -device\n", err)
+		}
+		return nil
+	}
+}
+
+// maxDisplay bounds the name a server gives for the account, as kept and shown.
+const maxDisplay = 80
+
+// clipDisplay is a server-given name cut to maxDisplay characters.
+func clipDisplay(s string) string {
+	if r := []rune(s); len(r) > maxDisplay {
+		return string(r[:maxDisplay-1]) + "…"
+	}
+	return s
+}
+
+// signedInAs is who a profile is signed in as, as a person reads it: the
+// account's email, else its name, else the subject the server knows it by.
+func signedInAs(p *profiles.Profile) string {
+	if p.Display != "" {
+		return p.Display
+	}
+	return p.Username
 }
 
 // profilesPath is where profiles are kept, refused inside the workspace,
@@ -86,6 +163,22 @@ func profileName(raw string) string {
 }
 
 func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
+	return loginWith(workspace, args, out, errOut, loginOpts{open: openBrowser})
+}
+
+// loginOpts are what a caller of abhed login other than the command line
+// chooses: what opens the browser sign-in page (the person's browser, or a
+// request to a client such as Studio), and the profiles file to keep the
+// sign-in in, in place of the person's.
+type loginOpts struct {
+	open func(string) error
+	file string
+	// ctx, when set, ends the sign-in early: a client's cancel.
+	ctx context.Context
+}
+
+// loginWith is abhed login with o.
+func loginWith(workspace string, args []string, out, errOut io.Writer, o loginOpts) int {
 	if !profileNetwork(errOut) {
 		return 1
 	}
@@ -94,6 +187,7 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 	name := fs.String("profile", "", "profile name (default: the server's host and port)")
 	device := fs.Bool("device", false, "sign in with a code entered in any browser (default over SSH)")
 	browser := fs.Bool("browser", false, "sign in through a browser on this machine")
+	noBrowser := fs.Bool("no-browser", false, "print the sign-in address instead of opening a browser")
 	method := fs.String("method", "", "the server's sign-in method to use, when it offers several")
 	ca := fs.String("ca", "", "trust only this CA for the server (PEM)")
 	cert := fs.String("cert", "", "client certificate, for a server that asks for one (PEM)")
@@ -121,9 +215,11 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	path, err := profilesPath(workspace)
-	if err != nil {
-		return fail(err)
+	path := o.file
+	if path == "" {
+		if path, err = profilesPath(workspace); err != nil {
+			return fail(err)
+		}
 	}
 	reg, err := profiles.Load(path)
 	if err != nil {
@@ -159,7 +255,10 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	ctx := context.Background()
+	ctx := o.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	d, err := profiles.Discover(ctx, client, base)
 	if err != nil {
 		return fail(err)
@@ -205,16 +304,10 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 			fmt.Fprintln(errOut, "Waiting for approval…")
 		})
 	} else {
-		tok, err = profiles.PKCELogin(ctx, client, base, m, func(u string) error {
-			fmt.Fprintf(errOut, "Opening your browser to approve this sign-in. If it does not open, visit:\n  %s\n", u)
-			if err := openBrowser(u); err != nil {
-				fmt.Fprintf(errOut, "abhed: could not open a browser (%v); use the link above, or run abhed login -device\n", err)
-			}
-			return nil
-		})
+		tok, err = profiles.PKCELogin(ctx, client, base, m, signInOpener(*noBrowser, errOut, o.open))
 	}
 	if err != nil {
-		return fail(err)
+		return fail(profiles.GrantRemoved(base, err))
 	}
 	p.Method = m.Name
 	p.ClientID = m.ClientID
@@ -234,6 +327,14 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 	if sub, _ := me["subject"].(string); sub != "" {
 		p.Username = sub
 	}
+	// The subject stays the account's key; a person reads the email or name.
+	p.Display = ""
+	for _, k := range []string{"email", "name"} {
+		if v, _ := me[k].(string); strings.TrimSpace(v) != "" && v != p.Username {
+			p.Display = clipDisplay(config.PrintableText(v))
+			break
+		}
+	}
 	if code := saveProfile(path, reg, *name, p, errOut); code != 0 {
 		return code
 	}
@@ -241,7 +342,7 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 	if !p.ExpiresAt.IsZero() {
 		until = ", until " + p.ExpiresAt.Local().Format("2 Jan 15:04")
 	}
-	fmt.Fprintf(out, "Signed in to %s as %s (profile %s%s).\n", base, p.Username, *name, until)
+	fmt.Fprintf(out, "Signed in to %s as %s (profile %s%s).\n", base, signedInAs(p), *name, until)
 	return enrollAfterLogin(ctx, path, *name, p, enrolOptions{given: policyKeys, accept: *orgPolicy || len(policyKeys) > 0, confirm: askYes}, out, errOut)
 }
 
@@ -390,9 +491,9 @@ func profileCmd(workspace string, args []string, out, errOut io.Writer) int {
 			case p.PendingLogout:
 				status = "signed out here; the server has not recorded it yet"
 			case p.SignedIn(now) && p.ExpiresAt.IsZero():
-				status = "signed in as " + p.Username
+				status = "signed in as " + signedInAs(p)
 			case p.SignedIn(now):
-				status = "signed in as " + p.Username + " until " + p.ExpiresAt.Local().Format("2 Jan 15:04")
+				status = "signed in as " + signedInAs(p) + " until " + p.ExpiresAt.Local().Format("2 Jan 15:04")
 			case p.Token != "":
 				status = "expired; run abhed login " + p.URL
 			}

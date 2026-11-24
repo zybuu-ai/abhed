@@ -28,9 +28,27 @@ type Budget struct {
 	MaxTokens    int64
 	MaxSubagents int
 	AllowNested  bool
+	// MaxUSD caps the session's cost in US dollars, subagents included;
+	// zero is no cap. With a cap, a call to an unpriced model is refused.
+	MaxUSD float64
+	// Prices are the configured model prices, over the built-in list.
+	Prices map[string]model.Price
+	// ManagedPrices marks prices only an administrator may set, as under a
+	// managed or org dollar cap, so a refusal points there.
+	ManagedPrices bool
+	// Allowance, when set, is a limit kept outside the session, such as an
+	// edition's periodic budget, asked at each turn boundary of the session
+	// and its subagents.
+	Allowance func(context.Context) Allowance
+	// allowanceUSD is set once an Allowance says a dollar limit applies;
+	// allowanceStop holds its last stop message, "" while it allows.
+	allowanceUSD  atomic.Bool
+	allowanceStop atomic.Pointer[string]
 
 	tokens  atomic.Int64
 	spawned atomic.Int32
+	// microUSD is the cost spent, in millionths of a dollar.
+	microUSD atomic.Int64
 }
 
 func NewBudget(maxTokens int64, maxSubagents int, allowNested bool) *Budget {
@@ -45,10 +63,56 @@ func (b *Budget) Spend(tokens int) {
 }
 
 func (b *Budget) Exhausted() bool {
-	if b == nil || b.MaxTokens <= 0 {
+	if b == nil {
 		return false
 	}
-	return b.tokens.Load() >= b.MaxTokens
+	return b.MaxTokens > 0 && b.tokens.Load() >= b.MaxTokens || b.USDExhausted()
+}
+
+// USDLimited reports a dollar limit in force: the session's own cap, or
+// one an Allowance has said applies. It is the one check of it: under one,
+// a model with no price is refused wherever a call is made.
+func (b *Budget) USDLimited() bool {
+	return b != nil && (b.MaxUSD > 0 || b.allowanceUSD.Load())
+}
+
+// USDExhausted reports the dollar cap reached.
+func (b *Budget) USDExhausted() bool {
+	return b != nil && b.MaxUSD > 0 && b.SpentUSD() >= b.MaxUSD
+}
+
+// Price is a model's price: configured, then built in. ok is false for an
+// unpriced model, whose cost is never guessed.
+func (b *Budget) Price(name string) (model.Price, bool) {
+	if b == nil {
+		return model.PriceFor(name, nil)
+	}
+	return model.PriceFor(name, b.Prices)
+}
+
+// SpendUSD adds a call's cost.
+func (b *Budget) SpendUSD(usd float64) {
+	if b == nil || usd <= 0 {
+		return
+	}
+	b.microUSD.Add(int64(math.Ceil(usd * 1e6)))
+}
+
+// SpentUSD is the cost spent so far, subagents included.
+func (b *Budget) SpentUSD() float64 {
+	if b == nil {
+		return 0
+	}
+	return float64(b.microUSD.Load()) / 1e6
+}
+
+// CanSpawn reports whether one more subagent could start now; a nil budget
+// sets no limit.
+func (b *Budget) CanSpawn() bool {
+	if b == nil {
+		return true
+	}
+	return !b.Exhausted() && (b.MaxSubagents <= 0 || int(b.spawned.Load()) < b.MaxSubagents)
 }
 
 func (b *Budget) Spent() int64 {
@@ -61,9 +125,11 @@ func (b *Budget) Spent() int64 {
 // Carry starts the counters from what a session already spent before it was
 // continued here, so continuing a session elsewhere does not reset its
 // allowance. It only raises them.
-func (b *Budget) Carry(tokens int64, spawned int) {
+func (b *Budget) Carry(tokens int64, spawned int, usd float64) {
 	if b == nil {
 		return
+	}
+	for cur, n := b.microUSD.Load(), int64(math.Ceil(usd*1e6)); n > cur && !b.microUSD.CompareAndSwap(cur, n); cur = b.microUSD.Load() {
 	}
 	for cur := b.tokens.Load(); tokens > cur && !b.tokens.CompareAndSwap(cur, tokens); cur = b.tokens.Load() {
 	}
@@ -76,6 +142,9 @@ func (b *Budget) Carry(tokens int64, spawned int) {
 func (b *Budget) TryReserveSubagent() error {
 	if b == nil {
 		return nil
+	}
+	if b.USDExhausted() {
+		return fmt.Errorf("budget limit reached ($%.4f spent of %s)", b.SpentUSD(), usd(b.MaxUSD))
 	}
 	if b.Exhausted() {
 		return fmt.Errorf("budget limit reached (%d tokens spent of %d)", b.tokens.Load(), b.MaxTokens)
@@ -166,10 +235,15 @@ func (t Task) Description() string {
 		note = backgroundNote
 	}
 	return "Spawn a subagent with a fresh context to handle a self-contained subtask. " +
-		"Use when a task needs extensive exploration whose intermediate detail you do not need — " +
-		"the subagent returns only a summary. The prompt must be COMPLETE and self-contained: " +
-		"the subagent cannot see this conversation." + note + " Agent types:" + t.Agents.listing()
+		"Use for exploration whose detail you do not need; it returns only a summary. " +
+		"The prompt must be COMPLETE and self-contained: the subagent cannot see this " +
+		"conversation. Calls in ONE response run concurrently." + t.Agents.worktreeNote() + note + " Agent types:" + t.Agents.listing()
 }
+
+// parallelUse is what a request for parallel work means. Models read "run
+// this in parallel" as a request to make the project's code concurrent, and
+// started no subagent.
+const parallelUse = "Work asked for in parallel or by several agents means this, not concurrent code."
 
 func (t Task) Schema() json.RawMessage {
 	return mustSchema(map[string]any{
@@ -202,8 +276,12 @@ func withModel(props map[string]any, models []string, background bool) map[strin
 
 // agentTypeSchema is the agent_type property: the types this session offers.
 func agentTypeSchema(d *Definitions) map[string]any {
-	return map[string]any{"type": "string", "enum": d.Names(),
-		"description": "One of the agent types listed on the task tool. Defaults to general."}
+	if names := d.enum(); names != nil {
+		return map[string]any{"type": "string", "enum": names,
+			"description": "One of the agent types listed on the task tool. Defaults to general."}
+	}
+	return map[string]any{"type": "string",
+		"description": "An agent type: one listed on the task tool, or another by name; an unknown name lists the types matching it. Defaults to general."}
 }
 
 func mustSchema(v any) json.RawMessage {
@@ -234,8 +312,33 @@ type taskArgs struct {
 
 // unknownType refuses an agent type the session does not offer, naming those it does.
 func unknownType(d *Definitions, what, name string) tools.Result {
+	if found := d.Search(name, 20); len(found) > 0 {
+		var b strings.Builder
+		fmt.Fprintf(&b, "Unknown %s %q. Agent types matching it:", what, name)
+		for _, def := range found {
+			fmt.Fprintf(&b, "\n- %s — %s", def.Name, def.Description)
+		}
+		return tools.Result{Content: b.String(), IsError: true}
+	}
+	names := d.Names()
+	var b strings.Builder
+	shown := 0
+	for _, n := range names {
+		if b.Len()+len(n)+2+tailRoom(shown, len(names)) > ListingBudget {
+			break
+		}
+		if shown > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(n)
+		shown++
+	}
+	more := ""
+	if shown < len(names) {
+		more = fmt.Sprintf(", and %d more; give a word from the type or the task to search them", len(names)-shown)
+	}
 	return tools.Result{
-		Content: fmt.Sprintf("Unknown %s %q. Available: %s.", what, name, strings.Join(d.Names(), ", ")),
+		Content: fmt.Sprintf("Unknown %s %q. Available: %s%s.", what, name, b.String(), more),
 		IsError: true,
 	}
 }
@@ -252,9 +355,11 @@ func (t Task) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) to
 		}
 		return tools.Result{Content: "prompt is required and must be self-contained.", IsError: true}
 	}
-	// A resume keeps the task's own description unless given another.
+	// A resume keeps the task's own description unless given another; a new
+	// task given none is labelled from its prompt, as tasks does, rather
+	// than refused for a label at the cost of a turn.
 	if strings.TrimSpace(a.Description) == "" && a.Resume == "" {
-		return tools.Result{Content: "description is required (3-5 words, shown to the user).", IsError: true}
+		a.Description = labelFrom(a.Prompt)
 	}
 	if a.Resume != "" {
 		// The resumed task's own role and worktree apply; the spawn checks them.
@@ -804,6 +909,8 @@ func (c *child) execute(ctx context.Context) (string, TerminalReason, error) {
 		"tokens_in":   usage.InputTokens,
 		"tokens_out":  usage.OutputTokens,
 		"model":       c.adapter.Profile().Name,
+		"cost_usd":    usage.CostUSD,
+		"unpriced":    usage.Unpriced,
 		// The child's last event of this run, its end: the answer this
 		// return carries is the last one before it, whatever runs follow.
 		"end_seq": c.sub.Recorder.LastAppended(),
@@ -961,7 +1068,7 @@ func onlySkills(reg *tools.Registry, def *Definition) (*tools.Registry, error) {
 		return nil, fmt.Errorf("definition %s names skills this session does not have: %s", def.Name, strings.Join(missing, ", "))
 	}
 	out := reg.Clone()
-	out.Add(cut)
+	out.Replace(cut)
 	return out, nil
 }
 
@@ -1255,6 +1362,15 @@ func mirrorInto(parent *parentLink, child string) func(Event) {
 				return
 			}
 			parent.record(ev.Type, ev.Actor, ev.Payload)
+		case EvModelWaiting:
+			// A child waiting for the model is said where the person watches.
+			var w ModelWaiting
+			if json.Unmarshal(ev.Payload, &w) == nil {
+				if w.Session == "" {
+					w.Session = child
+				}
+				parent.record(EvModelWaiting, ev.Actor, w)
+			}
 		case EvUserMessage:
 			// A message the person sent it while it ran (queued, so it has a
 			// QueueID; its prompt has none) is the person's, in the record audit reads.

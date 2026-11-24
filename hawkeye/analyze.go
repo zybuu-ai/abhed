@@ -59,10 +59,13 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 	r.Started, r.Ended = evs[0].CreatedAt, evs[len(evs)-1].CreatedAt
 	r.Totals.DurationMS = r.Ended.Sub(r.Started).Milliseconds()
 
+	// calls is the latest call asked under each id: a model may reuse an id
+	// in a later turn, so a decision or result goes to the call asked last
+	// under it, and each request is a call of its own (order).
 	calls := map[string]*Call{}
-	var order []string
+	var order []*Call
 	files := map[string]*FileTouch{}
-	remote := map[string]remoteInfo{}
+	remote := map[int64]remoteInfo{} // by the request's seq
 	var ended agent.SessionEnded
 
 	for _, e := range evs {
@@ -81,7 +84,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				// A call outside the conversation, as a suggestion, is no turn,
 				// but its tokens are spent: the session's own totals count them.
 				r.offTurn = append(r.offTurn, Turn{TokensIn: m.TokensIn, TokensOut: m.TokensOut,
-					TokensCached: m.TokensCached, LatencyMS: m.LatencyMS})
+					TokensCached: m.TokensCached, LatencyMS: m.LatencyMS, CostUSD: m.CostUSD, Unpriced: m.Unpriced})
 				break
 			}
 			if m.Model != "" && (len(r.Models) == 0 || r.Models[len(r.Models)-1] != m.Model) {
@@ -89,7 +92,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 			}
 			r.Turns = append(r.Turns, Turn{
 				N: len(r.Turns) + 1, Seq: e.Seq, Model: m.Model, TokensIn: m.TokensIn, TokensOut: m.TokensOut,
-				TokensCached: m.TokensCached, CacheReported: m.CacheReported,
+				TokensCached: m.TokensCached, CacheReported: m.CacheReported, CostUSD: m.CostUSD, Unpriced: m.Unpriced,
 				Window: m.ContextWindow, FirstTokenMS: m.FirstTokenMS,
 				LatencyMS: m.LatencyMS, ToolCalls: m.ToolCalls, Error: m.Error, CutOff: m.CutOff, Estimated: m.Estimated,
 			})
@@ -103,17 +106,30 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				Actor: string(e.Actor), Via: a.Via,
 			}
 			calls[a.CallID] = c
-			order = append(order, a.CallID)
+			order = append(order, c)
 			touch(files, a.Tool, a.Args)
 			if _, ok := remoteTools[a.Tool]; ok {
 				name, ns, what := remoteOf(a.Tool, a.Args)
-				remote[a.CallID] = remoteInfo{name: name, ns: ns, what: clip(what, 2000), where: a.Target}
+				remote[e.Seq] = remoteInfo{name: name, ns: ns, what: clip(what, 2000), where: a.Target}
 			}
 
 		case agent.EvToolchainInstall:
 			var a agent.ToolchainAction
 			if json.Unmarshal(e.Payload, &a) == nil {
 				r.Toolchains = append(r.Toolchains, ToolchainStep{Seq: e.Seq, ToolchainAction: a})
+			}
+
+		case agent.EvCompletionSummary, agent.EvNextEditSummary:
+			var a agent.CompletionSummary
+			if json.Unmarshal(e.Payload, &a) == nil {
+				feature := "completion"
+				if e.Type == agent.EvNextEditSummary {
+					feature = "next_edit"
+				}
+				r.Editor = append(r.Editor, EditorStats{Seq: e.Seq, Feature: feature, CompletionSummary: a})
+				// Their cost is the session's too, carried here rather than a model.call each.
+				r.editorUSD += a.CostUSD
+				r.editorUnpriced = r.editorUnpriced || a.Unpriced
 			}
 
 		case agent.EvOllamaStart, agent.EvOllamaInstall, agent.EvOllamaPull:
@@ -137,7 +153,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				continue
 			}
 			c.Step, c.Reason, c.By, c.Scope = d["step"], d["reason"], d["by"], d["scope"]
-			c.Rule, c.Layer = d["rule"], d["layer"]
+			c.Rule, c.Layer, c.Source = d["rule"], d["layer"], d["source"]
 			c.Approver, c.GrantedScope = d["approver"], d["granted_scope"]
 			c.PlanHash = d["plan_hash"]
 			c.PlanStep, _ = strconv.Atoi(d["plan_step"])
@@ -191,6 +207,27 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 					Seq: e.Seq, Trigger: k.Trigger, Before: k.BeforeTokens, After: k.AfterTokens,
 				})
 			}
+
+		case agent.EvContextWindow:
+			var w agent.ContextWindowNote
+			_ = json.Unmarshal(e.Payload, &w)
+			r.Context = append(r.Context, ContextFit{Seq: e.Seq, Kind: "window", Action: w.Source, Model: w.Model, Window: w.Window})
+
+		case agent.EvContextOverflow:
+			var o agent.ContextOverflow
+			_ = json.Unmarshal(e.Payload, &o)
+			w := o.Window
+			if o.Limit > 0 {
+				w = o.Limit
+			}
+			r.Context = append(r.Context, ContextFit{Seq: e.Seq, Kind: "overflow", Action: o.Action, Model: o.Model,
+				Window: w, Before: o.BeforeTokens, After: o.AfterTokens})
+
+		case agent.EvContextRefit:
+			var f agent.ContextRefit
+			_ = json.Unmarshal(e.Payload, &f)
+			r.Context = append(r.Context, ContextFit{Seq: e.Seq, Kind: "refit", Action: f.Reason, Model: f.ToModel,
+				Window: f.ToWindow, Before: f.BeforeTokens, After: f.AfterTokens})
 
 		case agent.EvContextOffloaded:
 			var o agent.Offloaded
@@ -256,8 +293,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 	if r.Outcome == "running" && opt.Idle {
 		r.Outcome = "idle"
 	}
-	for _, id := range order {
-		c := calls[id]
+	for _, c := range order {
 		c.SandboxDenied = len(c.Sandbox) > 0
 		c.SandboxUnconfirmed = c.SandboxUnconfirmed && !c.SandboxDenied
 		r.Calls = append(r.Calls, *c)
@@ -354,6 +390,17 @@ func (r *Report) totals(ended agent.SessionEnded) {
 			r.Policy.ByLayer[c.Layer]++
 		}
 	}
+	t.CostUSD, t.Unpriced = r.editorUSD, r.editorUnpriced
+	for _, turn := range append(append([]Turn(nil), r.Turns...), r.offTurn...) {
+		switch {
+		case turn.CostUSD != nil:
+			t.CostUSD += *turn.CostUSD
+		case turn.Unpriced:
+			t.Unpriced = true
+		case turn.TokensIn+turn.TokensOut > 0:
+			t.CostNotRecorded = true
+		}
+	}
 	for _, turn := range r.Turns {
 		t.TokensIn += turn.TokensIn
 		t.TokensOut += turn.TokensOut
@@ -427,6 +474,7 @@ var beforeModel = map[agent.EventType]bool{
 	agent.EvUserMessage: true, agent.EvObservation: true, agent.EvActionDenied: true,
 	agent.EvSubagentNotice: true, agent.EvSessionWoken: true, agent.EvModelCall: true,
 	agent.EvCompactDone: true, agent.EvContextOffloaded: true, agent.EvModelSwitched: true, agent.EvModelFallback: true,
+	agent.EvModelWaiting: true, agent.EvContextWindow: true, agent.EvContextOverflow: true, agent.EvContextRefit: true,
 }
 
 // deltaShaped reports whether a gap between prev and next could hold only deltas.
@@ -588,4 +636,29 @@ func clip(s string, n int) string {
 		n--
 	}
 	return s[:n] + "…"
+}
+
+// callAt is the call asked last under id at or before seq: the one an event
+// at seq that names id is about, as a model may reuse an id across turns.
+func callAt(calls []Call, id string, seq int64) (Call, bool) {
+	var out Call
+	ok := false
+	for _, c := range calls {
+		if c.CallID == id && c.Seq <= seq {
+			out, ok = c, true
+		}
+	}
+	return out, ok
+}
+
+// callNext is the first call asked under id at or after seq, what a review
+// made before the request names; callAt when there is none.
+func callNext(calls []Call, id string, seq int64) Call {
+	for _, c := range calls {
+		if c.CallID == id && c.Seq >= seq {
+			return c
+		}
+	}
+	c, _ := callAt(calls, id, seq)
+	return c
 }

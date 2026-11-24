@@ -171,6 +171,11 @@ type Policy struct {
 	// ListenPorts are the only ports listening opens (sandbox.listen_ports),
 	// TCP alone, less Abhed's reserved ports and those the Mac listens on.
 	ListenPorts []int
+	// GitIdentity is the person's git author and committer, as
+	// GIT_AUTHOR_NAME=... and the like, given to commands on the tiers whose
+	// home holds none of their configuration (the fence and containers), so
+	// a commit there carries their name rather than failing for want of one.
+	GitIdentity []string
 	// ReadableHome lets the macOS process tier read all of home but the
 	// HomeSecrets; otherwise only the toolchain folders there are readable.
 	ReadableHome bool
@@ -191,8 +196,13 @@ type Policy struct {
 	// CPU; zero means 200.
 	MaxCPUPercent int
 	// Tier, when set, is the one backend Select builds, in place of the
-	// strongest available; only TierFence can be chosen.
+	// strongest available: process, container, vm or fence, never weaker
+	// than MinTier, and never another in its place.
 	Tier Tier
+	// PreferOwnTools passes over a container tier whose image has no git
+	// for the process tier, where that still meets MinTier: for a person's
+	// own workspace on a Mac, with nothing managed requiring more.
+	PreferOwnTools bool
 	// CPUPercent bounds the fence tier's commands' CPU time, in percent of
 	// one CPU; zero leaves it unbounded.
 	CPUPercent int
@@ -248,7 +258,9 @@ func Caveat(sb Sandbox) string {
 }
 
 // Select returns the strongest available backend meeting policy.MinTier. It
-// never silently downgrades: with none meeting it, it errors.
+// never silently downgrades: with none meeting it, it errors. With
+// PreferOwnTools, a container tier whose image has no git is passed over for
+// the process tier, which still meets MinTier; the choice says so.
 func Select(p Policy) (Sandbox, error) {
 	if err := checkHidden(p); err != nil {
 		return nil, err
@@ -269,30 +281,71 @@ func Select(p Policy) (Sandbox, error) {
 		q.Egress = p.OptionalEgress
 		withProxy = []Sandbox{NewGVisor(q), NewContainer(q), NewProcess(q), nil}
 	}
+	strongest := fmt.Sprintf("the strongest tier available here meeting sandbox.min_tier %q", orTier(p.MinTier))
+	prefer := p.PreferOwnTools && TierProcess.Strength() >= p.MinTier.Strength()
+	// passed is a container tier passed over for its image, used still when
+	// the process tier turns out not to be available.
+	var passed Sandbox
+	var passedWhy string
 
 	var tried []string
 	for i, c := range candidates {
+		pick := Sandbox(nil)
 		if withProxy != nil && withProxy[i] != nil {
 			if ok, _ := withProxy[i].Available(); ok && withProxy[i].Tier().Strength() >= p.MinTier.Strength() {
-				return withProxy[i], nil
+				pick = withProxy[i]
 			}
 		}
-		available, why := c.Available()
-		if !available {
-			tried = append(tried, fmt.Sprintf("%s (%s)", c.Tier(), why))
-			continue
+		if pick == nil {
+			available, why := c.Available()
+			if !available {
+				tried = append(tried, fmt.Sprintf("%s (%s)", c.Tier(), why))
+				continue
+			}
+			if c.Tier().Strength() < p.MinTier.Strength() {
+				tried = append(tried, fmt.Sprintf("%s (weaker than required %s)", c.Tier(), p.MinTier))
+				continue
+			}
+			pick = c
 		}
-		if c.Tier().Strength() < p.MinTier.Strength() {
-			tried = append(tried, fmt.Sprintf("%s (weaker than required %s)", c.Tier(), p.MinTier))
-			continue
+		if ct, ok := pick.(*Container); ok && prefer {
+			if passed != nil {
+				continue // the same image, without git
+			}
+			lacks, missing, why := lacksGit(ct)
+			if lacks {
+				passed, passedWhy = pick, ownToolsNote(ct, missing)
+				continue
+			}
+			if why != "" {
+				return noteChoice(pick, strongest+"; "+why), nil
+			}
 		}
-		return c, nil
+		if passed != nil {
+			if pick.Tier() == TierProcess {
+				return noteChoice(pick, passedWhy), nil
+			}
+			// Nothing but the host is left: the container stands after all.
+			return noteChoice(passed, strongest+"; the process tier, preferred for its image's missing tools, is not available here"), nil
+		}
+		return noteChoice(pick, strongest), nil
+	}
+	if passed != nil {
+		return noteChoice(passed, strongest+"; the process tier, preferred for its image's missing tools, is not available here"), nil
 	}
 	return nil, fmt.Errorf(
 		"no sandbox backend meets the required minimum tier %q.\nTried: %s.\n"+
 			"Install gVisor (runsc) or a container runtime, or lower sandbox.min_tier "+
 			"in config — but do not run untrusted repositories below tier %q",
 		p.MinTier, strings.Join(tried, "; "), TierProcess)
+}
+
+// orTier is t, or none when unset.
+func orTier(t Tier) Tier {
+	if t == "" {
+		return TierNone
+	}
+	return t
 }
 
 // EgressOf is the egress policy a sandbox's commands go through, or nil
@@ -329,20 +382,4 @@ func checkHidden(p Policy) error {
 		}
 	}
 	return nil
-}
-
-// selectChosen builds the one tier the configuration chose, or refuses
-// naming why: never another tier in its place.
-func selectChosen(p Policy) (Sandbox, error) {
-	if p.Tier != TierFence {
-		return nil, fmt.Errorf("sandbox.tier %q cannot be chosen; only %q can", p.Tier, TierFence)
-	}
-	if TierFence.Strength() < p.MinTier.Strength() {
-		return nil, fmt.Errorf("sandbox.tier is fence, which counts as tier %q, weaker than the required minimum %q", TierProcess, p.MinTier)
-	}
-	f := NewFence(p)
-	if ok, why := f.Available(); !ok {
-		return nil, fmt.Errorf("sandbox.tier is fence, but commands cannot be fenced here, and no other tier is used in its place: %s", why)
-	}
-	return f, nil
 }

@@ -3,11 +3,11 @@ package store
 import (
 	"context"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/testdb"
 )
 
 // shiftOf reads the database's commit_shift.
@@ -59,7 +59,7 @@ func TestCommitOrderSurvivesARestoreIntoAnotherCluster(t *testing.T) {
 
 	// A runtime server started on the restored database before a migrate
 	// would sort new events below exported ones: it refuses.
-	cfg := DefaultConfig(os.Getenv("ABHED_TEST_RUNTIME_DSN"))
+	cfg := DefaultConfig(testdb.DSN(t, "ABHED_TEST_RUNTIME_DSN"))
 	cfg.Tenant = tenant
 	if q, err := Open(ctx, cfg); err == nil {
 		q.Close()

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -77,7 +78,7 @@ func TestCLIContext(t *testing.T) {
 	c := startCLI(t)
 	c.task("hello")
 	c.command("/context", "of window")
-	if !strings.Contains(c.out.String(), "messages") || !strings.Contains(c.out.String(), "8192") {
+	if !strings.Contains(c.out.String(), "messages") || !strings.Contains(c.out.String(), strconv.Itoa(cliWindow)) {
 		t.Fatalf("/context:\n%s", c.out.String())
 	}
 }

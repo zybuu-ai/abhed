@@ -91,7 +91,7 @@ func TestAmbiguousArgumentsAreRefusedBeforePolicy(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			l, store := harnessIn(t, dir, []scriptedTurn{{calls: []model.ToolCall{c}}, {text: "done"}}, policy.ModeBypass, true)
-			l.Tools.Add(tools.Todo{})
+			l.Tools.Replace(tools.Todo{})
 			if err := l.Policy.AddDeny("write("+filepath.Join(dir, "secret")+"/**)", "edit("+filepath.Join(dir, "secret")+"/**)", "read("+filepath.Join(dir, "secret")+"/**)"); err != nil {
 				t.Fatal(err)
 			}
@@ -128,7 +128,7 @@ func TestCanonicalArgumentsAreWhatRunsAndIsRecorded(t *testing.T) {
 		{text: "done"},
 	}, policy.ModeBypass, true)
 	w := &spy{}
-	l.Tools.Add(w)
+	l.Tools.Replace(w)
 	if _, err := l.Run(context.Background(), "go"); err != nil {
 		t.Fatal(err)
 	}

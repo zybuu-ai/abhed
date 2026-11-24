@@ -57,6 +57,11 @@ type Renderer struct {
 	// tools tracks the calls in flight, so a result is drawn under its
 	// request and a diff is shown once.
 	tools toolState
+	// engine are the engine's own calls (a diagnostics server's start),
+	// drawn as notes, never as the agent's tool calls; engineNotes wait for
+	// the agent's calls in flight when they came to be drawn whole.
+	engine      map[string]bool
+	engineNotes []heldNote
 
 	// todos is the task list as last recorded, for the dock and /todos;
 	// agentTypes names each subagent by session, for its return line;
@@ -258,6 +263,20 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	s := r.s
+	if note, ok := r.engineEvent(ev); ok {
+		if note != "" {
+			behind := map[string]bool{}
+			for id := range r.tools.calls {
+				behind[id] = true
+			}
+			r.engineNotes = append(r.engineNotes, heldNote{text: note, behind: behind})
+			if len(behind) == 0 {
+				r.endReply(d, "")
+			}
+			r.flushEngineNotes(d, false)
+		}
+		return
+	}
 	switch ev.Type {
 	case agent.EvAgentDelta:
 		var dl agent.Delta
@@ -306,7 +325,7 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 			d.dequeue(m.Text)
 			d.commitItem(&promptBlock{text: sanitize(m.Text, false), prompt: d.promptText()})
 		}
-		if note := WithheldNote(m.SecretsWithheld); note != "" {
+		if note := MessageNote(m.SecretsWithheld, m.Pasted); note != "" {
 			r.endReply(d, "")
 			d.commitItem(&rawBlock{text: r.s.Yellow("! ") + r.s.Dim(note)})
 		}
@@ -325,6 +344,7 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 			return
 		}
 		r.toolObserved(d, o)
+		r.flushEngineNotes(d, false)
 
 	case agent.EvAnswerVerdict:
 		if v, ok := verdictOf(ev); ok {
@@ -338,6 +358,7 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 		var m map[string]string
 		if json.Unmarshal(ev.Payload, &m) == nil {
 			r.toolDenied(d, m)
+			r.flushEngineNotes(d, false)
 		}
 
 	case agent.EvForked:
@@ -358,6 +379,13 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 	case agent.EvSessionWoken:
 		d.commit(&rawBlock{text: "  " + s.Yellow("◆") + " " + s.Dim("woke to act on background results")})
 
+	case agent.EvBudgetStopped:
+		var b agent.BudgetStopped
+		if json.Unmarshal(ev.Payload, &b) == nil {
+			r.endReply(d, "")
+			d.commit(&rawBlock{text: "  " + s.Yellow("!") + " " + VisibleLine(b.Message)})
+		}
+
 	case agent.EvTodoUpdated:
 		if b := r.todoEvent(ev); b != nil {
 			r.endReply(d, "")
@@ -377,6 +405,8 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 			return
 		}
 		r.endReply(d, "")
+		// The run is over: nothing a note waits behind will be drawn now.
+		r.flushEngineNotes(d, true)
 		if e.Settled {
 			d.commit(&rawBlock{text: "  " + s.Yellow("◆") + " " + s.Dim("background work finished")})
 			return
@@ -490,7 +520,7 @@ func endedText(reason agent.TerminalReason, detail string) string {
 	case agent.TermMaxTurns:
 		return "Stopped at the turn limit (max_turns)"
 	case agent.TermMaxBudget:
-		return "Stopped at the token budget (max_budget)"
+		return "Stopped at the budget (max_budget)"
 	case agent.TermRetryExhausted:
 		return "Stopped: the model kept making the same call without getting anywhere (retry_exhausted)"
 	case agent.TermStalled:
@@ -538,11 +568,17 @@ func (b *streamBlock) lines(width int, _ Style, _ bool) []string {
 // dock.
 func (r *Renderer) lineEvent(ev agent.Event) {
 	s := r.s
+	if note, ok := r.engineEvent(ev); ok {
+		if note != "" && !r.quiet {
+			fmt.Fprintln(r.w, note)
+		}
+		return
+	}
 	switch ev.Type {
 	case agent.EvUserMessage:
 		var m agent.Message
 		if json.Unmarshal(ev.Payload, &m) == nil && r.errw != nil {
-			if note := WithheldNote(m.SecretsWithheld); note != "" {
+			if note := MessageNote(m.SecretsWithheld, m.Pasted); note != "" {
 				fmt.Fprintf(r.errw, "abhed: %s\n", note)
 			}
 		}
@@ -657,6 +693,12 @@ func (r *Renderer) lineEvent(ev agent.Event) {
 			fmt.Fprintf(r.w, "  %s %s\n", s.Yellow("◆"), s.Dim("woke to act on background results"))
 		}
 
+	case agent.EvBudgetStopped:
+		var b agent.BudgetStopped
+		if json.Unmarshal(ev.Payload, &b) == nil {
+			fmt.Fprintf(r.w, "  %s %s\n", s.Yellow("!"), VisibleLine(b.Message))
+		}
+
 	case agent.EvTodoUpdated:
 		if b := r.todoEvent(ev); b != nil && !r.quiet {
 			r.emitRows(b.lines(100, s, false))
@@ -757,6 +799,47 @@ func truncate(s string, n int) string {
 	return string([]rune(s)[:n]) + "..."
 }
 
+// MessageNote is what a person is told of a message that held stored
+// secrets' values or pasted credentials, "" when it held neither.
+func MessageNote(secrets, pasted string) string {
+	a, b := WithheldNote(secrets), PastedNote(pasted)
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	}
+	return a + "; " + b
+}
+
+// PastedNote says which pasted credentials were withheld, from ID:kind
+// pairs, comma-separated; the value is never shown. One with no ID was not
+// held for use.
+func PastedNote(pasted string) string {
+	if pasted == "" {
+		return ""
+	}
+	var held, unheld []string
+	for _, p := range strings.Split(pasted, ",") {
+		id, kind, _ := strings.Cut(p, ":")
+		if id == "" {
+			unheld = append(unheld, VisibleLine(kind))
+			continue
+		}
+		held = append(held, VisibleLine(kind)+" ("+VisibleLine(id)+")")
+	}
+	var parts []string
+	if len(held) > 0 {
+		parts = append(parts, "your message held "+strings.Join(held, ", ")+"; it was not sent to the model or kept in the "+
+			"record, and is held in memory for this session only, for a login you approve")
+	}
+	if len(unheld) > 0 {
+		parts = append(parts, "your message held "+strings.Join(unheld, ", ")+"; it was not sent to the model or kept in the "+
+			"record, and is not held anywhere, so paste it again to use it")
+	}
+	return strings.Join(parts, "; ")
+}
+
 // WithheldNote tells the sender which stored secrets their message held, by
 // name, and that the model got placeholders; "" when it held none.
 func WithheldNote(names string) string {
@@ -772,4 +855,84 @@ func WithheldNote(names string) string {
 		what = "the stored secrets " + strings.Join(list, ", ")
 	}
 	return "your message held the value of " + what + "; it was not sent to the model, which got [secret:NAME] in its place"
+}
+
+// engineEvent takes the events of the engine's own calls: a request issued
+// for diagnostics opens one, and its approval, denial and outcome are drawn
+// as one dim note, never as a tool call of the agent's. ok is false for any
+// other event.
+func (r *Renderer) engineEvent(ev agent.Event) (note string, ok bool) {
+	switch ev.Type {
+	case agent.EvActionRequested, agent.EvActionApproved, agent.EvActionDenied, agent.EvObservation:
+	default:
+		return "", false
+	}
+	var p struct {
+		CallID string `json:"call_id"`
+		Via    string `json:"via"`
+		Reason string `json:"reason"`
+	}
+	if json.Unmarshal(ev.Payload, &p) != nil || p.CallID == "" {
+		return "", false
+	}
+	switch ev.Type {
+	case agent.EvActionRequested:
+		if p.Via != agent.DiagnosticsVia || ev.Actor != agent.ActorSystem {
+			return "", false
+		}
+		if r.engine == nil {
+			r.engine = map[string]bool{}
+		}
+		r.engine[p.CallID] = true
+		return "", true
+	case agent.EvActionApproved:
+		return "", r.engine[p.CallID]
+	case agent.EvActionDenied:
+		if !r.engine[p.CallID] {
+			return "", false
+		}
+		delete(r.engine, p.CallID)
+		return "  " + r.s.Dim("· diagnostics: language server not started: "+VisibleLine(sanitize(p.Reason, false))), true
+	case agent.EvObservation:
+		if !r.engine[p.CallID] {
+			return "", false
+		}
+		delete(r.engine, p.CallID)
+		var o agent.Observation
+		_ = json.Unmarshal(ev.Payload, &o)
+		mark := r.s.Dim("·")
+		if o.IsError {
+			mark = r.s.Yellow("·")
+		}
+		return "  " + mark + " " + r.s.Dim("diagnostics: "+VisibleLine(sanitize(o.Content, false))), true
+	}
+	return "", false
+}
+
+// heldNote is an engine note and the agent's calls it waits behind.
+type heldNote struct {
+	text   string
+	behind map[string]bool
+}
+
+// flushEngineNotes draws the held notes whose calls have been drawn whole,
+// in order; all of them when the run has ended.
+func (r *Renderer) flushEngineNotes(d *dock, all bool) {
+	kept := r.engineNotes[:0]
+	waiting := false
+	for _, n := range r.engineNotes {
+		for id := range n.behind {
+			if _, open := r.tools.calls[id]; !open {
+				delete(n.behind, id)
+			}
+		}
+		// A note keeps its place behind any earlier one still held.
+		if !all && (waiting || len(n.behind) > 0) {
+			waiting = true
+			kept = append(kept, n)
+			continue
+		}
+		d.commit(&rawBlock{text: n.text})
+	}
+	r.engineNotes = kept
 }

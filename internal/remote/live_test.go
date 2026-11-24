@@ -508,6 +508,7 @@ func TestConnectRequiresApproval(t *testing.T) {
 }
 
 // The refusal must tell the model what to do, or it retries identically.
+// accept_host_key is ssh_connect's, so only a host it added is offered it.
 func TestUnknownHostKeyErrorNamesTheRetry(t *testing.T) {
 	srv := startSSHServer(t, "pw")
 	defer srv.stop()
@@ -516,7 +517,7 @@ func TestUnknownHostKeyErrorNamesTheRetry(t *testing.T) {
 	empty := filepath.Join(t.TempDir(), "known_hosts")
 	_ = os.WriteFile(empty, []byte(""), 0o600)
 	h, _ := NewHost(HostConfig{Name: "vm1", Addr: srv.addr, User: "tester",
-		PasswordEnv: "TEST_SSH_PW", KnownHostsFile: empty})
+		PasswordEnv: "TEST_SSH_PW", KnownHostsFile: empty, connected: true})
 	defer func() { _ = h.Close() }()
 
 	_, err := h.Run(context.Background(), "hostname", 5*time.Second)
@@ -590,6 +591,26 @@ func TestSessionHostCannotPassForAnOperatorHost(t *testing.T) {
 	}
 	if got := tool.Target(sess, json.RawMessage(`{"host":"prod","command":"id"}`)); !strings.Contains(got, "ops@10.0.0.1:22") {
 		t.Errorf("the approval does not show where prod is: %q", got)
+	}
+}
+
+// A name in ssh.hosts whose entry did not load (no user) still belongs to the
+// operator: ssh_connect may not put a machine of its own behind it, where the
+// read-only classifier would trust it.
+func TestSessionHostCannotTakeAnUnloadedOperatorName(t *testing.T) {
+	srv := startSSHServer(t, "pw")
+	defer srv.stop()
+	pinHome(t, srv)
+	reg, errs := NewRegistry([]HostConfig{{Name: "app1", Addr: "10.0.0.1"}})
+	if len(errs) != 1 || reg.Len() != 0 {
+		t.Fatalf("a host with no user loaded: %v", errs)
+	}
+	connect := ConnectTool{R: reg, Declared: []string{"app1"}, Secret: stored(map[string]string{"VM_PASSWORD": "pw"})}
+	for _, name := range []string{"app1", "APP1", "app-1", "appl"} {
+		args, _ := json.Marshal(map[string]any{"addr": srv.addr, "user": "tester", "name": name, "password_secret": "VM_PASSWORD"})
+		if res := connect.Run(context.Background(), newSession(t), args); !res.IsError || !strings.Contains(res.Content, "operator declared") {
+			t.Errorf("a session host named %q took the operator's app1: %s", name, res.Content)
+		}
 	}
 }
 

@@ -167,7 +167,7 @@ func TestCompactActuallyShrinksAgentHistory(t *testing.T) {
 	split := boundaryBefore(msgs, c.KeepRecentTurns)
 	t.Logf("msgs=%d before=%d KeepRecentTurns=%d split=%d", len(msgs), before, c.KeepRecentTurns, split)
 
-	out, info, err := c.Compact(context.Background(), "auto", "", msgs, before)
+	out, info, err := c.Compact(unmetered(), "auto", "", msgs, before)
 	t.Logf("after: msgs=%d tokens=%d err=%v", len(out), info.AfterTokens, err)
 	if len(out) == len(msgs) {
 		t.Fatalf("Compact was a no-op: keeping %d exchanges leaves nothing older to "+

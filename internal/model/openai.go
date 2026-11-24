@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +30,10 @@ type OpenAICompatible struct {
 	// every request. Nil leaves the server's default in place.
 	Think *bool
 
+	// EffortOff also sends "reasoning_effort": "none" when thinking is off,
+	// for a server that reads that rather than "think" (Ollama's /v1).
+	EffortOff bool
+
 	// ReasoningTags strips inline reasoning from content for models that emit
 	// it in-band (e.g. <think>...</think>) rather than in a separate field.
 	// Reasoning must never reach tool-argument parsing.
@@ -38,6 +44,19 @@ type OpenAICompatible struct {
 	// Set per provider type where the server is known to take the field;
 	// extra.parallel_tool_calls ("true" or "false") overrides it.
 	ParallelToolCalls bool
+
+	// slots, when set, bounds the requests in flight to this provider: a
+	// request waits for one before it is sent and holds it until its reply
+	// has been read. Every adapter built from the same spec shares it.
+	slots *slotPool
+
+	// PromptCache is how the request asks the provider to cache its prompt
+	// prefix: "" sends nothing (the server caches on its own, or not at all),
+	// CacheKey sends OpenAI's prompt_cache_key, and CacheControl marks the
+	// system prompt and the last message with cache_control, as OpenRouter
+	// documents for its Anthropic and Gemini models. Set per provider where
+	// the field is known to be taken, so no other server is sent it.
+	PromptCache string
 
 	// User is sent as the request's "user" field when set. Some gateways
 	// (a LiteLLM proxy with enforce_user_param) require it; a plain endpoint
@@ -54,6 +73,7 @@ type OpenAICompatible struct {
 	Notify func(string)
 
 	profile Profile
+	limits  *Limits
 }
 
 func NewOpenAICompatible(baseURL, apiKey, model string, p Profile) *OpenAICompatible {
@@ -73,7 +93,10 @@ func NewOpenAICompatible(baseURL, apiKey, model string, p Profile) *OpenAICompat
 }
 
 func (c *OpenAICompatible) Name() string     { return c.profile.Name }
-func (c *OpenAICompatible) Profile() Profile { return c.profile }
+func (c *OpenAICompatible) Profile() Profile { return c.limits.apply(c.profile) }
+
+// SetMaxTools sets the most tools one request may offer.
+func (c *OpenAICompatible) SetMaxTools(n int) { c.profile.MaxTools = n }
 
 // wire types
 
@@ -125,6 +148,10 @@ type wireRequest struct {
 	StreamOptions     *streamOpts `json:"stream_options,omitempty"`
 	ReasoningEffort   string      `json:"reasoning_effort,omitempty"`
 
+	// PromptCacheKey groups requests that share a prefix, so OpenAI routes
+	// them to the same cache. Sent only to OpenAI's own API.
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
+
 	// User identifies the end user to the endpoint. OpenAI treats it as an
 	// optional abuse-tracking hint, but a LiteLLM proxy configured with
 	// enforce_user_param rejects any request without it ("You must pass a
@@ -142,10 +169,10 @@ type wireRequest struct {
 	// Think controls a hybrid-reasoning model's thinking phase.
 	//
 	// Separate from ReasoningEffort because the two are not the same knob and
-	// not every server honours both: Ollama ignores reasoning_effort entirely
-	// and reads "think", while OpenAI-style servers do the reverse. Sending
-	// whichever one is configured, and omitting the other, lets one adapter
-	// serve both without a per-vendor branch.
+	// not every server honours both. Ollama's OpenAI-compatible /v1 endpoint
+	// (0.33.2) ignores "think" and turns thinking off only for
+	// "reasoning_effort": "none", so with thinking off that is sent too where
+	// EffortOff says the server takes it (type ollama, or extra.think_off).
 	//
 	// This matters more than it looks. Measured on qwen3.8:27b through Ollama,
 	// an ELI5 question took 3m22s with thinking on and 55s with it off — the
@@ -171,9 +198,14 @@ type wireChunk struct {
 		PromptTokens        int `json:"prompt_tokens"`
 		CompletionTokens    int `json:"completion_tokens"`
 		PromptTokensDetails *struct {
-			CachedTokens *int `json:"cached_tokens"`
+			CachedTokens     *int `json:"cached_tokens"`
+			CacheWriteTokens int  `json:"cache_write_tokens"` // OpenRouter's cache writes
 		} `json:"prompt_tokens_details"`
-		CompletionTokensDetails *struct {
+		// DeepSeek's cache hits, and an Anthropic-shaped proxy's (LiteLLM).
+		PromptCacheHitTokens     *int `json:"prompt_cache_hit_tokens"`
+		CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
+		CacheCreationInputTokens int  `json:"cache_creation_input_tokens"`
+		CompletionTokensDetails  *struct {
 			ReasoningTokens int `json:"reasoning_tokens"`
 		} `json:"completion_tokens_details"`
 	} `json:"usage"`
@@ -185,10 +217,23 @@ type wireChunk struct {
 
 // wirePart is one element of OpenAI-style array content.
 type wirePart struct {
-	Type     string        `json:"type"`
-	Text     string        `json:"text,omitempty"`
-	ImageURL *wireImageURL `json:"image_url,omitempty"`
+	Type         string        `json:"type"`
+	Text         string        `json:"text,omitempty"`
+	ImageURL     *wireImageURL `json:"image_url,omitempty"`
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
 }
+
+// cacheControl marks a cache breakpoint: the prompt up to and including the
+// part is cached.
+type cacheControl struct {
+	Type string `json:"type"`
+}
+
+// The prompt-cache modes a provider may take.
+const (
+	CacheKey     = "prompt_cache_key"
+	CacheControl = "cache_control"
+)
 
 // wireImageURL carries the image inline as a data: URI. Not an http URL — that
 // would have the provider fetch the bytes, taking them out of the network.
@@ -266,18 +311,33 @@ func (c *OpenAICompatible) buildRequest(req Request) wireRequest {
 	if think == nil {
 		think = c.Think // provider-level default, when the request names none
 	}
+	effort := string(sp.Effort)
+	if c.EffortOff && think != nil && !*think {
+		effort = "none" // thinking off, in the field such a server reads
+	}
 	var parallel *bool
 	if c.ParallelToolCalls && len(tools) > 0 {
 		parallel = new(bool)
 		*parallel = true
 	}
+	var cacheKey string
+	switch c.PromptCache {
+	case CacheKey:
+		// The system prompt names the session's prefix; the key says nothing
+		// of its text.
+		sum := sha256.Sum256([]byte(c.Model + "\x00" + req.System))
+		cacheKey = "abhed-" + hex.EncodeToString(sum[:8])
+	case CacheControl:
+		markCacheBreakpoints(msgs)
+	}
 	return wireRequest{
 		Model:             c.Model,
+		PromptCacheKey:    cacheKey,
 		User:              c.User,
 		Messages:          msgs,
 		Tools:             tools,
 		ParallelToolCalls: parallel,
-		MaxTokens:         sp.MaxTokens,
+		MaxTokens:         clampOutput(sp.MaxTokens, c.Profile()),
 		Temperature:       sp.Temperature,
 		TopP:              sp.TopP,
 		FrequencyPenalty:  sp.FrequencyPenalty,
@@ -286,7 +346,7 @@ func (c *OpenAICompatible) buildRequest(req Request) wireRequest {
 		Stop:              sp.Stop,
 		Stream:            true,
 		StreamOptions:     &streamOpts{IncludeUsage: true},
-		ReasoningEffort:   string(sp.Effort),
+		ReasoningEffort:   effort,
 		Think:             think,
 		TopK:              sp.TopK,
 		MinP:              sp.MinP,
@@ -295,6 +355,10 @@ func (c *OpenAICompatible) buildRequest(req Request) wireRequest {
 }
 
 func (c *OpenAICompatible) Complete(ctx context.Context, req Request) (<-chan Chunk, error) {
+	req, wire, err := toWire(req, ToolLimit(c.Profile()), c.Name())
+	if err != nil {
+		return nil, err
+	}
 	// Refuse an image the endpoint cannot read, rather than sending it and
 	// letting the provider 400 with its own wording — or silently ignore it.
 	if err := CheckVision(c.Profile(), req); err != nil {
@@ -319,8 +383,13 @@ func (c *OpenAICompatible) Complete(ctx context.Context, req Request) (<-chan Ch
 		return httpReq, nil
 	}
 
+	release, err := c.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := send(ctx, c.HTTP, c.Retry, newRequest, c.Notify, c.fatalStatus)
 	if err != nil {
+		release()
 		se := &StatusError{}
 		if errors.As(err, &se) {
 			return nil, fmt.Errorf("endpoint returned %w", se)
@@ -328,14 +397,38 @@ func (c *OpenAICompatible) Complete(ctx context.Context, req Request) (<-chan Ch
 		return nil, fmt.Errorf("call %s: %w", c.BaseURL, err)
 	}
 	if resp.StatusCode != http.StatusOK {
+		defer release()
 		defer resp.Body.Close()
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("endpoint returned %w", &StatusError{Status: resp.StatusCode, Body: strings.TrimSpace(string(msg)), Attempts: 1})
 	}
 
 	out := make(chan Chunk, 64)
-	go c.stream(ctx, resp.Body, out, req.Tools)
-	return out, nil
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.stream(ctx, resp.Body, out, req.Tools)
+	}()
+	// The slot is free once the reply is read, or the call is given up.
+	go func() {
+		select {
+		case <-done:
+		case <-ctx.Done():
+		}
+		release()
+	}()
+	return fromWire(out, wire), nil
+}
+
+// acquire waits for a request slot, when requests are bounded.
+// A request to a model on this machine counts as using it until it is released.
+func (c *OpenAICompatible) acquire(ctx context.Context) (func(), error) {
+	release, err := c.slots.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	end := LocalRequest(c.BaseURL)
+	return func() { end(); release() }, nil
 }
 
 // offered is the tool set from the request, used only to validate a tool
@@ -393,8 +486,22 @@ func (c *OpenAICompatible) stream(ctx context.Context, body io.ReadCloser,
 		if ch.Usage != nil {
 			usage.InputTokens = ch.Usage.PromptTokens
 			usage.OutputTokens = ch.Usage.CompletionTokens
-			if d := ch.Usage.PromptTokensDetails; d != nil && d.CachedTokens != nil {
-				usage.CachedInputTokens, usage.CacheReported = *d.CachedTokens, true
+			// Cached tokens, as each server names them: OpenAI's details,
+			// DeepSeek's hit count, or an Anthropic-shaped proxy's read count.
+			switch u := ch.Usage; {
+			case u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens != nil:
+				usage.CachedInputTokens, usage.CacheReported = *u.PromptTokensDetails.CachedTokens, true
+			case u.PromptCacheHitTokens != nil:
+				usage.CachedInputTokens, usage.CacheReported = *u.PromptCacheHitTokens, true
+			case u.CacheReadInputTokens != nil:
+				usage.CachedInputTokens, usage.CacheReported = *u.CacheReadInputTokens, true
+			}
+			// Writes are taken to be inside prompt_tokens, as reads are: LiteLLM's
+			// prompt-caching doc says prompt_tokens counts every prompt token, and
+			// OpenRouter's example counts reads inside it. Neither says so of writes.
+			usage.CacheWriteTokens = ch.Usage.CacheCreationInputTokens
+			if d := ch.Usage.PromptTokensDetails; d != nil && d.CacheWriteTokens > 0 {
+				usage.CacheWriteTokens = d.CacheWriteTokens
 			}
 			if d := ch.Usage.CompletionTokensDetails; d != nil {
 				usage.ReasoningTokens = d.ReasoningTokens
@@ -548,3 +655,36 @@ func (c *OpenAICompatible) CountTokens(req Request) (int, error) {
 // fatalStatus: this adapter has no status it can recognise as hopeless, so
 // every retryable failure is retried.
 func (c *OpenAICompatible) fatalStatus(*StatusError) bool { return false }
+
+// Endpoint is the base URL the adapter calls.
+func (c *OpenAICompatible) Endpoint() string { return c.BaseURL }
+
+// markCacheBreakpoints marks the system prompt and the last user or tool
+// message as cache breakpoints, turning their text into one text part.
+// Two of the four breakpoints a request may carry; the rest stay unused.
+func markCacheBreakpoints(msgs []wireMessage) {
+	mark := func(m *wireMessage) {
+		switch c := m.Content.(type) {
+		case string:
+			if c != "" {
+				m.Content = []wirePart{{Type: "text", Text: c, CacheControl: &cacheControl{Type: "ephemeral"}}}
+			}
+		case []wirePart:
+			for i := len(c) - 1; i >= 0; i-- {
+				if c[i].Type == "text" {
+					c[i].CacheControl = &cacheControl{Type: "ephemeral"}
+					return
+				}
+			}
+		}
+	}
+	if len(msgs) > 0 && msgs[0].Role == "system" {
+		mark(&msgs[0])
+	}
+	for i := len(msgs) - 1; i > 0; i-- {
+		if msgs[i].Role == string(RoleUser) || msgs[i].Role == string(RoleTool) {
+			mark(&msgs[i])
+			return
+		}
+	}
+}

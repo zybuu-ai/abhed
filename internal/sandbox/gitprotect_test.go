@@ -124,8 +124,10 @@ func TestProcessSandboxGitWorksWithProtectGit(t *testing.T) {
 	p.ProtectGit = true
 	s := NewProcess(p)
 	available(t, s)
-	g := "git -c user.name=a -c user.email=a@b "
-	out, err := runIn(t, s, filepath.Join(ws, "repo"), "set -e; echo hi > f; "+g+"add f; "+g+"commit -q -m one; "+
+	// The sandbox does not pass the test's GIT_CONFIG_NOSYSTEM on, so the
+	// command sets it: this machine's /etc/gitconfig and its hooks stay out.
+	g := "git -c user.name=a -c user.email=a@b -c core.hooksPath=/dev/null "
+	out, err := runIn(t, s, filepath.Join(ws, "repo"), "set -e; export GIT_CONFIG_NOSYSTEM=1; echo hi > f; "+g+"add f; "+g+"commit -q -m one; "+
 		g+"branch b; "+g+"checkout -q b; echo two >> f; "+g+"commit -q -am two; "+g+"checkout -q main; "+
 		g+"fetch -q ../other main:other; "+g+"log --oneline other | grep -q other; git status --short")
 	if err != nil {
@@ -633,5 +635,44 @@ func TestBwrapRefusesLinkedHooksClearly(t *testing.T) {
 	out, err := runIn(t, s, ws, "true")
 	if err == nil || !strings.Contains(err.Error()+out, "symbolic link") {
 		t.Fatalf("not refused clearly: %v %s", err, out)
+	}
+}
+
+// A commondir the watch moves aside while a command's scan looks (made after
+// the scan passed its folder, and moved before the scan ended) refuses that
+// command: the refusal is read after the scan, so neither misses it.
+func TestAPlantMovedDuringTheScanRefusesTheCommand(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitTree(t, ws, "x")
+	c := &Container{policy: Policy{Workspace: ws, ProtectGit: true}}
+	// The hook stands in for the watch; the real one (Linux) would note the
+	// same plant again, later, and refuse a later command too.
+	c.gitg.stop()
+	planted := filepath.Join(ws, ".git", "commondir")
+	gitScanned = func() {
+		// As the watch does: made, then moved aside and noted.
+		if err := os.WriteFile(planted, []byte("/elsewhere\n"), 0o600); err != nil {
+			t.Error(err)
+			return
+		}
+		entries, _ := takeOutGitPlanted([]string{planted})
+		c.gitg.noteMoved(entries)
+	}
+	t.Cleanup(func() { gitScanned = nil })
+	cmd := c.Command(context.Background(), ws, "true")
+	gitScanned = nil
+	if cmd.Err == nil || !strings.Contains(cmd.Err.Error(), "commondir") {
+		t.Fatalf("a command whose scan a plant was moved aside during ran: %v", cmd.Err)
+	}
+	if _, err := os.Lstat(planted); err == nil {
+		t.Error("the planted commondir is still there")
+	}
+	// Refused once: the next command runs.
+	if cmd := c.Command(context.Background(), ws, "true"); cmd.Err != nil {
+		t.Errorf("the command after the refusal: %v", cmd.Err)
 	}
 }

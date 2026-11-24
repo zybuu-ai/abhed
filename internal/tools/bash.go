@@ -69,6 +69,16 @@ type Bash struct {
 	// ShellLine is the line the interactive terminal is judged and recorded
 	// as; nil is bash's.
 	ShellLine func() string
+	// HostAsk, when set, says why a command Sandbox would run through host
+	// git, as the person, needs their approval, under which step, and what a
+	// grant for it is bound to, or why it is refused; "" leaves it to policy.
+	// Given the call's launch key (sandbox.Launch.Key), it keeps what it
+	// judged, and the command runs only on that.
+	HostAsk func(key, cwd, command string) (reason, step, bind string, err error)
+	// HostGitOn, when set, says whether remote git is brokered now, for a
+	// sandbox still being chosen when the tool was made; unset, HostAsk and
+	// the isolation's tier say.
+	HostGitOn func() bool
 	// NotFound, when set, says what a command run in dir that could not
 	// find program can do about it, such as install the toolchain; "" says nothing.
 	NotFound func(dir, program string) string
@@ -102,15 +112,35 @@ type Isolation struct {
 func (Bash) Name() string  { return "bash" }
 func (Bash) Mutates() bool { return true }
 
+// hostGit reports whether git's remote commands go through the user's own
+// git on the host here; serve, for one, has no host git.
+func (b Bash) hostGit() bool {
+	if b.HostGitOn != nil {
+		return b.HostAsk != nil && b.HostGitOn()
+	}
+	return b.HostAsk != nil && (b.Isolation.Tier == "process" || b.Isolation.Tier == "fence")
+}
+
 func (b Bash) Description() string {
 	d := "Run a shell command in the session workspace. Use for builds, tests, git, and package managers. Prefer read/glob/grep for file inspection — they are cheaper and safer. Note: a call that is just `cd <folder>` sets the working directory for later calls; shell state (variables, functions) and a cd inside a longer command do not carry over."
+	hostGit := b.hostGit()
 	switch b.network() {
 	case networkOff:
-		d += " The sandbox has no network: commands cannot reach the internet or any other host, so curl, wget, package installs and git fetch fail. To read from the web, use web_search or web_fetch if they are in your tools; otherwise tell the user."
+		if hostGit {
+			d += " The sandbox has no network: commands cannot reach the internet or any other host, so curl, wget and package installs fail. To read from the web, use web_search or web_fetch if they are in your tools; otherwise tell the user."
+		} else {
+			d += " The sandbox has no network: commands cannot reach the internet or any other host, so curl, wget, package installs and git fetch fail. To read from the web, use web_search or web_fetch if they are in your tools; otherwise tell the user."
+		}
 	case networkOn:
 		d += " Commands can reach the network."
 	case networkAllowlist:
 		d += " " + b.allowlistText()
+	}
+	if hostGit {
+		d += " git fetch, git pull, git push, git clone and git ls-remote need no setup: run each as the whole command, on its own " +
+			"with its usual options (no && or ; and no -c), and its network part goes through the user's own git with their SSH keys and credential helpers, " +
+			"after their approval where needed, reaching only the repository's configured remotes or a clone URL they approve; " +
+			"a pull's merge and a clone's checkout then run here. Never look for or copy SSH keys or tokens."
 	}
 	if b.Isolation.Tier == "fence" {
 		d += " Commands run under the fence: they write only the workspace and a private temp folder (HOME and TMPDIR point there), and unix sockets, such as docker's or an ssh agent's, are refused."
@@ -974,6 +1004,9 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		return res
 	}
 	endProc()
+	if left := output.leftNote(); left != "" {
+		content += "\n[" + left + "]"
+	}
 	res := b.finish(ctx, runCtx, s, a, content, truncated, held, err, elapsed, timeout)
 	if snapNote != "" {
 		res.Content = withNote(res.Content, snapNote)
@@ -1035,7 +1068,7 @@ func (b Bash) finish(ctx, runCtx context.Context, s *Session, a bashArgs, conten
 	// A non-zero exit is a valid observation the model must reason about, not a
 	// tool failure. Never convert a failing test run into an error.
 	header := fmt.Sprintf("exit %d · %s", exitCode, elapsed.Round(time.Millisecond))
-	note := ""
+	note, netOff := "", false
 	// On the host the same text is the operating system's refusal, not a sandbox's.
 	// Any exit code: a pipeline's last command can succeed after curl failed.
 	if missing := b.notFoundNote(s.Cwd, content, exitCode); missing != "" {
@@ -1043,7 +1076,8 @@ func (b Bash) finish(ctx, runCtx context.Context, s *Session, a bashArgs, conten
 	} else if b.network() == networkOff && (networkFailed(a.Command, content, exitCode) || exitCode != 0 && proxyRefused(content)) {
 		// With the network off a 403 is the egress proxy's: no registry is open yet.
 		content = withNote(content, b.networkNote(a.Command, content))
-	} else if kind, hint := sandboxHint(content); hint != "" && exitCode != 0 && b.ranTier() != "none" {
+		netOff = true
+	} else if kind, hint := sandboxHint(content, b.hostGit()); hint != "" && exitCode != 0 && b.ranTier() != "none" {
 		// A command that succeeded was not stopped: git warns of .abhed and still exits 0.
 		content = withNote(content, hint)
 		note = kind
@@ -1054,6 +1088,7 @@ func (b Bash) finish(ctx, runCtx context.Context, s *Session, a bashArgs, conten
 		ExitCode:    &exitCode,
 		NoOutput:    noOutput,
 		SandboxNote: note,
+		NetworkOff:  netOff,
 	}
 }
 
@@ -1080,6 +1115,45 @@ func withNote(content, note string) string {
 	return strings.TrimRight(content, "\n") + "\n\n" + note
 }
 
+// HostGitLine reports a line the host git broker runs on the host, or
+// refuses there; set by that package, which this one cannot import.
+var HostGitLine func(command string) bool
+
+// HostImpliedLine is a git push line as the repository's configuration
+// makes it run, when that forces, deletes or mirrors, else ""; set by the
+// host git package. Read only to add a deny, an ask or a confirmation.
+var HostImpliedLine func(cwd, command string) string
+
+// ImpliedHost is HostImpliedLine for a call, in the session's folder.
+func (b Bash) ImpliedHost(s *Session, raw json.RawMessage) string {
+	if HostImpliedLine == nil || s == nil {
+		return ""
+	}
+	var a bashArgs
+	if json.Unmarshal(raw, &a) != nil {
+		return ""
+	}
+	return HostImpliedLine(s.Cwd, a.Command)
+}
+
+// AskHost is HostAsk for a call, in the session's folder.
+func (b Bash) AskHost(s *Session, key string, raw json.RawMessage) (reason, step, bind string, err error) {
+	if b.HostAsk == nil || s == nil {
+		return "", "", "", nil
+	}
+	var a bashArgs
+	if json.Unmarshal(raw, &a) != nil {
+		return "", "", "", nil
+	}
+	return b.HostAsk(key, s.Cwd, a.Command)
+}
+
+// CommandFor is the process command runs as, in cwd, as a call's would:
+// under the sandbox, with the git-safe settings, and with no secret.
+func (b Bash) CommandFor(ctx context.Context, cwd, command string) (*exec.Cmd, error) {
+	return b.command(ctx, cwd, bashArgs{Command: command})
+}
+
 // command makes the process for a call: under the sandbox when there is
 // one, with the secrets it asked for, ending its whole group when ctx ends.
 func (b Bash) command(ctx context.Context, cwd string, a bashArgs) (*exec.Cmd, error) {
@@ -1101,6 +1175,11 @@ func (b Bash) command(ctx context.Context, cwd string, a bashArgs) (*exec.Cmd, e
 	b.forward(cmd, gitNames)
 
 	if len(a.Secrets) > 0 {
+		// Git run on the host as the person needs none of the vault, and gets none.
+		if b.HostAsk != nil && HostGitLine != nil && HostGitLine(a.Command) {
+			sandbox.Release(cmd)
+			return nil, errors.New("secrets are not given to git run on the host as you; run it without them")
+		}
 		env, err := b.Secrets(a.Secrets)
 		if err != nil {
 			sandbox.Release(cmd)
@@ -1369,7 +1448,7 @@ const networkHint = "NOTE: this sandbox has no network access, so the command co
 // kind is the folder named ("kube", "ssh", "aws", "gnupg"), "credentials"
 // for another of sandbox.HomeSecrets, or "abhed" for Abhed's own state, which
 // the sandbox tiers deny; or "denied" when the output names none of them.
-func sandboxHint(output string) (kind, hint string) {
+func sandboxHint(output string, hostGit bool) (kind, hint string) {
 	if !strings.Contains(output, "operation not permitted") &&
 		!strings.Contains(output, "Operation not permitted") {
 		return "", ""
@@ -1379,9 +1458,7 @@ func sandboxHint(output string) (kind, hint string) {
 			"authenticate from inside it. Use the k8s_get tool instead, which holds the " +
 			"credential outside the sandbox. If k8s_get is not available, this deployment " +
 			"has not enabled cluster access — tell the user to set k8s.enabled in their config."},
-		{".ssh", "Abhed's sandbox blocks reads of ~/.ssh, so ssh and git-over-ssh cannot " +
-			"authenticate from inside it. Use the ssh tool instead, which uses the agent or " +
-			"a configured key. If it is not available, tell the user to configure ssh.hosts."},
+		{".ssh", sshHint(hostGit)},
 		{".aws", "Abhed's sandbox blocks reads of ~/.aws, so the AWS CLI cannot authenticate " +
 			"from inside it. Ask the user to run this command themselves, or to expose the " +
 			"capability through an MCP server."},
@@ -1619,4 +1696,19 @@ func CommandHome(reg *Registry) func() (string, bool) {
 		h := os.Getenv("HOME")
 		return h, h != ""
 	}
+}
+
+// sshHint is the note for a command refused ~/.ssh: where git's remote
+// commands go through the user's own git (hostGit), how to run them so;
+// where they do not (serve, a container tier), that they cannot here.
+func sshHint(hostGit bool) string {
+	if hostGit {
+		return "Abhed's sandbox blocks reads of ~/.ssh, so ssh cannot authenticate from inside it. " +
+			"git fetch, pull, push, clone and ls-remote go through the user's own git on the host " +
+			"when each is run alone, as the whole command (not after && or ;): run them so. " +
+			"For other ssh use, use the ssh tool if it is in your tools; otherwise tell the user."
+	}
+	return "Abhed's sandbox blocks reads of ~/.ssh, so ssh, and git fetch, pull, push and clone over ssh, " +
+		"cannot authenticate from inside it, and git's remote commands do not go through the user's own git here. " +
+		"For other ssh use, use the ssh tool if it is in your tools; otherwise tell the user to run the command themselves."
 }

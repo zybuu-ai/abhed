@@ -14,10 +14,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/customcmd"
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -31,14 +33,19 @@ import (
 
 // headlessOpts are how a -p run reads and writes.
 type headlessOpts struct {
-	format  string // text, json or stream-json
-	partial bool   // stream-json: include agent.delta and reasoning deltas
-	verbose bool
-	schema  json.RawMessage
+	// continueLimit continues the resumed session's run that stopped at its
+	// turn limit, for -p --continue (or -r) with no task.
+	continueLimit bool
+	format        string // text, json or stream-json
+	partial       bool   // stream-json: include agent.delta and reasoning deltas
+	verbose       bool
+	schema        json.RawMessage
 	// inputs are the user messages after the first, from -input-format
 	// stream-json; nil for a single task.
 	inputs <-chan string
-	start  map[string]any
+	// typed is the person's own words in the first task, without piped stdin.
+	typed string
+	start map[string]any
 	// fence is the fence, when commands run under it.
 	fence *sandbox.Fence
 	// attempts are the configuration changes that did not take effect,
@@ -53,57 +60,150 @@ type headlessOpts struct {
 	fallback *fallbackAdapter
 	// runbook is the runbook -runbook approved for this run, nil without one.
 	runbook *runbookSpec
+	// commands are the custom commands a task may name: read once, when a
+	// task starts with "/" or messages come on stdin.
+	commands *customState
+	// lateStdin is closed when input comes on stdin after stdinWait, the
+	// wait the run started after; the run then stops (errLateStdin).
+	lateStdin <-chan struct{}
+	stdinWait time.Duration
 }
 
 // maxStdin bounds the stdin a -p run takes as context.
 const maxStdin = 10 << 20
 
+// How a -p run reads stdin: not at all, to its end, or, with a task given,
+// to its end only once input or its end comes within a short window.
+const (
+	stdinSkip  time.Duration = -1
+	stdinToEOF time.Duration = 0
+)
+
+// defaultStdinWait is how long a -p run with a task waits for piped input
+// to start before going on without it (-stdin-wait changes it).
+const defaultStdinWait = 1500 * time.Millisecond
+
+// stdinIdleNote is said when a task's stdin was left open with nothing in it.
+const stdinIdleNote = "abhed: stdin left open with no input; ignored. Pass - to wait for it, or -no-stdin to silence this"
+
 // headlessTask is the task a -p run is given: the command line's, with
 // piped stdin added as its input. With stdin alone, stdin is the task. A
-// stop signal ends the wait for stdin.
-func headlessTask(ctx context.Context, prompt string, stdin io.Reader, isPipe bool, wait io.Writer) (string, error) {
-	if !isPipe {
-		return prompt, nil
+// stop signal ends the wait for stdin. window is how stdin is read: skipped,
+// read to its end, or, when positive, read to its end only if input or its
+// end comes within window; an open pipe nobody writes is then left alone,
+// with a note, so a caller that leaves stdin open does not hang the run.
+//
+// late, when not nil, is closed if input arrives after the window, which
+// the run must not answer without: see errLateStdin.
+func headlessTask(ctx context.Context, prompt string, stdin io.Reader, window time.Duration, wait io.Writer) (task string, late <-chan struct{}, err error) {
+	if window < 0 {
+		return prompt, nil, nil
 	}
 	type read struct {
 		data []byte
 		err  error
 	}
+	fr := &firstRead{r: stdin, started: make(chan struct{}), data: make(chan struct{})}
 	got := make(chan read, 1)
 	go func() {
-		data, err := io.ReadAll(io.LimitReader(stdin, maxStdin+1))
+		data, err := io.ReadAll(io.LimitReader(fr, maxStdin+1))
 		got <- read{data, err}
 	}()
 	var r read
-	// A pipe whose writer is slow, or never closes, would otherwise look
-	// like a hang.
-	select {
-	case r = <-got:
-	case <-time.After(3 * time.Second):
-		fmt.Fprintln(wait, "abhed: reading the task's input from stdin until it ends (redirect from /dev/null to skip it)")
+	if window > 0 {
+		// The reader is left behind on a pipe nobody writes; the run does
+		// not wait for it, but stops if input comes after all.
+		select {
+		case <-fr.started:
+		case r = <-got:
+		case <-time.After(window):
+			fmt.Fprintln(wait, stdinIdleNote)
+			return prompt, fr.data, nil
+		case <-ctx.Done():
+			return "", nil, context.Cause(ctx)
+		}
+	}
+	if r.data == nil && r.err == nil {
+		// A pipe whose writer is slow, or never closes, would otherwise look
+		// like a hang.
 		select {
 		case r = <-got:
+		case <-time.After(3 * time.Second):
+			fmt.Fprintln(wait, "abhed: reading the task's input from stdin until it ends (redirect from /dev/null to skip it)")
+			select {
+			case r = <-got:
+			case <-ctx.Done():
+				return "", nil, context.Cause(ctx)
+			}
 		case <-ctx.Done():
-			return "", context.Cause(ctx)
+			return "", nil, context.Cause(ctx)
 		}
-	case <-ctx.Done():
-		return "", context.Cause(ctx)
 	}
 	if r.err != nil {
-		return "", fmt.Errorf("reading stdin: %w", r.err)
+		return "", nil, fmt.Errorf("reading stdin: %w", r.err)
 	}
 	if len(r.data) > maxStdin {
-		return "", fmt.Errorf("stdin is larger than %d MiB; pass a path in the task instead", maxStdin>>20)
+		return "", nil, fmt.Errorf("stdin is larger than %d MiB; pass a path in the task instead", maxStdin>>20)
 	}
 	in := strings.TrimRight(string(r.data), "\n")
 	switch {
 	case strings.TrimSpace(in) == "":
-		return prompt, nil
+		return prompt, nil, nil
 	case prompt == "":
-		return in, nil
+		return in, nil, nil
 	}
 	// Piped data is the person's attachment, not their words.
-	return prompt + stdinHeader + untrustedNote + "\n" + fenced("stdin", "", in), nil
+	return prompt + stdinHeader + untrustedNote + "\n" + fenced("stdin", "", in), nil, nil
+}
+
+// firstRead closes started at its first read that returns, input or the
+// input's end, and data at its first input.
+type firstRead struct {
+	r                   io.Reader
+	started, data       chan struct{}
+	startOnce, dataOnce sync.Once
+}
+
+func (f *firstRead) Read(p []byte) (int, error) {
+	n, err := f.r.Read(p)
+	if n > 0 {
+		f.dataOnce.Do(func() { close(f.data) })
+	}
+	if n > 0 || err != nil {
+		f.startOnce.Do(func() { close(f.started) })
+	}
+	return n, err
+}
+
+// errLateStdin stops a -p run whose stdin input came after the wait for
+// it: the answer would leave that input out, so none is given.
+// It is a stop cause, so the record ends the run as stdin_late.
+var errLateStdin = agent.StopCause{Reason: agent.TermStdinLate}
+
+// exitLateStdin is a -p run's exit code when input came on stdin after the
+// wait for it.
+var exitLateStdin = agent.TermStdinLate.ExitCode()
+
+// lateStdinMessage says what to do about input that came too late.
+func lateStdinMessage(window time.Duration) string {
+	return fmt.Sprintf("input arrived on stdin after %s; rerun with - to wait for it, or -stdin-wait <dur>", window)
+}
+
+// stdinWindow is how a -p run reads stdin. With no task, stdin is the task,
+// read to its end; "-" asks for that with a task too. With a task, piped
+// input is attached when it starts within -stdin-wait, as in
+// `git diff | abhed -p "review"`; a pipe left open with nothing in it is
+// ignored, so a CI step or driver that never closes stdin does not hang.
+func stdinWindow(f *cliFlags, task string, isPipe bool) time.Duration {
+	switch {
+	case f.noStdin || !isPipe:
+		return stdinSkip
+	case task == "" || f.stdinDash:
+		return stdinToEOF
+	case f.stdinWait <= 0:
+		return stdinSkip
+	}
+	return f.stdinWait
 }
 
 // stdinHeader opens piped stdin in a -p task.
@@ -379,6 +479,8 @@ func recordStart(rec *agent.Recorder, start map[string]any, attempts []agent.Con
 	if err == nil {
 		if e := toolset.RecordConfigAttempts(rec, attempts); e != nil {
 			err = fmt.Errorf("recording the configuration attempts: %w", e)
+		} else if e := toolset.RecordConfigChanges(rec); e != nil {
+			err = fmt.Errorf("recording the configuration changes: %w", e)
 		}
 	}
 	// What qualified the fence for this run's commands, after the start.
@@ -413,6 +515,9 @@ type resultLine struct {
 	DurationMS int64                `json:"duration_ms"`
 	ExitCode   int                  `json:"exit_code"`
 	Usage      resultUsage          `json:"usage"`
+	// PermissionDenials are the calls refused for want of an answer or by a
+	// rule, each with the flag that would allow it, or why none would.
+	PermissionDenials []permissionDenial `json:"permission_denials,omitempty"`
 	// Omitted names the event types this output left out, so a reader of the
 	// capture can tell a gap where they sat from a missing event.
 	Omitted []agent.EventType `json:"omitted,omitempty"`
@@ -422,6 +527,10 @@ type resultUsage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
 	CachedTokens int `json:"cached_tokens"`
+	// CostUSD is what the run's priced calls cost; Unpriced marks a call to
+	// a model with no price, whose cost is not in it and is not guessed.
+	CostUSD  float64 `json:"cost_usd"`
+	Unpriced bool    `json:"unpriced,omitempty"`
 }
 
 func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o headlessOpts,
@@ -430,8 +539,26 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	appCfg config.Config, prompt string, budget *agent.Budget, extHost *extension.Host) int {
 
 	began := time.Now()
+	// Input that comes on stdin after the wait stops the run: an answer
+	// without it would read as one with it.
+	var stopLate context.CancelCauseFunc
+	ctx, stopLate = context.WithCancelCause(ctx)
+	defer stopLate(nil)
+	if o.lateStdin != nil {
+		go func() {
+			select {
+			case <-o.lateStdin:
+				stopLate(errLateStdin)
+			case <-ctx.Done():
+			}
+		}()
+	}
 	// A new session, or with -c or -r the recorded one it goes on with.
-	sessionID, seed, err := headlessSession(ctx, &cliState{store: store, appCfg: appCfg, workspace: sess.Root, adapter: adapter})
+	sessionID, seed, err := headlessSession(ctx, &cliState{store: store, appCfg: appCfg, workspace: sess.Root, adapter: adapter}, o.continueLimit)
+	if errors.Is(err, agent.ErrNothingToContinue) || errors.Is(err, agent.ErrContinueRefused) {
+		fmt.Fprintf(os.Stderr, "abhed: -p --continue with no task: %v; give a task to go on\n", err)
+		return 2
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1 // a run with no session row would write into another's record
@@ -444,9 +571,18 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 
 	events := store.Subscribe(sessionID)
 	done := make(chan struct{})
+	hints := newDenialHints(pol, appCfg, registry)
+	hints.runbook = o.runbook != nil
 	go func() {
 		defer close(done)
 		for ev := range events {
+			// Each refusal says on stderr what would allow it, whatever the format.
+			if d, ok := hints.observe(ev); ok {
+				fmt.Fprintf(os.Stderr, "abhed: %s\n", config.PrintableText(d.String()))
+			}
+			if note := diagnosticsNote(ev); note != "" {
+				fmt.Fprintf(os.Stderr, "abhed: %s\n", config.PrintableText(note))
+			}
 			if o.verbose && ev.Type == agent.EvModelCall {
 				fmt.Fprintf(os.Stderr, "abhed: model call %s\n", ev.Payload)
 			}
@@ -471,11 +607,23 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		o.fallback.SetRecord(recordFallback(rec))
 	}
 
+	if cfg.ContinueTurns == 0 {
+		cfg.ContinueTurns = cfg.MaxTurns // a continuation gets the run's own allowance again
+	}
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
+	loop.Unattended = true // nobody reads a question a -p run ends with
+	loop.SubdirMemory = subdirMemory(appCfg, pol, sess.Root)
 	loop.Provider = appCfg.Model.Default
 	// A structured result is checked by its schema, not as prose, and the
-	// contract gates an answer, which a structured run does not give.
-	if v, err := toolset.Verifier(appCfg, false); err == nil && o.schema == nil {
+	// contract gates an answer, which a structured run does not give. Unset,
+	// -p labels its answer as the terminal does; -verify off still turns it off.
+	if v, err := toolset.Verifier(appCfg, true); err == nil && o.schema == nil {
+		// A -p answer is read by a script or a person who was not watching:
+		// one that seems to answer another question is noted in its verdict.
+		// With -verify off there is no verifier, and no verdict to note it in.
+		if v != nil {
+			v.Relevance = true
+		}
 		v.Install(loop)
 	} else if o.schema != nil && appCfg.Verify.Contract.On() {
 		fmt.Fprintln(os.Stderr, "abhed: note: verify.contract is not checked for a -json-schema run: its result is checked by the schema, and its required commands do not run")
@@ -488,6 +636,16 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	var before []agent.Event
 	if resumedAfter > 0 {
 		before, _ = store.Events(sessionID)
+	}
+	if o.continueLimit {
+		// Checked before the start is recorded: nothing to continue leaves no trace.
+		loop.NoteContinues(before)
+		if err := loop.CanContinue(); err != nil {
+			store.Unsubscribe(sessionID, events)
+			<-done
+			fmt.Fprintf(os.Stderr, "abhed: -p --continue with no task: %v; give a task to go on\n", err)
+			return 2
+		}
 	}
 	if err := recordStart(rec, resumedStart(o.start, resumedAfter), o.attempts, o.grants, o.fence); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
@@ -503,6 +661,9 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	// run, and the exit code, wait for them.
 	agent.NewBackground(loop, toolset.BackgroundPolicy(appCfg, agent.WakeOff))
 	defer loop.Background.Close(agent.TermSessionClosed)
+	if loop.Diagnostics = toolset.Diagnostics(appCfg, registry); loop.Diagnostics != nil {
+		defer loop.Diagnostics.Close()
+	}
 	if appCfg.Sets("subagents.wake") && appCfg.Subagents.Wake != "off" {
 		fmt.Fprintf(os.Stderr, "abhed: note: subagents.wake is %s, but -p runs background tasks joined: it waits for them\n", config.Printable(appCfg.Subagents.Wake))
 	}
@@ -532,19 +693,77 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		fmt.Fprintf(os.Stderr, "abhed: runbook bound: %d steps, plan %s\n", len(rb.Steps), rb.Hash)
 		o.runbook.prompt = agent.RunbookPrompt(rb)
 	}
-	runOne := func(task string) {
+	runOne := func(task, typed string) {
+		// /parallel sends its turn, recorded as the command it is, here as
+		// in the terminal and in Studio.
+		if work, isCmd := parallelCommand(typed); isCmd {
+			if work == "" {
+				ran, err = true, errors.New("/parallel needs the work to split, such as /parallel review pkg/auth, test pkg/store")
+				return
+			}
+			if _, err = loop.Recorder.Record(agent.EvCommandInvoked, agent.ActorUser, agent.Trusted,
+				agent.CommandInvoked{Name: "/parallel", Source: sourceBuiltin, Args: work}); err != nil {
+				ran = true
+				return
+			}
+			rest := ""
+			if strings.HasPrefix(task, typed) {
+				rest = task[len(typed):] // piped stdin, kept as the input it was
+			}
+			task, typed = agent.ParallelPrompt(work)+rest, ""
+		}
+		c, args, cerr := headlessCustom(o.commands, sess.Root, typed)
+		if cerr != nil {
+			ran, err = true, cerr
+			return
+		}
+		if c != nil {
+			if _, err = loop.Recorder.Record(agent.EvCommandInvoked, agent.ActorUser, agent.Trusted,
+				agent.CommandInvoked{Name: c.Name, Source: c.Source, SHA256: c.SHA256, Args: args}); err != nil {
+				ran = true
+				return
+			}
+			if len(c.AllowedTools) > 0 {
+				sub, missing := loop.Tools.SubsetStrict(c.AllowedTools)
+				if len(missing) > 0 {
+					ran, err = true, fmt.Errorf("%s names tools this run does not have: %s", c.Name, strings.Join(missing, ", "))
+					return
+				}
+				prev := loop.Tools
+				loop.Tools = sub
+				defer func() { loop.Tools = prev }()
+			}
+			rest := ""
+			if strings.HasPrefix(task, typed) {
+				rest = task[len(typed):] // piped stdin, kept as the input it was
+			}
+			// The command's own @ files are attached through policy, as the
+			// terminal attaches them; a refused one stops the command.
+			msg, _, merr := (mentionExpander{}).Expand(ctx, loop, customcmd.Expand(c.Body, args))
+			if merr != nil {
+				ran, err = true, fmt.Errorf("%s was not sent: %w", c.Name, merr)
+				return
+			}
+			// The command's body is not the person's own words.
+			task, typed = msg.Text+rest, ""
+		}
 		if o.runbook != nil && !ran {
 			task = withRunbook(task, o.runbook.prompt)
 		}
 		ran = true
+		runCtx := agent.WithTyped(ctx, typed)
 		if o.schema != nil {
-			structured, reason, err = agent.RunStructured(ctx, loop, loop.Tools, task, o.schema)
+			structured, reason, err = agent.RunStructured(runCtx, loop, loop.Tools, task, o.schema)
 			return
 		}
-		reason, err = loop.Run(ctx, task)
+		reason, err = loop.Run(runCtx, task)
 	}
 	if prompt != "" {
-		runOne(prompt)
+		runOne(prompt, o.typed)
+	}
+	if o.continueLimit {
+		ran = true
+		reason, err = loop.ContinueAfterLimit(ctx, "print")
 	}
 	// The next message is awaited alongside a stop signal: stdin may stay
 	// open for as long as the caller likes. Reading stops after a failure.
@@ -557,7 +776,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		if !open {
 			break
 		}
-		runOne(task)
+		runOne(task, task)
 	}
 	if !ran && err == nil {
 		err = errors.New("no task: stdin held no user message")
@@ -578,14 +797,44 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	if c, stopped := stopCode(ctx); stopped {
 		code = c
 	}
+	// Input that came after the wait, during the run or by its end, voids
+	// the answer.
+	late := errors.Is(context.Cause(ctx), errLateStdin)
+	if o.lateStdin != nil && !late {
+		select {
+		case <-o.lateStdin:
+			late = true
+		default:
+		}
+	}
+	// A stop signal stands: the person stopped the run before, or whatever,
+	// the input came.
+	if _, stopped := stopCode(ctx); stopped {
+		late = false
+	}
+	if late {
+		code, err = exitLateStdin, errors.New(lateStdinMessage(o.stdinWait))
+		reason = agent.TermStdinLate
+		// No structured result, in any format; text output may already hold
+		// part of the answer, printed as it streamed.
+		structured = nil
+	}
 
 	u := loop.Usage()
+	// The conversation holds the model's own words; what stdout carries of
+	// them is redacted as the record is, a stored secret withheld.
+	structured = withheldJSON(rec.Redact, structured)
 	switch {
 	case streaming:
+		answer := ""
+		if !late {
+			answer = agent.WithheldText(rec.Redact, runAnswer(loop.Messages(), store, sessionID, resumedAfter))
+		}
 		res := resultLine{Type: "result", Subtype: string(reason), IsError: code != 0,
-			Result: runAnswer(loop.Messages(), store, sessionID, resumedAfter), Structured: structured,
+			Result: answer, Structured: structured,
 			SessionID: sessionID, NumTurns: u.Turns, DurationMS: time.Since(began).Milliseconds(), ExitCode: code,
-			Usage: resultUsage{u.InputTokens, u.OutputTokens, u.CachedTokens}, Verdict: loop.LastVerdict()}
+			Usage: resultUsage{u.InputTokens, u.OutputTokens, u.CachedTokens, u.CostUSD, u.Unpriced}, Verdict: loop.LastVerdict(),
+			PermissionDenials: hints.denials}
 		if res.Subtype == "" {
 			res.Subtype = string(agent.TermError)
 		}
@@ -594,6 +843,9 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		}
 		if err != nil {
 			res.Error = friendlyModelError(err, o.providerName, o.provider)
+		}
+		if reason == agent.TermMaxBudget && res.Error == "" {
+			res.Error = budgetStopMessage(store, sessionID)
 		}
 		b, _ := json.Marshal(res)
 		fmt.Println(string(b))
@@ -606,6 +858,10 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %s\n", friendlyModelError(err, o.providerName, o.provider))
+		if pp := explainProvider(appCfg, o.providerName, err); pp != nil {
+			noteProviderProblem(pp)
+			fmt.Fprintf(os.Stderr, "abhed: next: %s\n", pp.Next)
+		}
 	}
 	if code != 0 {
 		noteIgnoredModel(appCfg)
@@ -627,10 +883,30 @@ func runAnswer(msgs []model.Message, es server.EventStore, id string, after int6
 	return lastAssistantText(msgs)
 }
 
+// withheldJSON is raw with stored secrets redacted, or the withheld marker
+// when redacting leaves no valid JSON.
+func withheldJSON(red agent.Redactor, raw json.RawMessage) json.RawMessage {
+	if raw == nil {
+		return nil
+	}
+	out := json.RawMessage(agent.WithheldText(red, string(raw)))
+	if !json.Valid(out) {
+		b, _ := json.Marshal(agent.Withheld)
+		return b
+	}
+	return out
+}
+
 func lastAssistantText(msgs []model.Message) string {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == model.RoleAssistant && strings.TrimSpace(msgs[i].Content) != "" {
-			return msgs[i].Content
+			// A reply cut part way and its continuation are one answer.
+			out := msgs[i].Content
+			for j := i; j >= 2 && msgs[j-1].Role == model.RoleUser && msgs[j-1].Content == agent.ContinueCutReply &&
+				msgs[j-2].Role == model.RoleAssistant; j -= 2 {
+				out = msgs[j-2].Content + out
+			}
+			return out
 		}
 	}
 	return ""
@@ -647,7 +923,41 @@ func printUsage(r *ui.Renderer, u agent.Usage) {
 	if u.Compactions > 0 {
 		line += fmt.Sprintf(" · %d compaction(s)", u.Compactions)
 	}
+	if c := costText(u.CostUSD, u.Unpriced); c != "" {
+		line += " · " + c
+	}
 	fmt.Printf("%s\n", s.Dim(line))
+}
+
+// costText is a cost as shown: dollars, with a note when some calls went to
+// a model with no price, or "" when nothing was priced or spent.
+func costText(usd float64, unpriced bool) string {
+	switch {
+	case unpriced && usd > 0:
+		return fmt.Sprintf("$%.4f (some calls unpriced)", usd)
+	case unpriced:
+		return "cost unpriced"
+	case usd > 0:
+		return fmt.Sprintf("$%.4f", usd)
+	}
+	return ""
+}
+
+// budgetStopMessage is what the record says stopped the run at its budget.
+func budgetStopMessage(store server.EventStore, sessionID string) string {
+	events, err := store.Events(sessionID)
+	if err != nil {
+		return ""
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == agent.EvBudgetStopped {
+			var b agent.BudgetStopped
+			if json.Unmarshal(events[i].Payload, &b) == nil {
+				return b.Message
+			}
+		}
+	}
+	return ""
 }
 
 // withheldNoteOf is the note a user.message that withheld stored secrets
@@ -660,5 +970,14 @@ func withheldNoteOf(ev agent.Event) string {
 	if json.Unmarshal(ev.Payload, &m) != nil {
 		return ""
 	}
-	return ui.WithheldNote(m.SecretsWithheld)
+	return ui.MessageNote(m.SecretsWithheld, m.Pasted)
+}
+
+// parallelCommand reports whether typed is /parallel, and the work it names.
+func parallelCommand(typed string) (string, bool) {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(typed), "/parallel")
+	if !ok || (rest != "" && rest[0] != ' ' && rest[0] != '\n' && rest[0] != '\t') {
+		return "", false
+	}
+	return strings.TrimSpace(rest), true
 }

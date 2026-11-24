@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -89,8 +91,10 @@ func fakeLSP(t *testing.T, root string, env ...string) *[]string {
 	var asked []string
 	oldCmd, oldTier, oldBackoff, oldFinder := lspCommand, lspTier, lspBackoff, lspProgramFinder
 	lspTier = func(tools.Bash) string { return "process" }
-	// The fake stands in for every server, so each is "on the PATH".
+	// The fake stands in for every server, so each is "on the PATH", for the
+	// engine's own check and for the supervisor's, which reads the real PATH.
 	lspProgramFinder = func(*tools.Registry) func(string) bool { return func(string) bool { return true } }
+	stubOnPath(t, "gopls")
 	lspBackoff = func(int) time.Duration { return 10 * time.Millisecond }
 	lspCommand = func(_ tools.Bash, ctx context.Context, cwd, command string) *exec.Cmd {
 		asked = append(asked, command)
@@ -895,4 +899,69 @@ func TestStudioMissingServerInstallAndChanged(t *testing.T) {
 	r.cl.waitFor(from, "toolchain changed", func(m rpcMessage) bool {
 		return m.Method == "_abhed/toolchain/changed" && strings.Contains(string(m.Params), `"extra":"gopls"`) && strings.Contains(string(m.Params), id)
 	})
+}
+
+// stubOnPath puts programs by these names first on the PATH, each one that
+// only exits, so a check that a program is installed finds it without the
+// host having it; the test's fake runs in its place.
+func stubOnPath(t *testing.T, names ...string) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, n := range names {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil { // #nosec G306 -- a test stub that must run
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// Python's default server is basedpyright; where only pyright or pylsp is
+// installed, that one runs instead.
+func TestPickLanguageServer(t *testing.T) {
+	has := func(names ...string) func(string) bool {
+		return func(p string) bool { return slices.Contains(names, p) }
+	}
+	for _, tc := range []struct {
+		find func(string) bool
+		want string
+	}{
+		{has("basedpyright-langserver", "pylsp"), "basedpyright-langserver"},
+		{has("pyright-langserver", "pylsp"), "pyright-langserver"},
+		{has("pylsp"), "pylsp"},
+		{has(), "basedpyright-langserver"},
+		{nil, "basedpyright-langserver"},
+	} {
+		if got := pickLanguageServer("python", tc.find); got[0] != tc.want {
+			t.Errorf("got %v; want %s", got, tc.want)
+		}
+	}
+	if got := pickLanguageServer("go", has()); got[0] != "gopls" {
+		t.Errorf("go: %v", got)
+	}
+}
+
+// Where only pylsp is installed it runs, and what the person and the
+// supervisor are told names pylsp and what it loads, not basedpyright.
+func TestStudioPythonServerFallbackIsDescribed(t *testing.T) {
+	r := newStudioRig(t, "")
+	asked := fakeLSP(t, r.ws)
+	lspProgramFinder = func(*tools.Registry) func(string) bool { return func(p string) bool { return p == "pylsp" } }
+	stubOnPath(t, "pylsp")
+	id := r.open()
+	var res struct {
+		LSPID string `json:"lspId"`
+	}
+	r.cl.ok("_abhed/lsp/start", map[string]any{"sessionId": id, "language": "python"}, &res)
+	if len(*asked) != 1 || !strings.Contains((*asked)[0], "pylsp") || strings.Contains((*asked)[0], "pyright") {
+		t.Fatalf("command %v", *asked)
+	}
+	requested, _ := r.recorded(id, agent.EvActionRequested)
+	raw, _ := json.Marshal(requested)
+	if !strings.Contains(string(raw), "pylsp runs in the Python it was installed with") || strings.Contains(string(raw), "basedpyright") {
+		t.Fatalf("the judged call says %s", raw)
+	}
+	r.cl.ok("_abhed/lsp/stop", map[string]any{"lspId": res.LSPID}, nil)
+	if got := lspRuns("python", []string{"pyright-langserver", "--stdio"}); !strings.HasPrefix(got, "pyright runs") {
+		t.Fatalf("pyright: %s", got)
+	}
 }

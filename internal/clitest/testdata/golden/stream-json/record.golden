@@ -1,6 +1,8 @@
 session.started · system · model:stub-model provider:stub
+session.facts · system
 user.message · user
 model.call · system · model:stub-model
 agent.message · agent
+answer.verdict · system · source:text
 session.ended · system · reason:completed
 result · 

@@ -1,10 +1,14 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"time"
 	"unicode/utf16"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -19,10 +23,23 @@ import (
 // that into edits inside the document. No tools, no side effects.
 
 func init() {
-	liveFeatures = append(liveFeatures, "nextEdit")
+	liveFeatures = append(liveFeatures, "nextEdit", "nextEditCancel")
 	handle(map[string]func(*acpConn, rpcMessage){
-		"_abhed/nextEdit": (*acpConn).nextEdit,
+		"_abhed/nextEdit":        (*acpConn).nextEdit,
+		"_abhed/nextEdit/cancel": (*acpConn).nextEditCancel,
 	})
+}
+
+// nextEditCancel ends the session's next-edit request in flight, as Studio
+// asks on each keystroke: its window is stale.
+func (c *acpConn) nextEditCancel(msg rpcMessage) { c.featureCancel(msg, "next_edit") }
+
+// nextEditTokens bounds the answer by the window sent: the model writes the
+// window back with one edit. Half the window's bytes in tokens (code runs
+// near four bytes a token, dense or non-ASCII code nearer two) leaves room
+// for a real hunk; an answer cut at the bound is dropped, never offered.
+func nextEditTokens(window string) int {
+	return min(nextEditMaxTokens, max(128, len(window)/2+64))
 }
 
 // Next-edit bounds: the window sent, the recent edits, and the answer.
@@ -60,6 +77,10 @@ type nextEditRequest struct {
 	} `json:"window"`
 	Language string `json:"language"`
 	Seq      int64  `json:"seq"`
+	// Rename is Studio's reading of the last edit as a rename, and Sites
+	// where its language server says the old name is used in this document.
+	Rename *renameHint `json:"rename"`
+	Sites  []editRange `json:"sites"`
 }
 
 // suggestedEdit is one edit as the answer carries it.
@@ -70,6 +91,7 @@ type suggestedEdit struct {
 }
 
 func (c *acpConn) nextEdit(msg rpcMessage) {
+	arrived := time.Now()
 	var req nextEditRequest
 	if err := json.Unmarshal(msg.Params, &req); err != nil {
 		c.reply(msg.ID, nil, badParams("", err))
@@ -129,6 +151,10 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		empty("cancelled", "a newer request replaced it")
 		return
 	}
+	if !c.spend(k) {
+		empty("limited", "too many requests; slow down")
+		return
+	}
 
 	clean := func(text string) string {
 		text = parts.Loop.Withheld(text)
@@ -142,6 +168,23 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 	raw := linediff.SplitLines(req.Window.Text)
 	if len(raw) > nextEditLines {
 		raw = raw[:nextEditLines]
+	}
+	// A rename is finished from the document itself: no model, nothing sent.
+	// A .js file holding JSX is renamed as JSX is: only at a language server's sites.
+	rreq := req
+	rreq.Language = renameLanguage(req.Language, raw)
+	if h, line, ok := renameOf(rreq, raw); ok {
+		if edits, why, notRename := renameEdit(rreq, raw, h, line); !notRename {
+			if len(edits) == 0 {
+				k.count(func(s *agent.CompletionSummary) { s.LocalDropped++ })
+				empty("dropped", why)
+				return
+			}
+			// Offered like any suggestion: served, and of those, from the file.
+			k.count(func(s *agent.CompletionSummary) { s.Local++; s.Served++ })
+			c.reply(msg.ID, map[string]any{"edits": edits, "rename": true}, nil)
+			return
+		}
 	}
 	cleaned := linediff.SplitLines(clean(strings.Join(raw, "")))
 	if len(cleaned) != len(raw) {
@@ -177,24 +220,63 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		empty("cancelled", "a newer request replaced it")
 		return
 	}
+	if why := editorRefused(parts.Loop, a, "next-edit suggestions", "next-edit"); why != "" {
+		c.reply(msg.ID, k.priceNotice(map[string]any{"edits": []any{}}, why), nil)
+		return
+	}
 	if why := c.completeEnabled(s, k, provider, "chat"); why != "" {
 		refuse(why)
 		return
 	}
 	rel := rootRel(path, roots)
-	res, err := model.NextEditByChat(ctx, a, model.NextEditRequest{
-		File: rel, Language: req.Language, Recent: recent.String(),
-		Window: strings.Join(shown, ""), CursorLine: req.Cursor.Line - req.Window.StartLine, MaxTokens: nextEditMaxTokens,
+	// Completions go first on a shared server: this call waits for them, and
+	// one asked for while it runs cancels it.
+	mctx, release, werr := c.pool.nextEditTurn(ctx, editorServer(provider))
+	if werr != nil {
+		k.count(func(s *agent.CompletionSummary) { s.Superseded++ })
+		empty("cancelled", "a newer request replaced it")
+		return
+	}
+	defer release()
+	window := strings.Join(shown, "")
+	capTokens := nextEditTokens(window)
+	// A call ended while it waited for the server's request slot was never sent: nothing to charge.
+	var queued, sent atomic.Bool
+	mctx = model.WithSlotWait(mctx, func(_ model.SlotWait, done bool) {
+		if done {
+			sent.Store(true)
+		} else {
+			queued.Store(true)
+		}
 	})
-	cancelled := err != nil && ctx.Err() != nil
+	res, err := nextEditCall(mctx, a, model.NextEditRequest{
+		File: rel, Language: req.Language, Recent: recent.String(),
+		Window: window, CursorLine: req.Cursor.Line - req.Window.StartLine, MaxTokens: capTokens,
+	})
+	cancelled := err != nil && mctx.Err() != nil
+	preempted := cancelled && errors.Is(context.Cause(mctx), errCompletionFirst)
+	var tokIn, tokOut int
+	var usd *float64
+	var unpriced, estimated bool
+	if err == nil || !queued.Load() || sent.Load() {
+		tokIn, tokOut, usd, unpriced, estimated = editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, err, cancelled,
+			recent.Len()+len(window), len(res.Window), capTokens)
+	}
+	if err == nil {
+		k.took(time.Since(arrived))
+	}
 	edits, dropped := []suggestedEdit{}, res.Dropped
 	if err == nil && dropped == "" {
 		edits, dropped = windowEdits(req.URI, req.Window.StartLine, raw[:len(shown)], shown, res.Window, clean)
 	}
 	k.count(func(sum *agent.CompletionSummary) {
+		addCost(sum, usd, unpriced)
 		sum.Requests++
-		sum.TokensIn += res.InputTokens
-		sum.TokensOut += res.OutputTokens
+		sum.TokensIn += tokIn
+		sum.TokensOut += tokOut
+		if estimated {
+			sum.Estimated++
+		}
 		switch {
 		case cancelled:
 			sum.Cancelled++
@@ -205,6 +287,8 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		}
 	})
 	switch {
+	case preempted:
+		empty("cancelled", "a completion went first")
 	case cancelled:
 		empty("cancelled", "a newer request replaced it")
 	case err != nil:
@@ -340,4 +424,11 @@ func sameBarTrailingSpace(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// nextEditCall is next-edit's one model call (a rename finished from the
+// file makes none), kept apart so what every model call passes through sits
+// in one place.
+func nextEditCall(ctx context.Context, a model.Adapter, req model.NextEditRequest) (model.NextEditResult, error) {
+	return model.NextEditByChat(ctx, a, req)
 }

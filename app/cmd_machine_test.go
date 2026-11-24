@@ -1,0 +1,192 @@
+package app
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/identity"
+	"github.com/zybuu-ai/abhed/internal/machinegrant"
+)
+
+func TestMachineListAndForget(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "machine-grants.json")
+	old := machinegrant.Path
+	machinegrant.Path = func() string { return p }
+	t.Cleanup(func() { machinegrant.Path = old })
+	var out, errw bytes.Buffer
+	if code := machineCmd([]string{"list"}, &out, &errw); code != 0 || !strings.Contains(out.String(), "nothing") {
+		t.Fatalf("empty list: %d %q %q", code, out.String(), errw.String())
+	}
+	if err := machinegrant.Keep(machinegrant.Grant{Kind: machinegrant.KindSSHHost, Name: "box", Identity: "i", What: "host box (me@10.0.0.9:22)"}); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if code := machineCmd([]string{"list"}, &out, &errw); code != 0 || !strings.Contains(out.String(), "host box") {
+		t.Fatalf("list: %d %q", code, out.String())
+	}
+	if code := machineCmd([]string{"forget", "ssh-host", "nope"}, &out, &errw); code != 1 {
+		t.Fatalf("forgetting what is not kept: %d", code)
+	}
+	if code := machineCmd([]string{"forget", "bogus", "box"}, &out, &errw); code != 2 {
+		t.Fatalf("a bad kind: %d", code)
+	}
+	out.Reset()
+	if code := machineCmd([]string{"forget", "ssh-host", "box"}, &out, &errw); code != 0 || !strings.Contains(out.String(), "asks again") {
+		t.Fatalf("forget: %d %q", code, out.String())
+	}
+	if gs, _ := machinegrant.List(); len(gs) != 0 {
+		t.Fatalf("still kept: %v", gs)
+	}
+}
+
+// doctor names the contexts, hosts and kept grants, never a credential.
+func TestDoctorShowsTheMachineSetupWithoutSecrets(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("KUBECONFIG", "")
+	p := filepath.Join(home, "g.json")
+	old := machinegrant.Path
+	machinegrant.Path = func() string { return p }
+	t.Cleanup(func() { machinegrant.Path = old })
+	for path, text := range map[string]string{
+		".kube/config": "current-context: lab\nclusters:\n- name: lab\n  cluster:\n    server: https://lab.example:6443\n" +
+			"contexts:\n- name: lab\n  context:\n    cluster: lab\n    user: me\nusers:\n- name: me\n  user:\n    token: doctor-secret-token-77\n",
+		".ssh/config": "Host box\n  HostName 10.0.0.9\n",
+	} {
+		_ = os.MkdirAll(filepath.Dir(filepath.Join(home, path)), 0o700)
+		if err := os.WriteFile(filepath.Join(home, path), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = machinegrant.Keep(machinegrant.Grant{Kind: machinegrant.KindSSHHost, Name: "box", Identity: "i", What: "host box (me@10.0.0.9:22)"})
+	out := strings.Join(machineDoctor(config.Config{}), "\n")
+	for _, want := range []string{"1 contexts", "lab → https://lab.example:6443", "1 hosts", "box", "kept        1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "doctor-secret-token-77") {
+		t.Fatal("doctor printed the token")
+	}
+	empty := t.TempDir()
+	t.Setenv("HOME", empty)
+	if out := strings.Join(machineDoctor(config.Config{}), "\n"); !strings.Contains(out, "k8s_login is offered") {
+		t.Fatalf("with nothing set up: %s", out)
+	}
+}
+
+// A guest may not forget a kept grant from the command line.
+func TestGuestCannotForgetAMachineGrant(t *testing.T) {
+	endGuest()
+	if err := usePrincipal(identity.GuestPrincipal()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(endGuest)
+	// What a guest approves "always" is not kept anywhere.
+	if err := machinegrant.Keep(machinegrant.Grant{Kind: machinegrant.KindSSHHost, Name: "box", Identity: "i"}); err == nil {
+		t.Fatal("a guest's grant was kept")
+	}
+	if err := guestSubcommand([]string{"machine", "forget", "ssh-host", "box"}); err == nil {
+		t.Fatal("machine forget was not refused for a guest")
+	}
+	if err := guestSubcommand([]string{"machine", "list"}); err != nil {
+		t.Fatalf("machine list was refused: %v", err)
+	}
+}
+
+// Under the organisation's k8s setting, doctor's kubernetes section reads no
+// personal kubeconfig, and shows every server without its user or query.
+func TestDoctorK8sFollowsTheOrgRule(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("KUBECONFIG", "")
+	kc := filepath.Join(home, ".kube", "config")
+	_ = os.MkdirAll(filepath.Dir(kc), 0o700)
+	if err := os.WriteFile(kc, []byte("current-context: personal\nclusters:\n- name: p\n  cluster:\n    server: https://personal.example:6443\n"+
+		"contexts:\n- name: personal\n  context:\n    cluster: p\n    user: me\nusers:\n- name: me\n  user:\n    token: personal-secret-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	org := config.Config{Managed: true, ManagedKeys: []string{"k8s.enabled", "k8s.clusters"}, SetKeys: []string{"k8s.enabled", "k8s.clusters"}}
+	org.K8s.Enabled = true
+	org.K8s.Clusters = []config.K8sClusterConfig{{Name: "orgprod", Server: "https://u:pw@orgprod.example:6443/?token=abc"}}
+	out := strings.Join(k8sDoctor(org), "\n")
+	for _, bad := range []string{"personal", "pw", "token=abc", "personal-secret-token"} {
+		if strings.Contains(out, bad) {
+			t.Fatalf("doctor shows %q under the org's k8s setting:\n%s", bad, out)
+		}
+	}
+	if !strings.Contains(out, "no kubeconfig read") || !strings.Contains(out, "orgprod → https://orgprod.example:6443") {
+		t.Fatalf("doctor:\n%s", out)
+	}
+	// An org setting that only tightens leaves the person's own kubeconfig,
+	// read-only; one that turns k8s off shows nothing.
+	tight := config.Config{Managed: true, ManagedKeys: []string{"k8s.allow_writes"}, SetKeys: []string{"k8s.allow_writes", "k8s.enabled"}}
+	tight.K8s.Enabled = true
+	if out := strings.Join(k8sDoctor(tight), "\n"); !strings.Contains(out, "read-only: writes off by your organisation") || !strings.Contains(out, "context personal") {
+		t.Fatalf("doctor under the org's allow_writes false:\n%s", out)
+	}
+	// An org that declares clusters only: Kubernetes on for them, no kubeconfig.
+	declared := config.Config{Managed: true, ManagedKeys: []string{"k8s.clusters"}, SetKeys: []string{"k8s.clusters"}}
+	declared.K8s.Clusters = []config.K8sClusterConfig{{Name: "orgprod", Server: "https://orgprod.example:6443"}}
+	if out := strings.Join(k8sDoctor(declared), "\n"); !strings.Contains(out, "no kubeconfig read") || !strings.Contains(out, "orgprod") || strings.Contains(out, "personal") {
+		t.Fatalf("doctor under the org's declared clusters:\n%s", out)
+	}
+	off := config.Config{Managed: true, ManagedKeys: []string{"k8s.enabled"}, SetKeys: []string{"k8s.enabled"}}
+	if out := k8sDoctor(off); len(out) != 0 {
+		t.Fatalf("doctor under the org's k8s.enabled false: %v", out)
+	}
+	// With no org setting, the person's own kubeconfig is read as before.
+	own := config.Config{SetKeys: []string{"k8s.enabled"}}
+	own.K8s.Enabled = true
+	if out := strings.Join(k8sDoctor(own), "\n"); !strings.Contains(out, "context personal") || strings.Contains(out, "personal-secret-token") {
+		t.Fatalf("doctor without an org setting:\n%s", out)
+	}
+}
+
+// abhed machine reads the person's own grants, so it runs as the person.
+func TestMachineRunsAsThePerson(t *testing.T) {
+	if !personCommands["machine"] {
+		t.Fatal("abhed machine does not run as the person working, so a signed-in account's kept logins are missed")
+	}
+}
+
+// Under a managed k8s.kubeconfig, doctor lists the organisation's kubeconfig
+// and says a pasted login is refused; it never says k8s_login takes one.
+func TestDoctorUnderAManagedKubeconfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	kc := filepath.Join(home, "org.kubeconfig")
+	if err := os.WriteFile(kc, []byte("current-context: org\nclusters:\n- name: o\n  cluster:\n    server: https://org.example:6443\n"+
+		"contexts:\n- name: org\n  context:\n    cluster: o\n    user: u\nusers:\n- name: u\n  user:\n    token: t\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Managed: true, ManagedKeys: []string{"k8s.kubeconfig"}, SetKeys: []string{"k8s.kubeconfig"}}
+	cfg.K8s.Kubeconfig = kc
+	out := strings.Join(machineDoctor(cfg), "\n")
+	if !strings.Contains(out, "org → https://org.example:6443") || !strings.Contains(out, "a pasted login is refused") ||
+		strings.Contains(out, "k8s_login is offered") {
+		t.Fatalf("doctor:\n%s", out)
+	}
+}
+
+// doctor runs as the person working, and says whose state it shows.
+func TestDoctorReportsThePersonsState(t *testing.T) {
+	if !personCommands["doctor"] {
+		t.Fatal("doctor does not run as the person working")
+	}
+	if got := doctorPerson(identity.GuestPrincipal()); !strings.Contains(got, "guest: nothing is kept") || !strings.Contains(got, "this machine's") {
+		t.Fatalf("guest: %q", got)
+	}
+	endGuest()
+	if err := usePrincipal(identity.GuestPrincipal()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(endGuest)
+	if out := strings.Join(machineDoctor(config.Config{}), "\n"); !strings.Contains(out, "kept        guest: nothing is kept") {
+		t.Fatalf("doctor as a guest:\n%s", out)
+	}
+}

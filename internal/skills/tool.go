@@ -62,7 +62,11 @@ func (Tool) Mutates() bool { return false }
 func (t Tool) Description() string {
 	names := ""
 	if t.R != nil && t.R.Len() > 0 {
-		names = " Available: " + strings.Join(t.R.Names(), ", ") + "."
+		list, more := t.R.NamesWithin(ListingBudget)
+		names = " Available: " + list + "."
+		if more > 0 {
+			names = fmt.Sprintf(" Available: %s, and %d more: give a word from the name or the task to search them.", list, more)
+		}
 	}
 	// Models matched a skill and worked unaided; it is to be the first call.
 	return "Load the full instructions for a named skill." + names +
@@ -100,9 +104,25 @@ func (t Tool) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) to
 	s, ok := t.R.Get(name)
 	if !ok {
 		// Naming the alternatives ends the retry loop that a bare "not found"
-		// otherwise causes.
-		return errf("No skill named %q. Available: %s.",
-			name, strings.Join(t.R.Names(), ", "))
+		// otherwise causes: those matching the name's words, or, with none,
+		// as many names as the listing budget holds.
+		if found := t.R.Search(strings.NewReplacer("-", " ", "_", " ").Replace(name), 20); len(found) > 0 {
+			var b strings.Builder
+			fmt.Fprintf(&b, "No skill named %q. Skills matching it, to load by name:", name)
+			for _, f := range found {
+				desc := f.Description
+				if r := []rune(desc); len(r) > 120 {
+					desc = string(r[:119]) + "…"
+				}
+				fmt.Fprintf(&b, "\n- %s — %s", f.Name, desc)
+			}
+			return errf("%s", b.String())
+		}
+		list, more := t.R.NamesWithin(ListingBudget)
+		if more > 0 {
+			return errf("No skill named %q, and none matches its words. Available: %s, and %d more; give a word from the name or the task to search them.", name, list, more)
+		}
+		return errf("No skill named %q. Available: %s.", name, list)
 	}
 
 	// A skill that declares a pipeline is executed rather than described. The

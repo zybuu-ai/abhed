@@ -14,9 +14,9 @@
 | `skill` | load a procedure on demand |
 | `web_search` | five providers: duckduckgo, brave, tavily, serper, searxng; off by default, and only the managed configuration turns it on ([Web search](02-configuration.md#web-search)) |
 | `web_fetch` | read one web page as text, through Abhed rather than the shell; off by default |
-| `ssh`, `ssh_connect` | remote execution, off by default |
+| `ssh`, `ssh_connect` | remote execution, off by default except for your own `~/.ssh/config` hosts ([below](#your-own-clusters-and-machines)) |
 | `ssh_put`, `ssh_get` | file transfer over SFTP, off by default (`ssh.transfers`) |
-| `k8s_get`, `k8s_apply`, `k8s_login` | Kubernetes, read-only by default |
+| `k8s_get`, `k8s_apply`, `k8s_login` | Kubernetes: your own kubeconfig contexts on your machine, each first use asked once; otherwise off by default and read-only |
 
 A path given to `read`, `write`, `edit`, `glob` or `grep` may be absolute or
 relative to the workspace root (never to where a `cd` left `bash`). Either
@@ -52,6 +52,34 @@ and `/undo` of the new file removes them while they are empty.
 the first glob segment is searched, held to the workspace as any path, with
 the rest as its `glob`.
 
+`grep` also passes over the files a `.gitignore` excludes, the workspace's
+own and those below it, as git reads them (`!` takes a file back), unless
+`path` names the file or a folder inside an ignored one. It reads the files
+left in parallel. When ripgrep (`rg`) is on `PATH` as Abhed starts, one
+`rg` run beside the walk narrows which files are read: it is given only a
+literal that every match must contain, as a fixed string, and no
+configuration or environment of its own. An `rg` inside the workspace or an
+added directory is never run, nor one any account but root could replace:
+the program and every folder above it must be owned by root and writable by
+neither their group nor anyone else, so an `rg` from Homebrew (whose folders
+are yours) is not used. Install one from the system's packages for `grep`
+to use it; there is no setting to take another. Either way, what reaches the model is
+Abhed's own read and match: each file is read inside the workspace, never
+through a link or into Abhed's state, a file a read deny rule covers is
+left out with its matches (`deny: ["read(secrets/**)"]` keeps `secrets/`
+out of `grep` too), and secret values are redacted. A file an ask rule
+covers, such as the built-in ones for `.env` and keys, is left out too: no
+one can be asked through a search. Each file is judged by its path before
+it is read, so a withheld file is never opened or matched; the answer says
+how many files were not searched for that reason, a count that is the same
+whatever the pattern, and a `path` that names a withheld file is answered
+`withheld by a read rule`. `search` leaves such files out before ranking,
+as if they were not indexed, and says nothing of them. A pattern with no such literal, or one matched
+without case beyond ASCII, is searched without ripgrep. The two searches
+read `.gitignore` files with separate parsers, so on an unusual pattern they
+can differ in which ignored files they skip; the read rules hold the same
+on both.
+
 `glob` and `grep` pass over vendored and build folders (`node_modules`,
 `vendor`, `dist`, `.git` and others) unless `path` points into one. A glob that
 names such a folder anywhere in its pattern, such as
@@ -65,6 +93,18 @@ server people sign in to, the account's own),
 handed to that one command as environment variables when a
 `secret(NAME)` rule allows it. The model never sees a value; see
 [Secrets](04-permissions.md#secrets).
+
+A command run in the foreground ends with everything it started: a job
+left behind with `&` or `nohup`, a daemon, a double fork. Before its result
+is given, Abhed ends the processes in the session the command leads and
+every descendant it followed while the command ran; one that only carries
+its `ABHED_COMMAND_ID` is named in the result, not ended (on macOS, which has no process namespace for it, the residual
+case is in [Sandbox](02-configuration.md#sandbox)); under bubblewrap on
+Linux the command's process namespace ends them all. The result names
+what was ended. To keep a server running, start it with
+`run_in_background`; to keep an app open (a new editor window started by
+`code .`, say), open it with `open -a`, which hands it to the system
+rather than to the command.
 
 ### Background commands
 
@@ -143,6 +183,178 @@ the sandbox has none and a command fails because of it, the result ends with
 a note that says so, so the model reports the reason or uses a web tool
 instead of retrying.
 
+### git remotes and your credentials
+
+The sandbox hides your SSH keys, SSH agent and credential helpers from
+commands, yet `git fetch`, `git pull`, `git push`, `git clone` and `git
+ls-remote` work on the process tier and the fence with nothing to configure,
+where the sandbox holds git's configuration (`sandbox.protect_git`, the
+default): run alone, in plain words, each has its network part go through
+git on the host, as you, with your own SSH agent, keychain, credential
+helpers and `~/.gitconfig`, to the repository's configured remotes or a
+clone URL you approve; a pull's merge and a clone's checkout run in the
+sandbox. The agent sees git's output, with any token in a URL removed, never
+a key. With the network off it is
+asked first and reaches only the repository's own remote; a forced push, a
+clone and a remote added during the session are asked each time. bash's
+description tells the model so from its first turn. Details, what is refused
+and how it is recorded: [Permissions](04-permissions.md#git-fetch-pull-push-and-clone-through-your-own-git).
+
+Your `user.name` and `user.email` reach git in the sandbox, so its commits
+carry them. On the process tier `~/.gitconfig` is readable by commands, and
+nothing under `~/.ssh` is. The fence and a container give commands a home of
+their own, without your git configuration, so Abhed reads your name and email
+on the host as the session starts (the repository's own first, then your
+global and system ones, as git would) and gives them to commands as
+`GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and
+`GIT_COMMITTER_EMAIL`. If an `include.path` in your configuration names a
+file this account cannot read, git refuses to read any configuration; Abhed
+then reads each file on its own and skips only that include.
+
+### Your own clusters and machines
+
+On your own machine, in the terminal, in Abhed Studio and under `abhed rpc`,
+the cluster and SSH tools work with the setup you already have, with nothing
+to configure:
+
+- **Kubeconfig contexts.** `k8s_get` and `k8s_apply` reach the contexts in
+  your kubeconfig (`KUBECONFIG`, every file it lists merged as `kubectl`
+  merges them, or `~/.kube/config`). Their descriptions list the contexts by
+  name, and the model names one as `context`, or as `cluster`: a name that is
+  no cluster in `k8s.clusters` or kept login is that context, and
+  `k8s.clusters` wins a clash. The server, the CA and the credential (a token,
+  a token file, a client certificate, or a credential helper's token) are
+  read in Abhed's own process. None of them reaches the sandbox, the record
+  or the model; the approval names the context, its server and how it signs
+  in, never the credential.
+- **First use asks once.** The first call to each context asks, in every
+  mode but bypass, plan and auto included, even for a read. Approving it
+  covers the rest of the session; *always for this cluster* keeps it for
+  you in `state/machine-grants.json` in your own account's folder (never a
+  guest's, which keeps nothing), outside every workspace, so
+  later sessions do not ask. A grant covers the context as it was approved:
+  if its server, CA, user or credential helper changes, it is asked about
+  again. An allow rule such as `k8s_get(context:lab/*)` answers the ask as
+  it answers any; a deny rule still refuses. Writes (`apply`, `delete`,
+  `scale`, `restart`, `rollback`) ask every time, after a dry run, as before.
+- **Credential helpers.** A context whose user has an `exec` plugin (cloud
+  sign-in helpers such as `gke-gcloud-auth-plugin` or `kubelogin`) makes
+  Abhed run that program to get a token. Its first use names the program
+  and its arguments and asks, even where `k8s.enabled` turned the tools on,
+  and nothing runs until you approve it.
+- **Refused sign-ins.** A context that signs in with a legacy
+  `auth-provider` (`gcp`, `azure`, `oidc`) is refused with the reason: that
+  flow refreshes tokens by writing them back into your kubeconfig, and
+  Abhed never writes to it. Switch the context to its exec plugin, or log in
+  with a token. A user name and password (basic auth) is refused too.
+- **`~/.ssh/config` hosts.** `ssh`, `ssh_put` and `ssh_get` reach the hosts
+  your `~/.ssh/config` names by their `Host` alias, with its `HostName`,
+  `User`, `Port`, `IdentityFile`, `ProxyJump` and `UserKnownHostsFile`, and
+  the files it `Include`s. The first value for a keyword wins and
+  `IdentityFile` adds, as OpenSSH reads them; a `Match` block is not
+  evaluated. They sign in with your ssh-agent (`SSH_AUTH_SOCK`) and the keys
+  `IdentityFile` names that need no passphrase (add one that does to the
+  agent), in Abhed's process only: the named keys first, then the agent's,
+  each offered once, and with `IdentitiesOnly yes` only the keys
+  `IdentityFile` names. Each hop of `ProxyJump` (at most four) is reached
+  the same way, is bounded by `ssh.connect_hosts` when that is set, and the
+  address reached through it is judged and recorded by the egress rules as a
+  direct one is; each host's key, hops included, must already be in
+  `known_hosts`: Abhed never adds one, and an unknown or changed key is
+  refused with the `ssh` command to record it yourself. A host that needs
+  `ProxyCommand` is listed as not usable, with the reason. The first use of
+  each host asks once, as for a context, and every command still asks as
+  `ssh` always does. `ssh_connect` naming one of these hosts says it is
+  ready by name. An operator's `ssh.hosts` name wins a clash, and
+  `ssh.connect_hosts`, when set, bounds these hosts too.
+
+This is on when no configuration file sets `k8s.enabled` (or `ssh.enabled`)
+and no managed configuration is in force, and the machine has a kubeconfig
+or kept logins (or an `~/.ssh/config` naming a host). With neither, your own
+surface still has `k8s_login`, offered to the model from the moment you
+paste a login, so a pasted `oc login` works on any machine and costs nothing
+until then; `k8s_get` and `k8s_apply` are offered once a login exists. `k8s_apply` is offered
+unless a file sets `k8s.allow_writes`. Setting `k8s.enabled` or
+`ssh.enabled` to `false`, in any file a workspace's included, turns it off.
+A managed configuration or org policy changes this only where it decides
+for the organisation:
+
+- `k8s.allow_writes: false` alone only tightens: your own kubeconfig stays
+  in use, read-only, and `k8s_apply` is not offered. An organisation that
+  wants its laptops read-only sets it explicitly: where it says nothing of
+  writes, a person's own `k8s.allow_writes: true` offers `k8s_apply` (each
+  write still asks, after a dry run).
+- A managed file that sets only `k8s.context`, `k8s.namespace` or
+  `k8s.ca_file` does not decide for the organisation either: your own
+  kubeconfig stays in use, with those values applied.
+- `k8s.enabled: false` turns Kubernetes off: no cluster tool is offered,
+  and a pasted login is still withheld, the model is told logins are off
+  and why, and a login it tries anyway is refused with the reason, never as
+  an unknown tool.
+- Where the organisation sets Kubernetes up itself, by declaring
+  `k8s.clusters` or `k8s.kubeconfig` in its managed file (which turns
+  Kubernetes on for them, with no `k8s.enabled` needed) or turning
+  `k8s.enabled` on, only that counts on the machine: a person's or
+  workspace's `k8s.enabled: true` is not taken, only its `k8s.clusters` are
+  offered (they take a token through `k8s_login`), and no kubeconfig is
+  read unless its managed file names one in `k8s.kubeconfig`. No login is
+  kept, and a pasted login is refused with the reason ("your
+  organisation's configuration … sets up Kubernetes itself …; ask your
+  administrator").
+- Any `ssh` key leaves only `ssh.hosts` and `ssh_connect`, never your
+  `~/.ssh/config`, and `machine_setup: false` turns off both.
+
+Anything else it sets, such as web search, leaves your own setup and your
+kept logins as they are. `abhed serve` never offers its
+operator's own setup to the sessions it runs.
+
+`abhed doctor` lists the contexts with their servers (and the program a
+credential helper runs), the `~/.ssh/config` hosts and what is kept, by name,
+never a credential. `abhed machine list` shows what is kept for you, and
+`abhed machine forget KIND NAME` (`k8s-context`, `ssh-host` or `k8s-login`)
+drops one, so its next use asks again.
+
+### A pasted login
+
+When you paste a credential into a message, such as
+`oc login --token=sha256~… --server=https://api.lab.example:6443`, a
+`Bearer` token, or a key of a known shape (a private key block, a GitHub,
+GitLab, Slack, AWS or cloud API key, a JSON web token), the model and the
+record get `[pasted:P1]` in its place, and you are told it was withheld. The
+value is held in the session's memory only. The model is told what was
+pasted (an OpenShift token for that server), never the value, and offers to
+log in: `k8s_login` with `pasted: "P1"` and a short cluster name. That one
+approval:
+
+1. reads the server's certificate, sending nothing: one a public CA vouches
+   for is verified as any site is; otherwise the CA your kubeconfig holds for
+   that server; otherwise the approval shows the certificate the server
+   presents now by its SHA-256 fingerprint, and approving pins it, as
+   `oc login` asks you to. A login that pins is always put to you, with the
+   fingerprint: bypass mode, an allow rule, a runbook or a remembered
+   "always" does not answer it, and where no one can be asked (`-p`, a
+   scheduled run) it is refused;
+2. sends the token to that server only after that check, and stores nothing
+   if the server refuses it;
+3. stores the token as a secret (`store_as`, by default `K8S_<CLUSTER>_TOKEN`),
+   keeps the cluster with its server, its pinned certificate and that secret
+   for you, outside every workspace, and logs the session in.
+
+The server is the one you pasted the token with; the model cannot name
+another. Pasting the same token again with another server holds it under a
+new id for that server, so a corrected `oc login` is the one used. A value
+you pasted is withheld wherever it appears again in the session, in a later
+message or a tool's output, and a pasted credential's shape is kept out of
+the terminal's prompt history, a server's session list and what an editor's
+completion or commit message requests send. A later session reaches the cluster by name in `k8s_get` and
+`k8s_apply`, which sign in with the kept token themselves: no paste, no
+`token_secret` and no `secret(NAME)` rule, since you bound that secret to
+that cluster when you approved it. A deny rule on the secret still refuses
+it. A name `k8s.clusters` declares, or that is a kubeconfig context, cannot be
+taken by a pasted login. Where Abhed does not run on your own machine
+(`abhed serve`), a pasted token is withheld the same way and cannot be kept:
+store it with `abhed secret set`.
+
 ### Cluster and machine logins
 
 `k8s_login` and `ssh_connect` take credentials the same way: by name, from
@@ -151,8 +363,9 @@ the store, under a `secret(NAME)` rule. `k8s_login` takes `cluster` and
 takes a token or password, so none is recorded, shown for approval, or sent
 back to the model; one sent anyway is dropped.
 
-Where a credential goes is the operator's choice, not the model's.
-`k8s_login` sends a token only to a cluster named in `k8s.clusters`, over TLS
+Where a credential goes is the operator's or the person's choice, not the
+model's. `k8s_login` sends a token only to a cluster named in `k8s.clusters`,
+or one you kept from a pasted login, over TLS
 verified against the system roots and the configured CA; a URL is refused
 before any request, and the approval prompt names the cluster and its server.
 `k8s_get` and `k8s_apply` then take `cluster` to use that login.

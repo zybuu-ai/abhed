@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -59,5 +60,39 @@ func TestSessionRefusedWhenAnswersCannotBeChecked(t *testing.T) {
 	s.mu.Unlock()
 	if n != 0 {
 		t.Fatalf("%d sessions running unchecked", n)
+	}
+}
+
+// An unattended run labels its answers too, unless it or the configuration
+// turns checking off.
+func TestUnattendedSessionLabelsByDefault(t *testing.T) {
+	isolateAgents(t)
+	for _, c := range []struct {
+		name, cfgMode, verify string
+		want                  agent.VerifyMode
+	}{
+		{"unset", "", "", agent.VerifyLabel},
+		{"asked off", "", "off", ""},
+		{"configured off", "off", "", ""},
+		{"asked strict", "", "strict", agent.VerifyStrict},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Verify.Mode = c.cfgMode
+			s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{}, Registry: tools.NewRegistry(tools.Read{})})
+			id, err := s.StartSession(context.Background(), StartSpec{Prompt: "hello", Unattended: true, Verify: c.verify})
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.mu.Lock()
+			v := s.running[id].Loop.Verify
+			s.mu.Unlock()
+			switch {
+			case c.want == "" && v != nil:
+				t.Fatalf("checked although turned off: %+v", v)
+			case c.want != "" && (v == nil || v.Mode != c.want):
+				t.Fatalf("want %s, got %+v", c.want, v)
+			}
+		})
 	}
 }

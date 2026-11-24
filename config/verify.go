@@ -9,8 +9,8 @@ import (
 // against the session's record, and what must hold before a run completes.
 type VerifyConfig struct {
 	// Mode is off, label or strict. Unset lets the surface choose: label in
-	// the terminal, the workbench and Abhed Studio, where a person reads the
-	// answer; off for -p, rpc, schedules and the SDK unless they ask.
+	// the terminal, -p, rpc, the server (unattended runs included) and Abhed
+	// Studio; off for the SDK unless it asks.
 	Mode string `json:"mode,omitempty"`
 	// AnswerTool offers the agent the answer tool, which carries each claim's
 	// evidence. Unset is on in strict mode and off in label mode.

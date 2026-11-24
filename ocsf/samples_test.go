@@ -2,6 +2,7 @@ package ocsf
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -13,6 +14,9 @@ type sample struct {
 	actor   agent.Actor
 	payload string
 }
+
+// untrustedTypes are recorded untrusted, so their samples are too.
+var untrustedTypes = map[agent.EventType]bool{agent.EvConfigChanged: true}
 
 // samples holds a line of every type the table maps, with the payload fields
 // docs/architecture/10-data-model.md names for it. Some types have more than
@@ -122,6 +126,9 @@ var samples = []sample{
 	{agent.EvCompactStarted, agent.ActorSystem, `{"before_tokens":9000,"after_tokens":0,"trigger":"auto"}`},
 	{agent.EvCompactDone, agent.ActorSystem, `{"before_tokens":9000,"after_tokens":2000,"summary":"s","trigger":"auto"}`},
 	{agent.EvContextOffloaded, agent.ActorSystem, `{"call_id":"c-1","bytes":100000}`},
+	{agent.EvContextWindow, agent.ActorSystem, `{"model":"m","window":32768,"source":"fallback","note":"assumed"}`},
+	{agent.EvContextOverflow, agent.ActorSystem, `{"model":"claude-sonnet-5-5","window":1000000,"limit":200000,"action":"compacted_retry","before_tokens":200397,"after_tokens":60000}`},
+	{agent.EvContextRefit, agent.ActorSystem, `{"reason":"model_switch","from_model":"a","to_model":"b","from_window":1000000,"to_window":32768,"before_tokens":90000,"after_tokens":12000}`},
 	{agent.EvPlanUpdated, agent.ActorAgent, `{"items":[]}`},
 	{agent.EvTodoUpdated, agent.ActorAgent, `{"items":[{"id":"1","text":"test","status":"pending"}]}`},
 	{agent.EvSuggestionOffered, agent.ActorSystem, `{"text":"run the tests","turn":2}`},
@@ -137,6 +144,22 @@ var samples = []sample{
 	{agent.EvOllamaPull, agent.ActorUser, `{"op":"pull","outcome":"refused","provider":"local","model":"qwen3:8b","problem":"assist_off","error":"Abhed is set not to install or download anything here","by":"user","surface":"server"}`},
 	{agent.EvDebugSetup, agent.ActorUser, `{"action":"process_tier_consent","workspace":"/w","call_id":"u-2"}`},
 	{agent.EvSandboxPortContested, agent.ActorSystem, `{"port":5173,"listeners":2}`},
+	{agent.EvLSPDiagnostics, agent.ActorSystem, `{"call_id":"c-7","path":"/w/a.go","language":"go","lsp_id":"lsp-diag-go-1","total":3,"shown":3,"errors":1,"warnings":2,"duration_ms":410}`},
+	{agent.EvHookContinued, agent.ActorSystem, `{"hook":"tests-first","text":"The tests-first hook asks you to continue before finishing: run the tests"}`},
+	{agent.EvHookFired, agent.ActorSystem, `{"extension":"freeze","event":"tool_call","verdict":"halt","kind":"command","reason":"change freeze","exit_code":0}`},
+	{agent.EvConfigChanged, agent.ActorSystem, `{"time":"2026-11-09T05:35:00Z","by":"mcp add -confirm-fd","key":"mcp.servers","name":"issues","kind":"stdio","sha256":"549dbf97"}`},
+	{agent.EvConfigChanged, agent.ActorSystem, `{"time":"2026-11-09T05:36:00Z","by":"mcp add","key":"mcp.servers","name":"pastebin","kind":"http","sha256":"0f1e2d3c","refused":"mcp.denied in /etc/abhed/config.json matches it"}`},
+	{agent.EvConfigChanged, agent.ActorSystem, `{"by":"abhed","key":"config-changes.jsonl","pending":51}`},
+	{agent.EvTurnsExtended, agent.ActorUser, `{"from":25,"to":50,"count":1,"max":3,"by":"user","surface":"tui"}`},
+	{agent.EvBudgetStopped, agent.ActorSystem, `{"reason":"usd","model":"gpt-4o","spent_usd":1.02,"max_usd":1,"message":"stopped: the budget of $1.00 is spent ($1.0200)"}`},
+	{agent.EvModelWaiting, agent.ActorSystem, `{"session":"s-child","model":"m","ahead":2}`},
+	{agent.EvPluginLoaded, agent.ActorSystem, `{"plugins":[{"name":"acme-review","version":"1.0.0","digest":"ab12","basis":"signature","signer":"release@acme.example (https://issuer.acme.example)"}]}`},
+	{agent.EvConfigChanged, agent.ActorSystem, `{"time":"2026-11-17T05:00:00Z","by":"plugin install","key":"plugins","name":"acme-review","kind":"signature","sha256":"ab12"}`},
+	{agent.EvSessionEnded, agent.ActorSystem, `{"reason":"stdin_late","turns":1,"tokens_in":1,"tokens_out":1,"tokens_cached":0,"compactions":0}`},
+	{agent.EvConfigApplied, agent.ActorSystem, `{"models_added":["claude"],"switched_to":"claude"}`},
+	{agent.EvSessionFacts, agent.ActorSystem, `{"text":"True now; don't probe or dispute; trust what the user reports. Sandbox: process. Network: off, only the user can open it. Git remotes not brokered."}`},
+	{"hostgit.brokered", agent.ActorSystem, `{"call_id":"c-1","stage":"started","command":"git fetch","workspace":"/w","cwd":"/w","network":"off","remotes":{"origin":["git@git.example:team/app.git"]},"hosts":["git.example"],"asked":"hostgit"}`},
+	{"hostgit.brokered", agent.ActorSystem, `{"call_id":"c-1","stage":"exited","command":"git fetch","workspace":"/w","cwd":"/w","network":"off","remotes":{"origin":["git@git.example:team/app.git"]},"hosts":["git.example"],"exit_code":0,"changed":[{"ref":"refs/remotes/origin/main","from":"aa","to":"bb"}]}`},
 }
 
 // sampleLines are the samples as one session's lines, seq from 1.
@@ -150,9 +173,14 @@ func sampleLines() []Line {
 			panic(string(s.typ) + ": " + err.Error())
 		}
 		compact, _ = json.Marshal(v)
+		trust := agent.Trusted
+		// Abhed's own entries (a pending count) are trusted; the log's lines are not.
+		if untrustedTypes[s.typ] && !strings.Contains(s.payload, `"by":"abhed"`) {
+			trust = agent.Untrusted
+		}
 		out[i] = Line{Event: agent.Event{
 			ID: "ev-" + itoa(i+1), SessionID: "s-1", Seq: int64(i + 1), Type: s.typ, Actor: s.actor,
-			Trust: agent.Trusted, CreatedAt: at.Add(time.Duration(i) * time.Second), Payload: compact,
+			Trust: trust, CreatedAt: at.Add(time.Duration(i) * time.Second), Payload: compact,
 		}}
 	}
 	return out

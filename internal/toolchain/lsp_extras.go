@@ -155,13 +155,13 @@ func (c Cache) installNPM(ctx context.Context, src *Source, e Extra, p Platform,
 				return ExtraInstalled{}, fmt.Errorf("unpack %s: %w", pkg.name, err)
 			}
 			dest := filepath.Join(top, "lib", "node_modules", pkg.name)
-			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil { // #nosec G301 -- a toolchain folder, readable to commands by design
 				return ExtraInstalled{}, err
 			}
 			if err := os.Rename(filepath.Join(out, "package"), dest); err != nil {
 				return ExtraInstalled{}, fmt.Errorf("%s has no package folder: %w", pkg.name, err)
 			}
-			if err := os.MkdirAll(filepath.Join(top, "bin"), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Join(top, "bin"), 0o755); err != nil { // #nosec G301 -- a toolchain folder, readable to commands by design
 				return ExtraInstalled{}, err
 			}
 			for cmd, script := range pkg.bins {
@@ -206,7 +206,7 @@ func (c Cache) installRustAnalyzer(ctx context.Context, src *Source, e Extra, p 
 		if err != nil {
 			return ExtraInstalled{}, err
 		}
-		if err := os.MkdirAll(filepath.Join(top, "bin"), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(top, "bin"), 0o755); err != nil { // #nosec G301 -- a toolchain folder, readable to commands by design
 			return ExtraInstalled{}, err
 		}
 		if err := gunzipTo(gz, filepath.Join(top, "bin", "rust-analyzer")); err != nil {

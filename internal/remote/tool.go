@@ -3,11 +3,13 @@ package remote
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -21,6 +23,10 @@ import (
 type Registry struct {
 	mu    sync.RWMutex
 	hosts map[string]*Host
+	// machine is the person's ~/.ssh/config, whose hosts are offered too,
+	// within machineAllowed when that is set.
+	machine        *SSHConfig
+	machineAllowed []string
 }
 
 func NewRegistry(configs []HostConfig) (*Registry, []error) {
@@ -127,6 +133,14 @@ type Tool struct {
 	// Reads are the operator's ssh.read_commands, named to the model so it
 	// can inspect a host in plan mode; the policy decides what they allow.
 	Reads []string
+	// ReadOnly says the policy's read-only classifier is on for the declared
+	// hosts, so the description can tell the model which commands run unasked.
+	ReadOnly bool
+	// ReadContents says the classifier also runs programs that print files.
+	ReadContents bool
+	// MaxTimeout bounds the timeout a call may ask for (ssh.max_timeout_seconds);
+	// 0 is DefaultTimeout.
+	MaxTimeout time.Duration
 	// Secret returns a stored secret's value, for stdin_secret; nil means no store.
 	Secret func(name string) (string, error)
 }
@@ -168,19 +182,24 @@ func (Tool) Name() string { return "ssh" }
 // over SSH: the command runs with the remote account's full authority, and
 // there is no undo. Classifying `cat` as safe would be judging the string, not
 // the consequence — on a remote host Abhed cannot see, the two are not the
-// same thing. So every remote command asks, unless the operator declared it
-// a read in ssh.read_commands, which the policy judges.
+// same thing. So every remote command asks, unless the policy finds it a
+// read: an entry of ssh.read_commands, or, on a host the operator declared,
+// a command its read-only classifier proves changes nothing.
 func (Tool) Mutates() bool { return true }
 
 func (t Tool) Description() string {
 	hosts := ""
 	if t.R != nil && t.R.Len() > 0 {
-		hosts = " Declared hosts: " + strings.Join(t.R.names(), ", ") + "."
+		hosts = " Hosts the operator declared, ready now with no ssh_connect needed: " +
+			strings.Join(t.R.names(), ", ") + "."
+	}
+	if t.R != nil {
+		hosts += machineHostsLine(t.R)
 	}
 	return "Run a shell command on a remote machine over SSH." + hosts +
 		" Hosts added with ssh_connect in this session can be named too." +
 		" Every call requires approval, because a remote command runs outside " +
-		"the sandbox with no undo" + reads(t.Reads) + ". Prefer one command that answers the question " +
+		"the sandbox with no undo" + reads(t.Reads) + readOnly(t.ReadOnly, t.ReadContents) + ". Prefer one command that answers the question " +
 		"over several exploratory ones. To give a command a password or key, have the " +
 		"user store it with `abhed secret set NAME` and pass the NAME as stdin_secret; " +
 		"never put a secret in the command."
@@ -192,7 +211,23 @@ func reads(cmds []string) string {
 		return ""
 	}
 	return ", except a command the operator declared a read, which runs unasked and in plan mode, " +
-		"alone and exactly as declared (* matches any text): " + strings.Join(cmds, "; ")
+		"alone and exactly as declared (* or ? stands within one argument, a lone ** for one or more arguments): " + strings.Join(cmds, "; ")
+}
+
+// readOnly tells the model what the read-only classifier lets run unasked.
+func readOnly(on, contents bool) string {
+	if !on {
+		return ""
+	}
+	what := "programs that show metadata (ls, stat, du, df, ps, free, uptime, wc, systemctl status -n 0, find " +
+		"without -exec of a reader, and find -exec of a program that opens files only with -type f -xdev, …), and head, tail, sort, cut, grep or wc reading what such a program pipes " +
+		"to them; never a path under /dev, /proc or /sys"
+	if contents {
+		what = "common read programs (ls, cat, head, tail, grep, du, df, ps, journalctl, find -type f -exec of a read, …)"
+	}
+	return ". On a declared host, a read-only command also runs unasked and in plan mode: " + what +
+		", with read options, joined only by |, words plain or in single quotes, with no redirection, $, " +
+		"backquote, double quote, ; or &&, and no follow (-f) form; anything else asks"
 }
 
 func (Tool) Schema() json.RawMessage {
@@ -201,7 +236,7 @@ func (Tool) Schema() json.RawMessage {
   "properties":{
     "host":{"type":"string","description":"Name of a configured host."},
     "command":{"type":"string","description":"The shell command to run."},
-    "timeout_seconds":{"type":"integer","description":"How long to wait. Default 120."},
+    "timeout_seconds":{"type":"integer","description":"How long to wait. Default 120, and never more than the operator's maximum (120 unless set)."},
     "stdin_secret":{"type":"string","description":"NAME of a stored secret to write to the command's stdin, such as a password for sudo -S or a key for a file. Never the value, and never put a secret in command."}
   },
   "required":["host","command"]
@@ -237,6 +272,12 @@ func (t Tool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage)
 	if !ok && t.R != nil {
 		h, ok = t.R.get(a.Host)
 	}
+	if !ok && t.R != nil {
+		var err error
+		if h, ok, err = machineHostFor(t.R, sess, a.Host); err != nil {
+			return errf("%v", err)
+		}
+	}
 	if !ok {
 		// Naming the alternatives ends the retry loop a bare "not found"
 		// otherwise causes.
@@ -249,7 +290,7 @@ func (t Tool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage)
 	if err != nil {
 		return errf("%v", err)
 	}
-	timeout := time.Duration(a.Timeout) * time.Second
+	timeout := t.timeout(a.Timeout)
 	out, err := h.RunInput(ctx, a.Command, timeout, stdin)
 	if out != nil && stdin != nil {
 		// The command may echo what it read; the model never sees it.
@@ -275,6 +316,26 @@ func (t Tool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage)
 	}
 }
 
+// DefaultTimeout is how long a command runs when the call names no timeout,
+// and the most a call may ask for unless the operator sets another bound.
+const DefaultTimeout = 2 * time.Minute
+
+// timeout is the call's timeout in seconds, bounded by the operator's
+// maximum: the model chooses how long it waits, never past that.
+func (t Tool) timeout(seconds int) time.Duration {
+	limit := t.MaxTimeout
+	if limit <= 0 {
+		limit = DefaultTimeout
+	}
+	if seconds <= 0 {
+		return min(DefaultTimeout, limit)
+	}
+	if seconds >= int(limit/time.Second) {
+		return limit // and no overflow from a huge number
+	}
+	return time.Duration(seconds) * time.Second
+}
+
 // Target shows the account and address a command runs on: an approval that
 // names only the host would not show which machine that is.
 func (t Tool) Target(sess *tools.Session, raw json.RawMessage) string {
@@ -283,15 +344,23 @@ func (t Tool) Target(sess *tools.Session, raw json.RawMessage) string {
 		return ""
 	}
 	h, ok := sessionHostsOf(sess, t.R, false).get(a.Host)
-	origin := "added in this session"
+	declared := false
 	if !ok && t.R != nil {
 		h, ok = t.R.get(a.Host)
-		origin = "declared by the operator"
+		declared = ok
+	}
+	if !ok && t.R != nil {
+		if mh, found := t.R.MachineHost(a.Host); found {
+			return machineTarget(mh)
+		}
 	}
 	if !ok {
 		return ""
 	}
-	target := fmt.Sprintf("runs as %s@%s, %s", h.User(), h.Addr(), origin)
+	target := fmt.Sprintf("runs as %s@%s, %s", h.User(), h.Addr(), hostOrigin(h, declared))
+	if h.cfg.jump != nil {
+		target += ", through " + h.cfg.jump.Name()
+	}
 	if a.StdinSecret != "" {
 		target += "; writes stored secret " + a.StdinSecret + " to the command's stdin"
 	}
@@ -345,9 +414,48 @@ func knownNames(r *Registry, mine *sessionHosts) []string {
 	if r != nil {
 		out = r.names()
 	}
-	out = append(out, mine.names()...)
+	for _, n := range append(mine.names(), r.machineAliases()...) {
+		if !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
 	sort.Strings(out)
 	return out
+}
+
+// machineHostFor is the session's connection to the ~/.ssh/config host
+// alias, made once and kept with the session's hosts, so it closes with it.
+func machineHostFor(r *Registry, sess *tools.Session, alias string) (*Host, bool, error) {
+	mh, ok := r.MachineHost(alias)
+	if !ok {
+		return nil, false, nil
+	}
+	mine := sessionHostsOf(sess, r, true)
+	if h, have := mine.get(alias); have && h.cfg.machine {
+		return h, true, nil
+	}
+	r.mu.RLock()
+	allowed := r.machineAllowed
+	r.mu.RUnlock()
+	h, err := newMachineHost(r.machineConfig(), mh, allowed)
+	if err != nil {
+		return nil, true, err
+	}
+	if !mine.add(h) {
+		return nil, true, fmt.Errorf("the session has ended")
+	}
+	return h, true, nil
+}
+
+// hostOrigin says where a host came from, for the approval.
+func hostOrigin(h *Host, declared bool) string {
+	switch {
+	case declared:
+		return "declared by the operator"
+	case h.cfg.machine:
+		return "from your ~/.ssh/config, signing in with your ssh-agent or its IdentityFile"
+	}
+	return "added in this session"
 }
 
 func combine(o *Output) string {
@@ -485,6 +593,9 @@ type ConnectTool struct {
 	Secret func(name string) (string, error)
 	// Allowed, when set, are the only addresses it may reach (ssh.connect_hosts).
 	Allowed []string
+	// Declared are the names in ssh.hosts, whether or not each loaded: a
+	// session host may never take one.
+	Declared []string
 }
 
 // addrAllowed reports whether addr matches one of patterns: the address as
@@ -527,8 +638,25 @@ func (ConnectTool) FixedArgs() {}
 // SecretArgs puts password_secret to a secret(NAME) rule.
 func (ConnectTool) SecretArgs() []string { return []string{"password_secret"} }
 
-func (ConnectTool) Description() string {
-	return "Register a remote machine for SSH, for this session only. Use when the user " +
+func (t ConnectTool) Description() string {
+	declared := ""
+	var ready, broken []string
+	for _, n := range t.declaredNames() {
+		if t.loaded(n) {
+			ready = append(ready, n)
+		} else {
+			broken = append(broken, n)
+		}
+	}
+	if len(ready) > 0 {
+		declared = "Not for a host the operator declared (" + strings.Join(ready, ", ") +
+			"): those are ready, so run commands on them with the `ssh` tool directly. "
+	}
+	if len(broken) > 0 {
+		declared += "Declared in ssh.hosts but not loaded, so unusable until the user fixes the entry: " +
+			strings.Join(broken, ", ") + ". "
+	}
+	return declared + "Register a remote machine for SSH, for this session only. Use when the user " +
 		"gives an address and a key path, or a password they stored with " +
 		"`abhed secret set NAME`. Call this FIRST with the key path " +
 		"exactly as the user wrote it — it resolves typos and common locations itself, " +
@@ -537,6 +665,30 @@ func (ConnectTool) Description() string {
 		"Do NOT use `ssh` through bash: the sandbox denies reads of key material, and a " +
 		"connection made inside a bash call does not survive to the next one. " +
 		"After this succeeds, run commands with the `ssh` tool."
+}
+
+// loaded reports a declared host that loaded, and so is ready for ssh.
+func (t ConnectTool) loaded(name string) bool {
+	if t.R == nil {
+		return false
+	}
+	_, ok := t.R.get(name)
+	return ok
+}
+
+// declaredNames are the operator's host names, loaded or not, sorted.
+func (t ConnectTool) declaredNames() []string {
+	var out []string
+	if t.R != nil {
+		out = t.R.names()
+	}
+	for _, d := range t.Declared {
+		if !slices.Contains(out, d) {
+			out = append(out, d)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (ConnectTool) Schema() json.RawMessage {
@@ -563,6 +715,83 @@ type connectArgs struct {
 	AcceptHostKey  bool   `json:"accept_host_key"`
 }
 
+// declaredName is why a call's name cannot be a session host, or "". A
+// declared host needs no connect; any other name may not pass for one.
+func (t ConnectTool) declaredName(a connectArgs) string {
+	name := a.Name
+	if name == "" {
+		name = a.Addr
+	}
+	if !plainName(name) {
+		return "Host names are plain ASCII letters, digits and punctuation, so one cannot " +
+			"pass for another; choose another name."
+	}
+	// An operator's host keeps its name: a session cannot put another machine
+	// behind it.
+	taken := ""
+	if t.R != nil {
+		taken = t.R.resembles(name)
+	}
+	for _, d := range t.Declared {
+		if taken == "" && foldName(d) == foldName(name) {
+			taken = d
+		}
+	}
+	switch {
+	case taken == "":
+		return ""
+	case a.Addr == taken && (a.Name == "" || a.Name == taken) && !t.loaded(taken):
+		return fmt.Sprintf("%s is declared in ssh.hosts but did not load (an entry needs a name, an addr "+
+			"and a user), so it cannot be used, and ssh_connect may not take its name. Ask the user to "+
+			"check its ssh.hosts entry. Nothing was connected.", taken)
+	case a.Addr == taken && (a.Name == "" || a.Name == taken):
+		// The model named the host, not a machine: it is already there.
+		return fmt.Sprintf("%s is a host the operator declared, and it is ready: run commands "+
+			"on it with the ssh tool (host %q), with no ssh_connect needed. ssh_connect is only for "+
+			"a machine the user gives an address for. Nothing was connected.", taken, taken)
+	}
+	return fmt.Sprintf("%q is, or reads like, %q, a host the operator declared; use that "+
+		"with the ssh tool, or choose a name unlike it for this one.", name, taken)
+}
+
+// Precheck answers a call naming a declared host before anyone is asked:
+// nothing would be connected, so no approval could make it succeed.
+func (t ConnectTool) Precheck(_ *tools.Session, raw json.RawMessage) error {
+	var a connectArgs
+	if json.Unmarshal(raw, &a) != nil {
+		return nil // Run reports it
+	}
+	a.Addr, a.Name = strings.TrimSpace(a.Addr), strings.TrimSpace(a.Name)
+	if a.Addr == "" {
+		return nil
+	}
+	if why := t.declaredName(a); why != "" {
+		return errors.New(why)
+	}
+	if why := t.machineName(a); why != "" {
+		return errors.New(why)
+	}
+	return nil
+}
+
+// machineName is why a call naming a ~/.ssh/config host needs no connect: it
+// is ready by name. One that brings its own key or password goes ahead.
+func (t ConnectTool) machineName(a connectArgs) string {
+	if t.R == nil || a.IdentityFile != "" || a.PasswordSecret != "" {
+		return ""
+	}
+	if _, ok := t.R.MachineHost(a.Addr); ok && (a.Name == "" || a.Name == a.Addr) {
+		return fmt.Sprintf("%s is a host in the user's ~/.ssh/config and is ready by name: run commands on it "+
+			"with the ssh tool (host %q), which signs in with their ssh-agent and the key the config names. "+
+			"Nothing was connected.", a.Addr, a.Addr)
+	}
+	return ""
+}
+
+// PrecheckInPlanMode: naming a declared host is answered in plan mode too;
+// the check connects nothing.
+func (ConnectTool) PrecheckInPlanMode() {}
+
 func (t ConnectTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage) tools.Result {
 	var a connectArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
@@ -585,17 +814,8 @@ func (t ConnectTool) Run(ctx context.Context, sess *tools.Session, raw json.RawM
 	if a.Name == "" {
 		a.Name = a.Addr
 	}
-	if !plainName(a.Name) {
-		return errf("Host names are plain ASCII letters, digits and punctuation, so one cannot " +
-			"pass for another; choose another name.")
-	}
-	// An operator's host keeps its name: a session cannot put another machine
-	// behind it.
-	if t.R != nil {
-		if taken := t.R.resembles(a.Name); taken != "" {
-			return errf("%q is, or reads like, %q, a host the operator declared; use that "+
-				"with the ssh tool, or choose a name unlike it for this one.", a.Name, taken)
-		}
+	if why := t.declaredName(a); why != "" {
+		return errf("%s", why)
 	}
 
 	var password string

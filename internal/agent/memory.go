@@ -16,6 +16,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/frontmatter"
+	"github.com/zybuu-ai/abhed/internal/home"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -36,6 +38,9 @@ const (
 	MemoryImport  = "import"
 	MemoryRule    = "rule"
 	MemoryAuto    = "auto"
+	// MemorySubdir is a folder's own ABHED.md, loaded when the agent first
+	// works in that folder.
+	MemorySubdir = "subdirectory"
 )
 
 // Memory file names.
@@ -56,14 +61,14 @@ const (
 	MaxImportDepth     = 10
 )
 
-// ManagedMemoryDir holds the organisation's ABHED.md; a variable for tests.
-var ManagedMemoryDir = filepath.Join("/etc", "abhed")
-
 // MemoryOptions say where to look and how far.
 type MemoryOptions struct {
 	Workspace string
 	// Home is the person's home directory; empty uses the process's.
 	Home string
+	// UserFile is the person's own memory file; empty is ABHED.md in the
+	// person's folder (home.PersonPath), or under Home/.abhed when Home is set.
+	UserFile string
 	// ImportDepth bounds imports; zero is DefaultImportDepth, and it is
 	// never more than MaxImportDepth.
 	ImportDepth int
@@ -75,6 +80,9 @@ type MemoryOptions struct {
 	Allow func(path string) error
 	// Auto, when set, is the auto memory index to load; see AutoMemoryDir.
 	Auto string
+	// ManagedOnly leaves out the person's and the workspace's memory files,
+	// for a bare run; RuleDirs and Auto still load as given.
+	ManagedOnly bool
 }
 
 // MemoryEntry is one memory file.
@@ -117,15 +125,15 @@ func DiscoverMemoryFiles(workspace string) []string {
 		}
 		return false
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		add(filepath.Join(home, ".abhed", MemoryFileName))
+	if p, err := home.PersonPath(MemoryFileName); err == nil {
+		add(p)
 	}
 	addNamed := func(p string) bool { return existsAsNamed(p) && add(p) }
 	if !addNamed(filepath.Join(workspace, MemoryFileName)) {
 		addNamed(filepath.Join(workspace, AgentsFileName))
 	}
 	addNamed(filepath.Join(workspace, LocalMemoryFileName))
-	add(filepath.Join(ManagedMemoryDir, MemoryFileName))
+	add(filepath.Join(managed.MemoryDir, MemoryFileName))
 	return out
 }
 
@@ -172,17 +180,37 @@ func inWorkspace(workspace, path string) bool {
 	return false
 }
 
+// userMemoryLabel is the person's memory file as the prompt and /memory name
+// it: under ~ when it is in the home folder.
+func userMemoryLabel(osHome, path string) string {
+	if osHome != "" {
+		if rel, err := filepath.Rel(osHome, path); err == nil && filepath.IsLocal(rel) {
+			return "~/" + filepath.ToSlash(rel)
+		}
+	}
+	return path
+}
+
 // LoadMemory reads every memory file, its imports and the rule files.
 func LoadMemory(o MemoryOptions) *Memory {
+	if o.UserFile == "" {
+		if o.Home != "" {
+			o.UserFile = filepath.Join(o.Home, home.DirName, MemoryFileName)
+		} else if p, err := home.PersonPath(MemoryFileName); err == nil {
+			o.UserFile = p
+		}
+	}
 	if o.Home == "" {
 		o.Home, _ = os.UserHomeDir()
 	}
 	m := &Memory{Workspace: o.Workspace}
 	l := memoryLoader{o: o, m: m, seen: map[string]bool{}}
-	if user := filepath.Join(o.Home, ".abhed", MemoryFileName); o.Home != "" && exists(user) {
-		l.file(user, MemoryUser, "~/.abhed/"+MemoryFileName, "", 0)
+	// ManagedOnly skips the person's and the workspace's files; the rule
+	// directories and auto memory are the caller's to narrow.
+	if user := o.UserFile; !o.ManagedOnly && user != "" && exists(user) {
+		l.file(user, MemoryUser, userMemoryLabel(o.Home, user), "", 0)
 	}
-	if o.Workspace != "" {
+	if o.Workspace != "" && !o.ManagedOnly {
 		project := filepath.Join(o.Workspace, MemoryFileName)
 		if existsAsNamed(project) {
 			l.file(project, MemoryProject, MemoryFileName, "", 0)
@@ -197,8 +225,8 @@ func LoadMemory(o MemoryOptions) *Memory {
 	if o.Auto != "" && exists(o.Auto) {
 		l.auto(o.Auto)
 	}
-	if managed := filepath.Join(ManagedMemoryDir, MemoryFileName); exists(managed) {
-		l.file(managed, MemoryManaged, managed+", set by the organisation", "", 0)
+	if org := filepath.Join(managed.MemoryDir, MemoryFileName); exists(org) {
+		l.file(org, MemoryManaged, org+", set by the organisation", "", 0)
 	}
 	return m
 }
@@ -366,7 +394,7 @@ func (l *memoryLoader) importAllowed(from, _ string, p string) bool {
 	}
 	// An operator's file may import from the organisation's directory; the
 	// person's ~/.abhed is Abhed's state and never imported.
-	for _, root := range []string{ManagedMemoryDir} {
+	for _, root := range []string{managed.MemoryDir} {
 		if rel, err := filepath.Rel(root, p); err == nil && filepath.IsLocal(rel) {
 			return true
 		}
@@ -584,8 +612,12 @@ func globMatch(glob, p string) bool {
 	}
 }
 
+// MemoryAskedNote begins why a memory file a read rule asks about was not loaded.
+const MemoryAskedNote = "a read rule asks before it is read"
+
 // ReadAllowed is a MemoryOptions.Allow that puts each workspace memory file
-// to a policy's read rules, as the read tool would be.
+// to a policy's read rules, as the read tool would be: a deny or an ask
+// keeps it out.
 func ReadAllowed(pol *policy.Engine) func(path string) error {
 	if pol == nil {
 		return nil
@@ -595,8 +627,12 @@ func ReadAllowed(pol *policy.Engine) func(path string) error {
 		if err != nil {
 			return err
 		}
-		if d := pol.Evaluate("read", false, args); d.Decision == policy.Deny {
+		switch d := pol.Evaluate("read", false, args); d.Decision {
+		case policy.Deny:
 			return errors.New(d.Reason)
+		case policy.Ask:
+			// Nobody is there to say yes while memory loads, so it is not read.
+			return fmt.Errorf("%s (%s), and memory is never loaded on an ask", MemoryAskedNote, d.Reason)
 		}
 		return nil
 	}
@@ -606,15 +642,16 @@ func ReadAllowed(pol *policy.Engine) func(path string) error {
 // are followed, at the default depth, only when allow puts them to the read
 // rules: with no policy to ask, a file an import names is not read.
 func memoryFromFiles(workspace string, files []string, allow func(string) error) *Memory {
-	home, _ := os.UserHomeDir()
+	osHome, _ := os.UserHomeDir()
+	user, _ := home.PersonPath(MemoryFileName)
 	m := &Memory{Workspace: workspace}
-	l := memoryLoader{o: MemoryOptions{Workspace: workspace, Home: home, Allow: allow}, m: m, seen: map[string]bool{}, noImports: allow == nil}
+	l := memoryLoader{o: MemoryOptions{Workspace: workspace, Home: osHome, UserFile: user, Allow: allow}, m: m, seen: map[string]bool{}, noImports: allow == nil}
 	for _, f := range files {
 		scope, label := MemoryProject, filepath.Base(f)
 		switch {
-		case home != "" && f == filepath.Join(home, ".abhed", MemoryFileName):
-			scope, label = MemoryUser, "~/.abhed/"+MemoryFileName
-		case f == filepath.Join(ManagedMemoryDir, MemoryFileName):
+		case user != "" && f == user:
+			scope, label = MemoryUser, userMemoryLabel(osHome, user)
+		case f == filepath.Join(managed.MemoryDir, MemoryFileName):
 			scope, label = MemoryManaged, f+", set by the organisation"
 		case filepath.Base(f) == LocalMemoryFileName:
 			scope = MemoryLocal

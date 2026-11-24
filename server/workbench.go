@@ -411,12 +411,21 @@ func (s *Server) changesSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer v.Close()
-
-	out := changesResponse{Files: []changedFile{}}
 	live, found := s.session(r.Context(), r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
-	if !found || live.undo == nil {
-		WriteJSON(w, http.StatusOK, out)
+	if !found {
+		WriteJSON(w, http.StatusOK, changesResponse{Files: []changedFile{}})
 		return
+	}
+	WriteJSON(w, http.StatusOK, s.changesOf(live, v))
+}
+
+// changesOf is what live changed in v's folder: a diff of each file's
+// content before its first edit against what is on disk now, and what its
+// commands changed against the folder's starting snapshot.
+func (s *Server) changesOf(live *liveSession, v *workspaceView) changesResponse {
+	out := changesResponse{Files: []changedFile{}}
+	if live.undo == nil {
+		return out
 	}
 	out.Available = true
 
@@ -463,7 +472,7 @@ func (s *Server) changesSession(w http.ResponseWriter, r *http.Request) {
 	}
 	shell, partial := shellChanges(v, live.snap, byTools)
 	out.Files, out.Partial = append(out.Files, shell...), partial
-	WriteJSON(w, http.StatusOK, out)
+	return out
 }
 
 // shellChanges are the files changed since the session opened that the edit

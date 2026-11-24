@@ -21,11 +21,21 @@ func fenceSessionBash(cfg config.Config, workspace string) func(string, *agent.R
 	return func(_ string, rec *agent.Recorder, shared tools.Bash) (tools.Bash, func() error) {
 		sf := &sessionFence{build: func() (sandbox.Sandbox, error) { return buildSandbox(cfg, workspace) }, rec: rec}
 		fence := func() sandbox.Tier { return sandbox.TierFence }
-		shared.Sandbox, shared.Shell = hostgit.Broker(workspace, fence, sandboxconfig.NetworkOpen(cfg), sf.Command), sf.Shell
+		// A served session: remote git stays in the sandbox (serveSandbox).
+		gb := hostgit.NewBroker(workspace, fence, sandboxconfig.HostGitNetwork(cfg), sessionFenceCommand(sf)).HoldsGit(sessionFenceHolds(sf), func() bool { return false }).NoRemotes()
+		shared.Sandbox, shared.Shell, shared.HostAsk = gb.Command, sf.Shell, nil
 		shared.Home = sf.CommandHome // the session's commands get its own fence's home
 		return shared, sf.Close
 	}
 }
+
+// sessionFenceCommand and sessionFenceHolds are what a served session's
+// broker runs commands with and asks whether git is held; tests stand in
+// for the fence, which needs Linux.
+var (
+	sessionFenceCommand = func(sf *sessionFence) func(ctx context.Context, cwd, line string) *exec.Cmd { return sf.Command }
+	sessionFenceHolds   = func(sf *sessionFence) func() bool { return sf.holdsGit }
+)
 
 // sessionFence is one served session's fence, with a cgroup of its own. It
 // is qualified at the session's first command, so a session opened only to
@@ -117,4 +127,43 @@ func (s *sessionFence) Close() error {
 		return nil
 	}
 	return s.fence.Close()
+}
+
+// holdsGit reports whether the session's fence holds git's configuration
+// against its commands; one that cannot be built holds nothing.
+func (s *sessionFence) holdsGit() bool {
+	f, err := s.get()
+	return err == nil && sandbox.HoldsGit(f)
+}
+
+// hostAsk is the broker's Ask where sb holds git's configuration, so the
+// bash tool tells the model of brokered git only where it is brokered.
+func hostAsk(sb sandbox.Sandbox, gb *hostgit.HostBroker) func(key, cwd, command string) (string, string, string, error) {
+	if !sandbox.HoldsGit(sb) || !gb.BrokersRemoteCommands() {
+		return nil
+	}
+	return gb.Ask
+}
+
+// lazyHostAsk is the broker's Ask where the sandbox may still be being
+// chosen: the broker asks whether git is held as each call is judged.
+func lazyHostAsk(gb *hostgit.HostBroker) func(key, cwd, command string) (string, string, string, error) {
+	if !gb.BrokersRemoteCommands() {
+		return nil
+	}
+	return gb.Ask
+}
+
+// cliHostGitOn is whether the CLI's bash brokers remote git, for its
+// description: while the sandbox is still being chosen, what the process
+// tier, the floor, would do, so the first request does not wait for it.
+func cliHostGitOn(cfg config.Config, sb sandbox.Sandbox, gb *hostgit.HostBroker) bool {
+	if !gb.BrokersRemoteCommands() {
+		return false
+	}
+	if l, ok := sb.(interface{ Resolved() bool }); ok && !l.Resolved() {
+		on, _ := cfg.Sandbox.GitProtected()
+		return on
+	}
+	return hostgit.BrokersRemotes(sb)
 }

@@ -237,6 +237,7 @@ func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 	// Opening the request is a mutating action of its own, judged like one.
 	pol := policy.New(policy.Mode(orDefault(cfg.Permissions.Mode, "default")))
 	pol.Managed = cfg.Managed
+	pol.RuleSource = cfg.RuleSource
 	_ = pol.AddDeny(cfg.Permissions.Deny...)
 	_ = pol.AddAsk(cfg.Permissions.Ask...)
 	_ = pol.AddAllow(cfg.Permissions.Allow...)

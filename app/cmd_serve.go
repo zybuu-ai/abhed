@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -19,6 +20,8 @@ import (
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/docsite"
+	"github.com/zybuu-ai/abhed/internal/filelock"
+	"github.com/zybuu-ai/abhed/internal/home"
 	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/loopport"
@@ -49,10 +52,19 @@ func (a *App) serveCmd(workspace, addr string) int {
 		}
 		return 1
 	}
+	// A server's sessions are other people's, or jobs on their behalf: the
+	// plugins the operator approved for themselves do not load there.
+	cfg.DropPlugins()
 	provider, err := cfg.Provider()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
+	}
+	addr, ok := serveSignInChoice(cfg, addr, terminalBoth(), newPrompter(os.Stdin, os.Stderr))
+	if !ok {
+		// Not a clean stop: a supervisor or wrapper must see that nothing serves.
+		fmt.Fprintln(os.Stderr, "abhed: not serving: set up sign-in first, or choose to serve without it")
+		return 2
 	}
 	if err := vaultLoads(); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
@@ -94,9 +106,9 @@ func (a *App) serveCmd(workspace, addr string) int {
 	}
 	// The CLI's tool set. The server shares its registry across sessions and
 	// binds each session's own subagents, todo list and skill tool to it.
-	set := toolset.Build(context.Background(), cfg, toolset.Options{
-		Workspace: workspace, Bash: bash, Parts: toolset.All, Vault: vault, Warn: warnf, Sandbox: sb,
-	})
+	tsOpts := toolset.Options{Workspace: workspace, Bash: bash, Parts: toolset.All, Vault: vault, Warn: warnf, Sandbox: sb}
+	tsOpts.NoMCPLogins = serveMCPLogins(cfg, vault, os.Stderr)
+	set := toolset.Build(context.Background(), cfg, tsOpts)
 	defer set.Close()
 
 	// Identity first: a provider that cannot reach its issuer is a startup
@@ -106,6 +118,11 @@ func (a *App) serveCmd(workspace, addr string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
+	}
+	for _, p := range authMW.Providers {
+		if g, ok := p.(*auth.GuestAuth); ok {
+			defer g.Close()
+		}
 	}
 	// Unusable TLS stops here, before anything listens: never plain HTTP instead.
 	tlsL, err := buildTLS(cfg, workspace, slog.Default())
@@ -249,6 +266,34 @@ func (a *App) serveCmd(workspace, addr string) int {
 	}
 	defer closeAudit()
 
+	// The address and this machine's state are claimed before anything
+	// reconciles or sweeps: a second serve on the same address fails here,
+	// and one on another address does not run the sandbox control plane
+	// another serve owns (its reconciler would take the first server's
+	// sandboxes for lost) nor take back or sweep anything at start.
+	if _, port, err := net.SplitHostPort(addr); err != nil || !loopport.AnyPort(port) {
+		probe, err := net.Listen("tcp", addr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+			return 1
+		}
+		_ = probe.Close()
+	}
+	releaseState, stateErr := serveStartupLock()
+	if stateErr == nil {
+		defer releaseState()
+	} else if cfg.ControlPlane.Enabled {
+		fmt.Fprintf(os.Stderr, "abhed: another abhed serve owns this machine's state (%v); its sandbox control plane runs there, "+
+			"so this one does not start. Stop that one, or serve from another HOME\n", stateErr)
+		return 1
+	}
+	heldState := func() (func(), error) {
+		if stateErr != nil {
+			return nil, stateErr
+		}
+		return func() {}, nil // held for the whole serve, above
+	}
+
 	// The sandbox control plane, only when the configuration turns it on.
 	var cp *controlplane.Service
 	var exposed *expose.Server
@@ -317,11 +362,12 @@ func (a *App) serveCmd(workspace, addr string) int {
 		Gateway:       set.Gateway,
 		Egress:        set.Guard(),
 		Index:         set.Index,
-		IndexOptions:  toolset.IndexOptions(cfg),
+		IndexOptions:  toolset.IndexOptions(cfg, workspace),
 		DrainTimeout:  time.Duration(cfg.Server.DrainSeconds) * time.Second,
 		CLILogin:      cliLogin,
 		// Nil unless control_plane.per_session: sessions then share sb as before.
 		SessionSandboxes:    perSession,
+		StartupLock:         heldState,
 		SoleOwner:           iso.sole,
 		SandboxAPIAdminOnly: iso.adminAPI,
 		APIAudit:            audit,
@@ -360,6 +406,45 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 2
 	}
 	srv := server.New(opts)
+	if cfg.Auth.Guest {
+		// No console guest survives its process or its hours: what earlier
+		// ones left goes at start, then hourly, never another node's live ones.
+		ttl := time.Duration(cfg.Auth.GuestHours) * time.Hour
+		if ttl <= 0 {
+			ttl = auth.DefaultGuestTTL
+		}
+		sweep := func(start bool) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			if n := srv.RemoveGuestLeftovers(ctx, ttl, start); n > 0 {
+				slog.Info("removed console guests' leftover sessions", "sessions", n)
+			}
+		}
+		sweep(true)
+		stopSweep := make(chan struct{})
+		defer close(stopSweep)
+		go func() {
+			t := time.NewTicker(time.Hour)
+			defer t.Stop()
+			for {
+				select {
+				case <-stopSweep:
+					return
+				case <-t.C:
+					sweep(false)
+				}
+			}
+		}()
+		// What a console guest kept goes when the guest signs out or expires.
+		end := func(owner string) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			n := srv.RemoveOwnerSessions(ctx, "", owner)
+			slog.Info("a console guest ended; its sessions are removed", "owner", owner, "sessions", n)
+		}
+		guestEnded.Store(&end)
+		defer guestEnded.Store(nil)
+	}
 	// Every session's egress proxy stops with the server, before the store
 	// closes, so the last summaries it records are kept.
 	if c, ok := sb.(io.Closer); ok {
@@ -434,6 +519,9 @@ func (a *App) serveCmd(workspace, addr string) int {
 	fmt.Printf("  workspace %s\n  model     %s\n  sandbox   %s\n  storage   %s\n",
 		workspace, provider.Model, sb.Tier(), serveStorageLabel(cfg))
 	fmt.Printf("  auth      %s\n", authLabel(cfg, authMW))
+	if note := server.HostNamesNote(cfg, shown); note != "" {
+		fmt.Printf("  hosts     %s\n", note)
+	}
 	fmt.Printf("  git       %s\n", gitHeldLabel(cfg, sb.Tier()))
 	if line := managedLine(cfg); line != "" {
 		fmt.Printf("  managed   %s\n", line)
@@ -490,7 +578,11 @@ func serveSandbox(cfg config.Config, workspace string) (config.Config, sandbox.S
 		return cfg, nil, tools.Bash{}, errors.New("sandbox.protect_git is true, but the sandbox tier is none, which cannot keep commands from writing git's config and hooks; " +
 			"make the process tier available, or set sandbox.protect_git false to serve without it")
 	}
-	bash := tools.Bash{Sandbox: hostgit.Broker(workspace, sb.Tier, sandboxconfig.NetworkOpen(cfg), sb.Command),
+	// A server's sessions never reach a remote with the server account's
+	// credentials: remote git runs in the sandbox, as before 1.3.0.
+	gb := hostgit.NewBroker(workspace, sb.Tier, sandboxconfig.HostGitNetwork(cfg), sb.Command).
+		HoldsGit(func() bool { return sandbox.HoldsGit(sb) }, func() bool { return sandbox.HoldsNewGit(sb) }).NoRemotes()
+	bash := tools.Bash{Sandbox: gb.Command, HostAsk: hostAsk(sb, gb),
 		Home: sandbox.HomeFunc(sb), Isolation: sandboxconfig.Isolation(cfg, string(sb.Tier()))}
 	// The workbench terminal's shell runs under the same backend as the agent's commands.
 	if in, ok := sb.(sandbox.Interactive); ok {
@@ -596,6 +688,16 @@ func (a *App) buildAuth(ctx context.Context, cfg config.Config, workspace string
 			mw.Verifier = auth.ChainVerifier(mw.Verifier, v)
 		}
 	}
+	if cfg.Auth.Guest {
+		g := auth.NewGuestAuth(time.Duration(cfg.Auth.GuestHours)*time.Hour, cfg.Auth.CookieSecure, cfg.Auth.DefaultTenant,
+			func(owner string) {
+				if end := guestEnded.Load(); end != nil {
+					(*end)(owner)
+				}
+			})
+		mw.Providers = append(mw.Providers, g)
+		public = append(public, g.PublicPaths()...)
+	}
 	mw.PublicPaths = public
 	if err := addClientCertAuth(cfg, mw); err != nil {
 		return nil, err
@@ -646,4 +748,18 @@ func authLabel(cfg config.Config, mw *auth.Middleware) string {
 	default:
 		return "none (single-tenant, no authentication)"
 	}
+}
+
+// serveStartupLock is held by the abhed serve that owns this machine's state
+// (its sessions and session sandboxes), so a second one, on another address,
+// does not take back or sweep them.
+func serveStartupLock() (func(), error) {
+	path, err := home.MachinePath("serve.lock")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	return filelock.Lock(path, 0, "%s is held by another abhed serve (waited %s)")
 }

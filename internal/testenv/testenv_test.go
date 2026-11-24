@@ -3,6 +3,7 @@ package testenv
 import (
 	"io/fs"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,7 +27,9 @@ func TestMain(m *testing.M) {
 
 func TestReal(t *testing.T) {
 	for addr, want := range map[string]bool{"localhost:11434": true, "127.0.0.1:11434": true, "[::1]:4000": true,
-		"0.0.0.0:11434": true, "127.0.0.1:8867": false, "10.0.0.2:11434": false, "example.com:4000": false, "bad": false} {
+		"0.0.0.0:11434": true, "127.0.0.1:8867": false, "10.0.0.2:11434": false, "example.com:4000": false, "bad": false,
+		"localhost.:11434": true, "LOCALHOST:4000": true, "127.1:11434": true, "0x7f000001:11434": true, "0177.0.0.1:4000": true,
+		"0:11434": true, "x.localhost:11434": true, "128.1:11434": false, "300.1:11434": false, ":11434": true} {
 		if Real(addr) != want {
 			t.Errorf("Real(%q) = %v", addr, !want)
 		}
@@ -39,8 +42,8 @@ func TestIsolateGuards(t *testing.T) {
 	if strings.Contains(defaults.LocalModelURL, "11434") || strings.Contains(defaults.OllamaURL, "11434") {
 		t.Fatalf("defaults %s %s", defaults.LocalModelURL, defaults.OllamaURL)
 	}
-	if !strings.HasPrefix(managed.ConfigFile, os.TempDir()) {
-		t.Fatalf("managed %s", managed.ConfigFile)
+	if _, err := os.Stat(managed.ConfigFile); !os.IsNotExist(err) || strings.HasPrefix(managed.ConfigFile, "/etc/") {
+		t.Fatalf("managed %s (%v)", managed.ConfigFile, err)
 	}
 	if h, _ := os.UserHomeDir(); h == g.OrigHome || os.Getenv("ABHED_MODEL") != "" {
 		t.Fatalf("home %s", h)
@@ -100,5 +103,64 @@ func TestEveryEnginePackageIsIsolated(t *testing.T) {
 			rel, _ := filepath.Rel(root, dir)
 			t.Errorf("%s loads a configuration or builds an engine in its tests but has no TestMain through internal/testenv", rel)
 		}
+	}
+}
+
+// The dial guard judges the address again once the name is resolved, in
+// the dialer's Control: the resolved address a loopback-resolving name dials
+// is refused and noted, and an ordinary one is let through.
+func TestDialControlJudgesTheResolvedAddress(t *testing.T) {
+	tr, ok := http.DefaultTransport.(*http.Transport)
+	if !ok || tr.DialContext == nil {
+		t.Fatal("the default transport is not guarded")
+	}
+	// A dial through the default transport is judged twice: as written, and
+	// in Control once resolved.
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	before := judged.Load()
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if got := judged.Load() - before; got < 2 {
+		t.Fatalf("a dial was judged %d time(s); the resolved address is not judged in Control", got)
+	}
+	// The loopback case calls the guard directly: a name that resolves to
+	// loopback would need an /etc/hosts entry, so no such name goes through
+	// the dialer end to end here.
+	n := len(g.Hits())
+	if err := g.judge("127.0.0.1:11434"); err == nil || !strings.Contains(err.Error(), "testenv") {
+		t.Fatalf("the resolved address 127.0.0.1:11434 was let through: %v", err)
+	}
+	if err := g.judge("127.0.0.1:8867"); err != nil {
+		t.Fatalf("an ordinary local port was refused: %v", err)
+	}
+	if hits := g.Hits(); len(hits) != n+1 {
+		t.Fatalf("hits %v", hits)
+	}
+	g.mu.Lock()
+	g.hits = g.hits[:n]
+	g.mu.Unlock()
+}
+
+// checkPrivate accepts root-owned folders above a private one, and refuses
+// a folder that is not this user's own 0700 one, here / itself. The branch
+// for a folder above owned by another, non-root user needs a second user,
+// so it has no test here.
+func TestCheckPrivateWalksToTheRoot(t *testing.T) {
+	if !ownFolderChecked {
+		t.Skip("folder ownership is not checked on this system")
+	}
+	if _, err := checkPrivate("/"); err == nil || !strings.Contains(err.Error(), "not a 0700 folder") {
+		t.Fatalf("checkPrivate(/) = %v; want the refusal of a folder not this user's 0700 one", err)
+	}
+	dir := filepath.Join(t.TempDir(), "mine")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := checkPrivate(dir); err != nil {
+		t.Fatalf("a 0700 folder under root-owned ones: %v", err)
 	}
 }

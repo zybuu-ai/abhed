@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -53,12 +54,19 @@ func newStudioClient(t *testing.T, ws string, durable bool, trust ...config.Trus
 	if durable {
 		c.useRecord(ws, "")
 	}
+	return startStudioClient(t, c, inW, outR, func() { _ = c.serve(inR) })
+}
+
+// startStudioClient serves c with serve (c.serve, or c.run as acpCmd does)
+// and reads what it writes.
+func startStudioClient(t *testing.T, c *acpConn, inW *io.PipeWriter, outR *io.PipeReader, serve func()) *studioClient {
+	t.Helper()
 	cl := &studioClient{t: t, conn: c, in: inW}
 	cl.cond = sync.NewCond(&cl.mu)
 	cl.answer = func(string, json.RawMessage) any {
 		return map[string]any{"outcome": map[string]any{"outcome": "cancelled"}}
 	}
-	go func() { _ = c.serve(inR) }()
+	go serve()
 	go func() {
 		sc := bufio.NewScanner(outR)
 		sc.Buffer(make([]byte, 0, 64<<10), 16<<20)
@@ -233,7 +241,8 @@ func newScriptModel(t *testing.T, frames ...string) *scriptModel {
 		m.mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintf(w, "data: %s\n\n", frame)
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3}}\n\n")
+		// The prompt's size as a server counts it, about four characters a token.
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":%d,\"completion_tokens\":3}}\n\n", len(body)/4)
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	t.Cleanup(m.Close)
@@ -271,12 +280,20 @@ type studioRig struct {
 	model *scriptModel
 }
 
+// rigWindow is the rig model's context window: a real model's, so the
+// script's turns are never spent on a compaction no test asked for. Each
+// track's prompt and tools grow the request; at 8192 a script ran into the
+// compaction threshold.
+const rigWindow = 32768
+
 // newStudioRig starts an engine whose user configuration is extra merged
 // over a model that follows the script.
 func newStudioRig(t *testing.T, extra string, frames ...string) *studioRig {
 	t.Helper()
 	m := newScriptModel(t, frames...)
-	userCfg := `{"model":{"default":"m","providers":{"m":` + stubProvider(m.URL, "m-1") + `}}` + extra + `}`
+	// The default configuration: the person's machine setup is on, and with
+	// nothing to reach and nothing pasted it offers the model nothing.
+	userCfg := `{"model":{"default":"m","providers":{"m":` + strings.Replace(stubProvider(m.URL, "m-1"), `"context_window":8192`, `"context_window":`+strconv.Itoa(rigWindow), 1) + `}}` + extra + `}`
 	acpModelsEnv(t, userCfg)
 	ws := t.TempDir()
 	if real, err := filepath.EvalSymlinks(ws); err == nil {

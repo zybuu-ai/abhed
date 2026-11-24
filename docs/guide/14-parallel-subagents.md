@@ -22,6 +22,129 @@ The budget (`limits.max_budget_tokens`) is one allowance for the session and
 all its subagents: a subagent spends from it turn by turn and stops when it
 runs out, as its parent does.
 
+## Asking for parallel work
+
+Ask in plain words: "review these in parallel", "at the same time", "use
+subagents". The `tasks` tool tells the model that work asked for in parallel or
+by several agents means starting subagents, not making the code concurrent, and
+`task` says that several `task` calls in one response also run at once. Models
+used to read "run this in parallel" as a request to make the project concurrent,
+or did the parts one after another.
+
+The descriptions alone did not turn a small local model: asked to "speed up the
+project by running things in parallel", it still added a thread pool to the
+code. So when your own words speak of parallel work, Abhed puts one of two short
+notes after your message for the model.
+
+- **Start subagents.** When the message opens with reading or analysis work
+  (review, audit, check, investigate, look at, read, summarise, compare,
+  research, analyse, explore, search, find, triage, test), with "fan out and"
+  one of those, or with subagents named as the ones to do it ("use", "using",
+  "with" or "via" … subagents), after an optional "please", "can you" or
+  "could you", and also has a parallel phrase or those subagents, the note
+  says that unless you asked in so many words to change the program to run
+  concurrently, the message means how the model does the work: split it into
+  independent parts and start them all at once with one `tasks` call. So
+  "review the three open PRs in parallel" gets it, but "update the crawler to
+  read pages in parallel" does not: a "to <reading verb>" or "so it <reading
+  verb>" after a noun says what a program is to be changed to do. Nor is it
+  given when the phrase seems to describe how a program runs: when it comes
+  within three words after a verb for running (run, happen, execute, fire,
+  process, fetch, query, dispatch, load, deadlock, in any form), after a why,
+  whether, that, how or if clause, or with a sign of the program's own
+  concurrency (deadlock, workers, jobs, requests, "instead of", "rather than",
+  "one by one", "one after another", serially, sequentially). Nor is it given
+  when the message also asks for a change to a program: the phrase is
+  "parallelize" (or "parallelise"), "it", "its", "them" or "they" stands right
+  before a reading verb or the phrase ("have it read", "parallelize its
+  reads"), or it speaks of performance ("speed up", "faster", "slow",
+  "slower", "performance", or "by" with a verb ending in "-ing"). Those
+  messages get the note that asks.
+- **Ask.** Any other parallel phrase, or a mention of subagents, gets a note
+  telling the model that if it is unclear whether you want independent pieces
+  of work started as subagents or the program itself changed to run
+  concurrently, it should ask one short question before acting; the
+  terminal, Studio and the console get it. A run nobody can answer, such as
+  `abhed -p`, a script through the SDK or rpc, or an unattended server run,
+  gets no question. Only a vague request there, one that names speed or
+  parallelism and no concrete task (no action such as fix, delete or update,
+  no bug, file or symbol, no issue number, version or list of names, and
+  no object beyond generic ones such as "things", "everything" or "the
+  project"; what is sped up, and a phrase after a preposition or a comma,
+  such as "for the demo", is not an object), gets a note in its place: if
+  the message only asks to speed things up or run things in parallel, make
+  no code edits for it, and answer with a short plan that describes both
+  readings, or with the one question it would ask; otherwise do the work. A
+  vague "speed up the project by running things in parallel" (or "make
+  everything run in parallel") under `-p` so gets a plan, while "delete
+  these three files at once" or "merge these three branches at once" is
+  done as asked. This judgement knows English words only: a request in
+  another language gets no note in a run nobody can answer.
+
+The parallel phrases are "in parallel", "at the same time", "at once",
+"simultaneously", "side by side", "parallelize" (or "parallelise"), "fan out",
+"en paralelo" and "समानांतर".
+
+Neither note is added when the message names any of these, since a note there
+would send the model the wrong way, and a missed note costs nothing that
+`/parallel` cannot ask for outright:
+
+- a word for creating, changing or shipping code: build, deploy, implement, add,
+  make, write, code, app, cluster, compose, docker, CI, ETL, "turn on", CI tools
+  (GitHub Actions, workflow, Jenkins, pre-commit, xdist, Makefile, tox, nox), and
+  "should" or "must" (which describe how a program behaves); and refactor,
+  rewrite, create, enable, switch and spawn in any form ("refactoring",
+  "rewrites", "creating", "enabled"), with design as a verb ("design a",
+  "designing");
+- the program's own concurrency: race, racy, goroutine, thread, thread-safe,
+  threadpool, ThreadPoolExecutor, multiprocessing, async, asyncio, await,
+  errgroup, rayon, `Promise.all`, mutex, lock, scheduler, worker pool, for loop,
+  GPU, connection or connecting, "test suite", "tests in parallel", "safe to
+  call" (or run, or use), `-p` with a number, `-parallel` or `--parallel`;
+- a source file name such as `resize.py` or `walk.go`.
+
+So a request to build agents ("create a supervisor with three subagents") gets
+no note, and neither do "use three agents", "handle these concurrently" or "make
+it faster, do it in parallel"; use `/parallel` for those. The notes are judged
+only on what you typed, never on files you attach with `@`, resources attached
+in Studio or input piped into `-p`. They are added only in the session itself,
+never to a subagent's task, and only while a subagent could still start. The
+record keeps the note on the `user.message`, as `harness_note`, beside your own
+text (whichever of the two it was), so a fork or a resume sends what the
+model was sent. A message queued or
+steered while a turn runs is treated the same way.
+
+`/parallel <work>` says it outright, in the terminal, in Studio and after
+`abhed -p` (as the task, or as a line of `-input-format stream-json`): the work
+goes to the model with the instruction to split it into parts and start them
+all in one `tasks` call. `@` mentions in the work are attached as in any
+message, and the command is recorded as `command.invoked`.
+
+```
+/parallel review pkg/auth, write tests for pkg/store, document pkg/server
+```
+
+The start shows as one line: `Tasks 3 in parallel: review pkg/auth · tests ·
+docs` in the terminal, and `tasks: 3 in parallel: …` on Studio's card, then one
+card or line per subagent as it starts and returns. A task given no description
+is labelled from its prompt.
+
+Outside a git repository the `tasks` tool does not offer worktree isolation,
+which would only be refused there; it asks the model to give subagents that
+edit files separate files instead. That is a request, not a guard: without
+isolation the subagents share one folder, and while `edit` refuses a file that
+changed since it was read, `write` replaces a file whole, so one subagent can
+overwrite what another wrote. A `git init` during the session offers worktree
+isolation from then on.
+
+On a local model server that answers one request at a time, the subagents'
+requests take turns: see `max_concurrent_requests` in
+[Configuration](02-configuration.md). Requests past the bound wait in Abhed, and
+the wait is shown, `waiting for the model · 2 ahead` in the terminal, on the
+subagent's card in Studio or as a thought for the session's own request, and
+recorded as `model.waiting`; the call's
+`model.call` keeps it apart as `queue_ms`.
+
 ## Agent types
 
 `agent_type` names the role each subagent runs in: `general` (the session's

@@ -21,7 +21,7 @@ const (
 	CodeUnverifiedHost   = "unverified-host"
 	CodeUnknownProgram   = "unknown-program"
 	CodeOutOfRemit       = "out-of-remit"
-	CodeCredentialEgress = "credential-egress"
+	CodeCredentialEgress = "credential-egress" // #nosec G101 -- a verdict code's name, not a credential
 	CodeHoneytoken       = "honeytoken"
 )
 

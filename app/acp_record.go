@@ -16,6 +16,7 @@ import (
 	"github.com/zybuu-ai/abhed/hawkeye"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/store"
@@ -239,9 +240,10 @@ func (c *acpConn) loadSession(msg rpcMessage, replay bool) {
 		// Read, never written to: going on from it is a fork.
 		s = &acpSession{id: e.ID, cwd: cwd, trust: trust, always: map[string]string{}, agent: recordOnly{},
 			readOnly: "the record failed verification at seq " + strconv.FormatInt(rep.FirstBad, 10)}
-		c.sessMu.Lock()
-		c.sessions[s.id] = s
-		c.sessMu.Unlock()
+		if !c.addSession(s) {
+			c.reply(msg.ID, nil, refusal(errParams, "the editor is closing; no session is opened"))
+			return
+		}
 	}
 	if replay {
 		c.replay(s, events)
@@ -280,7 +282,10 @@ func (c *acpConn) recordContinued(s *acpSession, events []agent.Event, via strin
 	if err := recordResumed(loop.Recorder, resumed); err != nil {
 		return err
 	}
-	return toolset.RecordConfigAttempts(loop.Recorder, toolset.ConfigAttempts(cfg, toolset.LocalPrincipal(inAgentCommand())))
+	if err := toolset.RecordConfigAttempts(loop.Recorder, toolset.ConfigAttempts(cfg, toolset.LocalPrincipal(inAgentCommand()))); err != nil {
+		return err
+	}
+	return toolset.RecordConfigChanges(loop.Recorder)
 }
 
 // recordResumed writes a session.resumed; a test makes it fail.
@@ -345,7 +350,9 @@ func (c *acpConn) restore(s *acpSession, rec *local.Store, events []agent.Event)
 				continue
 			}
 			var g agent.ScopeGranted
-			if json.Unmarshal(ev.Payload, &g) == nil && g.Scope != "" {
+			// A first use's scope is kept by the person's grants, which a
+			// revoke since may have dropped; it is never restored from here.
+			if json.Unmarshal(ev.Payload, &g) == nil && g.Scope != "" && !tools.IsFirstUseScope(g.Scope) {
 				if _, err := policy.ParseRule(g.Scope); err == nil {
 					// No guard: a git scope restored is asked about again, as its repository may have changed.
 					s.always[g.Scope] = ""
