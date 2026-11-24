@@ -59,7 +59,7 @@ func TestGitReachNamesWhatGitReads(t *testing.T) {
 	base := workspace(t)
 	repo, shapes := gitShapes(t, base)
 	want := map[string][]string{
-		"subfolder":       {repo},
+		"subfolder":       {repo, filepath.Join(repo, ".git")},
 		"linked worktree": {filepath.Join(repo, ".git", "worktrees", "wt"), filepath.Join(repo, ".git")},
 		"submodule":       {filepath.Join(base, "super", ".git", "modules", "app")},
 	}
@@ -103,11 +103,37 @@ func TestGitReachRefusesWhatDoesNotNameTheWorktreeBack(t *testing.T) {
 	}
 }
 
+// reachSandbox is the process tier for ws, with git's files held as every
+// session holds them.
+func reachSandbox(t *testing.T, ws string) *Process {
+	t.Helper()
+	p := DefaultPolicy(ws)
+	p.ProtectGit = true
+	s := NewProcess(p)
+	if ok, why := s.Available(); !ok {
+		t.Skipf("process sandbox unavailable: %s", why)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+// gitFolders are each shape's git folder and common git folder.
+func gitFolders(base, repo, shape string) (gd, common string) {
+	switch shape {
+	case "linked worktree":
+		return filepath.Join(repo, ".git", "worktrees", "wt"), filepath.Join(repo, ".git")
+	case "submodule":
+		g := filepath.Join(base, "super", ".git", "modules", "app")
+		return g, g
+	}
+	return filepath.Join(repo, ".git"), filepath.Join(repo, ".git")
+}
+
 // On the process tier, git works in a workspace whose git folder lies
-// outside it, even under a home the sandbox otherwise keeps unreadable: the
-// repository's top, the worktree's and the submodule's git folders are read.
-// They are never written: the profile grants no write there, and under
-// bubblewrap they are bound read-only.
+// outside it, even under a home the sandbox otherwise keeps unreadable: it
+// reads the repository's top (for a folder inside it) and commits into the
+// git folders, as it does in one inside the workspace. What git reads as
+// configuration or runs there stays as unwritable as in the workspace's own.
 func TestProcessSandboxReachesAGitFolderOutsideTheWorkspace(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("the process tier runs on macOS and Linux")
@@ -124,8 +150,7 @@ func TestProcessSandboxReachesAGitFolderOutsideTheWorkspace(t *testing.T) {
 	repo, shapes := gitShapes(t, home)
 	for name, ws := range shapes {
 		t.Run(name, func(t *testing.T) {
-			s := processSandbox(t, ws, false)
-			t.Cleanup(func() { _ = s.(interface{ Close() error }).Close() })
+			s := reachSandbox(t, ws)
 			if out, err := runIn(t, s, ws, "git status --short && git log -1 --format=%s"); err != nil || !strings.Contains(out, "first") {
 				t.Fatalf("git in the sandbox: %v\n%s", err, out)
 			}
@@ -134,29 +159,122 @@ func TestProcessSandboxReachesAGitFolderOutsideTheWorkspace(t *testing.T) {
 					t.Fatalf("the repository's top was not readable: %v\n%s", err, out)
 				}
 			}
-			p := s.(*Process)
-			reach := p.gitReads()
-			if len(reach) == 0 {
-				t.Fatal("nothing outside the workspace was reached")
+			commit := "echo x > made-in-sandbox.txt && git add made-in-sandbox.txt && " +
+				"git -c user.name=t -c user.email=t@example.test commit -q -m in-sandbox && git log -1 --format=%s"
+			if out, err := runIn(t, s, ws, commit); err != nil || !strings.Contains(out, "in-sandbox") {
+				t.Fatalf("a commit in the sandbox: %v\n%s", err, out)
 			}
-			if p.backend == "sandbox-exec" {
-				profile := p.seatbeltProfile()
-				for _, r := range reach {
-					if strings.Contains(profile, "(allow file-write* (subpath "+quote(r)+"))") {
-						t.Errorf("the profile lets commands write %s", r)
-					}
+			gd, common := gitFolders(home, repo, name)
+			for _, attempt := range []string{
+				"mkdir -p " + filepath.Join(common, "hooks") + " && echo 'exit 0' > " + filepath.Join(common, "hooks", "pre-commit"),
+				"echo '[core]' >> " + filepath.Join(common, "config"),
+				"git config core.hooksPath " + ws,
+				"mv " + filepath.Join(common, "hooks") + " " + filepath.Join(common, "hooks-moved"),
+			} {
+				if out, err := runIn(t, s, ws, attempt); err == nil {
+					t.Errorf("the sandbox let a command run %q: %s", attempt, out)
 				}
-				return
 			}
-			// Under bubblewrap the temp folder is the sandbox's own, so a write
-			// that lands is seen: none may.
-			gd := filepath.Join(repo, ".git")
-			if _, err := runIn(t, s, ws, "touch "+filepath.Join(gd, "planted")); err == nil {
-				t.Error("a command wrote the git folder outside the workspace")
+			// A commondir pointing git elsewhere: refused by pattern on macOS;
+			// bubblewrap holds only what exists, so one made in a repository's
+			// git folder is taken out before the next command, as in the
+			// workspace's own git folder.
+			planted := filepath.Join(gd, "commondir")
+			_, had := os.Lstat(planted)
+			_, _ = runIn(t, s, ws, "echo /elsewhere > "+planted)
+			_, _ = runIn(t, s, ws, "true")
+			if b, err := os.ReadFile(planted); err == nil && strings.Contains(string(b), "elsewhere") {
+				t.Error("a commondir planted in the git folder outside the workspace stayed")
+			} else if had == nil && err != nil {
+				t.Error("the worktree's own commondir was taken out")
 			}
-			if _, err := os.Stat(filepath.Join(gd, "planted")); err == nil {
-				t.Error("the git folder outside the workspace was written")
+			if out, err := runIn(t, s, ws, "git log -1 --format=%s"); err != nil || !strings.Contains(out, "in-sandbox") {
+				t.Errorf("git after the plant was taken out: %v\n%s", err, out)
+			}
+			if _, err := os.Stat(filepath.Join(common, "hooks", "pre-commit")); err == nil {
+				t.Error("a hook was planted in the git folder outside the workspace")
+			}
+			if b, _ := os.ReadFile(filepath.Join(common, "config")); strings.Contains(string(b), "hooksPath") {
+				t.Error("the git folder's configuration was written")
+			}
+			// The repository's top's own files stay unwritten. On macOS the test's
+			// temp folder is writable to commands anyway, so the rule is checked.
+			if name == "subfolder" {
+				if s.backend == "sandbox-exec" {
+					for _, f := range PathForms(repo) {
+						if strings.Contains(s.seatbeltProfile(), "(allow file-write* (subpath "+quote(f)+"))") {
+							t.Error("the profile lets commands write the repository's top")
+						}
+					}
+				} else if _, err := runIn(t, s, ws, "echo x >> ../README.md"); err == nil {
+					t.Error("a command wrote the repository's top")
+				}
+			}
+			if n := s.gitReachNote(); n == "" {
+				t.Error("the description does not say what outside the workspace git reaches")
 			}
 		})
+	}
+}
+
+// Reading a repository's top never reaches Abhed state in it: a top that
+// holds another workspace's .abhed is not read at all (only its git folder),
+// and on macOS one made later, in any case, stays unreadable.
+func TestTheRepositoryTopKeepsOtherStateOut(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("the process tier runs on macOS and Linux")
+	}
+	base := workspace(t)
+	home := filepath.Join(base, "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	repo, shapes := gitShapes(t, home)
+	ws := shapes["subfolder"]
+	other := filepath.Join(repo, "other", stateDir)
+	if err := os.MkdirAll(other, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "record"), []byte("NESTED-STATE\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := reachSandbox(t, ws)
+	if out, err := runIn(t, s, ws, "cat ../other/.abhed/record"); err == nil || strings.Contains(out, "NESTED-STATE") {
+		t.Fatalf("another workspace's state was read: %s", out)
+	}
+	if r := s.reach(); r.top != "" {
+		t.Errorf("a top holding another .abhed was read: %+v", r)
+	}
+	if out, err := runIn(t, s, ws, "git log -1 --format=%s"); err != nil || !strings.Contains(out, "first") {
+		t.Errorf("git log without the top: %v\n%s", err, out)
+	}
+
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	// Made after the sandbox read the top: denied by pattern, in any case.
+	if err := os.RemoveAll(filepath.Join(repo, "other")); err != nil {
+		t.Fatal(err)
+	}
+	s2 := reachSandbox(t, ws)
+	if _, err := runIn(t, s2, ws, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if r := s2.reach(); r.top == "" {
+		t.Fatal("the top was not read")
+	}
+	later := filepath.Join(repo, "other", ".ABHED")
+	if err := os.MkdirAll(later, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(later, "record"), []byte("NESTED-STATE\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"../other/.ABHED/record", "../OTHER/.abhed/record", "../other/.abhed/record"} {
+		if out, err := runIn(t, s2, ws, "cat "+p); err == nil || strings.Contains(out, "NESTED-STATE") {
+			t.Errorf("%s was read: %s", p, out)
+		}
 	}
 }

@@ -27,9 +27,9 @@ import (
 type Process struct {
 	choice
 	policy Policy
-	// readGit is GitReach's folders for the workspace, in both forms, read
-	// once; see gitReads.
-	readGit func() []string
+	// reach is gitReachOf the workspace, read once as the session starts;
+	// see gitReads and gitWrites.
+	reach   func() gitReach
 	backend string // "sandbox-exec" | "bwrap"
 	// cmds are the commands made; a followed one still running is ended when
 	// the sandbox closes.
@@ -133,7 +133,7 @@ func NewProcess(p Policy) *Process {
 	s := &Process{policy: p}
 	// Read once, as the session starts: a .git file a command rewrites later
 	// does not change what is readable.
-	s.readGit = sync.OnceValue(func() []string { return formsOf(GitReach(p.Workspace)) })
+	s.reach = sync.OnceValue(func() gitReach { return gitReachOf(p.Workspace) })
 	switch runtime.GOOS {
 	case "darwin":
 		if _, err := exec.LookPath("sandbox-exec"); err == nil {
@@ -350,6 +350,9 @@ func (s *Process) Describe() string {
 			d += " · " + n
 		}
 	}
+	if n := s.gitReachNote(); n != "" {
+		d += " · " + n
+	}
 	return d
 }
 
@@ -462,6 +465,14 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 		allow := append(append(s.workspaces(), formsOf(s.policy.ReadOnlyPaths)...), nonEmpty(readable)...)
 		// Read only: the repository top and git folders the workspace's git needs.
 		allow = append(allow, s.gitReads()...)
+		// A top not read whole is still listed: git changes into it.
+		if s.reach != nil {
+			if r := s.reach(); r.top == "" && r.root != "" {
+				for _, f := range PathForms(r.root) {
+					fmt.Fprintf(&b, "(allow file-read* (literal %q))\n", f)
+				}
+			}
+		}
 		for _, home := range hs {
 			allow = append(allow, homeToolchains(home)...)
 		}
@@ -487,6 +498,11 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 	b.WriteString("(deny file-write*)\n")
 	for _, ws := range s.workspaces() {
 		fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", ws)
+	}
+	// The git folders outside the workspace, as git writes them; what it
+	// reads as configuration is held below with the workspace's own.
+	for _, g := range s.gitWrites() {
+		fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", g)
 	}
 	for _, p := range append(tempAreas[:len(tempAreas):len(tempAreas)], "/dev/null", "/dev/stdout", "/dev/stderr", "/dev/urandom", "/dev/dtracehelper") {
 		fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", p)
@@ -549,10 +565,11 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 		// it and reading what it holds do not.
 		fmt.Fprintf(&b, "(allow file-read-metadata (subpath %q))\n", state)
 	}
-	// A repository top read for a workspace inside it keeps its own state out.
+	// What git reads outside the workspace holds no Abhed state a command
+	// may reach: a .abhed at any depth, in any case, made later too.
 	for _, r := range s.gitReads() {
-		fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", filepath.Join(r, stateDir))
-		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", filepath.Join(r, stateDir))
+		fmt.Fprintf(&b, "(deny file-read* (regex #\"%s\"))\n", stateAnywherePattern(r))
+		fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", stateAnywherePattern(r))
 	}
 	// Seatbelt matches the path the kernel resolved, so a home reached
 	// through a link is named both ways.
@@ -607,6 +624,12 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 					fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", t)
 				}
 			}
+		}
+		// The git folders outside the workspace hold the same files.
+		for _, g := range s.gitWrites() {
+			fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", gitFolderPattern(g))
+			fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", gitFolderFoldersPattern(g))
+			fmt.Fprintf(&b, "(deny file-write* (literal %q))\n", g)
 		}
 	}
 	for _, p := range s.statePaths() {
@@ -1136,10 +1159,37 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		args = append(args, tmpArgs...)
 		// The repository top and git folders the workspace's git reads, read
 		// only and before the workspace, which is bound writable over them.
+		// A top holding any other .abhed is never read (gitReachOf).
 		for _, r := range s.gitReads() {
 			args = append(args, "--ro-bind-try", r, r)
-			if info, err := os.Stat(filepath.Join(r, stateDir)); err == nil && info.IsDir() {
-				args = append(args, "--tmpfs", filepath.Join(r, stateDir))
+		}
+		// Git's own folders outside the workspace are written as git writes
+		// them, with what it reads as configuration held read-only below.
+		var outside, outsideDirs []string
+		if w := s.gitWrites(); len(w) > 0 {
+			dirs := s.reach().dirs
+			held, planted, ok := outsideGitHeld(s.policy.Workspace, dirs)
+			// A commondir git would not have written is taken out, and the
+			// command refused, as in the workspace's own git folder.
+			if entries, err := takeOutGitPlanted(planted); err != nil {
+				if l := LaunchOf(ctx); l.Record != nil {
+					_ = l.Record(EvGitPlanted, map[string]any{"entries": entries, "reason": err.Error(),
+						"call_id": l.CallID, "sandbox": s.backend, "workspace": s.policy.Workspace})
+				}
+				return &exec.Cmd{Err: err}
+			}
+			if ok {
+				for _, g := range w {
+					args = append(args, "--bind-try", g, g)
+				}
+				outside, outsideDirs = held, dirs
+			}
+		}
+		// Git stops looking for its folder at a mount, and the workspace is
+		// one; where the top is not bound, the folder above it is another.
+		if s.reach != nil {
+			if r := s.reach(); r.top == "" && r.root != "" {
+				args = append(args, "--setenv", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "1")
 			}
 		}
 		args = append(args,
@@ -1173,13 +1223,14 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 				protected = append(protected, found...)
 			}
 		}
-		for _, p := range holders(s.workspaces(), protected) {
+		for _, p := range append(holders(s.workspaces(), protected), holders(outsideDirs, outside)...) {
 			if info, err := os.Lstat(p); err == nil && info.IsDir() {
 				args = append(args, "--bind", p, p)
 			} else if err == nil && info.Mode().IsRegular() {
 				args = append(args, "--ro-bind", p, p)
 			}
 		}
+		protected = append(protected, outside...)
 		for _, p := range append(s.policy.ReadOnlyPaths[:len(s.policy.ReadOnlyPaths):len(s.policy.ReadOnlyPaths)], protected...) {
 			args = append(args, "--ro-bind-try", p, p)
 		}
@@ -1883,10 +1934,49 @@ func seatbeltPrivateDirs(dirs []string) string {
 }
 
 // gitReads are the folders outside the workspace its git reads (GitReach),
-// readable to commands; none for a sandbox not made by NewProcess.
+// in both forms, readable to commands; none for a sandbox not made by NewProcess.
 func (s *Process) gitReads() []string {
-	if s.readGit == nil {
+	if s.reach == nil {
 		return nil
 	}
-	return s.readGit()
+	r := s.reach()
+	if r.top == "" {
+		return formsOf(r.dirs)
+	}
+	return formsOf(append([]string{r.top}, r.dirs...))
+}
+
+// gitWrites are the git folders outside the workspace, in both forms, that
+// commands may write as git does in one inside it (index, objects, refs,
+// logs), with the same files held under protect_git; none without it, when
+// they stay read-only.
+func (s *Process) gitWrites() []string {
+	if s.reach == nil || !s.policy.ProtectGit {
+		return nil
+	}
+	return formsOf(s.reach().dirs)
+}
+
+// gitReachNote says what outside the workspace commands may read and write
+// for its git, for the description doctor shows and the record keeps.
+func (s *Process) gitReachNote() string {
+	if s.reach == nil {
+		return ""
+	}
+	r := s.reach()
+	var parts []string
+	if r.top != "" {
+		parts = append(parts, "the repository's top folder "+r.top+" readable")
+	}
+	if len(r.dirs) > 0 {
+		how := "readable"
+		if s.policy.ProtectGit {
+			how = "written as git writes them, configuration and hooks held"
+		}
+		parts = append(parts, "its git folders "+strings.Join(r.dirs, ", ")+" "+how)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "git outside the workspace: " + strings.Join(parts, "; ")
 }

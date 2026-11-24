@@ -1,60 +1,120 @@
 package sandbox
 
 import (
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
 // GitReach is what git needs to read outside workspace to work in it: the
 // repository's top folder when workspace is a folder inside a repository, and
-// the git folder and common git folder a work tree's .git file names (a linked
-// worktree's, a submodule checkout's). Commands may read these, never write
-// them: writes stay confined as before.
+// the repository's git folders outside the workspace (its top's .git, or the
+// git folder and common git folder a linked worktree's or submodule
+// checkout's .git file names). See gitReachOf.
+func GitReach(workspace string) []string {
+	r := gitReachOf(workspace)
+	if r.top == "" {
+		return r.dirs
+	}
+	return append([]string{r.top}, r.dirs...)
+}
+
+// gitReach is GitReach in parts: top, read only, and the git folders dirs,
+// which commands may write as git does under protect_git (index, objects,
+// refs and logs; never configuration, hooks or the pointers between them).
+type gitReach struct {
+	top  string
+	dirs []string
+	// root is the repository's top folder for a workspace inside it, whose
+	// own listing git needs (it changes into it) even where top is not read.
+	root string
+}
+
+// gitReachOf finds a workspace's git reach.
 //
 // A .git file in the workspace is the command's to rewrite, so the folder it
-// names is read only when that folder names the work tree back (a linked
+// names is reached only when that folder names the work tree back (a linked
 // worktree's gitdir file, a submodule's core.worktree), which nothing in the
 // sandbox can write: a .git file pointed at another repository reaches nothing.
 // A repository whose top folder is a home, or holds one (a home kept in git),
-// is not reached: its git folder would show what the home holds.
-func GitReach(workspace string) []string {
+// is not reached: its git folder would show what the home holds. A top that
+// holds another .abhed than the workspace's own (another workspace's state),
+// or more folders than can be looked through, is not read: only its .git.
+func gitReachOf(workspace string) gitReach {
 	ws := filepath.Clean(workspace)
 	root := gitRoot(ws)
-	if root == "" {
-		return nil
+	if root == "" || holdsAHome(root) {
+		return gitReach{}
 	}
-	var out []string
+	var r gitReach
 	add := func(p string) {
-		if p == "" || insideAny(p, PathForms(ws)) {
+		if p == "" || insideAny(p, PathForms(ws)) || slices.Contains(r.dirs, p) {
 			return
 		}
-		for _, have := range out {
-			if have == p {
-				return
-			}
-		}
-		out = append(out, p)
-	}
-	if holdsAHome(root) {
-		return nil
+		r.dirs = append(r.dirs, p)
 	}
 	dotGit := filepath.Join(root, ".git")
-	if root != ws {
-		add(root)
-	}
 	info, err := os.Lstat(dotGit)
-	if err != nil || !info.Mode().IsRegular() {
-		return out
+	if err != nil {
+		return gitReach{}
+	}
+	if root != ws {
+		r.root = root
+		if !holdsOtherState(root, ws) {
+			r.top = root
+		}
+		if info.IsDir() && gitFolder(dotGit) {
+			add(dotGit)
+		}
+	}
+	if !info.Mode().IsRegular() {
+		return r
 	}
 	gd := gitFileTarget(root, dotGit)
 	common, ok := ownGitFolder(root, gd)
 	if !ok {
-		return out
+		return r
 	}
 	add(gd)
 	add(common)
-	return out
+	return r
+}
+
+// stateScanFolders bounds holdsOtherState's walk.
+const stateScanFolders = 50_000
+
+// holdsOtherState reports whether top holds a state folder (.abhed, in any
+// case) outside ws, or more folders than the walk looks through.
+func holdsOtherState(top, ws string) bool {
+	seen, found := 0, false
+	_ = filepath.WalkDir(top, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if d != nil && d.IsDir() && p != top {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if seen++; seen > stateScanFolders {
+			found = true
+			return fs.SkipAll
+		}
+		if p != top && strings.EqualFold(d.Name(), stateDir) && !insideAny(p, PathForms(ws)) {
+			found = true
+			return fs.SkipAll
+		}
+		// A git folder holds no work tree; the workspace's own state is denied with it.
+		if p != top && (strings.EqualFold(d.Name(), ".git") || insideAny(p, PathForms(ws))) {
+			return fs.SkipDir
+		}
+		return nil
+	})
+	return found
 }
 
 // ownGitFolder is the common git folder of gd, the git folder root's .git file
@@ -148,4 +208,52 @@ func holdsAHome(p string) bool {
 		}
 	}
 	return false
+}
+
+// stateAnywherePattern is the seatbelt regex for a .abhed at any depth under
+// r, in any case.
+func stateAnywherePattern(r string) string {
+	return fmt.Sprintf(`^%s/(.+/)?%s(/|$)`, regexQuote(r), anyCase(stateDir))
+}
+
+// gitFolderPattern is gitPattern for g, a git folder named directly: its
+// gitPointers, its linked worktrees' and its submodules', in any case.
+func gitFolderPattern(g string) string {
+	names := make([]string, len(gitPointers))
+	for i, n := range gitPointers {
+		names[i] = anyCase(n)
+	}
+	return fmt.Sprintf(`^%s/((%s/[^/]+|%s/.+)/)?(%s)(/|$)`,
+		regexQuote(g), anyCase("worktrees"), anyCase("modules"), strings.Join(names, "|"))
+}
+
+// gitFolderFoldersPattern is gitFoldersPattern for g, a git folder named directly.
+func gitFolderFoldersPattern(g string) string {
+	folders := []string{anyCase("modules"), anyCase("modules") + "/[^/]+", anyCase("worktrees"), anyCase("worktrees") + "/[^/]+",
+		anyCase("info"), anyCase("objects"), anyCase("objects/info")}
+	return fmt.Sprintf(`^%s/((%s/[^/]+|%s/.+)/)?(%s)$`,
+		regexQuote(g), anyCase("worktrees"), anyCase("modules"), strings.Join(folders, "|"))
+}
+
+// outsideGitHeld are the files in dirs, git folders outside the workspace ws,
+// that bubblewrap binds read-only when it lets commands write the folders:
+// what git reads as configuration or follows elsewhere, config and hooks made
+// empty where missing, as for a git folder inside the workspace; planted are
+// commondir files git would not have written, to be taken out. ok is false,
+// and the folders stay read-only, when one cannot be held: a link, or more
+// submodules than are looked through.
+func outsideGitHeld(ws string, dirs []string) (held, planted []string, ok bool) {
+	g := &gitScan{ws: ws, seen: map[string]bool{}, make: true}
+	for _, d := range dirs {
+		if gitFolder(d) {
+			g.folder(d, 0)
+		} else {
+			// A linked worktree's folder: its pointers and per-worktree config.
+			g.existing(d, "commondir", "gitdir", "config.worktree")
+		}
+	}
+	if len(g.linked) > 0 || g.modulesBounded {
+		return nil, g.planted, false
+	}
+	return g.protected, g.planted, true
 }

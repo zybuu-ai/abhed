@@ -1217,16 +1217,26 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` shows and the record keeps.
 
 - On the process tier, git works where a workspace's git folder lies outside
-  it, as in 1.2.9: a folder inside a repository, a linked worktree, or a
-  submodule checkout, under a home the sandbox otherwise keeps unreadable.
-  Commands may read the repository's top folder (for a folder inside it) and
-  the git folders the worktree's or submodule's `.git` file names, and write
-  none of them; under bubblewrap they are bound read-only. A git folder is
-  read only when it names the work tree back (a worktree's `gitdir`, a
-  submodule's `core.worktree`), so a `.git` file pointed at another
-  repository reaches nothing, and a home kept in git is never read. Remote
-  git (`fetch`, `pull`, `push`) runs through host git for these shapes too,
-  with the git folders pinned as the session starts.
+  it: a folder inside a repository, a linked worktree, or a submodule
+  checkout, including under a home the sandbox otherwise keeps unreadable.
+  `git status`, `log`, `diff`, `add`, `commit`, `merge` and the merge step of
+  `pull` work there, and remote `fetch`, `pull` and `push` run through host
+  git as at a repository's top. Commands may read the repository's top folder
+  (for a folder inside one) and the git folders the worktree's or submodule's
+  `.git` file names, and write those git folders as git does: index,
+  objects, refs and logs. Their configuration, hooks, `info/attributes`,
+  alternates and the pointers between git folders stay unwritable, as for a
+  git folder inside the workspace; with `protect_git` off they stay read-only.
+  The top's own files are never writable. A git folder is reached only when
+  it names the work tree back (a worktree's `gitdir`, a submodule's
+  `core.worktree`), so a `.git` file pointed at another repository reaches
+  nothing, and a home kept in git is never read. A `.abhed` anywhere under
+  what is read stays unreadable; a top that holds another workspace's
+  `.abhed` is not read at all (only listed, and its git folder read), and
+  under bubblewrap one made there after the session started is not hidden.
+  The sandbox's description, which `abhed doctor` shows and the record
+  keeps, names what is read and written. The fence tier does not reach
+  these folders yet.
 
 - The `served` field of the `next_edit.summary` record event now includes
   renames finished from the file, which are also counted in `local`; before,
