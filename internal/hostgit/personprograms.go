@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -264,7 +265,7 @@ func programUntrusted(words []string, areas []string, path string) string {
 	// The shell runs these lines: a glob or other shell syntax in any word
 	// could expand to a path the agent chose.
 	for _, w := range words[1:] {
-		if strings.ContainsAny(w, "$`;|&(){}<>*?[]") {
+		if strings.ContainsAny(bracketedToken.ReplaceAllString(w, ""), "$`;|&(){}<>*?[]") {
 			return "has " + w + ", which the shell would expand or treat as more than a word, so what it names is not known; write it in full"
 		}
 	}
@@ -497,6 +498,38 @@ var sshPathKeys = map[string]bool{"pkcs11provider": true, "securitykeyprovider":
 var sshTrustKeys = map[string]bool{"userknownhostsfile": true, "globalknownhostsfile": true, "revokedhostkeys": true, "certificatefile": true,
 	"identityfile": true}
 
+// bracketedToken is one ssh % token in brackets, as an IPv6 bastion's
+// ProxyCommand writes its host ([%h]:%p): ssh puts the address there, and
+// the shell finds no file to glob it to in host git's empty run folder.
+var bracketedToken = regexp.MustCompile(`\[%[A-Za-z]\]`)
+
+// sshToken matches an ssh % token, %% among them.
+var sshToken = regexp.MustCompile(`%[A-Za-z%]`)
+
+// sshTrustFileUntrusted is trustFileUntrusted for a file ssh names, where
+// ssh % tokens may stand in the last path element alone (~/.ssh/%h.key):
+// the folder it is in is then judged, as the file is not known yet.
+func sshTrustFileUntrusted(v string, areas []string) string {
+	base, dir := filepath.Base(v), filepath.Dir(v)
+	if !strings.Contains(base, "%") || strings.ContainsAny(dir, "%$") || strings.Contains(base, "$") ||
+		strings.HasPrefix(v, "~") && !strings.HasPrefix(v, "~/") {
+		return trustFileUntrusted(v, areas)
+	}
+	if strings.Contains(sshToken.ReplaceAllString(base, ""), "%") {
+		return "names a % that is not an ssh token; write the full path"
+	}
+	d := expandHome(dir)
+	if !filepath.IsAbs(d) {
+		return "is not an absolute path, so where it is found is not known; write the full path"
+	}
+	for _, a := range areas {
+		if a != "" && within(d, a) {
+			return "is in " + a + ", which commands can write, where the agent could vouch for a host of its own"
+		}
+	}
+	return folderUntrusted(d)
+}
+
 // trustFileUntrusted says why a file ssh or git trusts (a known hosts file,
 // a certificate, a CA bundle or folder, a key), named as v, is not the
 // person's alone: a path ssh or git would expand (write the full path), a
@@ -607,7 +640,7 @@ func sshDirectiveUntrusted(key, value string, areas []string, path string) strin
 			if strings.EqualFold(w, "none") {
 				continue
 			}
-			if why := trustFileUntrusted(w, areas); why != "" {
+			if why := sshTrustFileUntrusted(w, areas); why != "" {
 				return why
 			}
 		}
