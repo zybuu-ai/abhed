@@ -1,8 +1,11 @@
 package sandbox
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -129,25 +132,53 @@ func gitFolders(base, repo, shape string) (gd, common string) {
 	return filepath.Join(repo, ".git"), filepath.Join(repo, ".git")
 }
 
-// On the process tier, git works in a workspace whose git folder lies
-// outside it, even under a home the sandbox otherwise keeps unreadable: it
-// reads the repository's top (for a folder inside it) and commits into the
-// git folders, as it does in one inside the workspace. What git reads as
-// configuration or runs there stays as unwritable as in the workspace's own.
-func TestProcessSandboxReachesAGitFolderOutsideTheWorkspace(t *testing.T) {
+// reachBase is where a test makes its repositories: a home the sandbox keeps
+// unreadable but for the workspace, as a person's projects under ~ are.
+// Seatbelt lets commands write the account's temp folder, where a test's
+// folders are, so on macOS a write a rule refuses is seen refused only in
+// a folder under the real home: with ABHED_TEST_GIT_UNDER_HOME=1 the test
+// makes one there (and removes it); without it, the rules are read instead.
+func reachBase(t *testing.T) (home string, refusalsShow bool) {
+	t.Helper()
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("the process tier runs on macOS and Linux")
 	}
-	base := workspace(t)
-	home := filepath.Join(base, "home")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	if runtime.GOOS == "darwin" && os.Getenv("ABHED_TEST_GIT_UNDER_HOME") == "1" {
+		u, err := user.Current()
+		if err != nil || u.HomeDir == "" {
+			t.Fatalf("no account home: %v", err)
+		}
+		real := u.HomeDir
+		dir, err := os.MkdirTemp(real, "abhed-gitreach-test-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		return dir, true
+	}
+	home = filepath.Join(workspace(t), "home")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// The repositories live in a home, which the sandbox keeps unreadable but
-	// for the workspace: as a person's projects under ~ are.
 	t.Setenv("HOME", home)
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	return home, runtime.GOOS == "linux"
+}
+
+const commitLine = "echo x > made-in-sandbox.txt && git add made-in-sandbox.txt && " +
+	"git -c user.name=t -c user.email=t@example.test commit -q -m in-sandbox && git log -1 --format=%s"
+
+// On the process tier, git reads in a workspace whose git folder lies
+// outside it, even under a home the sandbox otherwise keeps unreadable, and
+// commits where that git folder serves the workspace alone (a submodule's).
+// A git folder shared with another work tree, a linked worktree's common
+// folder or a repository's .git for a folder inside it, is never written: no
+// commit there, and none of what a command could do through it to another
+// work tree or the person's history.
+func TestProcessSandboxReachesAGitFolderOutsideTheWorkspace(t *testing.T) {
+	home, refusalsShow := reachBase(t)
 	repo, shapes := gitShapes(t, home)
+	gitRun(t, repo, "branch", "keep")
 	for name, ws := range shapes {
 		t.Run(name, func(t *testing.T) {
 			s := reachSandbox(t, ws)
@@ -159,62 +190,130 @@ func TestProcessSandboxReachesAGitFolderOutsideTheWorkspace(t *testing.T) {
 					t.Fatalf("the repository's top was not readable: %v\n%s", err, out)
 				}
 			}
-			commit := "echo x > made-in-sandbox.txt && git add made-in-sandbox.txt && " +
-				"git -c user.name=t -c user.email=t@example.test commit -q -m in-sandbox && git log -1 --format=%s"
-			if out, err := runIn(t, s, ws, commit); err != nil || !strings.Contains(out, "in-sandbox") {
-				t.Fatalf("a commit in the sandbox: %v\n%s", err, out)
-			}
-			gd, common := gitFolders(home, repo, name)
-			for _, attempt := range []string{
-				"mkdir -p " + filepath.Join(common, "hooks") + " && echo 'exit 0' > " + filepath.Join(common, "hooks", "pre-commit"),
-				"echo '[core]' >> " + filepath.Join(common, "config"),
-				"git config core.hooksPath " + ws,
-				"mv " + filepath.Join(common, "hooks") + " " + filepath.Join(common, "hooks-moved"),
-			} {
-				if out, err := runIn(t, s, ws, attempt); err == nil {
-					t.Errorf("the sandbox let a command run %q: %s", attempt, out)
-				}
-			}
-			// A commondir pointing git elsewhere: refused by pattern on macOS;
-			// bubblewrap holds only what exists, so one made in a repository's
-			// git folder is taken out before the next command, as in the
-			// workspace's own git folder.
-			planted := filepath.Join(gd, "commondir")
-			_, had := os.Lstat(planted)
-			_, _ = runIn(t, s, ws, "echo /elsewhere > "+planted)
-			_, _ = runIn(t, s, ws, "true")
-			if b, err := os.ReadFile(planted); err == nil && strings.Contains(string(b), "elsewhere") {
-				t.Error("a commondir planted in the git folder outside the workspace stayed")
-			} else if had == nil && err != nil {
-				t.Error("the worktree's own commondir was taken out")
-			}
-			if out, err := runIn(t, s, ws, "git log -1 --format=%s"); err != nil || !strings.Contains(out, "in-sandbox") {
-				t.Errorf("git after the plant was taken out: %v\n%s", err, out)
-			}
-			if _, err := os.Stat(filepath.Join(common, "hooks", "pre-commit")); err == nil {
-				t.Error("a hook was planted in the git folder outside the workspace")
-			}
-			if b, _ := os.ReadFile(filepath.Join(common, "config")); strings.Contains(string(b), "hooksPath") {
-				t.Error("the git folder's configuration was written")
-			}
-			// The repository's top's own files stay unwritten. On macOS the test's
-			// temp folder is writable to commands anyway, so the rule is checked.
-			if name == "subfolder" {
-				if s.backend == "sandbox-exec" {
-					for _, f := range PathForms(repo) {
-						if strings.Contains(s.seatbeltProfile(), "(allow file-write* (subpath "+quote(f)+"))") {
-							t.Error("the profile lets commands write the repository's top")
-						}
-					}
-				} else if _, err := runIn(t, s, ws, "echo x >> ../README.md"); err == nil {
-					t.Error("a command wrote the repository's top")
-				}
-			}
 			if n := s.gitReachNote(); n == "" {
 				t.Error("the description does not say what outside the workspace git reaches")
 			}
+			gd, common := gitFolders(home, repo, name)
+			profile := ""
+			if s.backend == "sandbox-exec" {
+				profile = s.seatbeltProfile()
+			}
+			if name == "submodule" {
+				if out, err := runIn(t, s, ws, commitLine); err != nil || !strings.Contains(out, "in-sandbox") {
+					t.Fatalf("a commit in the submodule: %v\n%s", err, out)
+				}
+				ownRefusals(t, s, ws, gd, refusalsShow)
+				return
+			}
+			// Shared folders: read, never written.
+			for _, f := range formsOf([]string{common, gd}) {
+				if profile != "" && strings.Contains(profile, "(allow file-write* (subpath "+quote(f)+"))") {
+					t.Errorf("the profile lets commands write %s", f)
+				}
+			}
+			if !refusalsShow {
+				return
+			}
+			before := snapshot(t, common)
+			for _, attempt := range []string{
+				commitLine,
+				"git update-ref refs/heads/keep HEAD~0",
+				"git update-ref refs/heads/main HEAD",
+				"echo x >> " + filepath.Join(common, "index"),
+				"echo ref: refs/heads/keep > " + filepath.Join(common, "HEAD"),
+				"git replace $(git rev-parse HEAD) $(git rev-parse HEAD)^{tree} 2>&1 || git replace -f HEAD HEAD",
+				"mkdir -p " + filepath.Join(common, "info") + " && echo x > " + filepath.Join(common, "info", "grafts"),
+				"echo '/*' > " + filepath.Join(common, "info", "sparse-checkout"),
+				"echo http://evil.example/ > " + filepath.Join(common, "objects", "info", "http-alternates"),
+				"git update-index --add --cacheinfo 100644,$(git hash-object -w ../README.md 2>/dev/null || echo e69de29bb2d1d6434b8b29ae775ad8c2e48c5391),other/main.go",
+				"echo x > " + filepath.Join(common, "hooks", "pre-commit"),
+				"echo '[core]' >> " + filepath.Join(common, "config"),
+			} {
+				if out, err := runIn(t, s, ws, attempt); err == nil {
+					t.Errorf("%s: the sandbox let a command run %q: %s", name, attempt, out)
+				}
+			}
+			if after := snapshot(t, common); after != before {
+				t.Errorf("%s: the shared git folder changed:\n%s", name, diffLines(before, after))
+			}
 		})
 	}
+}
+
+// ownRefusals checks a submodule's own git folder gd, which commands write:
+// what git reads as configuration, programs or history in it stays held.
+func ownRefusals(t *testing.T, s *Process, ws, gd string, refusalsShow bool) {
+	t.Helper()
+	if s.backend == "sandbox-exec" {
+		profile := s.seatbeltProfile()
+		for _, want := range []string{gitFolderPattern(gd), gitExtrasPattern(gd)} {
+			if !strings.Contains(profile, want) {
+				t.Errorf("the profile lacks %s", want)
+			}
+		}
+	}
+	if !refusalsShow {
+		return
+	}
+	for _, attempt := range []string{
+		"echo x > " + filepath.Join(gd, "hooks", "pre-commit"),
+		"echo '[core]' >> " + filepath.Join(gd, "config"),
+		"git config core.hooksPath " + ws,
+		"mv " + filepath.Join(gd, "hooks") + " " + filepath.Join(gd, "hooks-moved"),
+		"git replace -f HEAD HEAD~1",
+		"echo x > " + filepath.Join(gd, "info", "grafts"),
+		"echo '/*' > " + filepath.Join(gd, "info", "sparse-checkout"),
+		"echo http://evil.example/ > " + filepath.Join(gd, "objects", "info", "http-alternates"),
+		"echo /elsewhere > " + filepath.Join(gd, "commondir") + " && test -s " + filepath.Join(gd, "commondir"),
+	} {
+		if out, err := runIn(t, s, ws, attempt); err == nil && !strings.Contains(attempt, "commondir") {
+			t.Errorf("the sandbox let a command run %q: %s", attempt, out)
+		}
+	}
+	// A shallow list or commondir bubblewrap could not hold is taken out
+	// before the next command, which is refused.
+	_, _ = runIn(t, s, ws, "git rev-parse HEAD > "+filepath.Join(gd, "shallow"))
+	_, _ = runIn(t, s, ws, "true")
+	for _, f := range []string{"shallow", "commondir"} {
+		if b, err := os.ReadFile(filepath.Join(gd, f)); err == nil && len(strings.TrimSpace(string(b))) > 0 {
+			t.Errorf("a %s planted in the submodule's git folder stayed", f)
+		}
+	}
+	if entries, _ := os.ReadDir(filepath.Join(gd, "refs", "replace")); len(entries) > 0 {
+		t.Error("a replace ref was planted")
+	}
+	if out, err := runIn(t, s, ws, "git log -1 --format=%s"); err != nil || !strings.Contains(out, "in-sandbox") {
+		t.Errorf("git after the plants were taken out: %v\n%s", err, out)
+	}
+}
+
+// snapshot lists every file under dir with its size and contents' sum.
+func snapshot(t *testing.T, dir string) string {
+	t.Helper()
+	var b strings.Builder
+	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		data, _ := os.ReadFile(p)
+		fmt.Fprintf(&b, "%s %d %x\n", strings.TrimPrefix(p, dir), len(data), sha256.Sum256(data))
+		return nil
+	})
+	return b.String()
+}
+
+func diffLines(a, b string) string {
+	have := map[string]bool{}
+	for _, l := range strings.Split(a, "\n") {
+		have[l] = true
+	}
+	var out []string
+	for _, l := range strings.Split(b, "\n") {
+		if !have[l] {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 // Reading a repository's top never reaches Abhed state in it: a top that

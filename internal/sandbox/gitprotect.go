@@ -521,7 +521,7 @@ func takeOutGitPlanted(planted []string) ([]map[string]any, error) {
 	var entries []map[string]any
 	for _, p := range planted {
 		m := map[string]any{"path": p}
-		if dest, err := quarantine(p, "commondir", "git-"); err == nil {
+		if dest, err := quarantine(p, filepath.Base(p), "git-"); err == nil {
 			m["outcome"], m["moved_to"] = plantMoved, dest
 			parts = append(parts, p+" was moved to "+dest)
 		} else if errors.Is(err, fs.ErrNotExist) {
@@ -539,7 +539,8 @@ func takeOutGitPlanted(planted []string) ([]map[string]any, error) {
 	}
 	return entries, fmt.Errorf("sandbox: the command was not run: a commondir appeared where git would not write it "+
 		"(a repository's or a submodule's git folder, or a linked worktree's pointing elsewhere), "+
-		"pointing git at configuration and hooks elsewhere; %s", strings.Join(parts, "; "))
+		"pointing git at configuration and hooks elsewhere, or a shallow list a command made in a git folder outside the workspace; %s",
+		strings.Join(parts, "; "))
 }
 
 // gitPattern is the seatbelt regex for the gitPointers of every git folder

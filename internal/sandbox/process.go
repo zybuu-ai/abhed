@@ -629,6 +629,7 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 		for _, g := range s.gitWrites() {
 			fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", gitFolderPattern(g))
 			fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", gitFolderFoldersPattern(g))
+			fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", gitExtrasPattern(g))
 			fmt.Fprintf(&b, "(deny file-write* (literal %q))\n", g)
 		}
 	}
@@ -1167,8 +1168,9 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		// them, with what it reads as configuration held read-only below.
 		var outside, outsideDirs []string
 		if w := s.gitWrites(); len(w) > 0 {
-			dirs := s.reach().dirs
-			held, planted, ok := outsideGitHeld(s.policy.Workspace, dirs)
+			r := s.reach()
+			dirs := []string{r.own}
+			held, planted, ok := outsideGitHeld(s.policy.Workspace, r.own, r.shallow)
 			// A commondir git would not have written is taken out, and the
 			// command refused, as in the workspace's own git folder.
 			if entries, err := takeOutGitPlanted(planted); err != nil {
@@ -1946,15 +1948,16 @@ func (s *Process) gitReads() []string {
 	return formsOf(append([]string{r.top}, r.dirs...))
 }
 
-// gitWrites are the git folders outside the workspace, in both forms, that
-// commands may write as git does in one inside it (index, objects, refs,
-// logs), with the same files held under protect_git; none without it, when
-// they stay read-only.
+// gitWrites is, in both forms, the one git folder outside the workspace that
+// serves it alone (a submodule checkout's), which commands may write as git
+// does in one inside it, with the same files and ownGitExtras held under
+// protect_git; none without it. Folders shared with other work trees stay
+// read-only (gitReach).
 func (s *Process) gitWrites() []string {
-	if s.reach == nil || !s.policy.ProtectGit {
+	if s.reach == nil || !s.policy.ProtectGit || s.reach().own == "" {
 		return nil
 	}
-	return formsOf(s.reach().dirs)
+	return PathForms(s.reach().own)
 }
 
 // gitReachNote says what outside the workspace commands may read and write
@@ -1968,12 +1971,17 @@ func (s *Process) gitReachNote() string {
 	if r.top != "" {
 		parts = append(parts, "the repository's top folder "+r.top+" readable")
 	}
-	if len(r.dirs) > 0 {
-		how := "readable"
-		if s.policy.ProtectGit {
-			how = "written as git writes them, configuration and hooks held"
+	var ro []string
+	for _, d := range r.dirs {
+		if d != r.own || !s.policy.ProtectGit {
+			ro = append(ro, d)
 		}
-		parts = append(parts, "its git folders "+strings.Join(r.dirs, ", ")+" "+how)
+	}
+	if len(ro) > 0 {
+		parts = append(parts, "its git folders "+strings.Join(ro, ", ")+" readable, not writable")
+	}
+	if r.own != "" && s.policy.ProtectGit {
+		parts = append(parts, "the submodule's git folder "+r.own+" written as git writes it, configuration, hooks and history held")
 	}
 	if len(parts) == 0 {
 		return ""

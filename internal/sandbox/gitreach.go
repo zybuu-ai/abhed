@@ -22,12 +22,21 @@ func GitReach(workspace string) []string {
 	return append([]string{r.top}, r.dirs...)
 }
 
-// gitReach is GitReach in parts: top, read only, and the git folders dirs,
-// which commands may write as git does under protect_git (index, objects,
-// refs and logs; never configuration, hooks or the pointers between them).
+// gitReach is GitReach in parts: top and the git folders dirs, read only,
+// and own, the one git folder whose work tree is exactly the workspace (a
+// submodule checkout's), which commands may write as git does under
+// protect_git. A git folder shared with another work tree (a linked
+// worktree's common folder, or a repository's .git for a folder inside it,
+// whose index covers files outside the workspace) is never written: through
+// it a command could move another work tree's branch, index or HEAD, plant
+// replace refs or grafts, or stage files outside the workspace.
 type gitReach struct {
 	top  string
 	dirs []string
+	own  string
+	// shallow is whether own held a shallow file as the session started,
+	// which bubblewrap cannot hold when there was none (see outsideGitHeld).
+	shallow bool
 	// root is the repository's top folder for a workspace inside it, whose
 	// own listing git needs (it changes into it) even where top is not read.
 	root string
@@ -80,6 +89,11 @@ func gitReachOf(workspace string) gitReach {
 	}
 	add(gd)
 	add(common)
+	// A submodule's git folder serves this work tree alone.
+	if root == ws && gd == common && gitFolder(gd) && !insideAny(gd, PathForms(ws)) {
+		r.own = gd
+		r.shallow = exists(filepath.Join(gd, "shallow"))
+	}
 	return r
 }
 
@@ -227,6 +241,21 @@ func gitFolderPattern(g string) string {
 		regexQuote(g), anyCase("worktrees"), anyCase("modules"), strings.Join(names, "|"))
 }
 
+// ownGitExtras are what else in a written git folder git reads as history or
+// as where to fetch from, held as the gitPointers are: grafts, a shallow
+// list, sparse-checkout rules, dumb-http alternates and replace refs.
+var ownGitExtras = []string{"info/grafts", "info/sparse-checkout", "objects/info/http-alternates", "shallow", "refs/replace"}
+
+// gitExtrasPattern is the seatbelt regex for ownGitExtras in g and in the
+// git folders of its submodules, in any case.
+func gitExtrasPattern(g string) string {
+	names := make([]string, len(ownGitExtras))
+	for i, n := range ownGitExtras {
+		names[i] = anyCase(n)
+	}
+	return fmt.Sprintf(`^%s/(%s/.+/)?(%s)(/|$)`, regexQuote(g), anyCase("modules"), strings.Join(names, "|"))
+}
+
 // gitFolderFoldersPattern is gitFoldersPattern for g, a git folder named directly.
 func gitFolderFoldersPattern(g string) string {
 	folders := []string{anyCase("modules"), anyCase("modules") + "/[^/]+", anyCase("worktrees"), anyCase("worktrees") + "/[^/]+",
@@ -235,25 +264,44 @@ func gitFolderFoldersPattern(g string) string {
 		regexQuote(g), anyCase("worktrees"), anyCase("modules"), strings.Join(folders, "|"))
 }
 
-// outsideGitHeld are the files in dirs, git folders outside the workspace ws,
-// that bubblewrap binds read-only when it lets commands write the folders:
-// what git reads as configuration or follows elsewhere, config and hooks made
-// empty where missing, as for a git folder inside the workspace; planted are
-// commondir files git would not have written, to be taken out. ok is false,
-// and the folders stay read-only, when one cannot be held: a link, or more
-// submodules than are looked through.
-func outsideGitHeld(ws string, dirs []string) (held, planted []string, ok bool) {
+// outsideGitHeld are the files in own, the submodule's git folder outside
+// the workspace ws, that bubblewrap binds read-only when it lets commands
+// write it: what git reads as configuration or follows elsewhere (config and
+// hooks made empty where missing), and ownGitExtras (refs/replace made an
+// empty folder, grafts, sparse-checkout and http-alternates empty files where
+// missing). planted are a commondir git would not have written, and a shallow
+// list that was not there as the session started (shallow, as the empty one
+// would make git take the repository as shallow), to be taken out. ok is
+// false, and the folder stays read-only, when one cannot be held: a link, or
+// more submodules than are looked through.
+func outsideGitHeld(ws, own string, shallow bool) (held, planted []string, ok bool) {
 	g := &gitScan{ws: ws, seen: map[string]bool{}, make: true}
-	for _, d := range dirs {
-		if gitFolder(d) {
-			g.folder(d, 0)
-		} else {
-			// A linked worktree's folder: its pointers and per-worktree config.
-			g.existing(d, "commondir", "gitdir", "config.worktree")
-		}
-	}
+	g.folder(own, 0)
 	if len(g.linked) > 0 || g.modulesBounded {
 		return nil, g.planted, false
+	}
+	var shallowPlanted []string
+	defer func() { planted = append(planted, shallowPlanted...) }()
+	for _, n := range ownGitExtras {
+		p := filepath.Join(own, filepath.FromSlash(n))
+		switch {
+		case n == "shallow":
+			if !shallow && exists(p) {
+				shallowPlanted = append(shallowPlanted, p)
+			} else if exists(p) {
+				g.add(p)
+			}
+			continue
+		case n == "refs/replace":
+			makeEmpty(p, true)
+		default:
+			_ = os.MkdirAll(filepath.Dir(p), 0o755) // #nosec G301 -- git's own mode for its folders
+			makeEmpty(p, false)
+		}
+		if isLink(p) {
+			return nil, g.planted, false
+		}
+		g.add(p)
 	}
 	return g.protected, g.planted, true
 }

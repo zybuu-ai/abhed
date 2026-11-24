@@ -194,9 +194,10 @@ func (b *HostBroker) ownFolder(p string) string {
 
 // reachable reports whether p lies in a folder sandbox.GitReach gives the
 // workspace's git (read once, as the broker starts) and outside the temp and
-// cache areas commands write. Commands may write such a git folder only as
-// git does (under protect_git, which HoldsGit says holds), never its
-// configuration or hooks, as for the workspace's own.
+// cache areas commands write. Commands never write such a folder, but for a
+// submodule's own git folder, which they write only as git does with its
+// configuration, hooks and history held (protect_git, which HoldsGit says
+// holds), as for the workspace's own .git.
 func (b *HostBroker) reachable(p string) bool {
 	b.reachOnce.Do(func() { b.reach = sandbox.GitReach(b.workspace) })
 	in := false

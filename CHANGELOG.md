@@ -1216,27 +1216,36 @@ All notable changes to Abhed are recorded here. The format follows
   failed lookup of the account is said in the sandbox's description, which
   `abhed doctor` shows and the record keeps.
 
-- On the process tier, git works where a workspace's git folder lies outside
-  it: a folder inside a repository, a linked worktree, or a submodule
-  checkout, including under a home the sandbox otherwise keeps unreadable.
-  `git status`, `log`, `diff`, `add`, `commit`, `merge` and the merge step of
-  `pull` work there, and remote `fetch`, `pull` and `push` run through host
-  git as at a repository's top. Commands may read the repository's top folder
-  (for a folder inside one) and the git folders the worktree's or submodule's
-  `.git` file names, and write those git folders as git does: index,
-  objects, refs and logs. Their configuration, hooks, `info/attributes`,
-  alternates and the pointers between git folders stay unwritable, as for a
-  git folder inside the workspace; with `protect_git` off they stay read-only.
-  The top's own files are never writable. A git folder is reached only when
-  it names the work tree back (a worktree's `gitdir`, a submodule's
-  `core.worktree`), so a `.git` file pointed at another repository reaches
-  nothing, and a home kept in git is never read. A `.abhed` anywhere under
-  what is read stays unreadable; a top that holds another workspace's
-  `.abhed` is not read at all (only listed, and its git folder read), and
-  under bubblewrap one made there after the session started is not hidden.
-  The sandbox's description, which `abhed doctor` shows and the record
-  keeps, names what is read and written. The fence tier does not reach
-  these folders yet.
+- On the process tier, git works again where a workspace's git folder lies
+  outside it, including under a home the sandbox otherwise keeps
+  unreadable. In each shape:
+  - a folder inside a repository: `git status`, `log`, `diff` and `show`
+    work, and remote `fetch`, `pull` and `push` run through host git; the
+    repository's top folder is readable (unless it holds another
+    workspace's `.abhed`, when it is only listed) and its `.git` is read
+    only, as its index covers files outside the workspace, so `add` and
+    `commit` fail, as in 1.2.9;
+  - a linked worktree: the same, with its own and the common git folder
+    read only, so `add` and `commit` fail, as in 1.2.9;
+  - a submodule checkout: everything, `add` and `commit` included; its own
+    git folder (`.git/modules/<name>`) is written as git writes it, with its
+    configuration, hooks, `info/attributes`, alternates, grafts,
+    `sparse-checkout`, `http-alternates`, `shallow` and replace refs held as
+    for a git folder inside the workspace (with `protect_git` off it stays
+    read only).
+
+  No command can write another work tree's branch, index or HEAD, plant
+  replace refs or grafts in a shared git folder, or stage a file outside
+  the workspace. A git folder is reached only when it names the work tree
+  back (a worktree's `gitdir`, a submodule's `core.worktree`), so a `.git`
+  file pointed at another repository reaches nothing, and a home kept in
+  git is never read. A `.abhed` anywhere under what is read stays
+  unreadable; under bubblewrap one made in the top after the session
+  started is not hidden. The sandbox's description, which `abhed doctor`
+  shows and the record keeps, names what is read and written. Committing
+  in a folder inside a repository or a linked worktree (a commit brokered
+  on the host, limited to the workspace's paths) is planned for 1.3.x, and
+  the fence tier does not reach these folders yet.
 
 - The `served` field of the `next_edit.summary` record event now includes
   renames finished from the file, which are also counted in `local`; before,

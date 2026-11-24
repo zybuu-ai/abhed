@@ -395,9 +395,12 @@ git, vim and shells read (`~/.gitconfig`, `~/.config/git`, `~/.vimrc`,
 `~/.zshrc`, …), and what git needs outside the workspace: the repository's
 top folder, read only, when the workspace is a folder inside one (unless it
 holds another workspace's `.abhed`), and the git folders a linked worktree's
-or submodule's `.git` file names, when they name the work tree back, which
-commands write as git does with their configuration and hooks held as for a
-git folder inside the workspace. That common git folder's `config`, with any
+or submodule's `.git` file names, when they name the work tree back. Those
+are read only, but for a submodule's own git folder, which serves its work
+tree alone and which commands write as git does, with configuration, hooks,
+grafts, replace refs and the rest held as for a git folder inside the
+workspace; a git folder shared with another work tree is never written. That
+common git folder's `config`, with any
 token kept in a remote URL or an `http.extraheader`, is readable to commands
 in those shapes, as it is when the git folder is inside the workspace. A
 `.abhed` under any of them stays unreadable. The credential list above still
