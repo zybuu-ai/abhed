@@ -182,6 +182,12 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			if ws == "" {
 				ws = workspace
 			}
+			// The org policy is fetched as each session starts, as the terminal
+			// and an editor connection do, so a rule published since applies.
+			if err := orgPolicyAfterNetwork(ctx, ws, config.LoadOptions{Trust: trust, Quiet: true}, errOut); err != nil {
+				emit(rpcResponse{ID: req.ID, Type: "error", Error: "the network configuration: " + err.Error()})
+				continue
+			}
 			// made is the agent New returns; a wake starts only after a run of it.
 			var made *abhed.Agent
 			opts := abhed.Options{

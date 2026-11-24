@@ -8,6 +8,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- `abhed rpc`, which Abhed Studio and scripts start sessions through, never
+  fetched the org policy as a session started, so a deny rule published
+  since did not reach those sessions until another command fetched it. It
+  now fetches it at each `start`, as the terminal and an editor connection
+  do. Affected: every release with `abhed rpc` and an org policy.
 - `abhed serve` answered any `Host`, and an `Origin` equal to it passed the
   cross-origin check, so a web page could reach the API by pointing its own
   name at the server (DNS rebinding); with `auth.mode` `none` that was the
