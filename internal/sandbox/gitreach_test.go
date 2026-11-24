@@ -278,7 +278,7 @@ func ownRefusals(t *testing.T, s *Process, ws, gd string, refusalsShow bool) {
 			t.Errorf("the sandbox let a command run %q: %s", attempt, out)
 		}
 	}
-	// A commondir made there is moved aside as it is made, before any next
+	// A commondir made there is moved aside soon after it is made, before any next
 	// command, where the person's own git could follow it.
 	if s.backend == "bwrap" {
 		_, _ = runIn(t, s, ws, "echo /elsewhere > "+filepath.Join(gd, "commondir"))

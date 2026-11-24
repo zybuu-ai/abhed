@@ -8,20 +8,33 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
-- Under bubblewrap (the process tier on Linux) with `protect_git`, a
-  command could leave in the workspace's git folder a `commondir`, an
-  `objects/info/alternates`, `http-alternates`, `info/attributes` or
-  `info/grafts` that did not exist before, as only files that already
-  existed were bound read-only; a planted `commondir` survived the sandbox
-  closing and pointed the person's own git (`git status` on the host, or
-  an editor's) at configuration of the command's choosing, which could run
-  a program on the host. The `info` and `objects/info` folders are now
-  held read-only whole, so none of those can be made, and a `commondir` is
-  moved aside the moment it is made, again as each command ends and as the
-  sandbox closes, and the next command refused. A repository a command
-  makes in the workspace is still taken out only as that command ends.
-  `git gc` cannot write `objects/info/commit-graph` there. macOS's Seatbelt
-  denies all of these by pattern and was not affected.
+- With `protect_git` on, on the tiers that hold git's files by binding only
+  the ones that exist (the process tier under bubblewrap on Linux, the
+  container tier, including on macOS with podman, and very likely the fence
+  tier), a command could make in the workspace's git folder a `commondir`
+  (or `objects/info/alternates`, `http-alternates`, `info/attributes`,
+  `info/grafts`) that was not there before. The person's own git on the
+  host (`git status`, or an editor's) then followed it to configuration of
+  the command's choosing, which could run a program as the person, and a
+  planted `commondir` stayed after the sandbox closed. Releases 1.2.6 to
+  1.2.9 have this with no mitigation (1.2.6 kept it even past the next
+  command). This release mitigates it and does not close it:
+  - `info` and `objects/info` are held read-only whole, so the files in
+    them cannot be made (`git gc` then cannot write the commit-graph);
+  - a `commondir` is moved aside soon after it is made (an inotify watch,
+    Linux), again as each command ends and as the sandbox closes, and the
+    next command is refused and says why.
+
+  What remains: a command that plants a `commondir` over and over still
+  has it read by host git runs that fall between a plant and its move; in
+  a measured 60 s run about a third of the host's `git status` runs ran
+  the command's program. On macOS's container tier there is no watch, only
+  the sweeps. A repository a command makes in the workspace is live to
+  host tools (an editor that opens nested repositories) until the command
+  ends, when it is taken out. Commits keep working on these tiers. Until a
+  later release closes this, keep host git tooling off a workspace an
+  untrusted command is writing, or use the macOS process tier (Seatbelt),
+  which denies these names outright and is not affected.
 
 - A repository's own `remote.<name>.mirror`, or a `remote.<name>.push`
   refspec that forces (`+…`) or deletes (`:…`), made a brokered `git push`
@@ -1288,8 +1301,12 @@ All notable changes to Abhed are recorded here. The format follows
     `sparse-checkout`, `http-alternates`, `shallow` and replace refs held as
     for a git folder inside the workspace, without Abhed making any file
     there that git would notice (with `protect_git` off it stays read
-    only); under bubblewrap a `commondir` made there is moved aside as it is
-    made, as in the workspace's own git folder.
+    only). On the tiers that bind only the git files that exist
+    (bubblewrap, the container tier including macOS's, the fence), a
+    `commondir` made there is moved aside soon after it is made, as in the
+    workspace's own git folder: a mitigation that a command planting in a
+    loop can still beat for some of the person's host git runs, as the
+    Security section says.
 
   No command can write another work tree's branch, index or HEAD, plant
   replace refs or grafts in a shared git folder, or stage a file outside

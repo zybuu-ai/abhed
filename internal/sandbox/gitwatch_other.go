@@ -2,11 +2,16 @@
 
 package sandbox
 
-// gitWatch is Linux's: elsewhere bubblewrap does not run.
+// gitWatch is Linux's: elsewhere a planted commondir is taken out only by the
+// sweeps (gitGuard.sweep) and as the next command starts.
 type gitWatch struct{}
 
-func (s *Process) watchGit([]string) {}
+func (gg *gitGuard) watch([]string) {}
 
-func (s *Process) takePlanted() []map[string]any { return nil }
+func (gg *gitGuard) takePlanted() []map[string]any { return nil }
 
-func (s *Process) stopGitWatch() {}
+func (gg *gitGuard) stop() {
+	gg.mu.Lock()
+	gg.closed = true
+	gg.mu.Unlock()
+}

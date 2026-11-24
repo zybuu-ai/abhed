@@ -71,11 +71,8 @@ type Process struct {
 	egress egressSessions
 	// git is what the look for git folders keeps between commands.
 	git gitMemory
-	// gitWatch moves aside a commondir planted in a git folder commands may
-	// write, as it is made (bubblewrap); see watchGit.
-	gitWatchMu     sync.Mutex
-	gitWatch       *gitWatch
-	gitWatchClosed bool
+	// gitg keeps a planted commondir from the person's git (bubblewrap).
+	gitg gitGuard
 	// Whether a sandboxed command is left no capabilities and no writable
 	// host-root path. Probed once; empty means it is, so the tier fails closed.
 	capsOnce sync.Once
@@ -1190,8 +1187,9 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 					args = append(args, "--bind-try", g, g)
 				}
 				outside, outsideDirs = held, dirs
-				// A commondir made there is moved aside as it is made.
-				s.watchGit(dirs)
+				// A commondir made there is moved aside soon after it is made
+				// (a mitigation; see gitGuard).
+				s.gitg.watch(dirs)
 			}
 		}
 		// Git stops looking for its folder at a mount, and the workspace is
@@ -1224,15 +1222,10 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		// Bubblewrap binds only what exists, so git folders found now are bound
 		// read-only; a planted commondir is taken out first.
 		if s.policy.ProtectGit {
-			// What the watcher moved aside while an earlier command ran is said,
+			// What the watch moved aside while an earlier command ran is said,
 			// and this command refused, as the scan below does for one it finds.
-			if moved := s.takePlanted(); len(moved) > 0 {
-				if l := LaunchOf(ctx); l.Record != nil {
-					_ = l.Record(EvGitPlanted, map[string]any{"entries": moved, "call_id": l.CallID, "sandbox": s.backend,
-						"workspace": s.policy.Workspace, "reason": "a commondir was made in a git folder while a command ran, and moved aside"})
-				}
-				return &exec.Cmd{Err: errors.New("sandbox: the command was not run: an earlier command made a commondir in a git folder, " +
-					"pointing git at configuration and hooks elsewhere; it was moved aside as it was made")}
+			if err := s.gitg.refuse(ctx, s.backend, s.policy.Workspace, &s.git); err != nil {
+				return &exec.Cmd{Err: err}
 			}
 			for _, ws := range s.workspaces() {
 				found, err := gitGuardFor(ctx, ws, s.backend, &s.git, s.policy.GitRequired)
@@ -1240,10 +1233,7 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 					return &exec.Cmd{Err: err}
 				}
 				protected = append(protected, found...)
-				s.git.mu.Lock()
-				dirs := s.git.dirs[ws]
-				s.git.mu.Unlock()
-				s.watchGit(dirs)
+				s.gitg.watchFound(&s.git, ws)
 			}
 		}
 		for _, p := range append(holders(s.workspaces(), protected), holders(outsideDirs, outside)...) {
@@ -2023,9 +2013,7 @@ func (s *Process) sweepGit() {
 	if !s.policy.ProtectGit || s.backend != "bwrap" {
 		return
 	}
-	for _, ws := range s.workspaces() {
-		_, _ = gitGuardFor(context.Background(), ws, s.backend, &s.git, false)
-	}
+	sweepGit(s.workspaces(), s.backend, &s.git)
 	// And the submodule's own git folder outside it, when commands write it.
 	if s.reach != nil {
 		if r := s.reach(); r.own != "" {
