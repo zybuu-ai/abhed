@@ -288,7 +288,9 @@ was not given (DNS rebinding; see [Configuration](02-configuration.md#names-the-
 The chart gives it the names a cluster uses: the Service's own (`<name>`,
 `<name>.<namespace>`, `<name>.<namespace>.svc` and
 `<name>.<namespace>.svc.<clusterDomain>`, `cluster.local` by default), every
-`ingress.hosts` host and the `route.host`, all in `server.allowed_hosts`
+`ingress.hosts` host and the `route.host` (required with `route.enabled`: a
+host OpenShift would generate is not known when the chart renders, so the
+chart refuses a Route without one), all in `server.allowed_hosts`
 together with any you list in `config.server.allowed_hosts`. Add other names
 clients use in `allowedHosts`:
 

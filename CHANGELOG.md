@@ -177,7 +177,8 @@ All notable changes to Abhed are recorded here. The format follows
   server by a name must have that name configured. The Helm chart does this
   itself: its probes send `Host: localhost`, and it puts the Service's DNS
   names, the ingress and route hosts and the new `allowedHosts` value in
-  `server.allowed_hosts`; upgrade the chart with the server
+  `server.allowed_hosts`, and now refuses `route.enabled` without
+  `route.host`; upgrade the chart with the server
   ([Kubernetes](docs/guide/27-kubernetes.md#names-the-server-answers-to)).
 - git fetch, pull, push, clone and ls-remote in Abhed Studio and the CLI
   now reach remotes with the person's own credentials (SSH agent, keychain,
