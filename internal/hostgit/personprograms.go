@@ -186,13 +186,15 @@ func helperCommand(ctx context.Context, cwd, h string) string {
 	case filepath.IsAbs(first), strings.HasPrefix(first, "~/"):
 		return h
 	}
+	// The helper's own words after its name are judged too (store --file …).
+	args := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(h), first))
 	name := "git-credential-" + first
 	if dir, err := gitOut(ctx, cwd, "--exec-path"); err == nil && dir != "" {
 		if p := filepath.Join(dir, name); executable(p) {
-			return p
+			name = p
 		}
 	}
-	return name
+	return strings.TrimSpace(name + " " + args)
 }
 
 // shells are programs that run a command line given with -c, which Abhed
@@ -419,12 +421,9 @@ func readSSHConfig(f, rel string, areas []string, path string, include func(file
 				return fmt.Errorf("your ssh configuration file %s sets %s %q, which %s", f, key, rest, why)
 			}
 		case key == "match":
-			words, _ := shellWords(rest)
-			for i, w := range words {
-				if strings.EqualFold(w, "exec") && i+1 < len(words) {
-					if why := sshCommandUntrusted(words[i+1], areas, path); why != "" {
-						return fmt.Errorf("your ssh configuration file %s runs %q (Match exec), which %s", f, words[i+1], why)
-					}
+			for _, cmd := range matchExecs(rest) {
+				if why := sshCommandUntrusted(cmd, areas, path); why != "" {
+					return fmt.Errorf("your ssh configuration file %s runs %q (Match exec), which %s", f, cmd, why)
 				}
 			}
 		}
@@ -614,15 +613,45 @@ func sshCommandUntrusted(cmd string, areas []string, path string) string {
 }
 
 // sshKeyValue is an ssh configuration line's keyword, lowered, and the rest.
+// As ssh reads it: the keyword may be quoted, and is followed by spaces,
+// an =, or both.
 func sshKeyValue(line string) (string, string) {
-	i := strings.IndexAny(line, " \t=")
-	if i < 0 {
-		return strings.ToLower(line), ""
+	line = strings.TrimSpace(line)
+	var key, rest string
+	if strings.HasPrefix(line, `"`) {
+		end := strings.Index(line[1:], `"`)
+		if end < 0 {
+			return strings.ToLower(line), ""
+		}
+		key, rest = line[1:end+1], line[end+2:]
+	} else {
+		i := strings.IndexAny(line, " \t=")
+		if i < 0 {
+			return strings.ToLower(line), ""
+		}
+		key, rest = line[:i], line[i:]
 	}
-	key := strings.ToLower(line[:i])
-	rest := strings.TrimLeft(line[i:], " \t")
+	rest = strings.TrimLeft(rest, " \t")
 	rest = strings.TrimLeft(strings.TrimPrefix(rest, "="), " \t")
-	return key, rest
+	return strings.ToLower(key), rest
+}
+
+// matchExecs are the commands a Match line runs, as ssh reads its criteria:
+// exec and !exec, each followed by its command or joined to it by =.
+func matchExecs(rest string) []string {
+	words, _ := shellWords(rest)
+	var cmds []string
+	for i := 0; i < len(words); i++ {
+		w := strings.ToLower(strings.TrimPrefix(words[i], "!"))
+		switch {
+		case w == "exec" && i+1 < len(words):
+			cmds = append(cmds, words[i+1])
+			i++
+		case strings.HasPrefix(w, "exec="):
+			cmds = append(cmds, words[i][strings.Index(words[i], "=")+1:])
+		}
+	}
+	return cmds
 }
 
 // sshConfigFlag is the file an ssh command's -F names, "" when none.
