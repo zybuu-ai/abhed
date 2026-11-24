@@ -85,6 +85,11 @@ func personProgramsHeld(ctx context.Context, cwd string, areas []string, path st
 				return fmt.Errorf("the program your git configuration names for %s (%q) could not be read as words", k, cmd)
 			}
 			progs = append(progs, named{k, words})
+			for _, f := range helperDefaults(words) {
+				if why := trustFileUntrusted(f, areas); why != "" {
+					return fmt.Errorf("the credential helper your git configuration names for %s (%q) keeps credentials in %s, which %s", k, cmd, f, why)
+				}
+			}
 		}
 	}
 	// ssh's own options and configuration first, for the reason that names them.
@@ -195,6 +200,46 @@ func helperCommand(ctx context.Context, cwd, h string) string {
 		}
 	}
 	return strings.TrimSpace(name + " " + args)
+}
+
+// helperDefaults are the files git's own cache and store helpers use when
+// words name none: the cache's socket (in ~/.git-credential-cache where it
+// exists, else the XDG cache folder) and the store's credential files.
+func helperDefaults(words []string) []string {
+	if len(words) == 0 {
+		return nil
+	}
+	has := func(flag string) bool {
+		for _, w := range words[1:] {
+			if w == flag || strings.HasPrefix(w, flag+"=") {
+				return true
+			}
+		}
+		return false
+	}
+	home, _ := os.UserHomeDir()
+	xdg := func(env, fallback string) string {
+		if v := os.Getenv(env); v != "" && filepath.IsAbs(v) {
+			return v
+		}
+		return filepath.Join(home, fallback)
+	}
+	switch filepath.Base(words[0]) {
+	case "git-credential-cache":
+		if has("--socket") || home == "" {
+			return nil
+		}
+		if info, err := os.Stat(filepath.Join(home, ".git-credential-cache")); err == nil && info.IsDir() {
+			return []string{filepath.Join(home, ".git-credential-cache", "socket")}
+		}
+		return []string{filepath.Join(xdg("XDG_CACHE_HOME", ".cache"), "git", "credential", "socket")}
+	case "git-credential-store":
+		if has("--file") || home == "" {
+			return nil
+		}
+		return []string{filepath.Join(home, ".git-credentials"), filepath.Join(xdg("XDG_CONFIG_HOME", ".config"), "git", "credentials")}
+	}
+	return nil
 }
 
 // shells are programs that run a command line given with -c, which Abhed

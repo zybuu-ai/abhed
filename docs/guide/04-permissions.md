@@ -1239,7 +1239,10 @@ cannot steer host git:
   your git configuration, URL-scoped `http.<url>.*` ones too. Each must be a
   full path (no `$`, `%` or `~user`; `~/` is your home) outside the
   workspace and every folder commands can write, yours or root's, not
-  writable by others, and readable; `none` and the defaults
+  writable by others, and readable (so are the files git's own `cache` and
+  `store` helpers use when no `--socket` or `--file` names one: the cache's
+  socket in `~/.git-credential-cache` or the XDG cache folder, the store's
+  `~/.git-credentials` and XDG file); `none` and the defaults
   (`~/.ssh/known_hosts`, the system's CA store) pass. Otherwise the agent
   could vouch for a host of its own.
 - Host git runs with your `PATH`, less every folder that is relative or
