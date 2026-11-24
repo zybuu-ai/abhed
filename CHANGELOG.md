@@ -8,6 +8,21 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- Under bubblewrap (the process tier on Linux) with `protect_git`, a
+  command could leave in the workspace's git folder a `commondir`, an
+  `objects/info/alternates`, `http-alternates`, `info/attributes` or
+  `info/grafts` that did not exist before, as only files that already
+  existed were bound read-only; a planted `commondir` survived the sandbox
+  closing and pointed the person's own git (`git status` on the host, or
+  an editor's) at configuration of the command's choosing, which could run
+  a program on the host. The `info` and `objects/info` folders are now
+  held read-only whole, so none of those can be made, and a `commondir` is
+  moved aside the moment it is made, again as each command ends and as the
+  sandbox closes, and the next command refused. A repository a command
+  makes in the workspace is still taken out only as that command ends.
+  `git gc` cannot write `objects/info/commit-graph` there. macOS's Seatbelt
+  denies all of these by pattern and was not affected.
+
 - A repository's own `remote.<name>.mirror`, or a `remote.<name>.push`
   refspec that forces (`+…`) or deletes (`:…`), made a brokered `git push`
   run on the host as a mirror, force or delete push behind only the plain

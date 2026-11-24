@@ -68,6 +68,11 @@ type Process struct {
 	egress egressSessions
 	// git is what the look for git folders keeps between commands.
 	git gitMemory
+	// gitWatch moves aside a commondir planted in a git folder commands may
+	// write, as it is made (bubblewrap); see watchGit.
+	gitWatchMu     sync.Mutex
+	gitWatch       *gitWatch
+	gitWatchClosed bool
 	// Whether a sandboxed command is left no capabilities and no writable
 	// host-root path. Probed once; empty means it is, so the tier fails closed.
 	capsOnce sync.Once
@@ -1144,12 +1149,26 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		// Bubblewrap binds only what exists, so git folders found now are bound
 		// read-only; a planted commondir is taken out first.
 		if s.policy.ProtectGit {
+			// What the watcher moved aside while an earlier command ran is said,
+			// and this command refused, as the scan below does for one it finds.
+			if moved := s.takePlanted(); len(moved) > 0 {
+				if l := LaunchOf(ctx); l.Record != nil {
+					_ = l.Record(EvGitPlanted, map[string]any{"entries": moved, "call_id": l.CallID, "sandbox": s.backend,
+						"workspace": s.policy.Workspace, "reason": "a commondir was made in a git folder while a command ran, and moved aside"})
+				}
+				return &exec.Cmd{Err: errors.New("sandbox: the command was not run: an earlier command made a commondir in a git folder, " +
+					"pointing git at configuration and hooks elsewhere; it was moved aside as it was made")}
+			}
 			for _, ws := range s.workspaces() {
 				found, err := gitGuardFor(ctx, ws, s.backend, &s.git, s.policy.GitRequired)
 				if err != nil {
 					return &exec.Cmd{Err: err}
 				}
 				protected = append(protected, found...)
+				s.git.mu.Lock()
+				dirs := s.git.dirs[ws]
+				s.git.mu.Unlock()
+				s.watchGit(dirs)
 			}
 		}
 		for _, p := range holders(s.workspaces(), protected) {
@@ -1190,6 +1209,11 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		cmd := s.bounded(ctx, "bwrap", args)
 		cmd.Dir = cwd
 		cmd.Env = env
+		// What the command left in a git folder is taken out as it ends, not
+		// only as the next one starts.
+		if s.policy.ProtectGit {
+			OnExit(cmd, func(error) { s.sweepGit() })
+		}
 		return s.place(ctx, cmd)
 	}
 
@@ -1859,4 +1883,17 @@ func seatbeltPrivateDirs(dirs []string) string {
 		return ""
 	}
 	return "\n;; Folders made for this command alone.\n" + b.String()
+}
+
+// sweepGit takes out what a command left in the workspace's git folders that
+// git would follow (a commondir, a repository it made), as the next command's
+// start would, for a command that ended and a sandbox closing: the person's
+// own git may run before any next command.
+func (s *Process) sweepGit() {
+	if !s.policy.ProtectGit || s.backend != "bwrap" {
+		return
+	}
+	for _, ws := range s.workspaces() {
+		_, _ = gitGuardFor(context.Background(), ws, s.backend, &s.git, false)
+	}
 }
