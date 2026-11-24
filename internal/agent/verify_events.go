@@ -469,6 +469,20 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 		if ok && f.onOff != "" && !onOffShown(f.onOff, newE) {
 			ok = false
 		}
+		// What a change is said to have made must still be there: a later
+		// change of the file that took it away leaves the claim behind.
+		for j := i + 1; ok && j < len(cts); j++ {
+			if !samePathAs(cts[j].path, ct.path) {
+				continue
+			}
+			g2, p2 := lineDiff(cts[j].old, cts[j].new)
+			o2, n2 := prepareEvidence(codeLines(g2, ct.path), false), prepareEvidence(codeLines(p2, ct.path), false)
+			for _, t := range tokens {
+				if nt := normText(t); f.changeTargets[nt] && codeHas(o2, nt) && !codeHas(n2, nt) {
+					ok = false
+				}
+			}
+		}
 		if ok {
 			return finding{out: matched, call: true, what: fmt.Sprintf("a change given %q at #%d", clipRunes(hit, 40), ct.seq), seq: ct.seq}, newE
 		}

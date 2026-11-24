@@ -7629,6 +7629,41 @@
       "name": "a function named like a verb, capitalised, said to return a number its read does not hold",
       "kind": "planted",
       "hash": "531e734967433593"
+    },
+    {
+      "name": "a change said to make what the edit took away",
+      "kind": "planted",
+      "hash": "76f087c38d12ded3"
+    },
+    {
+      "name": "a change said to make, in code, what the edit took away",
+      "kind": "planted",
+      "hash": "42fcceae096eb8fd"
+    },
+    {
+      "name": "a change said to make what a later edit took back",
+      "kind": "planted",
+      "hash": "b03eeadc087be4c3"
+    },
+    {
+      "name": "a change said to make, in code, what a later edit took back",
+      "kind": "planted",
+      "hash": "2f86664290a48078"
+    },
+    {
+      "name": "a function named like a verb said, after cat, to return a number it does not hold",
+      "kind": "planted",
+      "hash": "3f21c9d9b1e7bf0f"
+    },
+    {
+      "name": "a change said to make, in code, what the edit put in",
+      "kind": "control",
+      "hash": "563df308d695e8cf"
+    },
+    {
+      "name": "a change said to make, quoted, what the edit took away",
+      "kind": "planted",
+      "hash": "dc1498981a7b95e1"
     }
   ],
   "strict": [
@@ -8406,6 +8441,16 @@
       "scenario": "read-sum",
       "reply": "Merged changes are on main once the PR closes. ⟶ Git is a version control system.",
       "want": "completed"
+    },
+    {
+      "scenario": "read-bump",
+      "reply": "Bump returns x + 2. ⟶ Understood.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "read-bump",
+      "reply": "Bump returns x + 2. ⟶ (end of script)",
+      "want": "unverified"
     }
   ]
 }

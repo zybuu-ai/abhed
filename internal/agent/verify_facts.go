@@ -19,6 +19,9 @@ type facts struct {
 	paths    []string // file paths named, also literals
 	hosts    []string // host names and addresses, also literals
 	numbers  []string // standalone numbers, normalised
+	// changeTargets are the literals a change claim says it made ("changed
+	// X to `Y`"), which only what a change put in can show.
+	changeTargets map[string]bool
 	// workNounLead: it opens with a git or deploy verb before a work noun
 	// whose state is said to be new, a report only after such a call.
 	workNounLead bool
@@ -254,6 +257,12 @@ func extractFacts(claim string) facts {
 	var f facts
 	text, workLead := adjectiveLead(ansiRe.ReplaceAllString(claim, ""))
 	f.workNounLead = workLead
+	if m := changeToRe.FindStringSubmatchIndex(claim); m != nil && m[2] > 0 {
+		f.changeTargets = map[string]bool{}
+		for _, lit := range extractFacts(claim[m[2]:]).literals {
+			f.changeTargets[lit] = true
+		}
+	}
 	seen := map[string]bool{}
 	addLit := func(s string) {
 		s = normText(strings.Trim(s, ",;:!?()[]{}'\""))

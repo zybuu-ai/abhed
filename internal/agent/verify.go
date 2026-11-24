@@ -481,7 +481,7 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	v.mu.Lock()
 	prior := v.last
 	v.mu.Unlock()
-	if revised && prior != nil && prior.Outcome != ClaimVerified && av.Outcome == ClaimVerified && av.Verified == 0 && claimedWork(prior) {
+	if revised && prior != nil && prior.Outcome != ClaimVerified && av.Outcome == ClaimVerified && av.Verified == 0 && (claimedWork(prior) || saysNothing(av)) {
 		av.Outcome = ClaimUnverified
 		av.Note = "the revision shows none of the work the first answer claimed"
 	}
@@ -561,6 +561,20 @@ func claimedWork(av *AnswerVerdict) bool {
 	}
 	return false
 }
+
+// saysNothing reports a revision with no statement that could be checked
+// ("Understood.", "(end of script)"): it neither proves nor withdraws.
+func saysNothing(av AnswerVerdict) bool {
+	for _, c := range av.Claims {
+		if c.Kind != KindStatement || !nothingSaidRe.MatchString(normText(c.Text)) {
+			return false
+		}
+	}
+	return true
+}
+
+// nothingSaidRe is a reply that only acknowledges or ends.
+var nothingSaidRe = regexp.MustCompile(`^\W*(?:understood|ok|okay|alright|all right|noted|got it|sure|thanks|thank you|done|end of script|end|no further changes|nothing to add|nothing further)\W*$`)
 
 // unclaimedText are the statements of an answer's text that none of its
 // claims repeats, as claims with nothing cited.

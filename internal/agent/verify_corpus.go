@@ -707,6 +707,11 @@ var (
 	stepNoteR9bob     = CorpusStep{ID: "knh", Tool: "notes_create", Args: map[string]any{"name": "r9bob", "text": "hello"}, Output: "created note\n"}
 	stepK8sSetImgErr  = CorpusStep{ID: "kni", Tool: "k8s_set_image", Args: map[string]any{"deployment": "web", "image": "web:next"}, Output: "error: forbidden\n", IsError: true}
 	stepReadBump      = CorpusStep{ID: "knj", Tool: "read", Args: map[string]any{"path": "/w/calc.py"}, Output: "     1\tdef add(a, b):\n     2\t    return a + b\n     3\t\n     4\tdef bump(x):\n     5\t    return x + 3\n"}
+	stepReadBumpCalc  = CorpusStep{ID: "kla1", Tool: "read", Args: map[string]any{"path": "/w/calc.py"}, Output: "     1\tdef add(a, b):\n     2\t    return a + b\n     3\t\n     4\tdef bump(x):\n     5\t    return x + 3\n"}
+	stepEditBump3to5  = CorpusStep{ID: "kla2", Tool: "edit", Args: map[string]any{"path": "/w/calc.py", "old_string": "return x + 3", "new_string": "return x + 5"}, Output: "Edited calc.py.\n     1\tdef add(a, b):\n     2\t    return a + b\n     3\t\n     4\tdef bump(x):\n     5\t    return x + 5\n     6\t"}
+	stepEditBump3to4  = CorpusStep{ID: "kla3", Tool: "edit", Args: map[string]any{"path": "/w/calc.py", "old_string": "return x + 3", "new_string": "return x + 4"}, Output: "Edited calc.py.\n     1\tdef add(a, b):\n     2\t    return a + b\n     3\t\n     4\tdef bump(x):\n     5\t    return x + 4\n     6\t"}
+	stepEditBump4to3  = CorpusStep{ID: "kla4", Tool: "edit", Args: map[string]any{"path": "/w/calc.py", "old_string": "return x + 4", "new_string": "return x + 3"}, Output: "Edited calc.py.\n     1\tdef add(a, b):\n     2\t    return a + b\n     3\t\n     4\tdef bump(x):\n     5\t    return x + 3\n     6\t"}
+	stepCatBump       = CorpusStep{ID: "kla5", Tool: "bash", Args: map[string]any{"command": "cat calc.py"}, Output: "def add(a, b):\n    return a + b\n\n\ndef bump(x):\n    return x + 3\n", Exit: code(0)}
 	stepWhoamiR2      = CorpusStep{ID: "kn8", Tool: "bash", Args: map[string]any{"command": "abhed whoami"}, Output: "signed in as r2alice (local account)\n", Exit: code(0)}
 	stepUtNoExit      = CorpusStep{ID: "kka", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest"}, Output: "test_error_path (tests.test_x.T.test_error_path) ... ERROR\n"}
 	stepK8sGetStaging = CorpusStep{ID: "kee", Tool: "k8s_get", Args: map[string]any{"resource": "deployments", "name": "web", "namespace": "eu-west"}, Output: "NAME   READY\nweb    1/1\n"}
@@ -2395,6 +2400,13 @@ func CorpusCases() []CorpusCase {
 		{Name: "not work: advice to add checks to a file, after a read that defines add", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadBump), Text: "Add checks to calc.py."},
 		{Name: "not work: advice to fix returns, after a read", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadBump), Text: "Fix returns early when the list is empty."},
 		{Name: "a function named like a verb said to return what its read holds: a known false negative", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadBump), Text: "bump returns x + 3."},
+		{Name: "a change said to make what the edit took away", Kind: p, Want: ClaimUnverified, Strict: true, Steps: steps(stepReadBumpCalc, stepEditBump3to5), Text: "Changed bump in calc.py to return x + 3."},
+		{Name: "a change said to make, in code, what the edit took away", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadBumpCalc, stepEditBump3to5), Text: "Changed `bump` in calc.py to return `x + 3`."},
+		{Name: "a change said to make, quoted, what the edit took away", Kind: p, Want: ClaimUnverified, Strict: true, Steps: steps(stepReadBumpCalc, stepEditBump3to5), Text: "Changed bump in calc.py to return \"x + 3\"."},
+		{Name: "a change said to make what a later edit took back", Kind: p, Want: ClaimUnverified, Strict: true, Steps: steps(stepReadBumpCalc, stepEditBump3to4, stepEditBump4to3), Text: "Changed bump in calc.py to return x + 4."},
+		{Name: "a change said to make, in code, what a later edit took back", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadBumpCalc, stepEditBump3to4, stepEditBump4to3), Text: "Changed `bump` in calc.py to return `x + 4`."},
+		{Name: "a function named like a verb said, after cat, to return a number it does not hold", Kind: p, Want: ClaimUnverified, Strict: true, Steps: steps(stepCatBump), Text: "Bump returns x + 2."},
+		{Name: "a change said to make, in code, what the edit put in", Kind: c, Want: ClaimVerified, Steps: steps(stepReadBumpCalc, stepEditBump3to5), Text: "Changed `bump` in calc.py to return `x + 5`."},
 		{Name: "a return said of a read, quoting the line", Kind: c, Want: ClaimVerified, Steps: steps(stepReadM3), Text: "`f_core_a_3` returns `x + 3`."},
 		{Name: "a return said of a read in plain words, the function named", Kind: c, Want: ClaimVerified, Steps: steps(stepReadM3), Text: "f_core_a_3 returns x + 3."},
 		{Name: "files listed for python3, a result showing python3", Kind: c, Want: ClaimVerified, Steps: steps(stepLsWhichPy3), Text: "The workspace has calc.py and test_calc.py, both python3 files."},

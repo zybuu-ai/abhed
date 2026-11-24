@@ -476,8 +476,14 @@ func (o *obsRec) evidence() *evidenceText {
 		content := o.content
 		// A read's line numbers, and a truncated read's closing note, are
 		// not what the file holds.
-		if o.tool == "read" {
+		switch o.tool {
+		case "read":
 			content = readTrailerRe.ReplaceAllString(stripGutter(content), "")
+		case "edit", "write":
+			// "Edited calc.py." and the file as it then was, numbered.
+			if head, rest, ok := strings.Cut(content, "\n"); ok {
+				content = head + "\n" + stripGutter(rest)
+			}
 		}
 		o.ev = prepareEvidence(content, o.testRun())
 	}
@@ -751,7 +757,7 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 		}
 	} else {
 		for _, o := range ix.obs {
-			if o.usable() && ix.staleBy(o) == nil {
+			if o.usable() && ix.staleBy(o) == nil && !ix.editShownAgain(o) {
 				pool = append(pool, o)
 			}
 		}
@@ -1007,7 +1013,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 			// (src/agents/rag_agent.py:7)") is shown by the read of it.
 		case len(windows) > 0 && !inWindow(lit) && !citePart(f, lit):
 			findings = append(findings, finding{out: missing, why: fmt.Sprintf("%q is not within three lines of the cited line", clipRunes(lit, 60))})
-		case (f.changeAct || f.changed || f.changeWord) && ix.changeTookAway(lit) != nil:
+		case (f.changeAct || f.changed || f.changeWord) && !f.changeTargets[lit] && ix.changeTookAway(lit) != nil:
 			// What a change replaced is shown by what that change was given
 			// to take away, as a read before it showed it.
 			m := ix.changeTookAway(lit)
@@ -1533,6 +1539,24 @@ func (ix *recordIndex) madeWorkCall() bool {
 	}
 	return false
 }
+
+// editShownAgain reports an edit or write whose file a later change of the
+// session touched: the file it showed is no longer the file.
+func (ix *recordIndex) editShownAgain(o *obsRec) bool {
+	if (o.tool != "edit" && o.tool != "write") || o.path == "" {
+		return false
+	}
+	for _, m := range ix.mutations {
+		if m.pos > o.pos && !m.failed && (!m.known || touches(m.targets, o.path) || m.path != "" && filepath.Clean(m.path) == filepath.Clean(o.path)) {
+			return true
+		}
+	}
+	return false
+}
+
+// changeToRe is the part of a change claim that says what it made: after
+// "to" or "with" ("changed `a` to `b`", "replaced `a` with `b`").
+var changeToRe = regexp.MustCompile(`(?i)\b(?:changed|changes|updated|set|modified|replaced|switched|bumped|renamed|rewrote|swapped|turned|moved)\b.*?\b(?:to|with|into)\b(.*)$`)
 
 // targetArgs are the arguments that name what a call was made to, never
 // what it was given to write or say.
@@ -2677,7 +2701,7 @@ func (ix *recordIndex) describesName(text string) bool {
 	}
 	def := regexp.MustCompile(`\b(?:def|func|function|fn|sub)\s+` + alt + `\b|\b` + alt + `\(`)
 	for _, o := range ix.obs {
-		if (o.tool == "read" || o.tool == "grep") && o.usable() && def.MatchString(o.content) {
+		if (o.tool == "read" || o.tool == "grep" || o.tool == "bash") && o.usable() && def.MatchString(o.content) {
 			return true
 		}
 	}

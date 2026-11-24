@@ -1439,6 +1439,17 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Under `-verify strict`, "Changed `bump` in calc.py to return x + 3"
+  verified after an edit that took `x + 3` away, from what the edit was
+  given to remove or from the line numbers in the edit's report; and "to
+  x + 4" verified after x + 3 → x + 4 → x + 3. What a change is said to
+  have made is now shown only by what a change put in and kept: never by
+  what it took away, the numbers of an edit's report, or the report of an
+  edit a later change of that file left behind. A false description
+  followed by a revision that says nothing ("Understood.", "(end of
+  script)") now ends unverified, and a name `cat` showed defined (`def
+  bump`) counts as one the session saw, so "Bump returns x + 2." after
+  `cat calc.py` is checked rather than read as advice.
 - Two answers ended `verified`, exit 0, under `-verify strict` with their
   work unproven. "bump returns x + 2." after a read of `return x + 3` was
   read as advice (a function named like a verb), which never counts

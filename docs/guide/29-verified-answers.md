@@ -100,7 +100,10 @@ with a healthy server", "I can help with the secure code"), leaves the
 sentence to be checked as any claim is. From each statement Abhed
 takes what can be compared: quoted text and backticked text, file paths, host
 names and addresses, versions, dates, numbers, and a number with the word it
-counts (`12 tests`, `replicas: 3`). A word with a digit in it
+counts (`12 tests`, `replicas: 3`). What a change is said to have made
+("changed `bump` to return `x + 4`") is shown only by what a change put in
+and no later change of that file took away, never by what a change was
+given to remove or by the line numbers of an edit's report. A word with a digit in it
 (`python3`, `r2alice`, `v2`, `feat-p1`) is a name that a result must hold
 as written, not a number, or that an `ssh` or Kubernetes call which
 succeeded was made to (its `host`, `cluster`, `context`, `namespace`,
@@ -855,7 +858,8 @@ succeeded.
 A revision that shows none of the work the first answer claimed (it
 verifies nothing, as a bare "(end of script)" does) leaves the first
 answer's claims unproven when they were claims of work (a pass, a command
-run, or a change naming a file or code): strict mode and a contract end
+run, or a change naming a file or code), or when it says nothing at all
+("Understood.", "(end of script)"): strict mode and a contract end
 `unverified`, not completed.
 
 When a statement comes out contradicted (from what it cites), in `label` or `strict` mode, or when
