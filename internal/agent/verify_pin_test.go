@@ -120,6 +120,7 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 		relEdit    bool   // the edit names its file relative to the workspace
 	}{
 		"read-sum":     {file: "sum.go", text: sum},
+		"read-bump":    {file: "calc.py", text: "def add(a, b):\n    return a + b\n\n\ndef bump(x):\n    return x + 3\n"},
 		"explain-sum":  {file: "sum.go", text: plain},
 		"add-continue": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"}},
 		"flip-debug":   {file: "app.env", text: "DEBUG=false\nCACHE=false\nTIMEOUT=30\n", edit: &edit{"DEBUG=false", "DEBUG=true"}},
