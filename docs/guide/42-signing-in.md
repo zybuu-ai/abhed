@@ -172,6 +172,15 @@ rpc's `auth.status`, `auth.signin`, `auth.register` and `auth.guest`, and
 ACP's `authenticate`, before the first session. Where sign-in is required
 they wait for that instead of exiting.
 
+`abhed doctor` and `abhed machine` run as whoever is working too, as the
+commands that read a person's state do: on a first interactive start they
+may ask who is working, where sign-in is required and no one is signed in
+they are refused with exit code 10, and they take `-guest` and `-account`.
+Doctor's `person` line says whose trust decisions, secrets and kept grants
+it shows. Where signing in is failing (an organisation's server that cannot
+be reached, say), `abhed -guest doctor` still checks the machine, where the
+organisation allows guest.
+
 So a 1.2.x script keeps working: before your first interactive start it
 runs as before, and after it, as your account. On a fresh CI machine it
 runs as guest; add `-guest` to silence the note. If you sign out, `-p`

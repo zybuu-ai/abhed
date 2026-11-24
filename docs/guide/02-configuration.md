@@ -165,7 +165,8 @@ refused call to learn it again. On a machine where sign-in is not set up yet,
 the one person working keeps them in `~/.abhed`, as before sign-in. Nothing is
 kept before the sign-in gate has said who is working, for a guest (nothing is
 read, made or written, so a guest neither leaves the file behind nor sees an
-account's limits), or by a machine command such as `abhed doctor`. It is
+account's limits), or by `abhed doctor`, which probes the model without
+keeping its window. It is
 kept per provider type, endpoint, model and account, under a keyed hash of
 them (HMAC-SHA256 under a random secret made once in `context-windows.key`
 beside it, mode 0600, and used only for that folder): the file holds no URL, user,
