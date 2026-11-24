@@ -3874,6 +3874,28 @@ func (s *Server) StopOwnerBackground(ctx context.Context, tenant, user string) i
 	return s.stopRevoked(ctx, hit, user)
 }
 
+// StopSessionRevoked stops one session of owner (or of the unclaimed owner
+// it was released to) as StopOwnerBackground stops all of them: its run,
+// background work and terminals end recorded as owner_revoked. It is for an
+// edition that finds one session's owner gone (a background job whose
+// account was removed) while the name may already be another account's. It
+// reports whether it found the session. ctx bounds the wait for the run to
+// record its end.
+func (s *Server) StopSessionRevoked(ctx context.Context, tenant, owner, id string) bool {
+	if owner == "" || owner == auth.Anonymous || auth.OwnsNothing(owner) {
+		return false
+	}
+	s.mu.RLock()
+	live, ok := s.running[id]
+	mine := ok && live.Tenant == tenant && (live.User == owner || live.User == auth.UnclaimedOwner(owner))
+	s.mu.RUnlock()
+	if !mine {
+		return false
+	}
+	s.stopRevoked(ctx, []*liveSession{live}, owner)
+	return true
+}
+
 // stopRevoked is StopOwnerBackground for the sessions in hit, whose owner was user.
 func (s *Server) stopRevoked(ctx context.Context, hit []*liveSession, user string) int {
 	n := 0
