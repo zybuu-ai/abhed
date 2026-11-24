@@ -6,6 +6,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-24
+
 ### Security
 
 - With `protect_git` on, on the tiers that hold git's files by binding only
@@ -34,7 +36,10 @@ All notable changes to Abhed are recorded here. The format follows
     only the sweeps, so a planted `commondir` stays for the whole command
     and every host git run during it follows it. A repository a command
     makes in the workspace is live to host tools (an editor that opens
-    nested repositories) until the command ends, when it is taken out.
+    nested repositories) until the command ends, and in this release it is
+    not taken out then either: a nested `.git` pointer file or a folder
+    laid out as a bare repository that a command makes stays in place, so
+    a later host git run in it can follow what the command wrote.
     Commits keep working on these tiers. Each command on these tiers now
     looks through the workspace's folders for git folders twice (as it
     starts, and as it ends), within the same bound; a large monorepo pays
