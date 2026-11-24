@@ -41,10 +41,6 @@ type SupervisorVerdict struct {
 // supervisor reads the supervisor's events; nil when the record has none.
 func supervisor(evs []agent.Event, calls []Call) *SupervisorStats {
 	var s SupervisorStats
-	byID := map[string]Call{}
-	for _, c := range calls {
-		byID[c.CallID] = c
-	}
 	judges := map[string]bool{}
 	seen := false
 	for _, e := range evs {
@@ -80,7 +76,9 @@ func supervisor(evs []agent.Event, calls []Call) *SupervisorStats {
 				s.ByCode = map[string]int{}
 			}
 			s.ByCode[v.Code]++
-			c := byID[v.CallID]
+			// The supervisor reviews a call before it is asked: the next one
+			// under its id, which a model may reuse in a later turn.
+			c := callNext(calls, v.CallID, e.Seq)
 			s.Concerns = append(s.Concerns, SupervisorVerdict{Seq: e.Seq, CallID: v.CallID, Tool: c.Tool, Subject: clip(c.Subject, 200),
 				Before: v.Before, After: v.After, Code: v.Code, Rationale: clip(v.Rationale, 300)})
 		case agent.EvSupervisorCorrection:

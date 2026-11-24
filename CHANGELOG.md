@@ -1164,6 +1164,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- HawkEYE (the API and `abhed hawkeye`) keeps each tool call apart when a
+  model reuses a call id in a later turn, as OpenAI-compatible servers that
+  number each turn's calls from `call_0_0` do. It used to merge them, list
+  the last call once for each, and drop an earlier call's denial from the
+  call list and the policy count; a decision or result now goes to the call
+  last asked under its id, and a supervisor review to the next one.
+
 - On a Mac, with no `sandbox.tier`, no `sandbox.image` or
   `ABHED_SANDBOX_IMAGE`, and nothing managed setting the tier or its minimum,
   the container tier on the default image is passed over for the process
