@@ -205,6 +205,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.9
 
+- `abhed doctor` and `abhed machine` now run as the person; where sign-in is
+  required and no one is signed in they exit 10. A script that only checks
+  the machine runs `abhed -guest doctor` (where guest is allowed).
 - `-verify strict` may now refuse to complete where 1.2.9 completed: a
   report of work the record does not prove ("Pulled, branched and
   pushed." after the push failed) is a claim it checks. See
