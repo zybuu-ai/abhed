@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func gitRun(t *testing.T, dir string, args ...string) {
@@ -252,6 +253,13 @@ func ownRefusals(t *testing.T, s *Process, ws, gd string, refusalsShow bool) {
 			}
 		}
 	}
+	// Abhed holds these without making them: git would print a hint for each
+	// host git status.
+	for _, f := range []string{"info/grafts", "info/sparse-checkout", "objects/info/http-alternates"} {
+		if exists(filepath.Join(gd, filepath.FromSlash(f))) {
+			t.Errorf("%s was made in the person's git folder", f)
+		}
+	}
 	if !refusalsShow {
 		return
 	}
@@ -269,6 +277,16 @@ func ownRefusals(t *testing.T, s *Process, ws, gd string, refusalsShow bool) {
 		if out, err := runIn(t, s, ws, attempt); err == nil && !strings.Contains(attempt, "commondir") {
 			t.Errorf("the sandbox let a command run %q: %s", attempt, out)
 		}
+	}
+	// A commondir made there is moved aside as it is made, before any next
+	// command, where the person's own git could follow it.
+	if s.backend == "bwrap" {
+		_, _ = runIn(t, s, ws, "echo /elsewhere > "+filepath.Join(gd, "commondir"))
+		time.Sleep(300 * time.Millisecond)
+		if exists(filepath.Join(gd, "commondir")) {
+			t.Error("a commondir made in the submodule's git folder stayed after the command")
+		}
+		_, _ = runIn(t, s, ws, "true") // refused, saying why
 	}
 	// A shallow list or commondir bubblewrap could not hold is taken out
 	// before the next command, which is refused.

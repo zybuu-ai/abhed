@@ -264,16 +264,17 @@ func gitFolderFoldersPattern(g string) string {
 		regexQuote(g), anyCase("worktrees"), anyCase("modules"), strings.Join(folders, "|"))
 }
 
-// outsideGitHeld are the files in own, the submodule's git folder outside
-// the workspace ws, that bubblewrap binds read-only when it lets commands
-// write it: what git reads as configuration or follows elsewhere (config and
-// hooks made empty where missing), and ownGitExtras (refs/replace made an
-// empty folder, grafts, sparse-checkout and http-alternates empty files where
-// missing). planted are a commondir git would not have written, and a shallow
-// list that was not there as the session started (shallow, as the empty one
-// would make git take the repository as shallow), to be taken out. ok is
-// false, and the folder stays read-only, when one cannot be held: a link, or
-// more submodules than are looked through.
+// outsideGitHeld are the files and folders in own, the submodule's git
+// folder outside the workspace ws, that bubblewrap binds read-only when it
+// lets commands write it: what git reads as configuration or follows
+// elsewhere (config and hooks made empty where missing), info and
+// objects/info whole (so attributes, grafts, sparse-checkout, alternates and
+// http-alternates cannot be made, and none is made by Abhed), and
+// refs/replace (an empty folder where missing). planted are a commondir git
+// would not have written, and a shallow list that was not there as the
+// session started (an empty one would make git take the repository as
+// shallow), to be taken out. ok is false, and the folder stays read-only,
+// when one cannot be held: a link, or more submodules than are looked through.
 func outsideGitHeld(ws, own string, shallow bool) (held, planted []string, ok bool) {
 	g := &gitScan{ws: ws, seen: map[string]bool{}, make: true}
 	g.folder(own, 0)
@@ -293,10 +294,12 @@ func outsideGitHeld(ws, own string, shallow bool) (held, planted []string, ok bo
 			}
 			continue
 		case n == "refs/replace":
+			// An empty folder, which git does not notice.
 			makeEmpty(p, true)
 		default:
-			_ = os.MkdirAll(filepath.Dir(p), 0o755) // #nosec G301 -- git's own mode for its folders
-			makeEmpty(p, false)
+			// In info or objects/info, held whole by the scan (heldGitFolders):
+			// no file is made in the person's git folder for these.
+			continue
 		}
 		if isLink(p) {
 			return nil, g.planted, false

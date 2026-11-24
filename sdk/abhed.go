@@ -131,6 +131,9 @@ type Options struct {
 	// Approve decides tool calls that policy routes to a prompt. Nil refuses
 	// them, which is the safe default when there is nobody to ask.
 	Approve func(ctx context.Context, tool string, args json.RawMessage, d Decision) (bool, error)
+	// NobodyToAsk says Approve asks no one (it only answers from grants kept
+	// earlier), so the session records itself as headless as with no Approve.
+	NobodyToAsk bool
 
 	// OnEvent receives every event, in the order the store records them, from
 	// a goroutine of its own. The agent does not wait on it: events waiting for
@@ -602,7 +605,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	}
 	loop.Budget = budget
 	// With no approver nobody answers an ask, so the supervisor's are denials.
-	loop.Monitor = toolset.Supervisor(cfg, registry, opts.Approve == nil)
+	loop.Monitor = toolset.Supervisor(cfg, registry, opts.Approve == nil || opts.NobodyToAsk)
 	loop.Diagnostics = toolset.Diagnostics(cfg, registry)
 	if opts.Suggest {
 		loop.Suggest = toolset.Suggester(cfg)
@@ -620,7 +623,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	// The loop runs on its own copy of the registry, which RunJSON must add its tool to.
 	// A surface's new session says how it started, as the command line's does.
 	if x.Surface != "" && !x.Resume {
-		start := map[string]any{"surface": x.Surface, "headless": opts.Approve == nil, "provider": cfg.Model.Default,
+		start := map[string]any{"surface": x.Surface, "headless": opts.Approve == nil || opts.NobodyToAsk, "provider": cfg.Model.Default,
 			"model": adapter.Profile().Name, "mode": string(pol.Mode), "web": toolset.WebState(cfg),
 			"workspace_trust": toolset.TrustState(opts.WorkspaceTrust, cfg.Workspace)}
 		if org := toolset.OrgPolicyState(cfg); org != nil {

@@ -288,7 +288,9 @@ was not given (DNS rebinding; see [Configuration](02-configuration.md#names-the-
 The chart gives it the names a cluster uses: the Service's own (`<name>`,
 `<name>.<namespace>`, `<name>.<namespace>.svc` and
 `<name>.<namespace>.svc.<clusterDomain>`, `cluster.local` by default), every
-`ingress.hosts` host and the `route.host`, all in `server.allowed_hosts`
+`ingress.hosts` host and the `route.host` (required with `route.enabled`: a
+host OpenShift would generate is not known when the chart renders, so the
+chart refuses a Route without one), all in `server.allowed_hosts`
 together with any you list in `config.server.allowed_hosts`. Add other names
 clients use in `allowedHosts`:
 
@@ -300,7 +302,11 @@ clusterDomain: cluster.local
 The startup, liveness and readiness probes send `Host: localhost`, so the
 kubelet's request, which would otherwise name the pod IP, is answered. A
 client that reaches a pod by its IP gets `421` with `auth.mode` `none`; with
-sign-in on, IP addresses are answered.
+sign-in on, IP addresses are answered. The bare Service name is
+among the allowed names, so with `auth.mode` `none` a browser that reaches
+`http://abhed` through its search domain is answered; rebinding through it
+would take control of that name in the network's own DNS. Where that is
+not acceptable, turn sign-in on.
 
 ## Network policy
 

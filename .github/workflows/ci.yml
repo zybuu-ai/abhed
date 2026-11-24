@@ -103,7 +103,7 @@ jobs:
           ABHED_REQUIRE_PAGE_TESTS: "1"
           # A throwaway runner: the tests that start and end real processes run.
           ABHED_TEST_PROCESS_KILL: "1"
-        run: go test ./... -count=1 -timeout 30m -coverprofile=coverage.out
+        run: go test ./... -count=1 -timeout 40m -coverprofile=coverage.out
 
       # abhed_app owns the tables; abhed_runtime is what a server should run
       # as. These tests are the evidence that the audit record cannot be
@@ -169,7 +169,7 @@ jobs:
         env:
           ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:55432/abhed_test?sslmode=disable
           ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:55432/abhed_test?sslmode=disable
-        run: go test ./... -race -count=1 -timeout 30m
+        run: go test ./... -race -count=1 -timeout 40m
 
       # The end-to-end CLI tests are evidence only if they ran. A test may
       # skip only as pending on an item listed here, each still being built:
@@ -326,7 +326,7 @@ jobs:
           ABHED_TEST_PROCESS_KILL: "1"
         run: |
           set -euo pipefail
-          go test ./internal/sandbox ./internal/tools ./server -count=1 -v -run 'TestCancelKillsOnlyAGroupTheCommandLeads|TestTreeStopsOnlyProcessesWhoseParentIsInIt|TestCancelSignalsOnlyTheCommandsOwnGroup|TestRunawayCommandEndsAtItsDeadline|TestNoneShellEndsItsBackgroundJobs|TestSweepNeedsTheShellItNamed|TestBashCancelEndsWhatTheCommandStarted|TestBashReturnsWhenABackgroundJobHoldsTheOutput|TestBashBackgroundNoteOnAFailingCommand|TestBashTimeoutEndsADetachedChild|TestBashTimeoutEndsADaemon|TestShellKillEndsBackgroundJobs' 2>&1 | tee "$RUNNER_TEMP/kill.log"
+          go test ./internal/sandbox ./internal/tools ./server -count=1 -timeout 40m -v -run 'TestCancelKillsOnlyAGroupTheCommandLeads|TestTreeStopsOnlyProcessesWhoseParentIsInIt|TestCancelSignalsOnlyTheCommandsOwnGroup|TestRunawayCommandEndsAtItsDeadline|TestNoneShellEndsItsBackgroundJobs|TestSweepNeedsTheShellItNamed|TestBashCancelEndsWhatTheCommandStarted|TestBashReturnsWhenABackgroundJobHoldsTheOutput|TestBashBackgroundNoteOnAFailingCommand|TestBashTimeoutEndsADetachedChild|TestBashTimeoutEndsADaemon|TestShellKillEndsBackgroundJobs' 2>&1 | tee "$RUNNER_TEMP/kill.log"
           ! grep -E -- "--- SKIP: (TestNoneShell|TestBash|TestShellKill|TestCancel|TestTree|TestSweepNeeds)" "$RUNNER_TEMP/kill.log"
       - name: The action's run script and real runs
         working-directory: integrations/github-action

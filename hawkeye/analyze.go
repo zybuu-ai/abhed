@@ -59,10 +59,13 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 	r.Started, r.Ended = evs[0].CreatedAt, evs[len(evs)-1].CreatedAt
 	r.Totals.DurationMS = r.Ended.Sub(r.Started).Milliseconds()
 
+	// calls is the latest call asked under each id: a model may reuse an id
+	// in a later turn, so a decision or result goes to the call asked last
+	// under it, and each request is a call of its own (order).
 	calls := map[string]*Call{}
-	var order []string
+	var order []*Call
 	files := map[string]*FileTouch{}
-	remote := map[string]remoteInfo{}
+	remote := map[int64]remoteInfo{} // by the request's seq
 	var ended agent.SessionEnded
 
 	for _, e := range evs {
@@ -103,11 +106,11 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				Actor: string(e.Actor), Via: a.Via,
 			}
 			calls[a.CallID] = c
-			order = append(order, a.CallID)
+			order = append(order, c)
 			touch(files, a.Tool, a.Args)
 			if _, ok := remoteTools[a.Tool]; ok {
 				name, ns, what := remoteOf(a.Tool, a.Args)
-				remote[a.CallID] = remoteInfo{name: name, ns: ns, what: clip(what, 2000), where: a.Target}
+				remote[e.Seq] = remoteInfo{name: name, ns: ns, what: clip(what, 2000), where: a.Target}
 			}
 
 		case agent.EvToolchainInstall:
@@ -290,8 +293,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 	if r.Outcome == "running" && opt.Idle {
 		r.Outcome = "idle"
 	}
-	for _, id := range order {
-		c := calls[id]
+	for _, c := range order {
 		c.SandboxDenied = len(c.Sandbox) > 0
 		c.SandboxUnconfirmed = c.SandboxUnconfirmed && !c.SandboxDenied
 		r.Calls = append(r.Calls, *c)
@@ -634,4 +636,29 @@ func clip(s string, n int) string {
 		n--
 	}
 	return s[:n] + "…"
+}
+
+// callAt is the call asked last under id at or before seq: the one an event
+// at seq that names id is about, as a model may reuse an id across turns.
+func callAt(calls []Call, id string, seq int64) (Call, bool) {
+	var out Call
+	ok := false
+	for _, c := range calls {
+		if c.CallID == id && c.Seq <= seq {
+			out, ok = c, true
+		}
+	}
+	return out, ok
+}
+
+// callNext is the first call asked under id at or after seq, what a review
+// made before the request names; callAt when there is none.
+func callNext(calls []Call, id string, seq int64) Call {
+	for _, c := range calls {
+		if c.CallID == id && c.Seq >= seq {
+			return c
+		}
+	}
+	c, _ := callAt(calls, id, seq)
+	return c
 }

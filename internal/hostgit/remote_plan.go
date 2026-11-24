@@ -107,6 +107,14 @@ func (b *HostBroker) plan(ctx context.Context, cwd string, op remoteOp) (plan, e
 		p.remotes[n], p.raw[n] = urls, raw
 		p.specs[n] = configValues(ctx, cwd, "remote."+n+".fetch")
 		fmt.Fprintf(digest, "%s\x00%q\x00%q\x00", n, raw, urls)
+		// What a push sends is the remote's too: a mirror or a push refspec
+		// set since a grant was kept (one that deletes or forces, say) is
+		// another remote's, and the grant no longer answers for it. Added
+		// only when set, so a grant kept without them still matches.
+		mirror, pushSpecs := configValues(ctx, cwd, "remote."+n+".mirror"), configValues(ctx, cwd, "remote."+n+".push")
+		if len(mirror) > 0 || len(pushSpecs) > 0 {
+			fmt.Fprintf(digest, "mirror\x00%q\x00push\x00%q\x00", mirror, pushSpecs)
+		}
 		for _, u := range urls {
 			host, port, err := remoteHost(u)
 			if err != nil {
@@ -126,8 +134,16 @@ func (b *HostBroker) plan(ctx context.Context, cwd string, op remoteOp) (plan, e
 		}
 	}
 	sort.Strings(p.hosts)
+	// A push the repository's own configuration makes a mirror, a force or a
+	// delete is one that can lose commits, whatever its words say.
+	implied := false
 	if push {
 		p.hooks, p.hooksScope = personHooks(ctx, cwd, root)
+		for _, n := range p.names {
+			if len(pushImplied(settings, n)) > 0 {
+				implied = true
+			}
+		}
 	}
 	p.bind = root + "\x00" + hex.EncodeToString(digest.Sum(nil))[:24]
 	where := strings.Join(p.hosts, ", ")
@@ -136,6 +152,9 @@ func (b *HostBroker) plan(ctx context.Context, cwd string, op remoteOp) (plan, e
 	}
 	who := "runs through host git as you, with your SSH agent, keychain and credential helpers,"
 	switch {
+	case push && implied:
+		p.ask, p.step = fmt.Sprintf("git %s %s and, as the repository's own configuration makes it (a mirror, a forcing or a deleting refspec), "+
+			"can replace or delete commits on %s; this exact form is asked each time", op.verb, who, where), StepHostGitEach
 	case settings != start.settings:
 		p.ask, p.step = fmt.Sprintf("git %s %s and the repository's remote settings changed during this session, "+
 			"so host git reaches %s only with your approval, asked each time", op.verb, who, where), StepHostGitEach

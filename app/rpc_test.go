@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -222,5 +224,21 @@ func TestRPCWarnsOnTheStderrItStartedWith(t *testing.T) {
 	gotB, _ := os.ReadFile(later)
 	if !strings.Contains(string(gotA), `rag corpus "kb" needs ABHED_TEST_UNSET_KEY`) || strings.Contains(string(gotB), "rag corpus") {
 		t.Fatalf("started with:\n%s\nlater:\n%s", gotA, gotB)
+	}
+}
+
+// abhed rpc fetches the org policy as each session starts, as the terminal
+// and an editor connection do, so a deny rule published since applies to
+// the next session Studio starts over rpc.
+func TestRPCStartFetchesTheOrgPolicy(t *testing.T) {
+	managedConfig(t, "")
+	ws := t.TempDir()
+	fetched := 0
+	fetchOrgAtStart = func(context.Context, io.Writer) { fetched++ }
+	t.Cleanup(func() { fetchOrgAtStart = orgPolicyAtStart })
+	start := `{"id":"1","method":"start","workspace":` + strconv.Quote(ws) + `}`
+	runRPC(t, ws, start, strings.Replace(start, `"id":"1"`, `"id":"2"`, 1))
+	if fetched != 2 {
+		t.Fatalf("the org policy was fetched %d times for two starts", fetched)
 	}
 }

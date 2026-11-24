@@ -8,6 +8,38 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- Under bubblewrap (the process tier on Linux) with `protect_git`, a
+  command could leave in the workspace's git folder a `commondir`, an
+  `objects/info/alternates`, `http-alternates`, `info/attributes` or
+  `info/grafts` that did not exist before, as only files that already
+  existed were bound read-only; a planted `commondir` survived the sandbox
+  closing and pointed the person's own git (`git status` on the host, or
+  an editor's) at configuration of the command's choosing, which could run
+  a program on the host. The `info` and `objects/info` folders are now
+  held read-only whole, so none of those can be made, and a `commondir` is
+  moved aside the moment it is made, again as each command ends and as the
+  sandbox closes, and the next command refused. A repository a command
+  makes in the workspace is still taken out only as that command ends.
+  `git gc` cannot write `objects/info/commit-graph` there. macOS's Seatbelt
+  denies all of these by pattern and was not affected.
+
+- A repository's own `remote.<name>.mirror`, or a `remote.<name>.push`
+  refspec that forces (`+…`) or deletes (`:…`), made a brokered `git push`
+  run on the host as a mirror, force or delete push behind only the plain
+  host-git ask. Such a push is now asked each time as one that can replace or
+  delete commits, and policy also judges the line it runs as (`git push
+  --force --mirror origin`): an organisation's `bash(git push -f*)` deny or
+  ask rule holds, and the destructive confirmation asks. The settings judged
+  are the settings it runs with, as before.
+- Deny and ask rules missed GNU abbreviations of long options (`rm --recur
+  --forc`, `chmod --recursiv`, `git clean --forc`). An unambiguous prefix of
+  at least three letters of a known long flag, or of the rule's own, now
+  counts as that flag. Deny and ask only; allow rules match as written.
+- `abhed rpc`, which Abhed Studio and scripts start sessions through, never
+  fetched the org policy as a session started, so a deny rule published
+  since did not reach those sessions until another command fetched it. It
+  now fetches it at each `start`, as the terminal and an editor connection
+  do. Affected: every release with `abhed rpc` and an org policy.
 - `abhed serve` answered any `Host`, and an `Origin` equal to it passed the
   cross-origin check, so a web page could reach the API by pointing its own
   name at the server (DNS rebinding); with `auth.mode` `none` that was the
@@ -18,10 +50,13 @@ All notable changes to Abhed are recorded here. The format follows
   only loopback and `server.allowed_hosts` are answered. Affected: every
   release with `abhed serve`.
 - A second `abhed serve` on the same HOME swept the running server's
-  per-session sandboxes. On the same address it now fails before any
-  startup cleanup; on another, the running server's startup lock
-  (`~/.abhed/serve.lock`) makes it leave the running one's sessions and
-  sandboxes alone.
+  per-session sandboxes, and its sandbox control plane marked the running
+  server's sandboxes lost (`Error`, `InstanceLost`). A serve now claims its
+  address and this machine's state (`~/.abhed/serve.lock`) before it builds
+  anything: on the same address a second one fails at once; on another, one
+  with `control_plane.enabled` refuses to start, naming the serve that owns
+  the state, and one without it serves but takes back and sweeps nothing.
+  Only the serve holding the lock reconciles or sweeps.
 - An organisation's deny or ask rule whose flags end in a star, such as
   `bash(rm -rf*)`, held only for the flags as written: `rm -r -f build` and
   `rm -fr build` fell through to the destructive ask. Such a rule is now read
@@ -176,11 +211,15 @@ All notable changes to Abhed are recorded here. The format follows
   names, the ingress and route hosts and the new `allowedHosts` value in
   `server.allowed_hosts`; upgrade the chart with the server
   ([Kubernetes](docs/guide/27-kubernetes.md#names-the-server-answers-to)).
+  Values with `route.enabled` and no `route.host`, which rendered before,
+  now fail to render: set `route.host` to the Route's host.
 - git fetch, pull, push, clone and ls-remote in Abhed Studio and the CLI
   now reach remotes with the person's own credentials (SSH agent, keychain,
   credential helpers), on the process tier and the fence; 1.2.9 ran them in
   the sandbox, where they failed. With `sandbox.allow_network` off they
-  reach the repository's own remote after one approval. An allow rule kept
+  reach the repository's own remote after one approval, and an answer kept
+  as "always for this repository" also answers `-p` runs and `abhed rpc`
+  sessions, which have nobody to ask. An allow rule kept
   from 1.2.9, such as `bash(git push*)`, now reaches the network through the
   person's keys where it failed before. To turn it off, a person sets
   `sandbox.host_git: false` (or `sandbox.protect_git: false`, which also
@@ -234,8 +273,13 @@ All notable changes to Abhed are recorded here. The format follows
   a managed configuration or org policy:
   - `k8s.allow_writes: false` alone only tightens, as in 1.2.9: the
     person's own kubeconfig stays in use, read-only, and `k8s_apply` is
-    not offered. Set it explicitly to keep laptops read-only: otherwise a
-    person's own `k8s.allow_writes: true` offers `k8s_apply`.
+    not offered. An organisation that wants its laptops read-only sets it
+    explicitly: where it says nothing of writes, a person's own
+    `k8s.allow_writes: true` offers `k8s_apply` (each write still asks,
+    after a dry run).
+  - A managed file that sets only `k8s.context`, `k8s.namespace` or
+    `k8s.ca_file` does not decide for the organisation either: the person's
+    own kubeconfig stays in use, with those values applied.
   - `k8s.enabled: false` turns Kubernetes off: no cluster tool is offered,
     and a pasted login is refused with that reason.
   - Where the organisation sets Kubernetes up itself, by declaring
@@ -349,6 +393,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `sdk.Options.NobodyToAsk` (Go API, additive): set with an `Approve` that
+  asks no one and only answers from grants kept earlier, the session records
+  itself headless and the supervisor runs as with no `Approve`. `abhed rpc`
+  sets it for a session started without `approvals`.
 - git fetch, pull, push, clone and ls-remote work in Abhed Studio and the
   CLI with the git and ssh setup the person already has: their network part
   runs through the person's own git on the host, with their keys, while
@@ -1131,6 +1179,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- HawkEYE (the API and `abhed hawkeye`) keeps each tool call apart when a
+  model reuses a call id in a later turn, as OpenAI-compatible servers that
+  number each turn's calls from `call_0_0` do. It used to merge them, list
+  the last call once for each, and drop an earlier call's denial from the
+  call list and the policy count; a decision or result now goes to the call
+  last asked under its id, and a supervisor review to the next one.
+
 - On a Mac, with no `sandbox.tier`, no `sandbox.image` or
   `ABHED_SANDBOX_IMAGE`, and nothing managed setting the tier or its minimum,
   the container tier on the default image is passed over for the process
@@ -1231,8 +1286,10 @@ All notable changes to Abhed are recorded here. The format follows
     git folder (`.git/modules/<name>`) is written as git writes it, with its
     configuration, hooks, `info/attributes`, alternates, grafts,
     `sparse-checkout`, `http-alternates`, `shallow` and replace refs held as
-    for a git folder inside the workspace (with `protect_git` off it stays
-    read only).
+    for a git folder inside the workspace, without Abhed making any file
+    there that git would notice (with `protect_git` off it stays read
+    only); under bubblewrap a `commondir` made there is moved aside as it is
+    made, as in the workspace's own git folder.
 
   No command can write another work tree's branch, index or HEAD, plant
   replace refs or grafts in a shared git folder, or stage a file outside
@@ -1360,6 +1417,17 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Two answers ended `verified`, exit 0, under `-verify strict` with their
+  work unproven. "bump returns x + 2." after a read of `return x + 3` was
+  read as advice (a function named like a verb), which never counts
+  against an answer. A sentence that opens with a name the session saw
+  defined (`def bump`, `bump(`) or the answer quotes, a verb of what it
+  does and code or a value now describes that thing; "Add checks for
+  empty input." stays advice. And a revision that showed nothing ("(end
+  of script)") after a first answer whose test run was refused completed;
+  a revision that verifies none of the work the first answer claimed (a
+  pass, a command run, or a change naming a file or code) now leaves it
+  unproven.
 - The verifier passed a report of work after the calls for it failed:
   "Pulled, branched feat-p1, committed and pushed." after the pull failed,
   the commit was refused and the push exited 128 ended `verified`, exit 0,

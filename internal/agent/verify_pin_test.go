@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -241,7 +242,12 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 	if sc.then != "" {
 		turns = append(turns, scriptedTurn{calls: []model.ToolCall{call("bash", map[string]string{"command": sc.then})}})
 	}
-	turns = append(turns, scriptedTurn{text: reply}, scriptedTurn{text: reply})
+	// "first ⟶ second" gives the revision turn its own reply.
+	first, second := reply, reply
+	if a, b, ok := strings.Cut(reply, " ⟶ "); ok {
+		first, second = a, b
+	}
+	turns = append(turns, scriptedTurn{text: first}, scriptedTurn{text: second})
 	ad.turns = turns
 	reason, _ := l.Run(context.Background(), "do it")
 	return reason

@@ -114,6 +114,13 @@ type HostAsker interface {
 	AskHost(sess *Session, key string, args json.RawMessage) (reason, step, bind string, err error)
 }
 
+// HostImplier says what a call runs as once the repository's own
+// configuration is applied (a plain git push its settings make a force
+// push), for policy to judge as well; "" when nothing differs.
+type HostImplier interface {
+	ImpliedHost(sess *Session, args json.RawMessage) string
+}
+
 // Targeter names where a call sends what it carries, such as the server a
 // credential goes to, when the arguments alone do not show it. The person
 // approving the call and the record both get it.

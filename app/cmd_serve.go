@@ -266,6 +266,34 @@ func (a *App) serveCmd(workspace, addr string) int {
 	}
 	defer closeAudit()
 
+	// The address and this machine's state are claimed before anything
+	// reconciles or sweeps: a second serve on the same address fails here,
+	// and one on another address does not run the sandbox control plane
+	// another serve owns (its reconciler would take the first server's
+	// sandboxes for lost) nor take back or sweep anything at start.
+	if _, port, err := net.SplitHostPort(addr); err != nil || !loopport.AnyPort(port) {
+		probe, err := net.Listen("tcp", addr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+			return 1
+		}
+		_ = probe.Close()
+	}
+	releaseState, stateErr := serveStartupLock()
+	if stateErr == nil {
+		defer releaseState()
+	} else if cfg.ControlPlane.Enabled {
+		fmt.Fprintf(os.Stderr, "abhed: another abhed serve owns this machine's state (%v); its sandbox control plane runs there, "+
+			"so this one does not start. Stop that one, or serve from another HOME\n", stateErr)
+		return 1
+	}
+	heldState := func() (func(), error) {
+		if stateErr != nil {
+			return nil, stateErr
+		}
+		return func() {}, nil // held for the whole serve, above
+	}
+
 	// The sandbox control plane, only when the configuration turns it on.
 	var cp *controlplane.Service
 	var exposed *expose.Server
@@ -339,7 +367,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 		CLILogin:      cliLogin,
 		// Nil unless control_plane.per_session: sessions then share sb as before.
 		SessionSandboxes:    perSession,
-		StartupLock:         serveStartupLock,
+		StartupLock:         heldState,
 		SoleOwner:           iso.sole,
 		SandboxAPIAdminOnly: iso.adminAPI,
 		APIAudit:            audit,

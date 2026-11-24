@@ -1113,6 +1113,23 @@ func withNote(content, note string) string {
 // refuses there; set by that package, which this one cannot import.
 var HostGitLine func(command string) bool
 
+// HostImpliedLine is a git push line as the repository's configuration
+// makes it run, when that forces, deletes or mirrors, else ""; set by the
+// host git package. Read only to add a deny, an ask or a confirmation.
+var HostImpliedLine func(cwd, command string) string
+
+// ImpliedHost is HostImpliedLine for a call, in the session's folder.
+func (b Bash) ImpliedHost(s *Session, raw json.RawMessage) string {
+	if HostImpliedLine == nil || s == nil {
+		return ""
+	}
+	var a bashArgs
+	if json.Unmarshal(raw, &a) != nil {
+		return ""
+	}
+	return HostImpliedLine(s.Cwd, a.Command)
+}
+
 // AskHost is HostAsk for a call, in the session's folder.
 func (b Bash) AskHost(s *Session, key string, raw json.RawMessage) (reason, step, bind string, err error) {
 	if b.HostAsk == nil || s == nil {
@@ -1435,9 +1452,10 @@ func sandboxHint(output string) (kind, hint string) {
 			"authenticate from inside it. Use the k8s_get tool instead, which holds the " +
 			"credential outside the sandbox. If k8s_get is not available, this deployment " +
 			"has not enabled cluster access — tell the user to set k8s.enabled in their config."},
-		{".ssh", "Abhed's sandbox blocks reads of ~/.ssh, so ssh and git-over-ssh cannot " +
-			"authenticate from inside it. Use the ssh tool instead, which uses the agent or " +
-			"a configured key. If it is not available, tell the user to configure ssh.hosts."},
+		{".ssh", "Abhed's sandbox blocks reads of ~/.ssh, so ssh cannot authenticate from inside it. " +
+			"git fetch, pull, push, clone and ls-remote go through the user's own git on the host " +
+			"when each is run alone, as the whole command (not after && or ;): run them so. " +
+			"For other ssh use, use the ssh tool if it is in your tools; otherwise tell the user."},
 		{".aws", "Abhed's sandbox blocks reads of ~/.aws, so the AWS CLI cannot authenticate " +
 			"from inside it. Ask the user to run this command themselves, or to expose the " +
 			"capability through an MCP server."},

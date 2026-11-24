@@ -155,6 +155,9 @@ ssh_host_ed25519_key
 {{- if and (eq (toString (get $storage "driver")) "postgres") (not .Values.postgres.enabled) }}
 {{- fail "config.storage.driver is postgres: set postgres.enabled and postgres.existingSecret so the connection string comes from a Secret." }}
 {{- end }}
+{{- if and .Values.route.enabled (not .Values.route.host) }}
+{{- fail "route.enabled needs route.host: the server answers only to names it is given, and the host OpenShift would generate is not known when the chart renders. Set route.host to the Route's host." }}
+{{- end }}
 {{- if and .Values.postgres.enabled (not .Values.postgres.existingSecret) }}
 {{- fail "postgres.enabled needs postgres.existingSecret: the chart never creates or templates a secret." }}
 {{- end }}

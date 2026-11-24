@@ -1200,7 +1200,10 @@ cannot steer host git:
   file is a hard link (another name for it could lie in reach), is owned by
   another user, is writable by other users or sits in a folder they can
   write (on macOS a folder only the `admin` group may also write, as
-  Homebrew's are, counts as yours), or cannot be read; while an include names another user's home
+  Homebrew's `you:admin` 775 folders are, counts as yours: every member of
+  `admin` can already act as root through `sudo`, so it lets in no one who
+  could not change the program anyway; such a folder inside the workspace or
+  an area commands can write is still refused), or cannot be read; while an include names another user's home
   (`~name/`) or git's install (`%(prefix)/`), which Abhed does not follow;
   while `GIT_CONFIG_GLOBAL` or `GIT_CONFIG_SYSTEM` is a relative path; or
   past 200 files. The same check stops an issue's push.
@@ -1239,7 +1242,10 @@ cannot steer host git:
   your git configuration, URL-scoped `http.<url>.*` ones too. Each must be a
   full path (no `$`, `%` or `~user`; `~/` is your home) outside the
   workspace and every folder commands can write, yours or root's, not
-  writable by others, and readable; `none` and the defaults
+  writable by others, and readable (so are the files git's own `cache` and
+  `store` helpers use when no `--socket` or `--file` names one: the cache's
+  socket in `~/.git-credential-cache` or the XDG cache folder, the store's
+  `~/.git-credentials` and XDG file); `none` and the defaults
   (`~/.ssh/known_hosts`, the system's CA store) pass. Otherwise the agent
   could vouch for a host of its own.
 - Host git runs with your `PATH`, less every folder that is relative or

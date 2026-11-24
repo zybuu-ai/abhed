@@ -182,6 +182,12 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			if ws == "" {
 				ws = workspace
 			}
+			// The org policy is fetched as each session starts, as the terminal
+			// and an editor connection do, so a rule published since applies.
+			if err := orgPolicyAfterNetwork(ctx, ws, config.LoadOptions{Trust: trust, Quiet: true}, errOut); err != nil {
+				emit(rpcResponse{ID: req.ID, Type: "error", Error: "the network configuration: " + err.Error()})
+				continue
+			}
 			// made is the agent New returns; a wake starts only after a run of it.
 			var made *abhed.Agent
 			opts := abhed.Options{
@@ -231,10 +237,21 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 					emit(rpcResponse{Type: "event", Event: &ev})
 				},
 			}
-			// Without approvals nobody is asked, so a call needing approval is refused.
+			// Without approvals nobody is asked, so a call needing approval is
+			// refused, unless a grant the person kept for this repository
+			// answers it, as in the terminal.
+			var next agent.Approver = agent.AutoApprove{Yes: false}
 			if req.Approvals {
-				opts.Approve = rpcApprover(approvals, emit)
+				next = approverFunc(rpcApprover(approvals, emit))
 			}
+			locked := false
+			if c, err := config.LoadWith(ws, config.LoadOptions{Trust: trust, Quiet: true, Warn: func(string) {}}); err == nil {
+				locked = c.AllowLocked()
+			} else {
+				locked = true // unread, nothing kept is used
+			}
+			opts.Approve = keptApprover{keep: cliKeeper{workspace: ws, locked: locked}, next: next}.Approve
+			opts.NobodyToAsk = !req.Approvals
 			na, err := abhed.New(embedded.With(ctx, embedded.Settings{Surface: "rpc", Principal: principalStart()}), opts)
 			made = na
 			cur = q.sess

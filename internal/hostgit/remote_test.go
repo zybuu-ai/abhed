@@ -981,3 +981,75 @@ func TestBrokerNoRemotesAndRemotesOff(t *testing.T) {
 		t.Fatalf("host ssh ran while turned off:\n%s", log)
 	}
 }
+
+// A plain git push the repository's own configuration makes a mirror, a
+// forcing or a deleting push is asked each time, as one, never answered by
+// the family a person keeps; and ImpliedLine says what it runs as, so policy
+// judges that too.
+func TestBrokerConfigImpliedPushAsksAsDestructive(t *testing.T) {
+	for _, c := range []struct {
+		set  [][2]string
+		want string
+	}{
+		{[][2]string{{"remote.origin.mirror", "true"}}, "git push --force --mirror origin"},
+		{[][2]string{{"remote.origin.push", ":refs/heads/x"}}, "git push --delete origin"},
+		{[][2]string{{"remote.origin.push", "+refs/heads/*:refs/heads/*"}}, "git push --force origin"},
+		{[][2]string{{"remote.origin.push", "refs/heads/main:refs/heads/main"}}, ""},
+		{[][2]string{{"remote.origin.mirror", "false"}}, ""},
+	} {
+		r := newRemoteRig(t)
+		b := r.broker(Network{Open: true})
+		for _, kv := range c.set {
+			if out, err := exec.Command("git", "-C", r.ws, "config", "--add", kv[0], kv[1]).CombinedOutput(); err != nil {
+				t.Fatalf("%v: %s", err, out)
+			}
+		}
+		if got := ImpliedLine(r.ws, "git push"); got != c.want {
+			t.Fatalf("%v: implied %q, want %q", c.set, got, c.want)
+		}
+		reason, step, _, err := b.Ask(r.key("c"), r.ws, "git push origin main")
+		if c.want == "" {
+			continue
+		}
+		if err != nil || step != StepHostGitEach || !strings.Contains(reason, "repository's own configuration") {
+			t.Fatalf("%v: asked %q %q %v", c.set, reason, step, err)
+		}
+		if got := ImpliedLine(r.ws, "git push origin main"); !strings.HasPrefix(got, "git push --") || !strings.HasSuffix(got, "origin main") {
+			t.Fatalf("%v: implied for a named remote %q", c.set, got)
+		}
+	}
+	if ImpliedLine(t.TempDir(), "git push") != "" || ImpliedLine(t.TempDir(), "git status") != "" {
+		t.Fatal("implied outside a repository")
+	}
+}
+
+// What a push sends is bound into the grant's scope: once a session sets
+// remote.origin.mirror or a push refspec, a later session's push is bound to
+// another scope, so a grant kept before no longer answers it. A remote with
+// neither keeps the scope it had.
+func TestPushScopeBindsMirrorAndPushRefspecs(t *testing.T) {
+	r := newRemoteRig(t)
+	bind := func(key string) (string, string) {
+		_, step, b, err := r.broker(Network{}).Ask(r.key(key), r.ws, "git push origin main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return step, b
+	}
+	step, before := bind("p-0")
+	if step != StepHostGit || before == "" {
+		t.Fatalf("a push with the network off: step %q bind %q", step, before)
+	}
+	if _, again := bind("p-1"); again != before {
+		t.Fatal("an unchanged remote's scope changed")
+	}
+	run(t, r.ws, "config", "remote.origin.mirror", "true")
+	if _, mirrored := bind("p-2"); mirrored == before {
+		t.Fatal("a mirror set since leaves the scope a kept push grant answers")
+	}
+	run(t, r.ws, "config", "--unset", "remote.origin.mirror")
+	run(t, r.ws, "config", "remote.origin.push", ":refs/heads/main")
+	if _, deleting := bind("p-3"); deleting == before {
+		t.Fatal("a deleting push refspec set since leaves the scope a kept push grant answers")
+	}
+}
