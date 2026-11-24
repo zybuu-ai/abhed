@@ -649,6 +649,9 @@ func TestAPlantMovedDuringTheScanRefusesTheCommand(t *testing.T) {
 	}
 	gitTree(t, ws, "x")
 	c := &Container{policy: Policy{Workspace: ws, ProtectGit: true}}
+	// The hook stands in for the watch; the real one (Linux) would note the
+	// same plant again, later, and refuse a later command too.
+	c.gitg.stop()
 	planted := filepath.Join(ws, ".git", "commondir")
 	gitScanned = func() {
 		// As the watch does: made, then moved aside and noted.
