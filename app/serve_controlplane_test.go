@@ -488,3 +488,69 @@ func gitLink(t *testing.T) string {
 	}
 	return link
 }
+
+// A second abhed serve on this machine's state, on another address, does
+// not run the sandbox control plane the first one owns: it says so and
+// exits, and the first server's Ready sandbox stays Ready (its reconciler
+// would have taken it for lost, as its driver runs no such instance).
+func TestSecondServeLeavesTheFirstServersSandboxesReady(t *testing.T) {
+	ws := checkEnv(t, `{"control_plane":{"enabled":true}}`, "")
+	cfg, err := newApp().loadConfig(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	built, err := buildControlPlane(ctx, cfg, ws, agent.NewMemStore(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb, err := controlplane.NewSandbox("alice", "default", "process", nil, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb, err = built.svc.Store().Create(ctx, sb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sb.Transition(controlplane.StateReady, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := built.svc.Store().Update(ctx, sb, sb.ResourceVersion); err != nil {
+		t.Fatal(err)
+	}
+	built.close()
+	// The first server, running: it holds this machine's state.
+	release, err := serveStartupLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	cmd := mainHelper([]string{"-C", ws, "-trust-workspace", "serve", "-addr", "127.0.0.1:0"})
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(out.String(), "another abhed serve owns this machine's state") {
+			t.Fatalf("the second serve: %v\n%s", err, out.String())
+		}
+	case <-time.After(20 * time.Second):
+		_ = cmd.Process.Kill() // the helper this test started
+		<-done
+		t.Errorf("the second serve kept running:\n%s", out.String())
+	}
+	built, err = buildControlPlane(ctx, cfg, ws, agent.NewMemStore(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer built.close()
+	got, err := built.svc.Store().Get(ctx, sb.ID)
+	if err != nil || got.State != controlplane.StateReady {
+		t.Fatalf("the first server's sandbox after a second serve: %s %v", got.State, err)
+	}
+}

@@ -18,10 +18,13 @@ All notable changes to Abhed are recorded here. The format follows
   only loopback and `server.allowed_hosts` are answered. Affected: every
   release with `abhed serve`.
 - A second `abhed serve` on the same HOME swept the running server's
-  per-session sandboxes. On the same address it now fails before any
-  startup cleanup; on another, the running server's startup lock
-  (`~/.abhed/serve.lock`) makes it leave the running one's sessions and
-  sandboxes alone.
+  per-session sandboxes, and its sandbox control plane marked the running
+  server's sandboxes lost (`Error`, `InstanceLost`). A serve now claims its
+  address and this machine's state (`~/.abhed/serve.lock`) before it builds
+  anything: on the same address a second one fails at once; on another, one
+  with `control_plane.enabled` refuses to start, naming the serve that owns
+  the state, and one without it serves but takes back and sweeps nothing.
+  Only the serve holding the lock reconciles or sweeps.
 - An organisation's deny or ask rule whose flags end in a star, such as
   `bash(rm -rf*)`, held only for the flags as written: `rm -r -f build` and
   `rm -fr build` fell through to the destructive ask. Such a rule is now read
