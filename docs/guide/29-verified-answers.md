@@ -854,8 +854,9 @@ succeeded.
 
 A revision that shows none of the work the first answer claimed (it
 verifies nothing, as a bare "(end of script)" does) leaves the first
-answer's claims unproven: strict mode and a contract end `unverified`,
-not completed.
+answer's claims unproven when they were claims of work (a pass, a command
+run, or a change naming a file or code): strict mode and a contract end
+`unverified`, not completed.
 
 When a statement comes out contradicted (from what it cites), in `label` or `strict` mode, or when
 a statement about the session's work comes out unverified in `strict` mode or

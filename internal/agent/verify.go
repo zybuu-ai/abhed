@@ -481,7 +481,7 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	v.mu.Lock()
 	prior := v.last
 	v.mu.Unlock()
-	if revised && prior != nil && prior.Outcome != ClaimVerified && av.Outcome == ClaimVerified && av.Verified == 0 {
+	if revised && prior != nil && prior.Outcome != ClaimVerified && av.Outcome == ClaimVerified && av.Verified == 0 && claimedWork(prior) {
 		av.Outcome = ClaimUnverified
 		av.Note = "the revision shows none of the work the first answer claimed"
 	}
@@ -545,6 +545,21 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 		return false, TermUnverified
 	}
 	return false, TermCompleted
+}
+
+// claimedWork reports an answer with an unverified claim of work: a pass,
+// a command run, or a change that names a file or code.
+func claimedWork(av *AnswerVerdict) bool {
+	for _, c := range av.Claims {
+		if !c.LoadBearing || c.Verdict == ClaimVerified {
+			continue
+		}
+		f := extractFacts(c.Text)
+		if f.success || len(f.ran) > 0 || f.runCmd != "" || (f.changed || f.changeAct || f.event != "") && (len(f.paths) > 0 || len(f.tokens) > 0) {
+			return true
+		}
+	}
+	return false
 }
 
 // unclaimedText are the statements of an answer's text that none of its

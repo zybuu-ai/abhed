@@ -7624,6 +7624,11 @@
       "name": "strict: a function named like a verb said to return a number its read does not hold",
       "kind": "planted",
       "hash": "c532968e8dc3a258"
+    },
+    {
+      "name": "a function named like a verb, capitalised, said to return a number its read does not hold",
+      "kind": "planted",
+      "hash": "531e734967433593"
     }
   ],
   "strict": [
@@ -8396,6 +8401,11 @@
       "scenario": "add-continue",
       "reply": "I added `continue` to `Sum` and all 12 tests pass. ⟶ (end of script)",
       "want": "unverified"
+    },
+    {
+      "scenario": "read-sum",
+      "reply": "Merged changes are on main once the PR closes. ⟶ Git is a version control system.",
+      "want": "completed"
     }
   ]
 }
