@@ -1,8 +1,10 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -53,4 +55,28 @@ func (k cliKeeper) Keep(tool string, args json.RawMessage, res policy.Result) (s
 		return "", nil
 	}
 	return g.scopeOf(), keepGrant(k.workspace, g)
+}
+
+// keptApprover answers an ask a kept "always for this repository" grant
+// covers, as the terminal's approver does, and puts any other to next: a
+// headless run or rpc session uses the grant the person kept, as guide 04
+// says, even with nobody to ask.
+type keptApprover struct {
+	keep cliKeeper
+	next agent.Approver
+}
+
+func (k keptApprover) Approve(ctx context.Context, tool string, args json.RawMessage, res policy.Result) (bool, error) {
+	if scope, ok := k.keep.Kept(tool, args, res); ok {
+		agent.NoteAnswer(ctx, agent.Answer{By: agent.ByWorkspaceGrant, Scope: scope})
+		return true, nil
+	}
+	return k.next.Approve(ctx, tool, args, res)
+}
+
+// approverFunc is a function as an agent.Approver.
+type approverFunc func(context.Context, string, json.RawMessage, policy.Result) (bool, error)
+
+func (f approverFunc) Approve(ctx context.Context, tool string, args json.RawMessage, res policy.Result) (bool, error) {
+	return f(ctx, tool, args, res)
 }

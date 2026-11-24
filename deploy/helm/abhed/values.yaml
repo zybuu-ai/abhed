@@ -229,6 +229,8 @@ ingress:
 # terminates at the router and speaks plain HTTP to the pod.
 route:
   enabled: false
+  # Required with enabled: the server answers only to names it is given, and
+  # a host OpenShift generates is not known when the chart renders.
   host: ""
   path: /
   annotations: {}

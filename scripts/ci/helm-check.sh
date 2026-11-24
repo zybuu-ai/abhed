@@ -137,6 +137,7 @@ refuse "a Route terminates edge in front of TLS" "passthrough or reencrypt" \
   --set route.enabled=true --set tls.enabled=true --set tls.existingSecret=t
 refuse "both minAvailable and maxUnavailable" "not both" --set podDisruptionBudget.minAvailable=1
 refuse "a digest that is not sha256" "digest" --set image.digest=latest
+refuse "a Route with no host" "route.enabled needs route.host" --set route.enabled=true
 refuse "privilege escalation" "allowPrivilegeEscalation" --set securityContext.allowPrivilegeEscalation=true
 refuse "a writable root filesystem" "readOnlyRootFilesystem" --set securityContext.readOnlyRootFilesystem=false
 refuse "a capability added" "add" --set 'securityContext.capabilities.add[0]=NET_ADMIN'

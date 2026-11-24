@@ -20,7 +20,11 @@ All notable changes to Abhed are recorded here. The format follows
   --forc`, `chmod --recursiv`, `git clean --forc`). An unambiguous prefix of
   at least three letters of a known long flag, or of the rule's own, now
   counts as that flag. Deny and ask only; allow rules match as written.
-
+- `abhed rpc`, which Abhed Studio and scripts start sessions through, never
+  fetched the org policy as a session started, so a deny rule published
+  since did not reach those sessions until another command fetched it. It
+  now fetches it at each `start`, as the terminal and an editor connection
+  do. Affected: every release with `abhed rpc` and an org policy.
 - `abhed serve` answered any `Host`, and an `Origin` equal to it passed the
   cross-origin check, so a web page could reach the API by pointing its own
   name at the server (DNS rebinding); with `auth.mode` `none` that was the
@@ -31,10 +35,13 @@ All notable changes to Abhed are recorded here. The format follows
   only loopback and `server.allowed_hosts` are answered. Affected: every
   release with `abhed serve`.
 - A second `abhed serve` on the same HOME swept the running server's
-  per-session sandboxes. On the same address it now fails before any
-  startup cleanup; on another, the running server's startup lock
-  (`~/.abhed/serve.lock`) makes it leave the running one's sessions and
-  sandboxes alone.
+  per-session sandboxes, and its sandbox control plane marked the running
+  server's sandboxes lost (`Error`, `InstanceLost`). A serve now claims its
+  address and this machine's state (`~/.abhed/serve.lock`) before it builds
+  anything: on the same address a second one fails at once; on another, one
+  with `control_plane.enabled` refuses to start, naming the serve that owns
+  the state, and one without it serves but takes back and sweeps nothing.
+  Only the serve holding the lock reconciles or sweeps.
 - An organisation's deny or ask rule whose flags end in a star, such as
   `bash(rm -rf*)`, held only for the flags as written: `rm -r -f build` and
   `rm -fr build` fell through to the destructive ask. Such a rule is now read
@@ -189,11 +196,15 @@ All notable changes to Abhed are recorded here. The format follows
   names, the ingress and route hosts and the new `allowedHosts` value in
   `server.allowed_hosts`; upgrade the chart with the server
   ([Kubernetes](docs/guide/27-kubernetes.md#names-the-server-answers-to)).
+  Values with `route.enabled` and no `route.host`, which rendered before,
+  now fail to render: set `route.host` to the Route's host.
 - git fetch, pull, push, clone and ls-remote in Abhed Studio and the CLI
   now reach remotes with the person's own credentials (SSH agent, keychain,
   credential helpers), on the process tier and the fence; 1.2.9 ran them in
   the sandbox, where they failed. With `sandbox.allow_network` off they
-  reach the repository's own remote after one approval. An allow rule kept
+  reach the repository's own remote after one approval, and an answer kept
+  as "always for this repository" also answers `-p` runs and `abhed rpc`
+  sessions, which have nobody to ask. An allow rule kept
   from 1.2.9, such as `bash(git push*)`, now reaches the network through the
   person's keys where it failed before. To turn it off, a person sets
   `sandbox.host_git: false` (or `sandbox.protect_git: false`, which also
@@ -367,6 +378,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `sdk.Options.NobodyToAsk` (Go API, additive): set with an `Approve` that
+  asks no one and only answers from grants kept earlier, the session records
+  itself headless and the supervisor runs as with no `Approve`. `abhed rpc`
+  sets it for a session started without `approvals`.
 - git fetch, pull, push, clone and ls-remote work in Abhed Studio and the
   CLI with the git and ssh setup the person already has: their network part
   runs through the person's own git on the host, with their keys, while

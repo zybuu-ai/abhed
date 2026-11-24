@@ -107,6 +107,14 @@ func (b *HostBroker) plan(ctx context.Context, cwd string, op remoteOp) (plan, e
 		p.remotes[n], p.raw[n] = urls, raw
 		p.specs[n] = configValues(ctx, cwd, "remote."+n+".fetch")
 		fmt.Fprintf(digest, "%s\x00%q\x00%q\x00", n, raw, urls)
+		// What a push sends is the remote's too: a mirror or a push refspec
+		// set since a grant was kept (one that deletes or forces, say) is
+		// another remote's, and the grant no longer answers for it. Added
+		// only when set, so a grant kept without them still matches.
+		mirror, pushSpecs := configValues(ctx, cwd, "remote."+n+".mirror"), configValues(ctx, cwd, "remote."+n+".push")
+		if len(mirror) > 0 || len(pushSpecs) > 0 {
+			fmt.Fprintf(digest, "mirror\x00%q\x00push\x00%q\x00", mirror, pushSpecs)
+		}
 		for _, u := range urls {
 			host, port, err := remoteHost(u)
 			if err != nil {
