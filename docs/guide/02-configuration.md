@@ -1681,10 +1681,14 @@ The `abhed serve` that owns this machine's state holds `~/.abhed/serve.lock`
 while it runs, and only it reconciles sandboxes or sweeps at start. A
 second one under the same HOME claims its address and the lock before it
 builds anything. On the same address it fails at once. On another address,
-with `control_plane.enabled` it refuses to start (the sandbox control plane
-belongs to the first; serve from another HOME instead); without it, it
-serves but takes back no session and sweeps no sandbox, and logs that it
-did not.
+with the sandbox control plane on it refuses to start (the control plane
+belongs to the first; serve from another HOME instead). The control plane is
+on with `control_plane.enabled`, and also, without it, on a server with sign-in
+that has or can gain more than one account (local accounts, say), where each
+session gets a sandbox of its own unless `server.shared_sessions` is set: such
+a second serve refuses too. With no sign-in, and no `control_plane.enabled`, it
+serves but takes back no session and sweeps no sandbox, and logs that it did
+not.
 
 ## Stopping the server
 
