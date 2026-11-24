@@ -263,3 +263,25 @@ func (t LoginTool) LoginsOff() string {
 	}
 	return t.M.cfg.PastedOff
 }
+
+// ReadSecrets names the stored secret a pasted login reads because its
+// token was that secret's value: it needs secret(NAME) as token_secret does,
+// unless it is the very secret a kept login for that server binds.
+func (t LoginTool) ReadSecrets(sess *tools.Session, raw json.RawMessage) []string {
+	var a struct {
+		Pasted string `json:"pasted"`
+	}
+	if json.Unmarshal(raw, &a) != nil || a.Pasted == "" {
+		return nil
+	}
+	p, ok := tools.PastedValue(sess, a.Pasted)
+	if !ok || p.SecretRef == "" {
+		return nil
+	}
+	for _, kl := range machinegrant.Logins() {
+		if kl.Secret == p.SecretRef && kl.Server == strings.TrimSuffix(p.Server, "/") {
+			return nil // already kept: nothing is read or sent
+		}
+	}
+	return []string{p.SecretRef}
+}

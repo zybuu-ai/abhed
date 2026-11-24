@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/secretfiles"
@@ -20,7 +21,10 @@ var secretRefRe = regexp.MustCompile(`^\[secret:([A-Z][A-Z0-9_]*)\]$`)
 
 // withholdPasted is text with each pasted credential replaced, what was
 // withheld as ID:kind, comma-separated, and the note the model gets.
-func (l *Loop) withholdPasted(text string) (string, string, string) {
+// raw is the message as typed and withheld the stored secrets the first pass
+// replaced in it: a login's [secret:NAME] is taken as that secret only when
+// the first pass wrote it here, never when the message itself held the text.
+func (l *Loop) withholdPasted(text, raw, withheld string) (string, string, string) {
 	found := secretfiles.FindPasted(text)
 	if len(found) == 0 {
 		return l.withholdHeld(text), "", ""
@@ -33,7 +37,11 @@ func (l *Loop) withholdPasted(text string) (string, string, string) {
 		// A login whose token was a stored value reads [secret:NAME] here: it
 		// names that secret, and its text is left as the record keeps it.
 		if m := secretRefRe.FindStringSubmatch(held.Value); m != nil {
-			if p.Server == "" {
+			// Only a value this message held, replaced by the first pass; a
+			// [secret:NAME] typed or copied in names nothing, and is held as
+			// nothing, so no login can read a secret by it.
+			if p.Server == "" || !slices.Contains(strings.Split(withheld, ","), m[1]) ||
+				strings.Contains(raw, "[secret:"+m[1]+"]") {
 				continue
 			}
 			held.Value, held.SecretRef, held.Kind = "", m[1], "a login with the stored secret "+m[1]
