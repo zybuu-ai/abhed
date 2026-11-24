@@ -1452,9 +1452,10 @@ func sandboxHint(output string) (kind, hint string) {
 			"authenticate from inside it. Use the k8s_get tool instead, which holds the " +
 			"credential outside the sandbox. If k8s_get is not available, this deployment " +
 			"has not enabled cluster access — tell the user to set k8s.enabled in their config."},
-		{".ssh", "Abhed's sandbox blocks reads of ~/.ssh, so ssh and git-over-ssh cannot " +
-			"authenticate from inside it. Use the ssh tool instead, which uses the agent or " +
-			"a configured key. If it is not available, tell the user to configure ssh.hosts."},
+		{".ssh", "Abhed's sandbox blocks reads of ~/.ssh, so ssh cannot authenticate from inside it. " +
+			"git fetch, pull, push, clone and ls-remote go through the user's own git on the host " +
+			"when each is run alone, as the whole command (not after && or ;): run them so. " +
+			"For other ssh use, use the ssh tool if it is in your tools; otherwise tell the user."},
 		{".aws", "Abhed's sandbox blocks reads of ~/.aws, so the AWS CLI cannot authenticate " +
 			"from inside it. Ask the user to run this command themselves, or to expose the " +
 			"capability through an MCP server."},
