@@ -40,8 +40,10 @@ type pastePlan struct {
 	server, cluster, storeAs, namespace string
 	caPEM                               []byte
 	fingerprint, subject                string
-	how                                 string // how TLS will be verified, for the person
-	kind                                string
+	// replaces marks a new token for a cluster kept already.
+	replaces bool
+	how      string // how TLS will be verified, for the person
+	kind     string
 }
 
 type pastePlansKey struct{ m *Manager }
@@ -102,14 +104,31 @@ func (t LoginTool) planPasted(ctx context.Context, sess *tools.Session, a loginA
 	if t.M.isContext(a.Cluster) {
 		return fmt.Errorf("%q is a kubeconfig context on this machine; keep the pasted cluster under another name", a.Cluster)
 	}
+	// The same token kept already: nothing to do, and nothing is sent.
+	for cluster, kl := range machinegrant.Logins() {
+		if t.Secret == nil || kl.Server != strings.TrimSuffix(p.Server, "/") {
+			continue
+		}
+		if v, err := t.Secret(kl.Secret); err == nil && strings.TrimSpace(v) == p.Value {
+			return fmt.Errorf("already kept: this is the token kept for cluster %s at %s (secret %s), so nothing was "+
+				"changed. Name it as cluster %q in k8s_get and k8s_apply", cluster, displayURL(kl.Server), kl.Secret, cluster)
+		}
+	}
 	name := storeName(a)
+	// Another token for a cluster kept already replaces its token, after the
+	// usual approval, under the secret it is kept with.
+	kept, replaces := t.M.keptLogin(a.Cluster)
+	if replaces && a.StoreAs == "" {
+		name = kept.Secret
+	}
+	replaces = replaces && name == kept.Secret
 	if !secrets.ValidName(name) || secrets.Held(name) {
 		return fmt.Errorf("store_as %q is not a secret name (upper-case letters, digits and '_')", name)
 	}
 	if t.Store == nil {
 		return fmt.Errorf("no secrets store is available here, so a pasted token cannot be kept")
 	}
-	if names, err := t.Store.Names(); err == nil && slices.Contains(names, name) {
+	if names, err := t.Store.Names(); err == nil && slices.Contains(names, name) && !replaces {
 		if v, err := t.Store.Value(name); err != nil || strings.TrimSpace(v) != p.Value {
 			return fmt.Errorf("a secret named %s already holds another value; choose another store_as", name)
 		}
@@ -119,7 +138,7 @@ func (t LoginTool) planPasted(ctx context.Context, sess *tools.Session, a loginA
 		return fmt.Errorf("the server pasted with %s is not an https:// URL with a host, so no token is sent to it", a.Pasted)
 	}
 	plan := pastePlan{server: strings.TrimSuffix(p.Server, "/"), cluster: a.Cluster, storeAs: name,
-		namespace: orDefault(a.Namespace, p.Namespace), kind: p.Kind}
+		namespace: orDefault(a.Namespace, p.Namespace), kind: p.Kind, replaces: replaces}
 	if err := plan.readTLS(ctx, t.M); err != nil {
 		return err
 	}
@@ -255,6 +274,11 @@ func (t LoginTool) pastedTarget(sess *tools.Session, a loginArgs) string {
 		return fmt.Sprintf("logs this session in to cluster %s at %s with the token you pasted (%s, %s), for this "+
 			"session only: as a guest, nothing is kept, and the token goes when you quit; %s. The token is never "+
 			"shown to the agent", p.cluster, displayURL(p.server), a.Pasted, p.kind, p.how)
+	}
+	if p.replaces {
+		return fmt.Sprintf("replaces the token kept for cluster %s with the one you pasted (%s, %s), in secret %s, "+
+			"and keeps the cluster at %s for you; %s. The token is never shown to the agent", p.cluster, a.Pasted, p.kind,
+			p.storeAs, displayURL(p.server), p.how)
 	}
 	return fmt.Sprintf("stores the token you pasted (%s, %s) as secret %s, keeps cluster %s at %s for you "+
 		"(in your own state, not the workspace) so k8s_login may send that secret to that server only, and logs "+

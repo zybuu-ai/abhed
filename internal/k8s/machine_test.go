@@ -425,3 +425,83 @@ func TestAGuestsPastedLoginIsForTheSessionOnly(t *testing.T) {
 		t.Fatalf("the session's login does not work: %+v", out)
 	}
 }
+
+// Pasting a kept token again changes nothing and sends nothing; a new token
+// for a kept cluster replaces its token after the approval.
+func TestRepastingAKeptLogin(t *testing.T) {
+	grantsIn(t)
+	const old, fresh = "sha256~old-token-value-0123456789abcdef", "sha256~new-token-value-0123456789abcdef"
+	var mu sync.Mutex
+	var auth []string
+	srv, _ := tlsCluster(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auth = append(auth, r.Header.Get("Authorization"))
+		mu.Unlock()
+		fmt.Fprint(w, `{"major":"1"}`)
+	}))
+	store := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
+	m := NewManager(Config{Kubeconfig: filepath.Join(t.TempDir(), "none"), KeptLogins: true, Secret: store.Value})
+	login := LoginTool{M: m, Secret: store.Value, Store: store}
+	sess := newSession(t)
+	// Kept once.
+	id := tools.HoldPasted(sess, tools.Pasted{Kind: "an OpenShift token", Value: old, Server: srv.URL})
+	raw := json.RawMessage(fmt.Sprintf(`{"cluster":"lab","pasted":%q}`, id))
+	if err := login.PrecheckContext(context.Background(), sess, raw); err != nil {
+		t.Fatal(err)
+	}
+	if res := login.Run(context.Background(), sess, raw); res.IsError {
+		t.Fatalf("%+v", res)
+	}
+	mu.Lock()
+	sent := len(auth)
+	mu.Unlock()
+	// The same token again: already kept, nothing sent.
+	again := newSession(t)
+	id = tools.HoldPasted(again, tools.Pasted{Kind: "an OpenShift token", Value: old, Server: srv.URL})
+	err := login.PrecheckContext(context.Background(), again, json.RawMessage(fmt.Sprintf(`{"cluster":"lab2","pasted":%q}`, id)))
+	if err == nil || !strings.Contains(err.Error(), "already kept") || !strings.Contains(err.Error(), `"lab"`) {
+		t.Fatalf("the same token again: %v", err)
+	}
+	mu.Lock()
+	if len(auth) != sent {
+		t.Fatal("a request was sent for a token already kept")
+	}
+	mu.Unlock()
+	// Another token for the kept cluster: it replaces the kept one.
+	id = tools.HoldPasted(again, tools.Pasted{Kind: "an OpenShift token", Value: fresh, Server: srv.URL})
+	raw = json.RawMessage(fmt.Sprintf(`{"cluster":"lab","pasted":%q}`, id))
+	if err := login.PrecheckContext(context.Background(), again, raw); err != nil {
+		t.Fatalf("a new token for a kept cluster: %v", err)
+	}
+	if target := login.Target(again, raw); !strings.Contains(target, "replaces the token kept for cluster lab") {
+		t.Fatalf("the approval: %s", target)
+	}
+	if res := login.Run(context.Background(), again, raw); res.IsError {
+		t.Fatalf("%+v", res)
+	}
+	if v, _ := store.Value("K8S_LAB_TOKEN"); v != fresh {
+		t.Fatalf("the kept token is %q", v)
+	}
+	mu.Lock()
+	last := auth[len(auth)-1]
+	mu.Unlock()
+	if last != "Bearer "+fresh {
+		t.Fatalf("sent %q", last)
+	}
+}
+
+// A placeholder is never sent as a credential.
+func TestAMaskedTokenIsNeverSent(t *testing.T) {
+	hits := 0
+	srv, _ := tlsCluster(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++ }))
+	for _, tok := range []string{"[secret:K8S_LAB_TOKEN]", "x[pasted:P1]", "[pasted credential]"} {
+		if _, err := OpenLogin(LoginCluster{Name: "lab", Server: srv.URL, InsecureSkipTLSVerify: true}, "", tok, ""); err == nil ||
+			!strings.Contains(err.Error(), "placeholder") {
+			t.Fatalf("%q: %v", tok, err)
+		}
+	}
+	c := &Cluster{Name: "lab", Server: srv.URL, bearer: "[secret:K8S_LAB_TOKEN]", client: srv.Client()}
+	if _, err := c.Do(context.Background(), "GET", "/version", nil); err == nil || hits != 0 {
+		t.Fatalf("a masked bearer was sent: %v (%d)", err, hits)
+	}
+}

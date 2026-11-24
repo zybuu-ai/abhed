@@ -642,6 +642,10 @@ type ApplyTool struct {
 	M *Manager
 	// Secret returns a stored secret's value, for secret_from; nil means no store.
 	Secret func(name string) (string, error)
+	// WritesOff, when set, is why no write is made here (the organisation
+	// turns writes off): the tool is not offered, and a call is refused with
+	// it rather than as an unknown tool.
+	WritesOff string
 }
 
 // BindStore is the tool reading secret_from's secrets from v instead.
@@ -761,6 +765,9 @@ func (t ApplyTool) Target(sess *tools.Session, raw json.RawMessage) string {
 }
 
 func (t ApplyTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage) tools.Result {
+	if t.WritesOff != "" {
+		return errf("Not applied: %s.", t.WritesOff)
+	}
 	var a applyArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return errf("Invalid arguments for k8s_apply: %v", err)

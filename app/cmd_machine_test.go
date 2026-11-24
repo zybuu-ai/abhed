@@ -146,3 +146,29 @@ func TestDoctorK8sFollowsTheOrgRule(t *testing.T) {
 		t.Fatalf("doctor without an org setting:\n%s", out)
 	}
 }
+
+// abhed machine reads the person's own grants, so it runs as the person.
+func TestMachineRunsAsThePerson(t *testing.T) {
+	if !personCommands["machine"] {
+		t.Fatal("abhed machine does not run as the person working, so a signed-in account's kept logins are missed")
+	}
+}
+
+// Under a managed k8s.kubeconfig, doctor lists the organisation's kubeconfig
+// and says a pasted login is refused; it never says k8s_login takes one.
+func TestDoctorUnderAManagedKubeconfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	kc := filepath.Join(home, "org.kubeconfig")
+	if err := os.WriteFile(kc, []byte("current-context: org\nclusters:\n- name: o\n  cluster:\n    server: https://org.example:6443\n"+
+		"contexts:\n- name: org\n  context:\n    cluster: o\n    user: u\nusers:\n- name: u\n  user:\n    token: t\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Managed: true, ManagedKeys: []string{"k8s.kubeconfig"}, SetKeys: []string{"k8s.kubeconfig"}}
+	cfg.K8s.Kubeconfig = kc
+	out := strings.Join(machineDoctor(cfg), "\n")
+	if !strings.Contains(out, "org → https://org.example:6443") || !strings.Contains(out, "a pasted login is refused") ||
+		strings.Contains(out, "k8s_login is offered") {
+		t.Fatalf("doctor:\n%s", out)
+	}
+}

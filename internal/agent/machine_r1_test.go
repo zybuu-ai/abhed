@@ -347,3 +347,30 @@ func TestAPastedLoginRefusedByTheOrganisationSaysWhy(t *testing.T) {
 		t.Fatalf("the paste's note: %q", first)
 	}
 }
+
+// A login pasted again whose token is already stored is still read as a
+// paste: the session holds the real token, not [secret:NAME], so the login
+// it asks for can never send the placeholder.
+func TestARepastedStoredTokenIsStillAPaste(t *testing.T) {
+	vault := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
+	if err := vault.Set("K8S_LAB_TOKEN", pinTok); err != nil {
+		t.Fatal(err)
+	}
+	sess, _ := tools.NewSession(t.TempDir())
+	rec := NewRecorder(NewMemStore(), "s", "")
+	rec.Redact = vault.Redactor()
+	ad := &scriptedAdapter{turns: []scriptedTurn{{text: "ok"}}}
+	l := NewLoop(ad, tools.NewRegistry(), policy.New(policy.ModeDefault), AutoApprove{}, sess, rec, DefaultConfig())
+	if _, err := l.Run(context.Background(), "oc login --token="+pinTok+" --server=https://api.lab.example:6443"); err != nil {
+		t.Fatal(err)
+	}
+	p, ok := tools.PastedValue(sess, "P1")
+	if !ok || p.Value != pinTok || p.Server != "https://api.lab.example:6443" {
+		t.Fatalf("held %+v %v", p, ok)
+	}
+	for _, m := range ad.gotRequests[0].Messages {
+		if strings.Contains(m.Content, pinTok) {
+			t.Fatal("the model was sent the token")
+		}
+	}
+}

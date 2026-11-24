@@ -65,12 +65,14 @@ func machineCmd(args []string, out, errw io.Writer) int {
 // counts and names, servers and addresses, never a credential.
 func machineDoctor(cfg config.Config) []string {
 	var out []string
+	k8sOn, _ := toolset.OrgK8s(cfg)
+	off := cfg.MachineSetupOff("k8s")
 	switch {
 	case cfg.MachineSetupOff("k8s") != "" && !cfg.ManagedSets("k8s.kubeconfig") && !cfg.FromOrg("k8s.kubeconfig"):
 		out = append(out, "kubeconfig  not used: "+cfg.MachineSetupOff("k8s"))
 	case cfg.Sets("k8s.enabled") && !cfg.K8s.Enabled:
 		out = append(out, "kubeconfig  not offered: k8s.enabled is false")
-	case toolset.MachineK8s(cfg, true) || cfg.K8s.Enabled:
+	case toolset.MachineK8s(cfg, true) || k8sOn:
 		list, _, err := k8s.Contexts(k8s.Config{Kubeconfig: cfg.K8s.Kubeconfig})
 		if err != nil {
 			out = append(out, "kubeconfig  none read: "+err.Error())
@@ -94,6 +96,11 @@ func machineDoctor(cfg config.Config) []string {
 		for _, n := range names {
 			out = append(out, "            "+n)
 		}
+		if off != "" {
+			out = append(out, "            a pasted login is refused here: "+off)
+		}
+	case off != "":
+		out = append(out, "kubeconfig  not used, and a pasted login is refused: "+off)
 	default:
 		out = append(out, "kubeconfig  none; k8s_login is offered, so a pasted `oc login` can log in")
 	}
