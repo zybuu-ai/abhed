@@ -99,3 +99,20 @@ func writableByOthers(perm os.FileMode, gid uint32, goos string) bool {
 	}
 	return false
 }
+
+// folderUntrusted says why folder d (where it exists) is not the person's
+// alone: another user's, or writable by others.
+func folderUntrusted(d string) string {
+	info, err := os.Stat(sandbox.RealPath(d))
+	if err != nil {
+		return ""
+	}
+	me := uint32(os.Getuid()) // #nosec G115 -- a uid
+	if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Uid != me && st.Uid != 0 {
+		return "is in a folder owned by another user"
+	}
+	if othersWrite(info) && info.Mode()&os.ModeSticky == 0 {
+		return "is in a folder other users can write"
+	}
+	return ""
+}

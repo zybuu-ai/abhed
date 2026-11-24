@@ -1243,7 +1243,8 @@ cannot steer host git:
   brokered while one is a relative path, or an absolute one in the
   workspace or a folder commands can write, or another user's or writable
   by others; while any word holds a glob or other shell syntax (`*`, `?`,
-  `$`, …), which the shell would expand; while a shell is given a command
+  `$`, …), which the shell would expand (one ssh `%` token in brackets, as
+  an IPv6 bastion's `[%h]:%p`, is fine); while a shell is given a command
   line (`sh -c …`); or while a
   `!` credential helper is more than a program and its words (a shell
   function such as `!f() { …; }; f`, a variable, a pipe or a second
@@ -1270,7 +1271,9 @@ cannot steer host git:
   `CertificateFile`, `IdentityFile` in your ssh configuration or `-o` options, and
   `http.sslCAInfo`, `http.sslCAPath`, `http.sslCert` and `http.sslKey` in
   your git configuration, URL-scoped `http.<url>.*` ones too. Each must be a
-  full path (no `$`, `%` or `~user`; `~/` is your home) outside the
+  full path (no `$` or `~user`, and an ssh `%` token only in the file's own
+  name, as `~/.ssh/%h.key`, when the folder it is in is checked; `~/` is
+  your home) outside the
   workspace and every folder commands can write, yours or root's, not
   writable by others, and readable (so are the files git's own `cache` and
   `store` helpers use when no `--socket` or `--file` names one: the cache's
