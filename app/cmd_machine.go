@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/identity"
 	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/machinegrant"
 	"github.com/zybuu-ai/abhed/internal/toolset"
@@ -65,12 +66,14 @@ func machineCmd(args []string, out, errw io.Writer) int {
 // counts and names, servers and addresses, never a credential.
 func machineDoctor(cfg config.Config) []string {
 	var out []string
+	k8sOn, _ := toolset.OrgK8s(cfg)
+	off := cfg.MachineSetupOff("k8s")
 	switch {
 	case cfg.MachineSetupOff("k8s") != "" && !cfg.ManagedSets("k8s.kubeconfig") && !cfg.FromOrg("k8s.kubeconfig"):
 		out = append(out, "kubeconfig  not used: "+cfg.MachineSetupOff("k8s"))
 	case cfg.Sets("k8s.enabled") && !cfg.K8s.Enabled:
 		out = append(out, "kubeconfig  not offered: k8s.enabled is false")
-	case toolset.MachineK8s(cfg, true) || cfg.K8s.Enabled:
+	case toolset.MachineK8s(cfg, true) || k8sOn:
 		list, _, err := k8s.Contexts(k8s.Config{Kubeconfig: cfg.K8s.Kubeconfig})
 		if err != nil {
 			out = append(out, "kubeconfig  none read: "+err.Error())
@@ -94,6 +97,11 @@ func machineDoctor(cfg config.Config) []string {
 		for _, n := range names {
 			out = append(out, "            "+n)
 		}
+		if off != "" {
+			out = append(out, "            a pasted login is refused here: "+off)
+		}
+	case off != "":
+		out = append(out, "kubeconfig  not used, and a pasted login is refused: "+off)
 	default:
 		out = append(out, "kubeconfig  none; k8s_login is offered, so a pasted `oc login` can log in")
 	}
@@ -107,6 +115,8 @@ func machineDoctor(cfg config.Config) []string {
 	}
 	gs, err := machinegrant.List()
 	switch {
+	case machinegrant.Guest():
+		out = append(out, "kept        guest: nothing is kept")
 	case err != nil:
 		out = append(out, "kept        UNREADABLE — "+err.Error())
 	case len(gs) > 0:
@@ -156,4 +166,16 @@ func k8sDoctor(cfg config.Config) []string {
 		out = append(out, fmt.Sprintf("k8s login   %s → %s%s", ui.VisibleLine(lc.Name), k8s.DisplayURL(lc.Server), warn))
 	}
 	return out
+}
+
+// doctorPerson says whose state doctor reports, and what is the machine's.
+func doctorPerson(p identity.Principal) string {
+	const machine = "; managed settings, sandbox tiers and programs are this machine's"
+	switch p.Kind {
+	case identity.Guest:
+		return "guest: nothing is kept" + machine
+	case identity.Legacy:
+		return "no sign-in: trust, secrets and kept grants are this machine's" + machine
+	}
+	return ui.VisibleLine(p.Display()) + ": trust, secrets and kept grants below are this account's" + machine
 }

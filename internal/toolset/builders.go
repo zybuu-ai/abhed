@@ -485,6 +485,10 @@ func InfraToolsFor(cfg config.Config, vault *secrets.Store, warn func(string, ..
 			k8s.LoginTool{M: mgr, Secret: secret, SecretNames: secretNames, Store: vault})
 		if cfg.K8s.AllowWrites {
 			out = append(out, k8s.ApplyTool{M: mgr, Secret: secret})
+		} else if machine && (cfg.ManagedSets("k8s.allow_writes") || cfg.FromOrg("k8s.allow_writes")) {
+			// Not offered, but a write the model tries anyway is told why.
+			out = append(out, k8s.ApplyTool{M: mgr, WritesOff: "your organisation's configuration turns cluster writes off " +
+				"(k8s.allow_writes false), so reads only; ask your administrator"})
 		}
 	} else if machine && k8sOff != "" {
 		// The organisation decides: a pasted login is still withheld, and the

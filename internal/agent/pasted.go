@@ -2,6 +2,8 @@ package agent
 
 import (
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/secretfiles"
@@ -14,9 +16,15 @@ import (
 // model is told what was pasted, never the value, so it can offer to log in:
 // k8s_login with that id stores it and keeps the cluster, on one approval.
 
+// secretRefRe is a stored secret's placeholder standing for a whole token.
+var secretRefRe = regexp.MustCompile(`^\[secret:([A-Z][A-Z0-9_]*)\]$`)
+
 // withholdPasted is text with each pasted credential replaced, what was
 // withheld as ID:kind, comma-separated, and the note the model gets.
-func (l *Loop) withholdPasted(text string) (string, string, string) {
+// raw is the message as typed and withheld the stored secrets the first pass
+// replaced in it: a login's [secret:NAME] is taken as that secret only when
+// the first pass wrote it here, never when the message itself held the text.
+func (l *Loop) withholdPasted(text, raw, withheld string) (string, string, string) {
 	found := secretfiles.FindPasted(text)
 	if len(found) == 0 {
 		return l.withholdHeld(text), "", ""
@@ -25,7 +33,28 @@ func (l *Loop) withholdPasted(text string) (string, string, string) {
 	var ids, lines []string
 	last := 0
 	for _, p := range found {
-		id := tools.HoldPasted(l.Session, tools.Pasted{Kind: p.Kind, Value: p.Value(text), Server: p.Server, Namespace: p.Namespace})
+		held := tools.Pasted{Kind: p.Kind, Value: p.Value(text), Server: p.Server, Namespace: p.Namespace}
+		// A login whose token was a stored value reads [secret:NAME] here: it
+		// names that secret, and its text is left as the record keeps it.
+		if m := secretRefRe.FindStringSubmatch(held.Value); m != nil {
+			// Only a value this message held, replaced by the first pass; a
+			// [secret:NAME] typed or copied in names nothing, and is held as
+			// nothing, so no login can read a secret by it.
+			if p.Server == "" || !slices.Contains(strings.Split(withheld, ","), m[1]) ||
+				strings.Contains(raw, "[secret:"+m[1]+"]") {
+				continue
+			}
+			held.Value, held.SecretRef, held.Kind = "", m[1], "a login with the stored secret "+m[1]
+			id := tools.HoldPasted(l.Session, held)
+			b.WriteString(text[last:p.End])
+			last = p.End
+			if id != "" {
+				ids = append(ids, id+":"+held.Kind)
+				lines = append(lines, fmt.Sprintf("%s is %s for the server %s", id, held.Kind, p.Server))
+			}
+			continue
+		}
+		id := tools.HoldPasted(l.Session, held)
 		b.WriteString(text[last:p.Start])
 		if id == "" {
 			// No session to hold it in: withheld all the same, unusable, and

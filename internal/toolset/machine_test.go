@@ -335,8 +335,20 @@ func TestAnOrgsWritesOffKeepsThePersonsKubeconfigReadOnly(t *testing.T) {
 	cfg := config.Config{Managed: true, ManagedKeys: []string{"k8s.allow_writes"}, SetKeys: []string{"k8s.allow_writes", "k8s.enabled"}}
 	cfg.K8s.Enabled = true
 	reg := tools.NewRegistry(InfraToolsFor(cfg, nil, func(string, ...any) {}, true)...)
-	if _, ok := reg.Get("k8s_apply"); ok {
-		t.Fatalf("k8s_apply is offered under the org's allow_writes false: %v", reg.Names())
+	for _, d := range reg.Definitions() {
+		if d.Name == "k8s_apply" {
+			t.Fatalf("k8s_apply is offered under the org's allow_writes false")
+		}
+	}
+	// A write the model tries anyway is refused with the reason, never as an
+	// unknown tool.
+	apply, ok := reg.Get("k8s_apply")
+	if !ok {
+		t.Fatal("k8s_apply is not registered to say why")
+	}
+	if err := tools.Precheck(context.Background(), apply, nil, json.RawMessage(`{"action":"delete","resource":"pods","name":"x"}`)); err == nil ||
+		!strings.Contains(err.Error(), "writes off") || !strings.Contains(err.Error(), "administrator") {
+		t.Fatalf("a write under the org's allow_writes false: %v", err)
 	}
 	get, ok := reg.Get("k8s_get")
 	if !ok || !strings.Contains(get.Description(), "personal") {
@@ -348,8 +360,13 @@ func TestAnOrgsWritesOffKeepsThePersonsKubeconfigReadOnly(t *testing.T) {
 	}
 	// The same on a laptop with no file of its own: machine setup, writes off.
 	auto := config.Config{Managed: true, ManagedKeys: []string{"k8s.allow_writes"}, SetKeys: []string{"k8s.allow_writes"}}
-	if got := infraNames(auto, true); !slices.Contains(got, "k8s_get") || slices.Contains(got, "k8s_apply") {
-		t.Fatalf("machine setup under allow_writes false: %v", got)
+	areg := tools.NewRegistry(InfraToolsFor(auto, nil, func(string, ...any) {}, true)...)
+	var offered []string
+	for _, d := range areg.Definitions() {
+		offered = append(offered, d.Name)
+	}
+	if !slices.Contains(offered, "k8s_get") || slices.Contains(offered, "k8s_apply") {
+		t.Fatalf("machine setup under allow_writes false offers %v", offered)
 	}
 }
 

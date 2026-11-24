@@ -724,7 +724,7 @@ func (l *Loop) deliverQueuedCount() (int, error) {
 		// session, and a message the model saw but the log did not would
 		// make a replay diverge from what happened.
 		text, withheld := l.withholdSecrets(q.Text)
-		text, pasted, pastedNote := l.withholdPasted(text)
+		text, pasted, pastedNote := l.withholdPasted(text, q.Text, withheld)
 		said := Message{Text: text, QueueID: q.ID, ClientID: q.ClientID, Steered: q.Steered, SecretsWithheld: withheld,
 			Pasted: pasted, Note: joinNotes(l.parallelNote(q.typed), pastedNote)}
 		if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, said); err != nil {
@@ -978,8 +978,10 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	if err := l.notePlugins(); err != nil {
 		return TermError, err
 	}
+	// Stored values first, whole; a login whose token was one is read after
+	// as a login naming that secret (withholdPasted).
 	text, withheld := l.withholdSecrets(m.Text)
-	text, pasted, pastedNote := l.withholdPasted(text)
+	text, pasted, pastedNote := l.withholdPasted(text, m.Text, withheld)
 	typed := m.Typed
 	if typed == "" {
 		typed = typedFrom(ctx)
@@ -3302,6 +3304,11 @@ func (l *Loop) secretsRefused(tool tools.Tool, call model.ToolCall) string {
 	}
 	_ = json.Unmarshal(call.Args, &a)
 	a.Secrets = append(a.Secrets, tools.SecretNames(tool, call.Args)...)
+	// A secret a call reads by a name it holds rather than names, such as a
+	// pasted login whose token was a stored value, needs its rule too.
+	if r, ok := tool.(tools.ReadSecrets); ok {
+		a.Secrets = append(a.Secrets, r.ReadSecrets(l.Session, call.Args)...)
+	}
 	// A secret a kept grant binds to the call's cluster was allowed when the
 	// person approved that grant; a deny rule still refuses it.
 	if b, ok := tool.(tools.BoundSecrets); ok {

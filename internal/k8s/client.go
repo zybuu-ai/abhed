@@ -432,7 +432,25 @@ func (lc LoginCluster) Verification(defaultCA string) string {
 // OpenLogin connects to an operator-declared cluster with a token obtained at
 // run time. TLS is verified against the system roots plus the cluster's CA
 // bundle, or k8s.ca_file; only the cluster's own insecure flag turns it off.
+// masked reports a token that is a placeholder Abhed wrote in place of a
+// value ([secret:NAME], [pasted:P1], …), never one to send.
+func masked(token string) bool {
+	for _, m := range []string{"[secret:", "[secret]", "[pasted:", "[pasted credential]", "[redacted"} {
+		if strings.Contains(token, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// errMasked refuses to send a placeholder as a credential.
+var errMasked = errors.New("the token is a placeholder Abhed wrote in place of a value, not the value, so it is not sent; " +
+	"ask the user to paste the login again, or to store the token with `abhed secret set NAME`")
+
 func OpenLogin(lc LoginCluster, defaultCA, token, namespace string) (*Cluster, error) {
+	if masked(token) {
+		return nil, errMasked
+	}
 	if !strings.HasPrefix(lc.Server, "https://") {
 		return nil, fmt.Errorf("cluster %s: server must be an https:// URL, got %q", lc.Name, lc.Server)
 	}
@@ -614,6 +632,9 @@ func (c *Cluster) credential() (string, error) {
 		if err := c.refreshExecToken(); err != nil {
 			return "", err
 		}
+	}
+	if masked(c.bearer) {
+		return "", errMasked
 	}
 	return c.bearer, nil
 }

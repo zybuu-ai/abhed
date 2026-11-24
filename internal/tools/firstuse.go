@@ -96,3 +96,11 @@ func IsFirstUseScope(scope string) bool {
 	}
 	return false
 }
+
+// ReadSecrets is a tool whose call reads stored secrets it holds by name
+// rather than names in its arguments, such as a pasted login whose token
+// was a stored value. Each needs a secret(NAME) allow rule, as a named one
+// does; a deny rule refuses it.
+type ReadSecrets interface {
+	ReadSecrets(sess *Session, args json.RawMessage) []string
+}
