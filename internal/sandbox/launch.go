@@ -69,12 +69,24 @@ var errNotStarted = errors.New("the command did not start")
 var exitHooks sync.Map
 
 // OnExit runs fn with cmd's result once whoever runs cmd reports its end
-// with Exited, or with an error once it is released unstarted.
+// with Exited, or with an error once it is released unstarted; after any
+// set before it.
 func OnExit(cmd *exec.Cmd, fn func(err error)) {
-	if cmd != nil && fn != nil {
-		exitHooks.Store(cmd, fn)
+	if cmd == nil || fn == nil {
+		return
 	}
+	exitHooksMu.Lock()
+	defer exitHooksMu.Unlock()
+	if prev, ok := exitHooks.Load(cmd); ok {
+		first := prev.(func(error))
+		exitHooks.Store(cmd, func(err error) { first(err); fn(err) })
+		return
+	}
+	exitHooks.Store(cmd, fn)
 }
+
+// exitHooksMu orders OnExit's chaining of hooks.
+var exitHooksMu sync.Mutex
 
 // Exited reports that cmd ended with err (Wait's), running what OnExit set.
 func Exited(cmd *exec.Cmd, err error) {

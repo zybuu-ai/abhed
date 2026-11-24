@@ -8,6 +8,39 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- With `protect_git` on, on the tiers that hold git's files by binding only
+  the ones that exist (the process tier under bubblewrap on Linux, the
+  container tier, including on macOS with podman, and very likely the fence
+  tier), a command could make in the workspace's git folder a `commondir`
+  (or `objects/info/alternates`, `http-alternates`, `info/attributes`,
+  `info/grafts`) that was not there before. The person's own git on the
+  host (`git status`, or an editor's) then followed it to configuration of
+  the command's choosing, which could run a program as the person, and a
+  planted `commondir` stayed after the sandbox closed. Releases 1.2.3
+  (where `protect_git` began) to 1.2.9 have this with no mitigation:
+  1.2.3 to 1.2.6 kept the plant even past the next command, and 1.2.3 did
+  not hold `.git/config` itself under bubblewrap. This release mitigates it and does not close it:
+  - `info` and `objects/info` are held read-only whole, so the files in
+    them cannot be made (`git gc` then cannot write the commit-graph);
+  - a `commondir` is moved aside soon after it is made (an inotify watch,
+    Linux), again as each command ends and as the sandbox closes, and the
+    next command is refused and says why.
+
+  What remains: a command that plants a `commondir` over and over still
+  has it read by host git runs that fall between a plant and its move; in
+  a measured 60 s run about a third of the host's `git status` runs ran
+  the command's program. On macOS's container tier there is no watch, only
+  the sweeps, so a planted `commondir` stays for the whole command and
+  every host git run during it follows it. A repository a command makes in the workspace is live to
+  host tools (an editor that opens nested repositories) until the command
+  ends, when it is taken out. Commits keep working on these tiers. Each
+  command on these tiers now looks through the workspace's folders for git
+  folders twice (as it starts, and as it ends), within the same bound; a
+  large monorepo pays that twice. Until a
+  later release closes this, keep host git tooling off a workspace an
+  untrusted command is writing, or use the macOS process tier (Seatbelt),
+  which denies these names outright and is not affected.
+
 - A repository's own `remote.<name>.mirror`, or a `remote.<name>.push`
   refspec that forces (`+…`) or deletes (`:…`), made a brokered `git push`
   run on the host as a mirror, force or delete push behind only the plain
@@ -1255,6 +1288,43 @@ All notable changes to Abhed are recorded here. The format follows
   rest to the agent's commands. `/Users/Shared` is not taken for a home. A
   failed lookup of the account is said in the sandbox's description, which
   `abhed doctor` shows and the record keeps.
+
+- On the process tier, git works again where a workspace's git folder lies
+  outside it, including under a home the sandbox otherwise keeps
+  unreadable. In each shape:
+  - a folder inside a repository: `git status`, `log`, `diff` and `show`
+    work, and remote `fetch`, `pull` and `push` run through host git; the
+    repository's top folder is readable (unless it holds another
+    workspace's `.abhed`, when it is only listed) and its `.git` is read
+    only, as its index covers files outside the workspace, so `add` and
+    `commit` fail, as in 1.2.9;
+  - a linked worktree: the same, with its own and the common git folder
+    read only, so `add` and `commit` fail, as in 1.2.9;
+  - a submodule checkout: everything, `add` and `commit` included; its own
+    git folder (`.git/modules/<name>`) is written as git writes it, with its
+    configuration, hooks, `info/attributes`, alternates, grafts,
+    `sparse-checkout`, `http-alternates`, `shallow` and replace refs held as
+    for a git folder inside the workspace, without Abhed making any file
+    there that git would notice (with `protect_git` off it stays read
+    only). The submodule's folder outside the workspace is reached only on
+    the process tier; under bubblewrap, which binds only the git files that
+    exist, a `commondir` made there is moved aside soon after it is made,
+    as in the workspace's own git folder: a mitigation that a command
+    planting in a loop can still beat for some of the person's host git
+    runs, as the Security section says. Seatbelt denies the name there.
+
+  No command can write another work tree's branch, index or HEAD, plant
+  replace refs or grafts in a shared git folder, or stage a file outside
+  the workspace. A git folder is reached only when it names the work tree
+  back (a worktree's `gitdir`, a submodule's `core.worktree`), so a `.git`
+  file pointed at another repository reaches nothing, and a home kept in
+  git is never read. A `.abhed` anywhere under what is read stays
+  unreadable; under bubblewrap one made in the top after the session
+  started is not hidden. The sandbox's description, which `abhed doctor`
+  shows and the record keeps, names what is read and written. Committing
+  in a folder inside a repository or a linked worktree (a commit brokered
+  on the host, limited to the workspace's paths) is planned for 1.3.x, and
+  the fence tier does not reach these folders yet.
 
 - The `served` field of the `next_edit.summary` record event now includes
   renames finished from the file, which are also counted in `local`; before,

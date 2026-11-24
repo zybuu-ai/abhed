@@ -1062,7 +1062,26 @@ its modes. The none tier holds nothing, and on it the `git` line of
 also refuses the fence in `landlock_only` mode, which cannot hold these files
 (unset, that fence runs and says so); Studio and `abhed serve` always hold
 them where the tier can. With `protect_git` set `true`, `abhed serve` does not
-start on the none tier, which cannot hold them. Because `config` is out of
+start on the none tier, which cannot hold them.
+
+How they are held differs by tier, and one tier class has a known gap.
+Seatbelt (the macOS process tier) denies these names in every git folder,
+made later too. Bubblewrap (the process tier on Linux), the container tier
+(on Linux and on macOS with podman) and the fence bind read-only only the
+files that exist, with `info/` and `objects/info/` held whole; a
+`commondir` a command makes is moved aside soon after (a watch on Linux),
+as each command ends and as the sandbox closes, and the next command is
+refused. That is a mitigation: a command that plants one over and over
+still has it read by some of your own git runs on the host (about a third
+in a measured run on Linux; on macOS's container tier, which has no watch,
+every run while the command lasts), and a repository a command makes is
+live to host tools until the command ends. Releases 1.2.3 to 1.2.9 had no
+mitigation at all. To find git folders, each command on these tiers looks
+through the workspace's folders twice (as it starts and as it ends), within
+the same bound; in a large monorepo that cost is paid twice. On those tiers, keep host git tooling (an editor's
+git integration) off a workspace an untrusted command is writing.
+
+Because `config` is out of
 reach, `git push -u` or `git branch --set-upstream-to` inside a session
 cannot save the upstream, although git prints that it did; set the upstream
 in your own terminal.

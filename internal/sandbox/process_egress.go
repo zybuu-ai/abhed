@@ -495,6 +495,10 @@ func (s *Process) Close() error {
 	// on macOS nothing else ends those (bubblewrap's PID namespace does).
 	s.cmds.end()
 	unwatchListeners(s)
+	// What a command planted in a git folder is taken out before the person's
+	// own git can follow it: the watcher stops, and a last look sweeps.
+	s.gitg.stop()
+	s.sweepGit()
 	ss := &s.egress
 	ss.mu.Lock()
 	ss.closed = true

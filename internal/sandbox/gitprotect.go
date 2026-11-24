@@ -48,6 +48,8 @@ type gitScan struct {
 	// make is whether a missing config and hooks are made empty for binding.
 	make bool
 	seen map[string]bool
+	// dirs are the git folders found (a repository's or a submodule's).
+	dirs []string
 }
 
 // GitProtected are the gitPointers of every git folder found in ws, config and
@@ -188,8 +190,19 @@ func (g *gitScan) folder(dir string, level int) {
 		return
 	}
 	g.seen[dir] = true
+	g.dirs = append(g.dirs, dir)
 	perWorktree := worktreeConfigOn(filepath.Join(dir, "config"))
 	if g.make {
+		// Where only what exists can be bound read-only, the folders holding
+		// pointers git follows (alternates, http-alternates, attributes,
+		// grafts) are held whole: a missing file in them could otherwise be
+		// made. A commit writes neither. Made empty where missing, which git
+		// does not notice.
+		for _, f := range heldGitFolders {
+			if _, err := os.Lstat(filepath.Join(dir, f)); errors.Is(err, fs.ErrNotExist) {
+				_ = os.MkdirAll(filepath.Join(dir, f), 0o755) // #nosec G301 -- git's own mode for its folders
+			}
+		}
 		// A missing config or hooks is made empty as the person, so it can
 		// be bound read-only; so is config.worktree where git would read one.
 		for _, f := range []string{"config", "hooks"} {
@@ -202,6 +215,9 @@ func (g *gitScan) folder(dir string, level int) {
 		}
 	}
 	g.existing(dir, "config", "hooks", "config.worktree", "gitdir", "info/attributes", "objects/info/alternates")
+	if g.make {
+		g.existing(dir, heldGitFolders...)
+	}
 	// Git writes a commondir only in a linked worktree's folder, and refuses an
 	// empty one, so one here was planted and no empty one can stand in for it.
 	if c := filepath.Join(dir, "commondir"); exists(c) {
@@ -454,7 +470,14 @@ type gitMemory struct {
 	// knownDirs the git folders that look found.
 	partial   map[string]bool
 	knownDirs map[string][]os.FileInfo
+	// dirs are the git folders the last scan of each workspace found, which
+	// a watcher looks at for a planted commondir (watchGit).
+	dirs map[string][]string
 }
+
+// heldGitFolders are the folders of a git folder held whole where only what
+// exists can be bound read-only (bubblewrap, the container and vm tiers).
+var heldGitFolders = []string{"info", "objects/info"}
 
 // gitGuardFor returns the paths in ws to bind read-only, or why the command is
 // refused; when required, a bounded walk refuses rather than miss one.
@@ -469,6 +492,10 @@ func gitGuardFor(ctx context.Context, ws, backend string, mem *gitMemory, requir
 	}
 	// Merged, not replaced: a concurrent scan cut short by a flood must not drop what another found.
 	mem.known[ws] = mergeKnown(mem.known[ws], g.gits)
+	if mem.dirs == nil {
+		mem.dirs = map[string][]string{}
+	}
+	mem.dirs[ws] = g.dirs
 	mem.mu.Unlock()
 	launch := LaunchOf(ctx)
 	record := func(ev string, pay map[string]any) {
@@ -521,7 +548,7 @@ func takeOutGitPlanted(planted []string) ([]map[string]any, error) {
 	var entries []map[string]any
 	for _, p := range planted {
 		m := map[string]any{"path": p}
-		if dest, err := quarantine(p, "commondir", "git-"); err == nil {
+		if dest, err := quarantine(p, filepath.Base(p), "git-"); err == nil {
 			m["outcome"], m["moved_to"] = plantMoved, dest
 			parts = append(parts, p+" was moved to "+dest)
 		} else if errors.Is(err, fs.ErrNotExist) {
@@ -539,7 +566,8 @@ func takeOutGitPlanted(planted []string) ([]map[string]any, error) {
 	}
 	return entries, fmt.Errorf("sandbox: the command was not run: a commondir appeared where git would not write it "+
 		"(a repository's or a submodule's git folder, or a linked worktree's pointing elsewhere), "+
-		"pointing git at configuration and hooks elsewhere; %s", strings.Join(parts, "; "))
+		"pointing git at configuration and hooks elsewhere, or a shallow list a command made in a git folder outside the workspace; %s",
+		strings.Join(parts, "; "))
 }
 
 // gitPattern is the seatbelt regex for the gitPointers of every git folder

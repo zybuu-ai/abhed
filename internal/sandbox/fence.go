@@ -66,6 +66,8 @@ type Fence struct {
 	seq  atomic.Uint64
 	// git is what the look for git folders keeps between commands.
 	git gitMemory
+	// gitg keeps a commondir a command plants from the person's git.
+	gitg gitGuard
 
 	closed    atomic.Bool
 	closeOnce sync.Once
@@ -120,6 +122,12 @@ func (f *Fence) Close() error {
 	f.once.Do(func() { f.why = "the session's fence was closed" })
 	f.closeOnce.Do(func() {
 		var errs []error
+		// What commands left in the workspace's git folders that git would
+		// follow is taken out before the person's own git.
+		f.gitg.stop()
+		if f.policy.ProtectGit {
+			sweepGit([]string{f.policy.Workspace}, string(TierFence), &f.git)
+		}
 		if f.host != nil {
 			errs = append(errs, f.host.close())
 			// Checked once nothing of the session's is left running.
@@ -308,7 +316,12 @@ func (f *Fence) limitsText() string {
 }
 
 func (f *Fence) Command(ctx context.Context, cwd, command string) *exec.Cmd {
-	return f.wrap(ctx, cwd, f.env(), "/bin/bash", "-c", command)
+	cmd := f.wrap(ctx, cwd, f.env(), "/bin/bash", "-c", command)
+	// What the command left in a git folder is taken out as it ends.
+	if f.policy.ProtectGit && cmd.Err == nil {
+		OnExit(cmd, func(error) { sweepGit([]string{f.policy.Workspace}, string(TierFence), &f.git) })
+	}
+	return cmd
 }
 
 // Shell starts an interactive bash under the same fence as Command.
@@ -724,6 +737,13 @@ func (f *Fence) plan(ctx context.Context) (*mountns.Plan, error) {
 			return nil, errors.New(strings.TrimPrefix(err.Error(), "sandbox: the command was not run: "))
 		}
 		protected = append(protected, found...)
+		// A commondir made in a git folder is moved aside soon after it is
+		// made (a mitigation; see gitGuard); one moved since the last command,
+		// or during this scan, refuses this one.
+		f.gitg.watchFound(&f.git, ws)
+		if err := f.gitg.refuse(ctx, string(TierFence), ws, &f.git); err != nil {
+			return nil, errors.New(strings.TrimPrefix(err.Error(), "sandbox: the command was not run: "))
+		}
 	}
 	for _, h := range holders(forms, protected) {
 		r, ok := rel(h)

@@ -70,7 +70,7 @@ func (b *HostBroker) plan(ctx context.Context, cwd string, op remoteOp) (plan, e
 	}
 	// The git folder git would use must be the one known: a .git swapped for
 	// a link to another repository is not reached.
-	if common := b.commonOf(ctx, root); common != start.common {
+	if common, gitDir := b.commonOf(ctx, root), b.gitDirOf(ctx, root); common != start.common || gitDir != start.gitDir {
 		return plan{}, fmt.Errorf("git %s: the repository's git folder is not the one it was when the session started "+
 			"(or lies outside the workspace), so Abhed does not run it on the host", op.verb)
 	}
@@ -78,7 +78,7 @@ func (b *HostBroker) plan(ctx context.Context, cwd string, op remoteOp) (plan, e
 	if err != nil {
 		return plan{}, fmt.Errorf("git %s: the repository's settings could not be read (%v), so Abhed does not run it on the host", op.verb, err)
 	}
-	if why := plantedProgram(settings); why != "" {
+	if why := plantedProgram(settings, b.ownWorktree(root, start.gitDir)); why != "" {
 		return plan{}, fmt.Errorf("git %s: the repository's own configuration %s, which would steer git run on the host as you; "+
 			"Abhed does not run git %s on the host while it does", op.verb, why, op.verb)
 	}
@@ -440,15 +440,17 @@ func remoteSettings(ctx context.Context, root string) (string, error) {
 // would steer host git whatever the command line sets: a hook, a remote
 // helper, another work tree, an upload or receive program, a proxy, an http
 // setting (proxy, TLS, extra headers, cookies, address overrides) or a URL
-// rewrite. "" when nothing does. The person's own files are theirs.
-func plantedProgram(settings string) string {
+// rewrite. "" when nothing does. The person's own files are theirs, and so
+// is a core.worktree that ownWorktree accepts (a submodule's, naming its
+// checkout from a git folder no command may write); nil accepts none.
+func plantedProgram(settings string, ownWorktree func(value string) bool) string {
 	parts := strings.Split(settings, "\x00")
 	for i := 0; i+1 < len(parts); i += 2 {
 		scope := parts[i]
 		if scope != "local" && scope != "worktree" {
 			continue
 		}
-		key, _, _ := strings.Cut(parts[i+1], "\n")
+		key, value, _ := strings.Cut(parts[i+1], "\n")
 		lower := strings.ToLower(key)
 		remoteKey := func(suffix string) bool {
 			return strings.HasPrefix(lower, "remote.") && strings.HasSuffix(lower, suffix)
@@ -458,7 +460,7 @@ func plantedProgram(settings string) string {
 			return "names a hook (" + key + ")"
 		case remoteKey(".vcs"):
 			return "names a remote helper (" + key + ")"
-		case lower == "core.worktree":
+		case lower == "core.worktree" && (ownWorktree == nil || !ownWorktree(value)):
 			return "moves the work tree elsewhere (" + key + ")"
 		case remoteKey(".uploadpack"), remoteKey(".receivepack"):
 			return "names the program run on the remote (" + key + ")"
@@ -481,7 +483,12 @@ func plantedProgram(settings string) string {
 // inside the workspace; "" otherwise.
 func (b *HostBroker) repoIn(dir string) string {
 	root := repoRoot(dir)
-	if root == "" || !b.inWorkspace(root) {
+	if root == "" {
+		return ""
+	}
+	// A workspace that is a folder of a repository: its top, which the
+	// workspace's git reaches and no command may write.
+	if !b.inWorkspace(root) && !b.reachable(sandbox.RealPath(root)) {
 		return ""
 	}
 	return sandbox.RealPath(root)
@@ -499,4 +506,23 @@ func (b *HostBroker) inWorkspace(p string) bool {
 		}
 	}
 	return false
+}
+
+// ownWorktree accepts a core.worktree that names root from gitDir, a git
+// folder outside the workspace that no command may write: what git writes for
+// a submodule checkout. One in a git folder a command may write is not taken.
+func (b *HostBroker) ownWorktree(root, gitDir string) func(string) bool {
+	return func(v string) bool {
+		if gitDir == "" || b.inWorkspace(gitDir) || !b.reachable(gitDir) {
+			return false
+		}
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return false
+		}
+		if !filepath.IsAbs(v) {
+			v = filepath.Join(gitDir, v)
+		}
+		return sandbox.RealPath(filepath.Clean(v)) == sandbox.RealPath(root)
+	}
 }
