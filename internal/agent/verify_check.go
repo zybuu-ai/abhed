@@ -2691,6 +2691,11 @@ func (ix *recordIndex) describesName(text string) bool {
 	if strings.HasPrefix(words[0], "`") {
 		return true
 	}
+	// Unquoted, only a verb that is never a plural noun: "Add checks …" is
+	// advice even where a result holds add(.
+	if !describesOnlyVerb[normText(strings.Trim(words[1], ".,;:!?"))] {
+		return false
+	}
 	if !plainIdentRe.MatchString(name) {
 		return false
 	}
@@ -2714,6 +2719,9 @@ var (
 	plainIdentRe = regexp.MustCompile(`^[A-Za-z_]\w*$`)
 	codeValueRe  = regexp.MustCompile("[\\d+\\-*/=<>()\\[\\]`]|\\b(?:true|false|none|nil|null)\\b")
 )
+
+// describesOnlyVerb are the describing verbs that are never plural nouns.
+var describesOnlyVerb = wordSet(`returns is raises yields throws computes accepts expects prints wraps adds subtracts multiplies divides`)
 
 // describesVerb are verbs that say what a named thing does or is.
 var describesVerb = wordSet(`returns is calls takes uses reads writes holds yields raises throws computes prints accepts expects gives sets gets checks skips loads stores sends logs handles wraps adds subtracts multiplies divides rounds`)

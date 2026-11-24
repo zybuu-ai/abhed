@@ -7664,6 +7664,11 @@
       "name": "a change said to make, quoted, what the edit took away",
       "kind": "planted",
       "hash": "dc1498981a7b95e1"
+    },
+    {
+      "name": "a present return said of what an edit put in and a later edit took away",
+      "kind": "planted",
+      "hash": "706385e163099b4c"
     }
   ],
   "strict": [

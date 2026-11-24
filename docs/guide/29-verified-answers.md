@@ -100,18 +100,19 @@ with a healthy server", "I can help with the secure code"), leaves the
 sentence to be checked as any claim is. From each statement Abhed
 takes what can be compared: quoted text and backticked text, file paths, host
 names and addresses, versions, dates, numbers, and a number with the word it
-counts (`12 tests`, `replicas: 3`). What a change is said to have made
-("changed `bump` to return `x + 4`") is shown only by what a change put in
-and no later change of that file took away, never by what a change was
-given to remove or by the line numbers of an edit's report. A word with a digit in it
-(`python3`, `r2alice`, `v2`, `feat-p1`) is a name that a result must hold
-as written, not a number, or that an `ssh` or Kubernetes call which
-succeeded was made to (its `host`, `cluster`, `context`, `namespace`,
-`name` or `deployment`; never what it was given to write). Such a call
-shows only that the session reached that target, not what is on it: a
-`k8s_get` on `prod2` that found nothing still shows "on prod2". The line numbers the read tool puts before each
-line, and a truncated read's closing note, are not part of what a read
-shows. A report with its subject left out ("Pulled, branched and
+counts (`12 tests`, `replicas: 3`). What a change is said to have made,
+or what it put in ("changed `bump` to return `x + 4`", "`bump` now
+returns `x + 5`"), is shown only by what a change put in and no later
+change of that file took away, never by what a change was given to
+remove or by the line numbers of an edit's report. A word with a digit
+in it (`python3`, `r2alice`, `v2`, `feat-p1`) is a name that a result
+must hold as written, not a number, or that an `ssh` or Kubernetes call
+which succeeded was made to (its `host`, `cluster`, `context`,
+`namespace`, `name` or `deployment`; never what it was given to write).
+Such a call shows only that the session reached that target, not what
+is on it: a `k8s_get` on `prod2` that found nothing still shows "on
+prod2". The line numbers the read tool puts before each line, and a
+truncated read's closing note, are not part of what a read shows. A report with its subject left out ("Pulled, branched and
 pushed.", "Committed the note.", "Added a test.") is about the session's
 work, as "I pushed" is, so a failed or refused call never lets it pass,
 and strict mode does not complete on it. A past form that opens a
