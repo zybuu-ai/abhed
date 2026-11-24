@@ -2647,11 +2647,19 @@ func refusalRest(low string, d *denialRec, quote string) bool {
 // 4.1 fixed the leak", "Build 512 removed the deadlock".
 func leadNounReport(text string) bool {
 	words := strings.Fields(text)
+	// A name that looks like a verb, with a verb of what it does after it
+	// ("bump returns x + 2"), describes it; it is no advice.
+	if len(words) >= 3 && describesVerb[normText(strings.Trim(words[1], ".,;:!?"))] {
+		return true
+	}
 	if len(words) < 3 || !leadNumberRe.MatchString(words[1]) {
 		return false
 	}
 	return saysPast(normText(strings.Trim(words[2], ".,;:!?")))
 }
+
+// describesVerb are verbs that say what a named thing does or is.
+var describesVerb = wordSet(`returns is calls takes uses reads writes holds yields raises throws computes prints accepts expects gives sets gets checks skips loads stores sends logs handles wraps adds subtracts multiplies divides rounds`)
 
 // leadNumberRe is a number or version said after a noun.
 var leadNumberRe = regexp.MustCompile(`^v?\d+(?:\.\d+)*[.,;:]?$`)

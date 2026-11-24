@@ -852,6 +852,11 @@ succeeded.
 
 ## The revision turn
 
+A revision that shows none of the work the first answer claimed (it
+verifies nothing, as a bare "(end of script)" does) leaves the first
+answer's claims unproven: strict mode and a contract end `unverified`,
+not completed.
+
 When a statement comes out contradicted (from what it cites), in `label` or `strict` mode, or when
 a statement about the session's work comes out unverified in `strict` mode or
 under a contract, the agent is sent one note, recorded in the `answer.verdict`

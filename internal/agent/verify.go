@@ -476,6 +476,15 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	if bad > 0 || unmet {
 		av.Outcome = ClaimUnverified
 	}
+	// A revision that shows nothing in place of the claims it was asked to
+	// prove ("(end of script)") leaves them unproven.
+	v.mu.Lock()
+	prior := v.last
+	v.mu.Unlock()
+	if revised && prior != nil && prior.Outcome != ClaimVerified && av.Outcome == ClaimVerified && av.Verified == 0 {
+		av.Outcome = ClaimUnverified
+		av.Note = "the revision shows none of the work the first answer claimed"
+	}
 	if av.Outcome == ClaimVerified && av.Verified == 0 {
 		av.Note = "no statement was read as a claim about this session's work"
 	}
