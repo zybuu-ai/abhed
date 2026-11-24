@@ -1617,7 +1617,7 @@ offers more than *Allow once*:
 | Always allow `go test …` in `orders` | any command of the family, run with the session in that folder or below it, in every session of this workspace (offered when the session is in a folder below the workspace's root) |
 | Always allow `go test …` in this workspace | any command of the family, anywhere in this workspace, in every session of it |
 | Always allow git fetch, pull and ls-remote from this remote of this repository, while its URL stays the same | `git fetch`, `git pull` and `git ls-remote` naming a remote by name, run through host git, to that repository's remote as approved, in every session of this workspace; the only scope that answers host git's question with the network off ([above](#git-fetch-pull-push-and-clone-through-your-own-git)) |
-| Always allow git push, without force, to this remote of this repository, while its URL stays the same | `git push` that neither forces nor deletes, likewise |
+| Always allow git push, without force, to this remote of this repository, while its URL and its push settings (refspecs, mirror) stay the same | `git push` that neither forces nor deletes, likewise; a change to the remote's push refspecs or mirror setting ends it |
 
 A family is a program and its subcommand: `go test`, `go build`, `go vet`,
 `go run`, `cargo test` (and `build`, `check`, `clippy`, `fmt`, `run`),

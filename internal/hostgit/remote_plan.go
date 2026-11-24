@@ -107,6 +107,11 @@ func (b *HostBroker) plan(ctx context.Context, cwd string, op remoteOp) (plan, e
 		p.remotes[n], p.raw[n] = urls, raw
 		p.specs[n] = configValues(ctx, cwd, "remote."+n+".fetch")
 		fmt.Fprintf(digest, "%s\x00%q\x00%q\x00", n, raw, urls)
+		if push {
+			// A kept "always" for this push holds only while the remote's push
+			// settings (its refspecs and mirror) stay as they were judged.
+			fmt.Fprintf(digest, "%q\x00", pushSettingsOf(settings, n))
+		}
 		// What a push sends is the remote's too: a mirror or a push refspec
 		// set since a grant was kept (one that deletes or forces, say) is
 		// another remote's, and the grant no longer answers for it. Added
@@ -134,15 +139,13 @@ func (b *HostBroker) plan(ctx context.Context, cwd string, op remoteOp) (plan, e
 		}
 	}
 	sort.Strings(p.hosts)
-	// A push the repository's own configuration makes a mirror, a force or a
-	// delete is one that can lose commits, whatever its words say.
-	implied := false
+	// A push the configuration makes a mirror, a force or a delete is one
+	// that can lose commits, whatever its words say.
+	var implied []string
 	if push {
 		p.hooks, p.hooksScope = personHooks(ctx, cwd, root)
-		for _, n := range p.names {
-			if len(pushImplied(settings, n)) > 0 {
-				implied = true
-			}
+		for _, e := range effects(settings, p.names, op) {
+			implied = append(implied, e.describe())
 		}
 	}
 	p.bind = root + "\x00" + hex.EncodeToString(digest.Sum(nil))[:24]
@@ -152,9 +155,9 @@ func (b *HostBroker) plan(ctx context.Context, cwd string, op remoteOp) (plan, e
 	}
 	who := "runs through host git as you, with your SSH agent, keychain and credential helpers,"
 	switch {
-	case push && implied:
-		p.ask, p.step = fmt.Sprintf("git %s %s and, as the repository's own configuration makes it (a mirror, a forcing or a deleting refspec), "+
-			"can replace or delete commits on %s; this exact form is asked each time", op.verb, who, where), StepHostGitEach
+	case push && len(implied) > 0:
+		p.ask, p.step = fmt.Sprintf("git %s %s and, as %s, can replace or delete commits on %s; this exact form is asked each time",
+			op.verb, who, strings.Join(implied, "; "), where), StepHostGitEach
 	case settings != start.settings:
 		p.ask, p.step = fmt.Sprintf("git %s %s and the repository's remote settings changed during this session, "+
 			"so host git reaches %s only with your approval, asked each time", op.verb, who, where), StepHostGitEach

@@ -3651,7 +3651,7 @@ func impliedArgs(line string) json.RawMessage {
 // (implied): a deny refuses it; a deny or ask rule's ask, or the
 // destructive confirmation, asks under its own step, which no grant answers.
 func impliedJudged(d policy.Result, implied string, r policy.Result) policy.Result {
-	why := "the repository's configuration makes this " + implied
+	why := "its git configuration makes this " + implied
 	switch {
 	case r.Decision == policy.Deny:
 		r.Reason = why + ": " + r.Reason

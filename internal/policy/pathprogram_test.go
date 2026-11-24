@@ -116,7 +116,10 @@ func TestRuleFlagsMatchMovedOrSplit(t *testing.T) {
 		{"bash(git clean -f*)", "git clean --forc", true},
 		{"bash(git push -f*)", "git push --forc origin", true},
 		{"bash(git push -f*)", "git push --force-with origin", true},
-		{"bash(rm -rf*)", "rm --re --fo build", false},
+		{"bash(rm -rf*)", "rm --re --fo build", true},
+		{"bash(git clean -f*)", "git clean --fo", true},
+		{"bash(rm -rf*)", "rm --r --f build", true},
+		{"bash(rm -rf*)", "rm --dir --verbose build", false},
 		{"bash(rm --no-preserve-root *)", "rm --no-pres /", true},
 	} {
 		kinds := []string{"deny"}
@@ -146,7 +149,7 @@ func TestRuleFlagsMatchMovedOrSplit(t *testing.T) {
 		"bash(git push --force*)": {"git push -f", "git push --force origin"},
 		"bash(rm --recursive*)":   {"rm -r x", "rm --recursive x"},
 		"bash(rm -rf *)":          {"rm --recur --forc build", "rm --recursiv -f build"},
-		"bash(git clean -f *)":    {"git clean --forc"},
+		"bash(git clean -f *)":    {"git clean --forc", "git clean --fo"},
 		"bash(chmod -R*)":         {"chmod --recursive 777 /srv"},
 		"bash(git clean -f*)":     {"git clean --force", "git -C /r clean -f"},
 	} {

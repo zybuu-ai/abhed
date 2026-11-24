@@ -158,10 +158,10 @@ var flagSynonyms = map[string]map[string]string{
 
 // expandLong is w, a long option as a command wrote it, as the long flag it
 // abbreviates, the way GNU getopt and git read --recur for --recursive: a
-// prefix of at least three letters of the table's flags or the rule's own,
+// prefix, of any length as getopt takes it, of the table's flags or the rule's own,
 // whose candidates all mean the same. w itself where none or several differ.
 func expandLong(eq map[string]string, rule map[string]bool, w string) string {
-	if _, known := eq[w]; known || rule[w] || len(w) < len("--")+3 {
+	if _, known := eq[w]; known || rule[w] || len(w) < len("--")+1 {
 		return w
 	}
 	found, canon := "", ""
