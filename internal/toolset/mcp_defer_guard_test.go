@@ -22,7 +22,7 @@ func TestDeferredToolAccountsForEveryOptionalInterface(t *testing.T) {
 		// Unloadable is deferredTool's own: it is what tool_search loads and unloads.
 		"Unloadable": true}
 	notDeferred := map[string]bool{"SecretArgs": true, "SecretPaths": true, "SecretWithholder": true, "ModeScoped": true, "FixedArgs": true, "StoreBound": true, "PlanPrechecker": true, "Cloner": true, "Rebinder": true,
-		"FirstUser": true, "BoundSecrets": true, "CertificatePinner": true, "PasteNoticer": true, "HostAsker": true, "ReadSecrets": true}
+		"FirstUser": true, "BoundSecrets": true, "CertificatePinner": true, "PasteNoticer": true, "HostAsker": true, "HostImplier": true, "ReadSecrets": true}
 	// Subjector is found by tool name in a registry, never on the tool value;
 	// ScopedRewinder is a session's scoped value, not a tool.
 	notATools := map[string]bool{"Asker": true, "ShellHost": true, "Subjector": true, "ScopedRewinder": true}
@@ -116,5 +116,24 @@ func TestUnwrappableToolsAreNotDeferred(t *testing.T) {
 	got, _ := reg.Get("mcp__s__login")
 	if _, ok := got.(tools.SecretArgs); !ok {
 		t.Fatal("the SecretArgs tool was wrapped and lost it")
+	}
+}
+
+// impliedTool is a tool whose call policy also judges as the line the
+// repository's configuration makes it run as.
+type impliedTool struct{ tools.Tool }
+
+func (impliedTool) ImpliedHost(*tools.Session, json.RawMessage) string {
+	return "git push --force origin"
+}
+
+// A tool with a host check that tightens the decision is never deferred:
+// the wrapper would hide it from the loop.
+func TestHostImplierIsNeverDeferred(t *testing.T) {
+	if deferrable(impliedTool{fakeMCP{name: "mcp__s__push"}}) {
+		t.Fatal("a HostImplier tool would be deferred, losing its check")
+	}
+	if !deferrable(fakeMCP{name: "mcp__s__push"}) {
+		t.Fatal("the same tool without the check is not deferrable")
 	}
 }
