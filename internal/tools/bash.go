@@ -1113,6 +1113,23 @@ func withNote(content, note string) string {
 // refuses there; set by that package, which this one cannot import.
 var HostGitLine func(command string) bool
 
+// HostImpliedLine is a git push line as the repository's configuration
+// makes it run, when that forces, deletes or mirrors, else ""; set by the
+// host git package. Read only to add a deny, an ask or a confirmation.
+var HostImpliedLine func(cwd, command string) string
+
+// ImpliedHost is HostImpliedLine for a call, in the session's folder.
+func (b Bash) ImpliedHost(s *Session, raw json.RawMessage) string {
+	if HostImpliedLine == nil || s == nil {
+		return ""
+	}
+	var a bashArgs
+	if json.Unmarshal(raw, &a) != nil {
+		return ""
+	}
+	return HostImpliedLine(s.Cwd, a.Command)
+}
+
 // AskHost is HostAsk for a call, in the session's folder.
 func (b Bash) AskHost(s *Session, key string, raw json.RawMessage) (reason, step, bind string, err error) {
 	if b.HostAsk == nil || s == nil {

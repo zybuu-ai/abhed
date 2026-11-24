@@ -126,8 +126,16 @@ func (b *HostBroker) plan(ctx context.Context, cwd string, op remoteOp) (plan, e
 		}
 	}
 	sort.Strings(p.hosts)
+	// A push the repository's own configuration makes a mirror, a force or a
+	// delete is one that can lose commits, whatever its words say.
+	implied := false
 	if push {
 		p.hooks, p.hooksScope = personHooks(ctx, cwd, root)
+		for _, n := range p.names {
+			if len(pushImplied(settings, n)) > 0 {
+				implied = true
+			}
+		}
 	}
 	p.bind = root + "\x00" + hex.EncodeToString(digest.Sum(nil))[:24]
 	where := strings.Join(p.hosts, ", ")
@@ -136,6 +144,9 @@ func (b *HostBroker) plan(ctx context.Context, cwd string, op remoteOp) (plan, e
 	}
 	who := "runs through host git as you, with your SSH agent, keychain and credential helpers,"
 	switch {
+	case push && implied:
+		p.ask, p.step = fmt.Sprintf("git %s %s and, as the repository's own configuration makes it (a mirror, a forcing or a deleting refspec), "+
+			"can replace or delete commits on %s; this exact form is asked each time", op.verb, who, where), StepHostGitEach
 	case settings != start.settings:
 		p.ask, p.step = fmt.Sprintf("git %s %s and the repository's remote settings changed during this session, "+
 			"so host git reaches %s only with your approval, asked each time", op.verb, who, where), StepHostGitEach

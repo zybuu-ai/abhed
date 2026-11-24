@@ -981,3 +981,44 @@ func TestBrokerNoRemotesAndRemotesOff(t *testing.T) {
 		t.Fatalf("host ssh ran while turned off:\n%s", log)
 	}
 }
+
+// A plain git push the repository's own configuration makes a mirror, a
+// forcing or a deleting push is asked each time, as one, never answered by
+// the family a person keeps; and ImpliedLine says what it runs as, so policy
+// judges that too.
+func TestBrokerConfigImpliedPushAsksAsDestructive(t *testing.T) {
+	for _, c := range []struct {
+		set  [][2]string
+		want string
+	}{
+		{[][2]string{{"remote.origin.mirror", "true"}}, "git push --force --mirror origin"},
+		{[][2]string{{"remote.origin.push", ":refs/heads/x"}}, "git push --delete origin"},
+		{[][2]string{{"remote.origin.push", "+refs/heads/*:refs/heads/*"}}, "git push --force origin"},
+		{[][2]string{{"remote.origin.push", "refs/heads/main:refs/heads/main"}}, ""},
+		{[][2]string{{"remote.origin.mirror", "false"}}, ""},
+	} {
+		r := newRemoteRig(t)
+		b := r.broker(Network{Open: true})
+		for _, kv := range c.set {
+			if out, err := exec.Command("git", "-C", r.ws, "config", "--add", kv[0], kv[1]).CombinedOutput(); err != nil {
+				t.Fatalf("%v: %s", err, out)
+			}
+		}
+		if got := ImpliedLine(r.ws, "git push"); got != c.want {
+			t.Fatalf("%v: implied %q, want %q", c.set, got, c.want)
+		}
+		reason, step, _, err := b.Ask(r.key("c"), r.ws, "git push origin main")
+		if c.want == "" {
+			continue
+		}
+		if err != nil || step != StepHostGitEach || !strings.Contains(reason, "repository's own configuration") {
+			t.Fatalf("%v: asked %q %q %v", c.set, reason, step, err)
+		}
+		if got := ImpliedLine(r.ws, "git push origin main"); !strings.HasPrefix(got, "git push --") || !strings.HasSuffix(got, "origin main") {
+			t.Fatalf("%v: implied for a named remote %q", c.set, got)
+		}
+	}
+	if ImpliedLine(t.TempDir(), "git push") != "" || ImpliedLine(t.TempDir(), "git status") != "" {
+		t.Fatal("implied outside a repository")
+	}
+}

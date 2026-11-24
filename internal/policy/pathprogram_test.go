@@ -109,6 +109,15 @@ func TestRuleFlagsMatchMovedOrSplit(t *testing.T) {
 		{"bash(git push -f*)", "git push origin +main", true},
 		{"bash(git push -f *)", "git -C d push origin +main:main", true},
 		{"bash(git push -f*)", "git push origin main", false},
+		// GNU abbreviations of long options (eval r2 #12).
+		{"bash(rm -rf*)", "rm --recur --forc build", true},
+		{"bash(rm -rf *)", "rm --recursiv --force build", true},
+		{"bash(chmod -R*)", "chmod --recursiv 644 /srv", true},
+		{"bash(git clean -f*)", "git clean --forc", true},
+		{"bash(git push -f*)", "git push --forc origin", true},
+		{"bash(git push -f*)", "git push --force-with origin", true},
+		{"bash(rm -rf*)", "rm --re --fo build", false},
+		{"bash(rm --no-preserve-root *)", "rm --no-pres /", true},
 	} {
 		kinds := []string{"deny"}
 		if strings.HasPrefix(c.rule, "bash(chmod") {
@@ -136,6 +145,8 @@ func TestRuleFlagsMatchMovedOrSplit(t *testing.T) {
 		"bash(git push -f*)":      {"git push --force origin", "git -C /r push -f origin", "git push --force-with-lease origin", "git push origin +main", "git --no-optional-locks push -f"},
 		"bash(git push --force*)": {"git push -f", "git push --force origin"},
 		"bash(rm --recursive*)":   {"rm -r x", "rm --recursive x"},
+		"bash(rm -rf *)":          {"rm --recur --forc build", "rm --recursiv -f build"},
+		"bash(git clean -f *)":    {"git clean --forc"},
 		"bash(chmod -R*)":         {"chmod --recursive 777 /srv"},
 		"bash(git clean -f*)":     {"git clean --force", "git -C /r clean -f"},
 	} {

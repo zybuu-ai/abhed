@@ -8,6 +8,19 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A repository's own `remote.<name>.mirror`, or a `remote.<name>.push`
+  refspec that forces (`+…`) or deletes (`:…`), made a brokered `git push`
+  run on the host as a mirror, force or delete push behind only the plain
+  host-git ask. Such a push is now asked each time as one that can replace or
+  delete commits, and policy also judges the line it runs as (`git push
+  --force --mirror origin`): an organisation's `bash(git push -f*)` deny or
+  ask rule holds, and the destructive confirmation asks. The settings judged
+  are the settings it runs with, as before.
+- Deny and ask rules missed GNU abbreviations of long options (`rm --recur
+  --forc`, `chmod --recursiv`, `git clean --forc`). An unambiguous prefix of
+  at least three letters of a known long flag, or of the rule's own, now
+  counts as that flag. Deny and ask only; allow rules match as written.
+
 - `abhed serve` answered any `Host`, and an `Origin` equal to it passed the
   cross-origin check, so a web page could reach the API by pointing its own
   name at the server (DNS rebinding); with `auth.mode` `none` that was the
