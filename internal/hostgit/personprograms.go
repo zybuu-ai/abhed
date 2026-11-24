@@ -261,6 +261,13 @@ func programUntrusted(words []string, areas []string, path string) string {
 	if strings.ContainsAny(first, "$`;|&(){}<>*?[]") || strings.HasSuffix(first, "()") {
 		return "does not start with a program Abhed can find (a shell function, variable or substitution), so what it runs is not known"
 	}
+	// The shell runs these lines: a glob or other shell syntax in any word
+	// could expand to a path the agent chose.
+	for _, w := range words[1:] {
+		if strings.ContainsAny(w, "$`;|&(){}<>*?[]") {
+			return "has " + w + ", which the shell would expand or treat as more than a word, so what it names is not known; write it in full"
+		}
+	}
 	if shells[filepath.Base(first)] && slices.Contains(words[1:], "-c") {
 		return "runs a shell command line (-c), so what it runs is not known; name a script instead"
 	}
@@ -487,7 +494,8 @@ var sshPathKeys = map[string]bool{"pkcs11provider": true, "securitykeyprovider":
 // sshTrustKeys are the ssh keywords whose value is a file ssh trusts: the
 // host keys it accepts and revokes, and the certificate it presents. One
 // the agent could write would let it vouch for a host of its own.
-var sshTrustKeys = map[string]bool{"userknownhostsfile": true, "globalknownhostsfile": true, "revokedhostkeys": true, "certificatefile": true}
+var sshTrustKeys = map[string]bool{"userknownhostsfile": true, "globalknownhostsfile": true, "revokedhostkeys": true, "certificatefile": true,
+	"identityfile": true}
 
 // trustFileUntrusted says why a file ssh or git trusts (a known hosts file,
 // a certificate, a CA bundle or folder, a key), named as v, is not the
@@ -662,23 +670,55 @@ func sshCommandUntrusted(cmd string, areas []string, path string) string {
 // an =, or both.
 func sshKeyValue(line string) (string, string) {
 	line = strings.TrimSpace(line)
-	var key, rest string
-	if strings.HasPrefix(line, `"`) {
-		end := strings.Index(line[1:], `"`)
-		if end < 0 {
-			return strings.ToLower(line), ""
+	// The keyword is a word as ssh's argv_split reads it: quotes anywhere in
+	// it ("Proxy"Command), \ escapes, ended by unquoted space or =.
+	var key strings.Builder
+	var quote rune
+	escaped := false
+	i := 0
+	for ; i < len(line); i++ {
+		c := rune(line[i])
+		switch {
+		case escaped:
+			key.WriteRune(c)
+			escaped = false
+		case c == '\\':
+			escaped = true
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			} else {
+				key.WriteRune(c)
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == ' ' || c == '\t' || c == '=':
+			goto done
+		default:
+			key.WriteRune(c)
 		}
-		key, rest = line[1:end+1], line[end+2:]
-	} else {
-		i := strings.IndexAny(line, " \t=")
-		if i < 0 {
-			return strings.ToLower(line), ""
-		}
-		key, rest = line[:i], line[i:]
 	}
-	rest = strings.TrimLeft(rest, " \t")
+done:
+	rest := strings.TrimLeft(line[i:], " \t")
 	rest = strings.TrimLeft(strings.TrimPrefix(rest, "="), " \t")
-	return strings.ToLower(key), rest
+	return sshCanonical(strings.ToLower(key.String())), rest
+}
+
+// sshAliases are OpenSSH's other names for keywords judged here, as its
+// readconf.c maps them: an alias, or a deprecated name it still reads.
+var sshAliases = map[string]string{
+	"smartcarddevice":       "pkcs11provider",
+	"globalknownhostsfile2": "globalknownhostsfile",
+	"userknownhostsfile2":   "userknownhostsfile",
+	"identityfile2":         "identityfile",
+}
+
+// sshCanonical is key under the name it is judged by.
+func sshCanonical(key string) string {
+	if c, ok := sshAliases[key]; ok {
+		return c
+	}
+	return key
 }
 
 // matchExecs are the commands a Match line runs, as ssh reads its criteria:

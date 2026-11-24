@@ -1235,7 +1235,9 @@ cannot steer host git:
   value after `=` in each (ssh's `-o ProxyCommand=…`), is judged: nothing is
   brokered while one is a relative path, or an absolute one in the
   workspace or a folder commands can write, or another user's or writable
-  by others; while a shell is given a command line (`sh -c …`); or while a
+  by others; while any word holds a glob or other shell syntax (`*`, `?`,
+  `$`, …), which the shell would expand; while a shell is given a command
+  line (`sh -c …`); or while a
   `!` credential helper is more than a program and its words (a shell
   function such as `!f() { …; }; f`, a variable, a pipe or a second
   command). If you use a shell-function helper, put it in a script of your
@@ -1246,7 +1248,9 @@ cannot steer host git:
   (relative ones from `~/.ssh` or `/etc/ssh`, globs expanded), checked as
   your git configuration files are, and every command a `ProxyCommand`,
   `LocalCommand`, `KnownHostsCommand` or `Match exec` there runs, judged as
-  above. So is what ssh loads or runs as its own (`PKCS11Provider`,
+  above, keywords read as ssh reads them (any case, quoted or escaped
+  anywhere, OpenSSH's aliases such as `SmartcardDevice` too). So is what
+  ssh loads or runs as its own (`PKCS11Provider`,
   `SecurityKeyProvider`, `XAuthLocation`, and `SSH_SK_PROVIDER` in your
   environment): an absolute path of your own, or `none` or `internal`. A
   `ControlPath` socket must not lie in the workspace or a folder commands
@@ -1256,7 +1260,7 @@ cannot steer host git:
   path.
 - So are the files ssh and git trust: `UserKnownHostsFile`,
   `GlobalKnownHostsFile` (each value), `RevokedHostKeys` and
-  `CertificateFile` in your ssh configuration or `-o` options, and
+  `CertificateFile`, `IdentityFile` in your ssh configuration or `-o` options, and
   `http.sslCAInfo`, `http.sslCAPath`, `http.sslCert` and `http.sslKey` in
   your git configuration, URL-scoped `http.<url>.*` ones too. Each must be a
   full path (no `$`, `%` or `~user`; `~/` is your home) outside the
