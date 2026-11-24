@@ -28,22 +28,22 @@ type gitWatch struct {
 	done    chan struct{}
 }
 
-// watchGit watches dirs, git folders, adding any not yet watched; the
-// watcher starts with the first.
-func (s *Process) watchGit(dirs []string) {
-	s.gitWatchMu.Lock()
-	defer s.gitWatchMu.Unlock()
-	if s.gitWatchClosed {
+// watch watches dirs, git folders, adding any not yet watched; the watcher
+// starts with the first.
+func (gg *gitGuard) watch(dirs []string) {
+	gg.mu.Lock()
+	defer gg.mu.Unlock()
+	if gg.closed {
 		return
 	}
-	w := s.gitWatch
+	w := gg.w
 	if w == nil {
 		fd, err := unix.InotifyInit1(unix.IN_NONBLOCK | unix.IN_CLOEXEC)
 		if err != nil {
 			return
 		}
 		w = &gitWatch{fd: fd, wds: map[int]string{}, dirs: map[string]bool{}, stopped: make(chan struct{}), done: make(chan struct{})}
-		s.gitWatch = w
+		gg.w = w
 		go w.run()
 	}
 	w.mu.Lock()
@@ -112,10 +112,10 @@ func (w *gitWatch) takeOut(p string) {
 }
 
 // takePlanted returns what the watcher moved aside since last asked.
-func (s *Process) takePlanted() []map[string]any {
-	s.gitWatchMu.Lock()
-	w := s.gitWatch
-	s.gitWatchMu.Unlock()
+func (gg *gitGuard) takePlanted() []map[string]any {
+	gg.mu.Lock()
+	w := gg.w
+	gg.mu.Unlock()
 	if w == nil {
 		return nil
 	}
@@ -126,12 +126,12 @@ func (s *Process) takePlanted() []map[string]any {
 	return out
 }
 
-// stopGitWatch ends the watcher, for the sandbox closing.
-func (s *Process) stopGitWatch() {
-	s.gitWatchMu.Lock()
-	w := s.gitWatch
-	s.gitWatch, s.gitWatchClosed = nil, true
-	s.gitWatchMu.Unlock()
+// stop ends the watcher, for the sandbox closing.
+func (gg *gitGuard) stop() {
+	gg.mu.Lock()
+	w := gg.w
+	gg.w, gg.closed = nil, true
+	gg.mu.Unlock()
 	if w == nil {
 		return
 	}

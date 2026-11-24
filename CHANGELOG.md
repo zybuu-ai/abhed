@@ -18,8 +18,11 @@ All notable changes to Abhed are recorded here. The format follows
   a program on the host. The `info` and `objects/info` folders are now
   held read-only whole, so none of those can be made, and a `commondir` is
   moved aside the moment it is made, again as each command ends and as the
-  sandbox closes, and the next command refused. A repository a command
-  makes in the workspace is still taken out only as that command ends.
+  sandbox closes, and the next command refused. The container and fence
+  tiers, which bind the host's workspace the same way, get the same
+  folder holds and sweeps, and the watch where they run on Linux. A
+  repository a command makes in the workspace is still taken out only as
+  that command ends.
   `git gc` cannot write `objects/info/commit-graph` there. macOS's Seatbelt
   denies all of these by pattern and was not affected.
 
