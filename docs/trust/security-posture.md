@@ -760,7 +760,7 @@ Stated plainly rather than buried:
   program run by about a third of host `git status` runs in a measured
   60 s test on Linux, and a repository a command makes is live to host
   tools (an editor opening nested repositories) until the command ends.
-  Releases 1.2.3 (where `protect_git` began) to 1.2.9 had this with no
+  Releases 1.2.3 (where holding git's files began) to 1.2.9 had this with no
   mitigation; 1.2.3 did not hold `.git/config` itself under bubblewrap. Seatbelt (the
   macOS process tier) denies these names outright and is not affected.
   Keep host git tooling off a workspace an untrusted command is writing on

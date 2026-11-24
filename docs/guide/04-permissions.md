@@ -195,8 +195,15 @@ command such as `cat .env` (allowed by the built-in `bash(cat *)`), a search,
 or a program the agent runs can still read the file. Keep credentials out of
 the workspace, give a secret only to the command that needs it
 ([Secrets](#secrets)), and deny reads of such files and the commands that
-print them in your own or the managed rules. Your own `permissions.ask` list
-replaces the built-in one, so copy these rules into it if you set one.
+print them in your own or the managed rules.
+
+A trusted configuration that sets its own `permissions.ask` replaces the
+whole built-in ask list, not only the credential reads above: it also drops
+the asks before writing or editing `ABHED.md`, `ABHED.local.md`, `AGENTS.md`
+and a folder's own `ABHED.md` (files every later session reads as
+instructions), and before a command that names `ABHED_TRUST_WORKSPACE` or
+`trust-workspace` (trusting a workspace for a nested run). Copy the rules
+you want to keep into your list.
 
 Read rules hold for `read`, `grep` and `search` alike: a file a deny rule
 covers, or an ask rule, is left out of what a search shows. They are path

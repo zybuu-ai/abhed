@@ -165,7 +165,8 @@ refused call to learn it again. On a machine where sign-in is not set up yet,
 the one person working keeps them in `~/.abhed`, as before sign-in. Nothing is
 kept before the sign-in gate has said who is working, for a guest (nothing is
 read, made or written, so a guest neither leaves the file behind nor sees an
-account's limits), or by a machine command such as `abhed doctor`. It is
+account's limits), or by `abhed doctor`, which probes the model without
+keeping its window. It is
 kept per provider type, endpoint, model and account, under a keyed hash of
 them (HMAC-SHA256 under a random secret made once in `context-windows.key`
 beside it, mode 0600, and used only for that folder): the file holds no URL, user,
@@ -1680,10 +1681,14 @@ The `abhed serve` that owns this machine's state holds `~/.abhed/serve.lock`
 while it runs, and only it reconciles sandboxes or sweeps at start. A
 second one under the same HOME claims its address and the lock before it
 builds anything. On the same address it fails at once. On another address,
-with `control_plane.enabled` it refuses to start (the sandbox control plane
-belongs to the first; serve from another HOME instead); without it, it
-serves but takes back no session and sweeps no sandbox, and logs that it
-did not.
+with the sandbox control plane on it refuses to start (the control plane
+belongs to the first; serve from another HOME instead). The control plane is
+on with `control_plane.enabled`, and also, without it, on a server with sign-in
+that has or can gain more than one account (local accounts, say), where each
+session gets a sandbox of its own unless `server.shared_sessions` is set: such
+a second serve refuses too. With no sign-in, and no `control_plane.enabled`, it
+serves but takes back no session and sweeps no sandbox, and logs that it did
+not.
 
 ## Stopping the server
 

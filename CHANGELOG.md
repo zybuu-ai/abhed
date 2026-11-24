@@ -10,37 +10,38 @@ All notable changes to Abhed are recorded here. The format follows
 
 - With `protect_git` on, on the tiers that hold git's files by binding only
   the ones that exist (the process tier under bubblewrap on Linux, the
-  container tier, including on macOS with podman, and very likely the fence
-  tier), a command could make in the workspace's git folder a `commondir`
+  container tier, including on macOS with podman, and the fence tier,
+  which binds git's files the same way), a command could make in the
+  workspace's git folder a `commondir`
   (or `objects/info/alternates`, `http-alternates`, `info/attributes`,
   `info/grafts`) that was not there before. The person's own git on the
   host (`git status`, or an editor's) then followed it to configuration of
   the command's choosing, which could run a program as the person, and a
   planted `commondir` stayed after the sandbox closed. Releases 1.2.3
-  (where `protect_git` began) to 1.2.9 have this with no mitigation:
+  (where holding git's files began) to 1.2.9 have this with no mitigation:
   1.2.3 to 1.2.6 kept the plant even past the next command, and 1.2.3 did
-  not hold `.git/config` itself under bubblewrap. This release mitigates it and does not close it:
+  not hold `.git/config` itself under bubblewrap. No security advisory is
+  published. This release mitigates it and does not close it:
   - `info` and `objects/info` are held read-only whole, so the files in
     them cannot be made (`git gc` then cannot write the commit-graph);
   - a `commondir` is moved aside soon after it is made (an inotify watch,
     Linux), again as each command ends and as the sandbox closes, and the
-    next command is refused and says why.
-
-  What remains: a command that plants a `commondir` over and over still
-  has it read by host git runs that fall between a plant and its move; in
-  a measured 60 s run about a third of the host's `git status` runs ran
-  the command's program. On macOS's container tier there is no watch, only
-  the sweeps, so a planted `commondir` stays for the whole command and
-  every host git run during it follows it. A repository a command makes in the workspace is live to
-  host tools (an editor that opens nested repositories) until the command
-  ends, when it is taken out. Commits keep working on these tiers. Each
-  command on these tiers now looks through the workspace's folders for git
-  folders twice (as it starts, and as it ends), within the same bound; a
-  large monorepo pays that twice. Until a
-  later release closes this, keep host git tooling off a workspace an
-  untrusted command is writing, or use the macOS process tier (Seatbelt),
-  which denies these names outright and is not affected.
-
+    next command is refused and says why;
+  - what remains: a command that plants a `commondir` over and over still
+    has it read by host git runs that fall between a plant and its move; in
+    a measured 60 s run about a third of the host's `git status` runs ran
+    the command's program. On macOS's container tier there is no watch,
+    only the sweeps, so a planted `commondir` stays for the whole command
+    and every host git run during it follows it. A repository a command
+    makes in the workspace is live to host tools (an editor that opens
+    nested repositories) until the command ends, when it is taken out.
+    Commits keep working on these tiers. Each command on these tiers now
+    looks through the workspace's folders for git folders twice (as it
+    starts, and as it ends), within the same bound; a large monorepo pays
+    that twice. Until a later release closes this, keep host git tooling
+    off a workspace an untrusted command is writing, or use the macOS
+    process tier (Seatbelt), which denies these names outright and is not
+    affected.
 - A repository's own `remote.<name>.mirror`, or a `remote.<name>.push`
   refspec that forces (`+…`) or deletes (`:…`), made a brokered `git push`
   run on the host as a mirror, force or delete push behind only the plain
@@ -56,16 +57,19 @@ All notable changes to Abhed are recorded here. The format follows
   a named ref) and whether it is the repository's configuration or your own;
   a push that names its own refspec takes none of the configured ones. An
   "always" for a plain push holds only while the remote's URL and its push
-  settings (refspecs, mirror) stay as they were.
+  settings (refspecs, mirror) stay as they were. Affected: no release; a
+  brokered push through host git is new in this one.
 - Deny and ask rules missed GNU abbreviations of long options (`rm --recur
   --forc`, `chmod --recursiv`, `git clean --fo`). An unambiguous prefix of
   any length, as getopt reads it, of a known long flag or of the rule's own
   now counts as that flag. Deny and ask only; allow rules match as written.
-- `abhed rpc`, which Abhed Studio and scripts start sessions through, never
+  Affected: every release with deny or ask rules on flags.
+- `abhed rpc`, which scripts and other programs start sessions through, never
   fetched the org policy as a session started, so a deny rule published
   since did not reach those sessions until another command fetched it. It
-  now fetches it at each `start`, as the terminal and an editor connection
-  do. Affected: every release with `abhed rpc` and an org policy.
+  now refreshes it as each session starts, at most once a minute, as the
+  terminal and ACP (which Abhed Studio uses) do. Affected: every release
+  with `abhed rpc` and an org policy.
 - `abhed serve` answered any `Host`, and an `Origin` equal to it passed the
   cross-origin check, so a web page could reach the API by pointing its own
   name at the server (DNS rebinding); with `auth.mode` `none` that was the
@@ -80,8 +84,9 @@ All notable changes to Abhed are recorded here. The format follows
   server's sandboxes lost (`Error`, `InstanceLost`). A serve now claims its
   address and this machine's state (`~/.abhed/serve.lock`) before it builds
   anything: on the same address a second one fails at once; on another, one
-  with `control_plane.enabled` refuses to start, naming the serve that owns
-  the state, and one without it serves but takes back and sweeps nothing.
+  with `control_plane.enabled` refuses to start, saying another serve holds
+  the lock file `~/.abhed/serve.lock`, and one without it serves but takes
+  back and sweeps nothing.
   Only the serve holding the lock reconciles or sweeps.
 - An organisation's deny or ask rule whose flags end in a star, such as
   `bash(rm -rf*)`, held only for the flags as written: `rm -r -f build` and
@@ -210,6 +215,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.9
 
+- `abhed doctor` and `abhed machine` now run as the person; where sign-in is
+  required and no one is signed in they exit 10. A script that only checks
+  the machine runs `abhed -guest doctor` (where guest is allowed).
 - `-verify strict` may now refuse to complete where 1.2.9 completed: a
   report of work the record does not prove ("Pulled, branched and
   pushed." after the push failed) is a claim it checks. See
@@ -419,10 +427,6 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
-- `sdk.Options.NobodyToAsk` (Go API, additive): set with an `Approve` that
-  asks no one and only answers from grants kept earlier, the session records
-  itself headless and the supervisor runs as with no `Approve`. `abhed rpc`
-  sets it for a session started without `approvals`.
 - git fetch, pull, push, clone and ls-remote work in Abhed Studio and the
   CLI with the git and ssh setup the person already has: their network part
   runs through the person's own git on the host, with their keys, while
@@ -562,7 +566,8 @@ All notable changes to Abhed are recorded here. The format follows
   random secret in `context-windows.key` beside it (no URL, credential or
   query is written, and the file alone confirms no guess of a credential),
   so a restarted session starts within it rather than being refused once
-  more. A guest, and a machine command such as `abhed doctor`, keep none:
+  more. A guest, and `abhed doctor`, which probes the model without keeping
+  its window, keep none:
   nothing is read or made. A kept limit never lowers a configured
   `context_window`; `abhed models list` shows it with its date, and `abhed
   models forget-window NAME` drops it. Anthropic's `prompt is too
@@ -1205,6 +1210,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- `abhed doctor` and `abhed machine` run as whoever is working, as the
+  commands that read a person's state do: on a first interactive start they
+  may ask who is working, where sign-in is required and no one is signed in
+  they are refused (exit code 10), and they take `-guest` and `-account`.
+  Doctor prints a `person` line saying whose trust decisions, secrets and
+  kept grants it shows. Where signing in fails, `abhed -guest doctor` still
+  checks the machine, where guest is allowed.
 - HawkEYE (the API and `abhed hawkeye`) keeps each tool call apart when a
   model reuses a call id in a later turn, as OpenAI-compatible servers that
   number each turn's calls from `call_0_0` do. It used to merge them, list
@@ -2072,6 +2084,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Go API
 
+- `sdk.Options.NobodyToAsk`: set with an `Approve` that asks no one and only
+  answers from grants kept earlier, the session records itself headless and
+  the supervisor runs as with no `Approve`. `abhed rpc` sets it for a
+  session started without `approvals`. Additive; existing callers are
+  unchanged.
 - `monitor.Case` gains `Engine`, set for a command the engine runs outside
   the agent's calls (a diagnostics server's start): the supervisor reviews
   it but does not count it against `Guard.MaxPerTurn`. Additive; existing
