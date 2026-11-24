@@ -6,11 +6,16 @@ import (
 	"sync"
 )
 
-// gitGuard keeps a commondir a command plants in a git folder from reaching
-// the person's own git on the host, on a tier that binds only the git files
-// that exist (bubblewrap, the container and fence tiers): a watch moves one
-// aside as it is made (Linux), sweeps take it out as each command ends and as
-// the sandbox closes, and the next command is refused and says why.
+// gitGuard narrows, and does not close, the window in which a commondir a
+// command plants in a git folder reaches the person's own git on the host, on
+// a tier that binds only the git files that exist (bubblewrap, the container
+// and fence tiers): a watch moves one aside soon after it is made (Linux),
+// sweeps take it out as each command ends and as the sandbox closes, and the
+// next command is refused and says why. A command that plants in a loop still
+// has its file read by host git runs between a plant and its move (about a
+// third of them in a measured 60 s run), and a repository a command makes is
+// live to host tools until the command ends. Seatbelt denies the names
+// themselves and needs none of this.
 type gitGuard struct {
 	mu     sync.Mutex
 	w      *gitWatch
@@ -19,11 +24,13 @@ type gitGuard struct {
 
 // refuse is why the next command may not run, when the watch moved a
 // planted commondir aside since the last command started; recorded.
-func (gg *gitGuard) refuse(ctx context.Context, backend, workspace string) error {
+func (gg *gitGuard) refuse(ctx context.Context, backend, workspace string, mem *gitMemory) error {
 	moved := gg.takePlanted()
 	if len(moved) == 0 {
 		return nil
 	}
+	// One made again since is taken out now, not left for the watch.
+	sweepGit([]string{workspace}, backend, mem)
 	if l := LaunchOf(ctx); l.Record != nil {
 		_ = l.Record(EvGitPlanted, map[string]any{"entries": moved, "call_id": l.CallID, "sandbox": backend,
 			"workspace": workspace, "reason": "a commondir was made in a git folder while a command ran, and moved aside"})

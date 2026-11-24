@@ -1148,7 +1148,7 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		if s.policy.ProtectGit {
 			// What the watch moved aside while an earlier command ran is said,
 			// and this command refused, as the scan below does for one it finds.
-			if err := s.gitg.refuse(ctx, s.backend, s.policy.Workspace); err != nil {
+			if err := s.gitg.refuse(ctx, s.backend, s.policy.Workspace, &s.git); err != nil {
 				return &exec.Cmd{Err: err}
 			}
 			for _, ws := range s.workspaces() {

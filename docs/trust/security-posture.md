@@ -736,6 +736,21 @@ it, so a collector being down cannot slow or fail a session.
 
 Stated plainly rather than buried:
 
+- **Git's files are not fully held on bubblewrap, the container tier or the
+  fence.** With `protect_git` on, these tiers bind read-only only the git
+  files that exist. A `commondir` a command makes in a git folder, pointing
+  the person's own git at configuration that runs a program, is moved aside
+  soon after it is made (an inotify watch on Linux; on macOS's container
+  tier only as each command ends and as the sandbox closes) and the next
+  command is refused. That is a mitigation, not a fix: a command planting
+  in a loop still had its program run by about a third of host `git status`
+  runs in a measured 60 s test, and a repository a command makes is live to
+  host tools (an editor opening nested repositories) until the command
+  ends. Releases 1.2.6 to 1.2.9 had this with no mitigation. Seatbelt (the
+  macOS process tier) denies these names outright and is not affected.
+  Keep host git tooling off a workspace an untrusted command is writing on
+  those tiers.
+
 - **No SOC 2, ISO 27001, HIPAA, or FedRAMP certification.** Any mapping of
   Abhed's controls onto a compliance framework is engineering judgment to
   confirm with your compliance function, not an attestation.

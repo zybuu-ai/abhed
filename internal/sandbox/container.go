@@ -282,7 +282,7 @@ func (c *Container) runArgsWith(ctx context.Context, cwd string, p Policy, netOp
 	}
 
 	if p.ProtectGit {
-		if err := c.gitg.refuse(ctx, string(c.Tier()), p.Workspace); err != nil {
+		if err := c.gitg.refuse(ctx, string(c.Tier()), p.Workspace, &c.git); err != nil {
 			return nil, err
 		}
 	}
@@ -293,7 +293,7 @@ func (c *Container) runArgsWith(ctx context.Context, cwd string, p Policy, netOp
 	args = append(args, mounts...)
 	if p.ProtectGit {
 		// The workspace is the host's, bind-mounted: a commondir made there is
-		// moved aside as it is made.
+		// moved aside soon after it is made (a mitigation; see gitGuard).
 		c.gitg.watchFound(&c.git, p.Workspace)
 	}
 

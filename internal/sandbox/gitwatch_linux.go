@@ -13,11 +13,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// gitWatch moves aside a commondir made in a git folder bubblewrap lets
-// commands write, the moment it is made: no file there can be bound before
-// it exists, and the person's own git (an editor's, run on its own) would
-// follow one to configuration that runs programs on the host. What it moved
-// is said, and the next command refused, by takePlanted.
+// gitWatch moves aside a commondir made in a git folder bubblewrap or a
+// container lets commands write, soon after it is made: no file there can be
+// bound before it exists, and the person's own git (an editor's, run on its
+// own) would follow one to configuration that runs programs on the host. It
+// shortens how long each planted file lives; it cannot stop host git reading
+// one in between (see gitGuard). What it moved is said, and the next command
+// refused, by takePlanted.
 type gitWatch struct {
 	mu      sync.Mutex
 	fd      int
