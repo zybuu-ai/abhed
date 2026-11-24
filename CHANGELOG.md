@@ -56,11 +56,12 @@ All notable changes to Abhed are recorded here. The format follows
   at least three letters of a known long flag, or of the rule's own, now
   counts as that flag. Deny and ask only; allow rules match as written.
   Affected: every release with deny or ask rules on flags.
-- `abhed rpc`, which Abhed Studio and scripts start sessions through, never
+- `abhed rpc`, which scripts and other programs start sessions through, never
   fetched the org policy as a session started, so a deny rule published
   since did not reach those sessions until another command fetched it. It
-  now fetches it at each `start`, as the terminal and an editor connection
-  do. Affected: every release with `abhed rpc` and an org policy.
+  now refreshes it as each session starts, at most once a minute, as the
+  terminal and ACP (which Abhed Studio uses) do. Affected: every release
+  with `abhed rpc` and an org policy.
 - `abhed serve` answered any `Host`, and an `Origin` equal to it passed the
   cross-origin check, so a web page could reach the API by pointing its own
   name at the server (DNS rebinding); with `auth.mode` `none` that was the
@@ -75,8 +76,9 @@ All notable changes to Abhed are recorded here. The format follows
   server's sandboxes lost (`Error`, `InstanceLost`). A serve now claims its
   address and this machine's state (`~/.abhed/serve.lock`) before it builds
   anything: on the same address a second one fails at once; on another, one
-  with `control_plane.enabled` refuses to start, naming the serve that owns
-  the state, and one without it serves but takes back and sweeps nothing.
+  with `control_plane.enabled` refuses to start, saying another serve holds
+  the lock file `~/.abhed/serve.lock`, and one without it serves but takes
+  back and sweeps nothing.
   Only the serve holding the lock reconciles or sweeps.
 - An organisation's deny or ask rule whose flags end in a star, such as
   `bash(rm -rf*)`, held only for the flags as written: `rm -r -f build` and
