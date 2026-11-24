@@ -101,8 +101,9 @@ job's name or record cannot drive your terminal. Every command is refused
 inside an agent's own command: a job runs as you, with your secrets.
 
 Exit status: 0 done, 1 failed (or the job attached to did not end done),
-2 usage, 3 not signed in or not allowed, 4 no such job, 5 not in a state for
-this or over your share of the server.
+2 usage, 3 not signed in to the server or not allowed, 4 no such job, 5 not in
+a state for this or over your share of the server, 10 no one is signed in on
+this machine where the organisation requires it.
 
 ## The protocol
 

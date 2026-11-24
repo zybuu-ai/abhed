@@ -100,8 +100,9 @@ profile) and -o table|json.`)
 	}
 	_ = tw.Flush()
 	fmt.Fprintln(w, `
-Exit status: 0 done, 1 failed, 2 usage, 3 not signed in or not allowed,
-4 no such job, 5 not in a state for this or over a quota.
+Exit status: 0 done, 1 failed, 2 usage, 3 not signed in to the server or not
+allowed, 4 no such job, 5 not in a state for this or over a quota, 10 no one
+is signed in on this machine where the organisation requires it.
 Refused inside an agent's command.`)
 }
 

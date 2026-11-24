@@ -112,12 +112,18 @@ type Isolation struct {
 func (Bash) Name() string  { return "bash" }
 func (Bash) Mutates() bool { return true }
 
+// hostGit reports whether git's remote commands go through the user's own
+// git on the host here; serve, for one, has no host git.
+func (b Bash) hostGit() bool {
+	if b.HostGitOn != nil {
+		return b.HostAsk != nil && b.HostGitOn()
+	}
+	return b.HostAsk != nil && (b.Isolation.Tier == "process" || b.Isolation.Tier == "fence")
+}
+
 func (b Bash) Description() string {
 	d := "Run a shell command in the session workspace. Use for builds, tests, git, and package managers. Prefer read/glob/grep for file inspection — they are cheaper and safer. Note: a call that is just `cd <folder>` sets the working directory for later calls; shell state (variables, functions) and a cd inside a longer command do not carry over."
-	hostGit := b.HostAsk != nil && (b.Isolation.Tier == "process" || b.Isolation.Tier == "fence")
-	if b.HostGitOn != nil {
-		hostGit = b.HostAsk != nil && b.HostGitOn()
-	}
+	hostGit := b.hostGit()
 	switch b.network() {
 	case networkOff:
 		if hostGit {
@@ -1071,7 +1077,7 @@ func (b Bash) finish(ctx, runCtx context.Context, s *Session, a bashArgs, conten
 		// With the network off a 403 is the egress proxy's: no registry is open yet.
 		content = withNote(content, b.networkNote(a.Command, content))
 		netOff = true
-	} else if kind, hint := sandboxHint(content); hint != "" && exitCode != 0 && b.ranTier() != "none" {
+	} else if kind, hint := sandboxHint(content, b.hostGit()); hint != "" && exitCode != 0 && b.ranTier() != "none" {
 		// A command that succeeded was not stopped: git warns of .abhed and still exits 0.
 		content = withNote(content, hint)
 		note = kind
@@ -1442,7 +1448,7 @@ const networkHint = "NOTE: this sandbox has no network access, so the command co
 // kind is the folder named ("kube", "ssh", "aws", "gnupg"), "credentials"
 // for another of sandbox.HomeSecrets, or "abhed" for Abhed's own state, which
 // the sandbox tiers deny; or "denied" when the output names none of them.
-func sandboxHint(output string) (kind, hint string) {
+func sandboxHint(output string, hostGit bool) (kind, hint string) {
 	if !strings.Contains(output, "operation not permitted") &&
 		!strings.Contains(output, "Operation not permitted") {
 		return "", ""
@@ -1452,10 +1458,7 @@ func sandboxHint(output string) (kind, hint string) {
 			"authenticate from inside it. Use the k8s_get tool instead, which holds the " +
 			"credential outside the sandbox. If k8s_get is not available, this deployment " +
 			"has not enabled cluster access — tell the user to set k8s.enabled in their config."},
-		{".ssh", "Abhed's sandbox blocks reads of ~/.ssh, so ssh cannot authenticate from inside it. " +
-			"git fetch, pull, push, clone and ls-remote go through the user's own git on the host " +
-			"when each is run alone, as the whole command (not after && or ;): run them so. " +
-			"For other ssh use, use the ssh tool if it is in your tools; otherwise tell the user."},
+		{".ssh", sshHint(hostGit)},
 		{".aws", "Abhed's sandbox blocks reads of ~/.aws, so the AWS CLI cannot authenticate " +
 			"from inside it. Ask the user to run this command themselves, or to expose the " +
 			"capability through an MCP server."},
@@ -1693,4 +1696,19 @@ func CommandHome(reg *Registry) func() (string, bool) {
 		h := os.Getenv("HOME")
 		return h, h != ""
 	}
+}
+
+// sshHint is the note for a command refused ~/.ssh: where git's remote
+// commands go through the user's own git (hostGit), how to run them so;
+// where they do not (serve, a container tier), that they cannot here.
+func sshHint(hostGit bool) string {
+	if hostGit {
+		return "Abhed's sandbox blocks reads of ~/.ssh, so ssh cannot authenticate from inside it. " +
+			"git fetch, pull, push, clone and ls-remote go through the user's own git on the host " +
+			"when each is run alone, as the whole command (not after && or ;): run them so. " +
+			"For other ssh use, use the ssh tool if it is in your tools; otherwise tell the user."
+	}
+	return "Abhed's sandbox blocks reads of ~/.ssh, so ssh, and git fetch, pull, push and clone over ssh, " +
+		"cannot authenticate from inside it, and git's remote commands do not go through the user's own git here. " +
+		"For other ssh use, use the ssh tool if it is in your tools; otherwise tell the user to run the command themselves."
 }
