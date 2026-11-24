@@ -136,3 +136,33 @@ func TestHeadlessUsesTheKeptHostGitGrant(t *testing.T) {
 		t.Fatalf("the caller was asked %d times, want only for the push", asked)
 	}
 }
+
+// The reviewer's case, at the approver: a push grant kept for a remote's
+// scope, then remote.origin.mirror set, which binds the push to another scope
+// (internal/hostgit TestPushScopeBindsMirrorAndPushRefspecs); a headless
+// push asked under that scope is not approved by the kept grant.
+func TestKeptPushGrantStopsAtAMirror(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "state", "workspace-grants.json")
+	old := grantsFile
+	grantsFile = func() string { return file }
+	defer func() { grantsFile = old }()
+	ws := t.TempDir()
+	push := json.RawMessage(`{"command":"git push origin main"}`)
+	at := func(digest string) policy.Result {
+		return policy.Result{Decision: policy.Ask, Step: hostgit.StepHostGit, Reason: "git push runs through host git as you", Scope: ws + "\x00" + digest}
+	}
+	g, ok := cliKeeper{workspace: ws}.grantOf("bash", push, at("plain0000000000000000000"))
+	if !ok {
+		t.Fatal("no grant for host git's push ask")
+	}
+	if err := keepGrant(ws, g); err != nil {
+		t.Fatal(err)
+	}
+	headless := keptApprover{keep: cliKeeper{workspace: ws}, next: agent.AutoApprove{Yes: false}}
+	if ok, _ := headless.Approve(context.Background(), "bash", push, at("plain0000000000000000000")); !ok {
+		t.Fatal("the kept push grant did not answer the remote it was kept for")
+	}
+	if ok, _ := headless.Approve(context.Background(), "bash", push, at("mirror000000000000000000")); ok {
+		t.Fatal("a kept push grant approved a headless push to a remote made a mirror since")
+	}
+}

@@ -182,9 +182,10 @@ All notable changes to Abhed are recorded here. The format follows
   server by a name must have that name configured. The Helm chart does this
   itself: its probes send `Host: localhost`, and it puts the Service's DNS
   names, the ingress and route hosts and the new `allowedHosts` value in
-  `server.allowed_hosts`, and now refuses `route.enabled` without
-  `route.host`; upgrade the chart with the server
+  `server.allowed_hosts`; upgrade the chart with the server
   ([Kubernetes](docs/guide/27-kubernetes.md#names-the-server-answers-to)).
+  Values with `route.enabled` and no `route.host`, which rendered before,
+  now fail to render: set `route.host` to the Route's host.
 - git fetch, pull, push, clone and ls-remote in Abhed Studio and the CLI
   now reach remotes with the person's own credentials (SSH agent, keychain,
   credential helpers), on the process tier and the fence; 1.2.9 ran them in
@@ -360,6 +361,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `sdk.Options.NobodyToAsk` (Go API, additive): set with an `Approve` that
+  asks no one and only answers from grants kept earlier, the session records
+  itself headless and the supervisor runs as with no `Approve`. `abhed rpc`
+  sets it for a session started without `approvals`.
 - git fetch, pull, push, clone and ls-remote work in Abhed Studio and the
   CLI with the git and ssh setup the person already has: their network part
   runs through the person's own git on the host, with their keys, while
