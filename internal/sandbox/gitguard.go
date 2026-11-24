@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 )
 
@@ -20,10 +21,49 @@ type gitGuard struct {
 	mu     sync.Mutex
 	w      *gitWatch
 	closed bool
+	// movedMu guards moved, what the watch moved aside since last asked, and
+	// scanned, the workspaces the guard was asked to look at (its sweeps'),
+	// apart from mu, which the watch holds while it moves.
+	movedMu sync.Mutex
+	moved   []map[string]any
+	scanned []string
 }
 
-// refuse is why the next command may not run, when the watch moved a
-// planted commondir aside since the last command started; recorded.
+// gitScanned, set in tests, runs as a command's scan of the git folders ends
+// (watchFound), before its refuse: where the watch may move a commondir made
+// meanwhile.
+var gitScanned func()
+
+// noteMoved records what the watch moved aside.
+func (gg *gitGuard) noteMoved(entries []map[string]any) {
+	if len(entries) == 0 {
+		return
+	}
+	gg.movedMu.Lock()
+	gg.moved = append(gg.moved, entries...)
+	gg.movedMu.Unlock()
+}
+
+// takePlanted returns what the watch moved aside since last asked.
+func (gg *gitGuard) takePlanted() []map[string]any {
+	gg.movedMu.Lock()
+	defer gg.movedMu.Unlock()
+	out := gg.moved
+	gg.moved = nil
+	return out
+}
+
+// workspaces are the workspaces the guard looked at, for its sweeps.
+func (gg *gitGuard) workspaces() []string {
+	gg.movedMu.Lock()
+	defer gg.movedMu.Unlock()
+	return append([]string(nil), gg.scanned...)
+}
+
+// refuse is why this command may not run: the watch moved a planted
+// commondir aside since the last command was built, including during this
+// one's scan; recorded. Called after the scan, so what the watch moves while
+// the scan looks is never missed by both.
 func (gg *gitGuard) refuse(ctx context.Context, backend, workspace string, mem *gitMemory) error {
 	moved := gg.takePlanted()
 	if len(moved) == 0 {
@@ -39,12 +79,21 @@ func (gg *gitGuard) refuse(ctx context.Context, backend, workspace string, mem *
 		"pointing git at configuration and hooks elsewhere; it was moved aside as it was made")
 }
 
-// watchFound watches the git folders mem's last scan of ws found.
+// watchFound watches the git folders mem's last scan of ws found, and
+// remembers ws for the sweeps.
 func (gg *gitGuard) watchFound(mem *gitMemory, ws string) {
 	mem.mu.Lock()
 	dirs := mem.dirs[ws]
 	mem.mu.Unlock()
+	gg.movedMu.Lock()
+	if !slices.Contains(gg.scanned, ws) {
+		gg.scanned = append(gg.scanned, ws)
+	}
+	gg.movedMu.Unlock()
 	gg.watch(dirs)
+	if gitScanned != nil {
+		gitScanned()
+	}
 }
 
 // sweep takes out what a command left in the workspaces' git folders that git

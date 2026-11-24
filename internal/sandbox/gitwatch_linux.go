@@ -25,7 +25,7 @@ type gitWatch struct {
 	fd      int
 	wds     map[int]string // watch -> git folder
 	dirs    map[string]bool
-	moved   []map[string]any
+	gg      *gitGuard // where what it moves is noted
 	stopped chan struct{}
 	done    chan struct{}
 }
@@ -44,7 +44,7 @@ func (gg *gitGuard) watch(dirs []string) {
 		if err != nil {
 			return
 		}
-		w = &gitWatch{fd: fd, wds: map[int]string{}, dirs: map[string]bool{}, stopped: make(chan struct{}), done: make(chan struct{})}
+		w = &gitWatch{fd: fd, wds: map[int]string{}, dirs: map[string]bool{}, gg: gg, stopped: make(chan struct{}), done: make(chan struct{})}
 		gg.w = w
 		go w.run()
 	}
@@ -110,22 +110,7 @@ func (w *gitWatch) takeOut(p string) {
 		return
 	}
 	entries, _ := takeOutGitPlanted([]string{p})
-	w.moved = append(w.moved, entries...)
-}
-
-// takePlanted returns what the watcher moved aside since last asked.
-func (gg *gitGuard) takePlanted() []map[string]any {
-	gg.mu.Lock()
-	w := gg.w
-	gg.mu.Unlock()
-	if w == nil {
-		return nil
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	out := w.moved
-	w.moved = nil
-	return out
+	w.gg.noteMoved(entries)
 }
 
 // stop ends the watcher, for the sandbox closing.
