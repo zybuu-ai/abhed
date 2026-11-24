@@ -326,3 +326,44 @@ func TestStopOwnerBackgroundCountsOnlyRunningTerminals(t *testing.T) {
 		t.Fatalf("stopped %d, want only the running terminal", n)
 	}
 }
+
+// StopSessionRevoked stops one session of an owner, recorded as
+// owner_revoked, and leaves the owner's other sessions running; another
+// owner's id is not stopped.
+func TestStopSessionRevokedStopsOneSession(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "proxy"
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: waitingAdapter{}, Registry: tools.NewRegistry(tools.Read{})})
+	ends := map[string]chan string{}
+	start := func() string {
+		ch := make(chan string, 1)
+		id, err := s.StartSession(context.Background(), StartSpec{Prompt: "wait", Tenant: "acme", User: "local:carol",
+			OnEnd: func(reason string, _ error) { ch <- reason }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ends[id] = ch
+		return id
+	}
+	one, two := start(), start()
+	t.Cleanup(func() { s.StopSession("acme", "local:carol", two) })
+	if s.StopSessionRevoked(context.Background(), "acme", "local:dave", one) {
+		t.Fatal("stopped another owner's session")
+	}
+	if !s.StopSessionRevoked(context.Background(), "acme", "local:carol", one) {
+		t.Fatal("did not find the session")
+	}
+	select {
+	case r := <-ends[one]:
+		if r != string(agent.TermOwnerRevoked) {
+			t.Fatalf("ended %q, want owner_revoked", r)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the session did not end")
+	}
+	select {
+	case r := <-ends[two]:
+		t.Fatalf("the owner's other session ended (%s)", r)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
